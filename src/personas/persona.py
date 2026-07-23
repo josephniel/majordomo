@@ -57,6 +57,10 @@ class Persona:
     # Push-style mail alerts: {every_minutes: 3, chat_id: <optional>}.
     # Needs the gmail connector enabled. See services/mailwatch.py.
     mail_watch: Optional[dict] = None
+    # Splitwise expense mirroring into the budget ledger: {every_minutes: 10,
+    # chat_id: <optional>}. Needs splitwise AND budget connectors enabled.
+    # Polling — Splitwise's API has no webhooks. See services/splitwisewatch.py.
+    splitwise_watch: Optional[dict] = None
     # Enablement map for BACKGROUND agents (heartbeat, mail-watch) — same
     # grammar as faculties:/connectors:. When unset, the chat map is used
     # downgraded to read-only. Background fires are unattended and pay the
@@ -91,6 +95,9 @@ class Persona:
             heartbeat=dict(cfg["heartbeat"]) if cfg.get("heartbeat") else None,
             webhooks=dict(cfg["webhooks"]) if cfg.get("webhooks") else None,
             mail_watch=dict(cfg["mail_watch"]) if cfg.get("mail_watch") else None,
+            splitwise_watch=(
+                dict(cfg["splitwise_watch"]) if cfg.get("splitwise_watch") else None
+            ),
             background_tools=(
                 dict(cfg["background_tools"]) if cfg.get("background_tools") else None
             ),

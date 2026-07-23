@@ -735,9 +735,9 @@ class PersonaRuntime:
             chat_id, model=self.settings.heartbeat_model
         )
 
-    def _mail_watch_agent_factory(self, chat_id: int) -> Agent:
-        """Mail-watch keeps the main model (urgency judgment) but sheds the
-        chat toolset — headers arrive as injected context, not via tools."""
+    def _watch_agent_factory(self, chat_id: int) -> Agent:
+        """Watch fires (mail, splitwise) keep the main model (judgment) but
+        shed the chat toolset — the activity arrives as injected context."""
         return self._background_agent_factory(chat_id)
 
     @cached_property
@@ -801,6 +801,15 @@ class PersonaRuntime:
             document_store=docs_store,
         )
 
+    def _watch_chat_id(self, cfg: dict, label: str) -> Optional[int]:
+        chat_id = cfg.get("chat_id") or self._default_operator_chat_id()
+        if chat_id is None:
+            log.warning(
+                "persona %r: %s configured but no chat to notify",
+                self.persona.id, label,
+            )
+        return int(chat_id) if chat_id is not None else None
+
     @cached_property
     def mail_watch_config(self):
         """Push-style mail alerts. None unless persona.yaml has mail_watch
@@ -808,24 +817,58 @@ class PersonaRuntime:
         cfg = self.persona.mail_watch
         if not cfg or not self.persona.is_connector_enabled("gmail"):
             return None
-        chat_id = cfg.get("chat_id") or self._default_operator_chat_id()
+        chat_id = self._watch_chat_id(cfg, "mail_watch")
         if chat_id is None:
-            log.warning(
-                "persona %r: mail_watch configured but no chat to notify",
-                self.persona.id,
-            )
             return None
-        from services.mailwatch import MailWatcher
-        from chat.proactive import MailWatchConfig
+        from services.mailwatch import MAIL_WATCH_PROMPT_PREAMBLE, MailWatcher
+        from chat.proactive import WatchConfig
         every = max(1, int(cfg.get("every_minutes") or 3))
-        return MailWatchConfig(
+        return WatchConfig(
+            name="mail_watch",
             cron=f"*/{every} * * * *",
-            chat_id=int(chat_id),
+            chat_id=chat_id,
             watcher=MailWatcher(
                 gmail_connector=self.gmail_connector,
                 state_file=self.persona.data_dir / "mail_watch.json",
             ),
-            agent_factory=self._mail_watch_agent_factory,
+            preamble=MAIL_WATCH_PROMPT_PREAMBLE,
+            agent_factory=self._watch_agent_factory,
+        )
+
+    @cached_property
+    def splitwise_watch_config(self):
+        """Splitwise expense mirroring (no webhooks upstream — polling).
+        None unless persona.yaml has splitwise_watch and both the splitwise
+        and budget connectors are enabled (the fire's whole job is writing
+        Splitwise activity into the budget ledger)."""
+        cfg = self.persona.splitwise_watch
+        if not cfg or not self.persona.is_connector_enabled("splitwise"):
+            return None
+        if not self.persona.is_connector_enabled("budget"):
+            log.warning(
+                "persona %r: splitwise_watch needs the budget connector; disabled",
+                self.persona.id,
+            )
+            return None
+        chat_id = self._watch_chat_id(cfg, "splitwise_watch")
+        if chat_id is None:
+            return None
+        from services.splitwisewatch import (
+            SPLITWISE_WATCH_PROMPT_PREAMBLE,
+            SplitwiseWatcher,
+        )
+        from chat.proactive import WatchConfig
+        every = max(1, int(cfg.get("every_minutes") or 10))
+        return WatchConfig(
+            name="splitwise_watch",
+            cron=f"*/{every} * * * *",
+            chat_id=chat_id,
+            watcher=SplitwiseWatcher(
+                splitwise_connector=self.splitwise_connector,
+                state_file=self.persona.data_dir / "splitwise_watch.json",
+            ),
+            preamble=SPLITWISE_WATCH_PROMPT_PREAMBLE,
+            agent_factory=self._watch_agent_factory,
         )
 
     @cached_property
@@ -930,6 +973,9 @@ class PersonaRuntime:
             status_reporter=self.status_reporter,
             heartbeat=self.heartbeat_config,
             webhook_server=self.webhook_server,
-            mail_watch=self.mail_watch_config,
+            watches=[
+                w for w in (self.mail_watch_config, self.splitwise_watch_config)
+                if w is not None
+            ],
             retention=self.retention_job,
         )

@@ -1,13 +1,14 @@
 """Proactive behaviors: heartbeat, mail watch, webhooks, retention.
 
-Everything here turns an EVENT (a cron tick, new mail, an HTTP POST) into a
+Everything here turns an EVENT (a cron tick, new mail, a new Splitwise
+expense, an HTTP POST) into a
 scheduled-style agent turn via the host's _on_schedule_fire — same per-chat
 lock, same <silent> handling as any other turn. The subsystem engines
 themselves (WebhookServer, MailWatcher, RetentionJob, ScheduleEngine) live
 elsewhere; this module is only the bridge into the conversation.
 
 ProactiveMixin is a context module of ConversationOrchestrator. It relies
-on the host providing: _schedule_connector, _heartbeat, _mail_watch,
+on the host providing: _schedule_connector, _heartbeat, _watches,
 _webhook_server, _retention, _on_schedule_fire().
 """
 from __future__ import annotations
@@ -43,17 +44,22 @@ class HeartbeatConfig:
 
 
 @dataclass(frozen=True)
-class MailWatchConfig:
-    """Push-style mail alerts: `watcher.check()` is a token-free REST
-    prefilter on a cron; an LLM turn runs only when new mail exists.
+class WatchConfig:
+    """A push-style watcher: `watcher.check()` is a token-free REST
+    prefilter on a cron; an LLM turn runs only when new activity exists
+    (mail watch, splitwise watch, …). The watcher owns its two-phase
+    watermark: check() stages, commit() applies — the bridge commits only
+    after the turn was DELIVERED, so an outage re-reports next poll.
 
     agent_factory, when set, supplies a DEDICATED agent per fire with a
-    reduced background toolset — mail headers arrive as injected context,
+    reduced background toolset — the activity arrives as injected context,
     so the fire doesn't need (or pay the schema cost of) the chat's full
     tool surface."""
+    name: str  # system-cron name + log label, e.g. "mail_watch"
     cron: str
     chat_id: int
-    watcher: Any  # services.mailwatch.MailWatcher
+    watcher: Any  # check() -> Optional[str]; commit()
+    preamble: str  # instructions prepended to the watcher's context block
     agent_factory: Any = None  # Callable[[int], Agent] | None
 
 
@@ -85,13 +91,14 @@ class ProactiveMixin:
                 )
             except Exception:
                 log.exception("could not register heartbeat cron")
-        if self._mail_watch is not None:
+        for w in self._watches:
             try:
-                self._schedule_connector.add_system_cron(
-                    "mail_watch", self._mail_watch.cron, self._on_mail_watch,
-                )
+                # Late binding trap: capture w per iteration.
+                def _fire(w=w):
+                    return self._on_watch(w)
+                self._schedule_connector.add_system_cron(w.name, w.cron, _fire)
             except Exception:
-                log.exception("could not register mail_watch cron")
+                log.exception("could not register %s cron", w.name)
         if self._retention is not None:
             from services.retention import RETENTION_CRON
             try:
@@ -147,36 +154,32 @@ class ProactiveMixin:
             agent_factory=hb.agent_factory,
         )
 
-    async def _on_mail_watch(self) -> None:
-        """Cheap REST prefilter first; the LLM only wakes for new mail."""
-        mw = self._mail_watch
-        if mw is None:
-            return
+    async def _on_watch(self, w: WatchConfig) -> None:
+        """Cheap REST prefilter first; the LLM only wakes for new activity."""
         try:
-            block = await mw.watcher.check()
+            block = await w.watcher.check()
         except Exception:
-            log.exception("mail_watch poll failed")
+            log.exception("%s poll failed", w.name)
             return
         if not block:
             return
-        from services.mailwatch import MAIL_WATCH_PROMPT_PREAMBLE
         delivered = await self._on_schedule_fire(
             ScheduledTask(
-                name="mail_watch",
-                cron=mw.cron,
-                chat_id=mw.chat_id,
-                prompt=MAIL_WATCH_PROMPT_PREAMBLE + block,
-                description="mail watch",
+                name=w.name,
+                cron=w.cron,
+                chat_id=w.chat_id,
+                prompt=w.preamble + block,
+                description=w.name.replace("_", " "),
             ),
-            agent_factory=mw.agent_factory,
+            agent_factory=w.agent_factory,
         )
         if delivered:
             # Only now does the watermark advance — a vendor/Telegram outage
-            # at fire time re-reports the same mail next poll instead of
-            # dropping the alert forever.
-            mw.watcher.commit()
+            # at fire time re-reports the same activity next poll instead of
+            # dropping it forever.
+            w.watcher.commit()
         else:
-            log.warning("mail_watch: alert turn failed; will re-report next poll")
+            log.warning("%s: turn failed; will re-report next poll", w.name)
 
     async def _on_webhook_fire(self, trigger, payload: str) -> None:
         """A named trigger was POSTed: run its prompt (+ payload context) as

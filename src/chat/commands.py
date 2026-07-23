@@ -3,7 +3,7 @@
 CommandsMixin is a context module of ConversationOrchestrator. It relies on
 the host providing: _platform, _config, _connectors, _persona_id, _agents,
 _session_ids, _session_store, _schedule_connector, _conversation_history,
-_heartbeat, _mail_watch, _webhook_server, _cancel_chat().
+_heartbeat, _watches, _webhook_server, _cancel_chat().
 """
 from __future__ import annotations
 
@@ -158,8 +158,8 @@ class CommandsMixin:
         proactive: list[str] = []
         if self._heartbeat is not None:
             proactive.append(f"heartbeat ({self._heartbeat.cron})")
-        if self._mail_watch is not None:
-            proactive.append(f"mail watch ({self._mail_watch.cron})")
+        for w in self._watches:
+            proactive.append(f"{w.name.replace('_', ' ')} ({w.cron})")
         if self._webhook_server is not None:
             names = ", ".join(self._webhook_server.trigger_names)
             proactive.append(f"webhooks :{self._webhook_server.port} [{names}]")
