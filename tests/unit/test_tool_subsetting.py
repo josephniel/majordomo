@@ -1,17 +1,18 @@
-"""agents.chat_completions — tool subsetting for token-constrained vendors."""
-import json
+"""agents.chat_completions — tool subsetting for token-constrained vendors.
 
+Routing is provider-declared (ToolProvider.TRIGGER_KEYWORDS/ALWAYS_ATTACH);
+the agent holds no per-service keyword tables.
+"""
 import pytest
 
 from agents.chat_completions import (
-    ALWAYS_ON_CONNECTORS,
     ChatCompletionsAgent,
     DeepSeekAgent,
     GeminiAgent,
     GroqAgent,
     OpenAIAgent,
 )
-from connectors.base import Connector, tool
+from core import Connector, tool
 
 
 def _mk_tool(name):
@@ -21,22 +22,29 @@ def _mk_tool(name):
 
 
 class FakeConnector(Connector):
-    def __init__(self, name, tool_names):
+    def __init__(self, name, tool_names, keywords=(), always=False):
         self.name = name
         self._tn = tool_names
+        self.TRIGGER_KEYWORDS = tuple(keywords)
+        self.ALWAYS_ATTACH = always
     def builtin_tools(self):
         return [_mk_tool(n) for n in self._tn]
 
 
 def make_agent(cls=GroqAgent):
     connectors = [
-        FakeConnector("memory", ["memory_save", "memory_recall"]),
-        FakeConnector("schedule", ["schedule_once"]),
-        FakeConnector("gmail", ["send_email", "search_emails"]),
-        FakeConnector("google_calendar", ["create_event", "list_events"]),
-        FakeConnector("splitwise", ["create_expense"]),
-        FakeConnector("clickup", ["create_task"]),
-        FakeConnector("yahoo", ["get_quote"]),
+        FakeConnector("memory", ["memory_save", "memory_recall"], always=True),
+        FakeConnector("schedule", ["schedule_once"], always=True),
+        FakeConnector("gmail", ["send_email", "search_emails"],
+                      keywords=("email", "inbox", "unread")),
+        FakeConnector("google_calendar", ["create_event", "list_events"],
+                      keywords=("calendar", "meeting", "tomorrow")),
+        FakeConnector("splitwise", ["create_expense"],
+                      keywords=("expense", "owe", "settle")),
+        FakeConnector("clickup", ["create_task"],
+                      keywords=("task", "ticket")),
+        FakeConnector("yahoo", ["get_quote"],
+                      keywords=("stock", "ticker")),
     ]
     return cls(context_builder=None, history=None, persona_id="p", chat_id=1,
                connectors=connectors, persona=None, api_key="k")
@@ -46,6 +54,9 @@ def selected_connectors(agent, text):
     tools = agent._select_tools(text)
     names = {t["function"]["name"] for t in tools}
     return {agent._tool_connector[n] for n in names}
+
+
+ALWAYS_ON = {"memory", "schedule"}
 
 
 class TestSubsetting:
@@ -63,18 +74,18 @@ class TestSubsetting:
         # non-subsetting agent always sends everything
         assert agent._select_tools("any new email?") is agent._openai_tools
 
-    def test_always_on_present_for_generic_message(self):
+    def test_always_attach_present_for_generic_message(self):
         agent = make_agent()
         conns = selected_connectors(agent, "what should I eat for breakfast?")
-        assert ALWAYS_ON_CONNECTORS <= conns
-        # no connector-specific tools for an unrelated message
+        assert ALWAYS_ON <= conns
+        # no keyword-routed tools for an unrelated message
         assert "gmail" not in conns and "splitwise" not in conns
 
     def test_email_message_pulls_gmail(self):
         agent = make_agent()
         conns = selected_connectors(agent, "any new email in my inbox?")
         assert "gmail" in conns
-        assert ALWAYS_ON_CONNECTORS <= conns
+        assert ALWAYS_ON <= conns
 
     def test_calendar_keywords(self):
         agent = make_agent()
@@ -92,6 +103,15 @@ class TestSubsetting:
         agent = make_agent()
         assert "yahoo" in selected_connectors(agent, "check yahoo for AAPL")
 
+    def test_provider_without_declared_routing_always_rides(self):
+        agent = make_agent()
+        # Simulates an external MCP server's tools: no routing declared.
+        agent._connectors.append(FakeConnector("weather", ["get_forecast"]))
+        agent._tools_by_name = agent._collect_tools()
+        agent._rebuild_openai_tools()
+        conns = selected_connectors(agent, "what should I eat for breakfast?")
+        assert "weather" in conns
+
     def test_subset_smaller_than_full(self):
         agent = make_agent()
         full = len(agent._openai_tools)
@@ -100,7 +120,7 @@ class TestSubsetting:
 
     def test_subset_never_empty(self):
         agent = make_agent()
-        # even gibberish keeps the always-on tools
+        # even gibberish keeps the always-attached tools
         assert agent._select_tools("asdfqwer zxcv")
 
     def test_multiple_connectors_when_message_spans_them(self):

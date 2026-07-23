@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import os
 from typing import Any, AsyncIterator, Optional
 
 from claude_agent_sdk import (
@@ -228,12 +227,16 @@ class AnthropicOptionsBuilder:
         model: Optional[str] = None,
         max_turns: Optional[int] = None,
         max_output_tokens: Optional[int] = None,
+        default_model: Optional[str] = None,
     ) -> None:
         self._composer = context_builder
         self._config = config
         self._connectors = connectors
         self._persona = persona
-        self._model = model or persona.model or os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
+        # Explicit override > persona pin > composition-root default
+        # (settings.claude_model). No env reads here — RuntimeSettings is
+        # the only place environment becomes config.
+        self._model = model or persona.model or default_model or "claude-sonnet-5"
         self._max_turns = max_turns or None  # 0/None → uncapped
         self._max_output_tokens = max_output_tokens or None
 

@@ -46,6 +46,9 @@ _LANG_COMMANDS = {
 
 class CodeExecutor(Faculty):
     name = "code"
+    TRIGGER_KEYWORDS = ("code", "run", "script", "python", "compute",
+                        "calculate", "csv", "chart", "graph", "convert",
+                        "parse", "generate")
     WRITE_TOOLS = frozenset({"run_code"})
     STATUS = {"run_code": "Running code in the sandbox"}
 

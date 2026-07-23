@@ -58,6 +58,9 @@ AUTO_COMPACT_THRESHOLD = 30
 
 class LongTermMemory(Faculty):
     name = "memory"
+    # Cheap and relevant to almost any turn — rides every turn even under
+    # tool subsetting.
+    ALWAYS_ATTACH = True
 
     STATUS = {
         "memory_save": "Saving to memory",

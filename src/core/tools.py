@@ -159,6 +159,23 @@ class ToolProvider:
     # (read-only by default); `read_write` grants them too.
     WRITE_TOOLS: frozenset[str] = frozenset()
 
+    # ---- keyword routing (token-constrained vendors) ----
+    # When a vendor can't afford every tool schema per turn (SUBSET_TOOLS),
+    # this provider's tools are attached only when the message mentions the
+    # provider's name or one of these keywords. Be generous — a missed tool
+    # is worse than a few extra. Empty + ALWAYS_ATTACH False = opted out of
+    # routing entirely: tools ride every turn (the safe default for
+    # providers that never declared keywords, incl. external MCP servers).
+    TRIGGER_KEYWORDS: tuple[str, ...] = ()
+    # Cheap, near-universally relevant providers (memory, schedule) set this
+    # so their tools ride every turn even under subsetting.
+    ALWAYS_ATTACH: bool = False
+
+    # Local tool names whose invocation satisfies an "I've set a reminder /
+    # scheduled task" claim — the hallucination detector (chat Layer 3b)
+    # substring-matches the turn's tool trace against the union of these.
+    SCHEDULE_CLAIM_TOOLS: frozenset[str] = frozenset()
+
     def owns_profile(self, profile_name: str) -> bool:
         return (
             profile_name == self.name

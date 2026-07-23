@@ -35,6 +35,8 @@ _delegation_depth: ContextVar[int] = ContextVar("delegation_depth", default=0)
 
 class Delegator(Faculty):
     name = "delegate"
+    TRIGGER_KEYWORDS = ("delegate", "summarize all", "audit", "go through",
+                        "digest", "triage", "review all", "every")
     STATUS = {"delegate_task": "Working on a delegated task"}
 
     def __init__(

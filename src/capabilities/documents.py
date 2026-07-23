@@ -42,6 +42,8 @@ def extract_text(mime: str, data: bytes) -> Optional[str]:
 
 class DocumentLibrary(Faculty):
     name = "documents"
+    TRIGGER_KEYWORDS = ("document", "doc", "pdf", "file", "search", "saved",
+                        "read", "attachment", "notes", "paper", "contract")
     WRITE_TOOLS = frozenset({"doc_delete"})
     STATUS = {
         "doc_list": "Listing saved documents",

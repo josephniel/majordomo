@@ -155,6 +155,11 @@ def _format_http_error(e: httpx.HTTPStatusError) -> str:
 
 class GoogleCalendarConnector(Connector):
     name = "google_calendar"
+    TRIGGER_KEYWORDS = ("calendar", "event", "meeting", "appointment",
+                        "invite", "schedule", "free", "busy", "availab",
+                        "reschedule", "tomorrow", "today", "agenda")
+    # create_event satisfies an "I've set a reminder" claim (chat Layer 3b).
+    SCHEDULE_CLAIM_TOOLS = frozenset({"create_event"})
     WRITE_TOOLS = frozenset({"create_event", "update_event", "delete_event"})
 
     TOOL_NAMES = [

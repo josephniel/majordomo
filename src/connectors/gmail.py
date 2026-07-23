@@ -202,6 +202,9 @@ def _build_raw_email(
 
 class GmailConnector(Connector):
     name = "gmail"
+    # Keyword routing for token-constrained vendors (see ToolProvider).
+    TRIGGER_KEYWORDS = ("email", "e-mail", "mail", "inbox", "unread", "reply",
+                        "send", "message", "draft", "compose", "attachment")
     WRITE_TOOLS = frozenset({"send_email", "mark_as_read"})
 
     TOOL_NAMES = [

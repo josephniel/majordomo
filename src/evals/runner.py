@@ -114,6 +114,7 @@ async def run_case(vendor: str, case: EvalCase) -> CaseResult:
         connectors=fakes,
         persona=persona,
         model=(os.environ.get(model_env) or None) if model_env else None,
+        api_key=os.environ.get(agent_cls.API_KEY_ENV),
     )
     try:
         await agent.start()

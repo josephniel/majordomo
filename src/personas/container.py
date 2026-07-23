@@ -28,12 +28,8 @@ from agents import (
     AnthropicAgent,
     ConversationHistory,
     EphemeralConversationHistory,
-    DeepSeekAgent,
     CascadingAgent,
     ExternalMCPManager,
-    GeminiAgent,
-    GroqAgent,
-    OpenAIAgent,
     ChatCompletionsSummarizer,
     Summarizer,
     ContextBuilder,
@@ -73,6 +69,7 @@ from platforms import get_platform_cls, registered_platform_names, ChatPlatform,
 
 from .persona import Persona
 from .settings import RuntimeSettings
+from .vendors import VENDORS, VENDORS_BY_NAME
 
 log = logging.getLogger(__name__)
 
@@ -174,9 +171,13 @@ class PersonaRuntime:
         # gemini-primary bot keep its scarce free Gemini quota for CHAT while
         # running frequent background tasks on cheap Claude Haiku instead
         # (COMPACTION_LLM=claude).
-        compaction_llm = self.settings.compaction_llm or self.settings.primary_llm
-        if compaction_llm in ("groq", "gemini", "openai", "deepseek"):
-            return ChatCompletionsSummarizer.for_vendor(compaction_llm)
+        s = self.settings
+        compaction_llm = s.compaction_llm or s.primary_llm
+        spec = VENDORS_BY_NAME.get(compaction_llm)
+        if spec is not None and spec.backend is not None:
+            return ChatCompletionsSummarizer.for_backend(
+                spec.backend, model=spec.model(s), api_key=spec.api_key(s),
+            )
 
         # Claude path: Haiku routine, Sonnet deep — NOT the persona chat model
         # (that would put background on Sonnet too).
@@ -445,7 +446,7 @@ class PersonaRuntime:
                 f"persona {self.persona.id!r}: unsupported platform type "
                 f"{cfg.type!r}. Supported: {', '.join(registered_platform_names()) or '(none)'}"
             )
-        self._validate_required_env(platform_cls.REQUIRED_ENV, AnthropicAgent.REQUIRED_ENV)
+        self._validate_required_env(platform_cls.REQUIRED_ENV)
         # Only build the comms_log when the chat is actually in a control
         # room; otherwise we don't want the DSN dependency.
         cr_configured = bool(cfg.raw.get("control_room"))
@@ -477,6 +478,7 @@ class PersonaRuntime:
             persona=self.persona,
             max_turns=self.settings.claude_max_turns,
             max_output_tokens=self.settings.claude_max_output_tokens,
+            default_model=self.settings.claude_model,
         )
 
     @cached_property
@@ -532,6 +534,7 @@ class PersonaRuntime:
                 persona=persona,
                 max_turns=self.settings.claude_max_turns,
                 max_output_tokens=self.settings.claude_max_output_tokens,
+                default_model=self.settings.claude_model,
             )
 
         # External stdio MCP tools are gated wholesale — we can't tell an
@@ -566,19 +569,20 @@ class PersonaRuntime:
         s = self.settings
         primary = s.primary_llm
 
-        # Every usable backend, keyed by name. No vendor is privileged.
+        # Every usable backend, keyed by name — driven by the vendor
+        # registry, so adding a vendor never touches this method.
         available: dict[str, Agent] = {}
-        if s.groq_api_key:
-            available["groq"] = _oai(GroqAgent, model=s.groq_model)
-        if s.gemini_api_key:
-            available["gemini"] = _oai(GeminiAgent, model=s.gemini_model)
-        if s.openai_api_key:
-            available["openai"] = _oai(OpenAIAgent)
-        if s.deepseek_api_key:
-            available["deepseek"] = _oai(DeepSeekAgent)
-        # Claude is opt-in (see docstring); no key needed when using subscription auth.
-        if s.claude_enabled or s.anthropic_api_key or primary == "claude":
-            available["claude"] = AnthropicAgent(claude_builder, session_id=session_id)
+        for v in VENDORS:
+            if not v.enabled(s):
+                continue
+            if v.backend is None:
+                # Natively-integrated vendor (claude): SDK adapter with
+                # session resume; keyless under subscription auth.
+                available[v.name] = AnthropicAgent(claude_builder, session_id=session_id)
+            else:
+                available[v.name] = _oai(
+                    v.backend, model=v.model(s), api_key=v.api_key(s),
+                )
 
         if not available:
             raise RuntimeError(
@@ -608,8 +612,8 @@ class PersonaRuntime:
                         self.persona.id, primary, fallback_primary,
                     )
                 primary = fallback_primary
-            # Primary first, then the remaining backends in a stable order.
-            order = [primary] + [n for n in ("groq", "gemini", "openai", "deepseek", "claude") if n != primary]
+            # Primary first, then the rest in registry order.
+            order = [primary] + [v.name for v in VENDORS if v.name != primary]
 
         chain: list[tuple[str, Agent]] = [(n, available[n]) for n in order if n in available]
         log.info(
@@ -684,6 +688,7 @@ class PersonaRuntime:
             model=model,
             max_turns=self.settings.claude_max_turns,
             max_output_tokens=self.settings.claude_max_output_tokens,
+            default_model=self.settings.claude_model,
         )
 
     def _background_agent_factory(
@@ -695,8 +700,7 @@ class PersonaRuntime:
         toolset) when Claude isn't enabled. Fresh session each fire; turns
         still mirror into the chat history so the main agent sees what the
         background fire reported."""
-        s = self.settings
-        if not (s.claude_enabled or s.anthropic_api_key or s.primary_llm == "claude"):
+        if not VENDORS_BY_NAME["claude"].enabled(self.settings):
             return self.create_agent(
                 chat_id=chat_id, persona_override=self.background_persona
             )

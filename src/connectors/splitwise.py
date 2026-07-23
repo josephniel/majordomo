@@ -238,6 +238,9 @@ def _splitwise_errors(resp: dict) -> Optional[str]:
 
 class SplitwiseConnector(Connector):
     name = "splitwise"
+    TRIGGER_KEYWORDS = ("split", "splitwise", "expense", "owe", "owed",
+                        "paid", "settle", "reimburse", "bill", "share",
+                        "cost", "debt")
     WRITE_TOOLS = frozenset({"create_expense", "update_expense", "delete_expense"})
 
     TOOL_NAMES = [

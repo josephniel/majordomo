@@ -28,6 +28,8 @@ FileSender = Callable[[int, str, Optional[str]], Awaitable[bool]]
 
 class FileCourier(Faculty):
     name = "files"
+    TRIGGER_KEYWORDS = ("file", "send", "download", "csv", "chart",
+                        "artifact", "attachment", "report")
     STATUS = {"chat_send_file": "Sending a file to the chat"}
 
     def __init__(self, data_dir: Path) -> None:

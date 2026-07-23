@@ -96,6 +96,8 @@ def _parse_skill(path: Path) -> Optional[Skill]:
 
 class SkillsLibrary(Faculty):
     name = "skills"
+    TRIGGER_KEYWORDS = ("skill", "always", "never", "remember how",
+                        "from now on", "procedure", "instructions", "teach")
     # Self-written skills mutate the agent's own standing instructions —
     # that's a write to the most privileged surface there is. Gate them.
     WRITE_TOOLS = frozenset({"skill_save", "skill_delete"})

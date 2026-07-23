@@ -303,6 +303,11 @@ class ScheduleEngine:
 
 class TaskScheduler(Faculty):
     name = "schedule"
+    ALWAYS_ATTACH = True  # relevant to almost any turn, cheap schemas
+    # Calls that satisfy an "I've set a reminder" claim (chat Layer 3b).
+    SCHEDULE_CLAIM_TOOLS = frozenset(
+        {"schedule_once", "schedule_create", "schedule_set_enabled"}
+    )
 
     STATUS = {
         "schedule_create": "Setting up your schedule",

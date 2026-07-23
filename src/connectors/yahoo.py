@@ -31,6 +31,8 @@ log = logging.getLogger(__name__)
 
 class YahooConnector(Connector):
     name = "yahoo"
+    TRIGGER_KEYWORDS = ("stock", "yahoo", "portfolio", "ticker", "market",
+                        "share price", "equity", "quote", "index")
     WRITE_TOOLS = frozenset({"mark_as_read"})
 
     DEFAULT_TOOLS = [

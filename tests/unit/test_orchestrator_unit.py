@@ -186,12 +186,19 @@ class TestScheduleHallucinationRecovery:
             self.last_turn_tool_names = self._retry_tools
             return self._retry_reply
 
+    class FakeSchedulerProvider:
+        """Declares which of its tools satisfy a schedule claim, like the
+        real TaskScheduler/calendar providers do."""
+        SCHEDULE_CLAIM_TOOLS = frozenset(
+            {"schedule_once", "schedule_create", "create_event"}
+        )
+
     def _orch(self, tmp_path):
         platform = self.FakePlatform()
         o = ConversationOrchestrator(
             platform=platform, agent_factory=lambda **k: None,
             session_store=SessionStore(tmp_path / "s.json"), config=object(),
-            connectors_list=[], persona_id="t",
+            connectors_list=[self.FakeSchedulerProvider()], persona_id="t",
             task_scheduler=object(),  # persona has a scheduler
         )
         return o, platform

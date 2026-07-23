@@ -117,6 +117,15 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._rate_warned_at: dict[int, float] = {}
         # Held refs for background agent teardowns.
         self._stale_agent_stops: set[asyncio.Task] = set()
+        # Union of the providers' SCHEDULE_CLAIM_TOOLS — tool names that
+        # satisfy an "I've set a reminder" claim (RecoveryMixin, Layer 3b).
+        # Substring-matched: vendors report different name forms
+        # ("mcp__schedule__schedule_once" vs "schedule_once").
+        self._schedule_claim_tools: tuple[str, ...] = tuple(sorted({
+            t
+            for c in connectors_list
+            for t in getattr(c, "SCHEDULE_CLAIM_TOOLS", ())
+        }))
 
     # ---- lifecycle ----
 

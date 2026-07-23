@@ -35,6 +35,8 @@ class RuntimeSettings:
     llm_chain: tuple[str, ...] = ()
     claude_enabled: bool = False
     anthropic_api_key: str = ""
+    # Default Claude chat model when the persona doesn't pin one.
+    claude_model: str = "claude-sonnet-5"
     groq_api_key: str = ""
     groq_model: Optional[str] = None
     gemini_api_key: str = ""
@@ -81,6 +83,7 @@ class RuntimeSettings:
             llm_chain=_csv(env.get("LLM_CHAIN")),
             claude_enabled=_truthy(env.get("CLAUDE_ENABLED")),
             anthropic_api_key=env.get("ANTHROPIC_API_KEY") or "",
+            claude_model=env.get("CLAUDE_MODEL") or "claude-sonnet-5",
             groq_api_key=env.get("GROQ_API_KEY") or "",
             groq_model=env.get("GROQ_MODEL") or None,
             gemini_api_key=env.get("GEMINI_API_KEY") or "",
