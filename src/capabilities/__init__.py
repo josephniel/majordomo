@@ -1,8 +1,9 @@
-"""First-party capabilities — agent skills that aren't external service adapters.
+"""First-party capabilities — the agent's own faculties.
 
-These implement the Connector interface so they slot into the same connector
-pipeline, but they talk to internal infrastructure (Postgres, APScheduler)
-rather than third-party APIs.
+These implement the Faculty refinement of ToolProvider so they slot into the
+same tool pipeline as connectors, but they talk to internal infrastructure
+(Postgres, APScheduler) rather than third-party APIs — singletons per
+persona, no accounts, no auth flows.
 
     LongTermMemory — Postgres-backed second brain
     TaskScheduler  — APScheduler recurring-task engine

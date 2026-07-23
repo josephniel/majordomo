@@ -69,6 +69,11 @@ Prefer doc_search over asking the user to re-send anything."""
         self._store = store
         self._persona_id = persona_id
 
+    @property
+    def store(self) -> DocumentStore:
+        """The backing store — retention wiring prunes through this."""
+        return self._store
+
     def system_prompt_section(self) -> str:
         return self.SYSTEM_PROMPT_SECTION
 

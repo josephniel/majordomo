@@ -3,7 +3,7 @@
 Adding a new connector:
   1. Create connectors/<name>.py with a class extending Connector.
   2. Export the class below.
-  3. Add an instance to PersonaRuntime.active_services in persona_container.py.
+  3. Register a factory for it in PersonaRuntime (personas/container.py).
 """
 from __future__ import annotations
 

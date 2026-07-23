@@ -162,7 +162,7 @@ class CommandsMixin:
         if self._mail_watch is not None:
             proactive.append(f"mail watch ({self._mail_watch.cron})")
         if self._webhook_server is not None:
-            names = ", ".join(sorted(getattr(self._webhook_server, "_triggers", {})))
+            names = ", ".join(self._webhook_server.trigger_names)
             proactive.append(f"webhooks :{self._webhook_server.port} [{names}]")
         lines.append("Proactive: " + (", ".join(proactive) if proactive else "(none)"))
 

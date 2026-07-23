@@ -189,7 +189,7 @@ class TestStatusProactiveBlock:
         hb = HeartbeatConfig(cron="0 8 * * *", chat_id=7,
                              prompt_loader=lambda: "- check email")
         mw = MailWatchConfig(cron="*/3 * * * *", chat_id=7, watcher=FakeWatcher())
-        webhook = SimpleNamespace(port=18790, _triggers={"alert": None})
+        webhook = SimpleNamespace(port=18790, trigger_names=["alert"])
         orch, platform, _ = _orch(
             tmp_path, heartbeat=hb, mail_watch=mw, webhook_server=webhook,
         )

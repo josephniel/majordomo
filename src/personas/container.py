@@ -767,7 +767,7 @@ class PersonaRuntime:
         docs_store = None
         for c in self.active_services:
             if isinstance(c, DocumentLibrary):
-                docs_store = c._store
+                docs_store = c.store
                 break
         comms = None
         if self.platform_config.raw.get("control_room"):

@@ -180,7 +180,7 @@ class GoogleCalendarConnector(Connector):
         self._config = config
         # Event creation defaults to the schedule timezone (SCHEDULE_TIMEZONE)
         # so "3pm" means the user's 3pm, falling back to UTC.
-        self._default_timezone = default_timezone or self._default_timezone
+        self._default_timezone = default_timezone or self.DEFAULT_TIMEZONE
 
     @property
     def credentials_dir(self) -> Path:
