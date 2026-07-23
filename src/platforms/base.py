@@ -20,7 +20,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping, Optional, Protocol
 
-from agents import Attachment
+from core import Attachment
 from comms import CommsLog
 
 log = logging.getLogger(__name__)

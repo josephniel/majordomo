@@ -20,11 +20,11 @@ from email.header import decode_header, make_header
 from pathlib import Path
 from typing import Any, Optional
 
-from .base import tool
+from core import tool
 
 from .registry import ServiceRegistry
 
-from .base import Connector
+from core import Connector
 
 log = logging.getLogger(__name__)
 

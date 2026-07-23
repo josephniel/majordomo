@@ -7,16 +7,22 @@ apart. The dependency rule: `chat/` (application) depends on ports and
 protocols, never on concrete capabilities; only `personas/container.py`
 (the composition root) touches concretes and the environment.
 
+- `core/`       — the neutral contracts leaf (2026-07-23 restructure):
+                  Agent ABC, Attachment, Summarizer, UsageLimitError,
+                  ToolProvider and its two refinements (Faculty = the
+                  agent's own, singleton, no auth; Connector = external
+                  adapter, multi-profile, credentialed), ToolSpec/@tool,
+                  the capability protocols (AttachmentIngestor,
+                  ContextInjector), and current_chat_id. Imports only the
+                  stdlib; every other package imports shared contracts
+                  from here. `connectors/base.py`, `agents/base.py`, and
+                  `connectors/chat_context.py` re-export for back-compat.
 - `platforms/`  — ChatPlatform port + adapters (telegram; transcription).
-- `agents/`     — Agent port + vendor adapters, CascadingAgent failover,
-                  ConversationHistory mirror.
-- `connectors/` — the ToolProvider contract and its two refinements
-                  (Faculty = the agent's own, singleton, no auth;
-                  Connector = external adapter, multi-profile, credentialed),
-                  ToolSpec, capability protocols (AttachmentIngestor,
-                  ContextInjector, status_line), the approval gate, and the
-                  external-service connector implementations. persona.yaml
-                  enables them via separate `faculties:` / `connectors:`
+- `agents/`     — vendor adapters for the Agent port, CascadingAgent
+                  failover, ConversationHistory mirror, ContextBuilder.
+- `connectors/` — the external-service connector implementations, the
+                  approval gate, and ServiceRegistry. persona.yaml enables
+                  providers via separate `faculties:` / `connectors:`
                   blocks (same grammar; legacy `enabled_connectors` accepted).
 - `capabilities/` — the Faculty implementations (memory, schedule, skills,
                   code, files, documents, delegate).

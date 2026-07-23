@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from capabilities.schedule import TaskScheduler
-from connectors.base import Connector, tool
+from core import Connector, tool
 
 
 def _ok(text: str) -> dict[str, Any]:

@@ -28,8 +28,8 @@ from claude_agent_sdk import (
     tool as _claude_sdk_tool,
 )
 
-from connectors import Connector, ServiceRegistry
-from connectors.base import ToolSpec
+from connectors import ServiceRegistry
+from core import Connector, ToolSpec
 
 from .base import (
     Agent,

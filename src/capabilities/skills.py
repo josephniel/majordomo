@@ -44,7 +44,7 @@ from typing import Any, Optional
 
 import yaml
 
-from connectors.base import Faculty, tool
+from core import Faculty, tool
 
 log = logging.getLogger(__name__)
 

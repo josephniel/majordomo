@@ -12,7 +12,7 @@ from __future__ import annotations
 from .registry import ServiceRegistry, ConnectorEntry  # ConnectorEntry: internal
 
 from .approvals import WriteApprovalGate
-from .base import (
+from core import (
     AttachmentIngestor,
     Connector,
     ContextInjector,
@@ -20,7 +20,7 @@ from .base import (
     Summarizer,
     ToolProvider,
 )
-from .chat_context import current_chat_id
+from core import current_chat_id
 from .clickup import ClickUpConnector
 from .gmail import GmailConnector
 from .google_calendar import GoogleCalendarConnector

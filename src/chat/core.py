@@ -25,7 +25,8 @@ from typing import Any, Optional
 
 from agents import Agent, ConversationHistory
 from comms import CommsLog, CommsRelay
-from connectors import ServiceRegistry, Connector, current_chat_id
+from connectors import ServiceRegistry
+from core import Connector, current_chat_id
 from capabilities import ReflectionEngine, ScheduledTask, TaskScheduler
 from platforms import ChatPlatform, InboundMessage
 

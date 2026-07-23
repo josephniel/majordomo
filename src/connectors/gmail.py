@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from .base import tool
+from core import tool
 
 from .registry import ServiceRegistry
 
@@ -32,7 +32,7 @@ from ._google_oauth import (
     GoogleOAuthClient,
     GoogleOAuthError,
 )
-from .base import Connector
+from core import Connector
 
 log = logging.getLogger(__name__)
 

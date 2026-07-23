@@ -18,8 +18,7 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from connectors.base import Faculty, tool
-from connectors.chat_context import current_chat_id
+from core import Faculty, current_chat_id, tool
 
 log = logging.getLogger(__name__)
 

@@ -18,7 +18,7 @@ from contextlib import AsyncExitStack
 from typing import Any, Callable, Optional
 
 from connectors import ServiceRegistry
-from connectors.base import ToolSpec
+from core import ToolSpec
 
 log = logging.getLogger(__name__)
 

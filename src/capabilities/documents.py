@@ -14,7 +14,7 @@ import io
 import logging
 from typing import Any, Optional
 
-from connectors.base import Faculty, tool
+from core import Faculty, tool
 from storage.docs import DocumentStore
 
 log = logging.getLogger(__name__)

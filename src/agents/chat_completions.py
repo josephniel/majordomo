@@ -24,8 +24,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from connectors import Connector
-from connectors.base import ToolSpec
+from core import Connector, ToolSpec
 
 from .base import (
     Agent,

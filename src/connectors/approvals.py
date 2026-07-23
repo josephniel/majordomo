@@ -27,8 +27,7 @@ import logging
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Optional
 
-from .base import Connector, ToolSpec
-from .chat_context import current_chat_id
+from core import Connector, ToolSpec, current_chat_id
 
 log = logging.getLogger(__name__)
 

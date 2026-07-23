@@ -18,8 +18,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
-from connectors.base import Faculty, tool
-from connectors.chat_context import current_chat_id
+from core import Faculty, current_chat_id, tool
 
 log = logging.getLogger(__name__)
 

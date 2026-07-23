@@ -29,8 +29,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID
 
-from connectors.base import Faculty, Summarizer, tool
-from connectors.chat_context import current_chat_id
+from core import Faculty, Summarizer, current_chat_id, tool
 
 from storage import MemoryCoreEntry, MemoryDatabase, MemoryEntry
 

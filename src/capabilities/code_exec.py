@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from connectors.base import Faculty, tool
+from core import Faculty, tool
 
 log = logging.getLogger(__name__)
 
