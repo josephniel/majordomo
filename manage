@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# manage — single entry point for the telegram-bot stack.
+# manage — single entry point for the majordomo stack.
 #
 # All commands run from the project root and assume:
 #   - .venv/ exists (`python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt`)
@@ -53,7 +53,7 @@ persona_or_default() {
 
 cmd_help() {
 cat <<'USAGE'
-manage — telegram-bot stack
+manage — majordomo stack
 
   Bot lifecycle:
     up [persona]                     start Postgres + run a bot in foreground

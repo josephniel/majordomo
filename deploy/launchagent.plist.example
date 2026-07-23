@@ -3,7 +3,7 @@
 <plist version="1.0">
 	<dict>
 		<key>Label</key>
-		<string>com.example.telegram-bot</string>
+		<string>com.example.majordomo</string>
 
 		<!-- Runs as the logged-in user (LaunchAgent, not root Daemon) so it keeps
 		     access to ~/.claude subscription auth and the user's Docker. Keep the

@@ -13,7 +13,7 @@ Enabled only when STATUS_PUSH_URL is set in the instance .env:
 Payload shape (one project among many on the dashboard):
 
     {
-      "project":  "telegram-bot",
+      "project":  "majordomo",
       "instance": "<persona id>",
       "kind":     "vendor_health",
       "vendors":  {"gemini": 287.0},   # vendor -> cooldown seconds remaining

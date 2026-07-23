@@ -1,4 +1,4 @@
-"""Shared fixtures for the telegram-bot test suite.
+"""Shared fixtures for the majordomo test suite.
 
 Integration fixtures talk to the real local Postgres (the compose stack on
 127.0.0.1:5433). Every test gets a UNIQUE persona id, so tests are isolated

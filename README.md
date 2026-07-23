@@ -1,4 +1,8 @@
-# telegram-bot — an LLM-agnostic personal-assistant agent framework
+# majordomo — an LLM-agnostic personal-assistant agent framework
+
+> *majordomo (n., from Latin "major domus" — chief of the house): the head
+> servant who runs the household, deals with the vendors, and interrupts
+> the master only when something genuinely needs them.*
 
 A self-hosted personal AI assistant that lives in Telegram, built around one
 hard-won premise: **free-tier LLMs are unreliable tool-callers, so the
@@ -92,7 +96,7 @@ reads `~/.claude`, so it only works when the bot runs on the host as your
 user, which is also why the deploy docs use a user-level service).
 
 ```sh
-git clone <this repo> && cd telegram-bot
+git clone https://github.com/josephniel/majordomo && cd majordomo
 python3.13 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 # 1. Create your instance from the template

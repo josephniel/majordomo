@@ -1,7 +1,7 @@
 [project]
-name = "telegram-bot-agent"
+name = "majordomo-agent"
 version = "0.1.0"
-description = "LLM-agnostic personal-assistant agent framework for Telegram"
+description = "majordomo — an LLM-agnostic personal-assistant agent framework for Telegram"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.13"

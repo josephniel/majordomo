@@ -10,12 +10,12 @@ over getUpdates with `Conflict` errors).
 ```sh
 sed -e "s|__PROJECT_DIR__|$(pwd)|g" -e "s|__PERSONA__|assistant|g" \
     deploy/launchagent.plist.example \
-    > ~/Library/LaunchAgents/com.example.telegram-bot.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.telegram-bot.plist
+    > ~/Library/LaunchAgents/com.example.majordomo.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.majordomo.plist
 ```
 
-- Restart after a code change: `launchctl kickstart -k gui/$(id -u)/com.example.telegram-bot`
-- Stop without resurrection: `launchctl bootout gui/$(id -u)/com.example.telegram-bot`
+- Restart after a code change: `launchctl kickstart -k gui/$(id -u)/com.example.majordomo`
+- Stop without resurrection: `launchctl bootout gui/$(id -u)/com.example.majordomo`
 - **Never** kill the PID manually — `KeepAlive=true` respawns a second
   poller within seconds.
 
