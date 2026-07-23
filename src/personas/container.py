@@ -43,6 +43,7 @@ from storage import MemoryDatabase
 from chat.sessions import SessionStore
 from connectors import (
     ServiceRegistry,
+    BudgetConnector,
     ClickUpConnector,
     Connector,
     Faculty,
@@ -149,6 +150,10 @@ class PersonaRuntime:
     @cached_property
     def splitwise_connector(self) -> SplitwiseConnector:
         return SplitwiseConnector(config=self.config)
+
+    @cached_property
+    def budget_connector(self) -> BudgetConnector:
+        return BudgetConnector(config=self.config)
 
     @cached_property
     def summarizer(self) -> Summarizer:
@@ -324,7 +329,7 @@ class PersonaRuntime:
     # — important because some (e.g. memory) require runtime resources at
     # construction time.
     _CONNECTOR_FACTORY_NAMES = (
-        "gmail", "google_calendar", "yahoo", "clickup", "splitwise",
+        "gmail", "google_calendar", "yahoo", "clickup", "splitwise", "budget",
     )
     _FACULTY_FACTORY_NAMES = (
         "memory", "schedule", "skills", "delegate", "code", "files", "documents",
@@ -337,6 +342,7 @@ class PersonaRuntime:
             "yahoo": lambda: self.yahoo_connector,
             "clickup": lambda: self.clickup_connector,
             "splitwise": lambda: self.splitwise_connector,
+            "budget": lambda: self.budget_connector,
             "memory": lambda: self.long_term_memory,
             "schedule": lambda: self.task_scheduler,
             "skills": lambda: self.skills_library,
