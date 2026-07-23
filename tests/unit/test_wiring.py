@@ -317,3 +317,51 @@ class TestFacultyConnectorTiering:
         assert hb.agent_factory is not None, "heartbeats get a dedicated agent"
         (d / "persona.yaml").write_text(yaml_text.replace("first thing", "edited thing"))
         assert hb.prompt_loader() == "check the edited thing"
+
+
+class TestMailWatchDedicatedAgent:
+    async def test_factory_agent_serves_the_fire(self, tmp_path):
+        watcher = FakeWatcher()
+        mw_agent = FakeAgent(reply="Boss needs you!")
+
+        async def _stop():
+            mw_agent.stopped = True
+        mw_agent.stop = _stop
+
+        mw = MailWatchConfig(
+            cron="*/3 * * * *", chat_id=7, watcher=watcher,
+            agent_factory=lambda chat_id: mw_agent,
+        )
+        orch, platform, chat_agent = _orch(tmp_path, mail_watch=mw)
+        await orch._on_mail_watch()
+        assert mw_agent.prompts, "dedicated agent served the mail-watch turn"
+        assert chat_agent.prompts == [], "chat agent untouched"
+        assert platform.sent == [(7, "Boss needs you!")]
+        assert watcher.commits == 1
+        # The throwaway agent's session must not become the chat's.
+        assert 7 not in orch._session_ids
+
+
+class TestBackgroundToolView:
+    def _persona(self, tmp_path, **kw):
+        from personas.persona import Persona
+        return Persona(
+            id="t", dir=tmp_path / "instances" / "t", name="T",
+            system_prompt="x",
+            enabled_connectors={"skills": "read_write", "files": True},
+            **kw,
+        )
+
+    def test_background_persona_downgrades_writes(self, tmp_path):
+        from personas.container import PersonaRuntime
+        runtime = PersonaRuntime(self._persona(tmp_path))
+        assert runtime.background_persona.enabled_connectors == {
+            "skills": True, "files": True,
+        }
+
+    def test_background_tools_override_wins(self, tmp_path):
+        from personas.container import PersonaRuntime
+        runtime = PersonaRuntime(
+            self._persona(tmp_path, background_tools={"files": True})
+        )
+        assert runtime.background_persona.enabled_connectors == {"files": True}

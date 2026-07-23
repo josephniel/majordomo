@@ -288,6 +288,7 @@ class ChatCompletionsAgent(Agent):
         external_tools_provider: Optional[
             Any  # async () -> dict[str, ToolSpec]; see agents/external_mcp.py
         ] = None,
+        max_tokens: Optional[int] = None,
     ) -> None:
         self._composer = context_builder
         self._history = history
@@ -302,6 +303,7 @@ class ChatCompletionsAgent(Agent):
         self._current_task: Optional[asyncio.Task] = None
         self._external_tools_provider = external_tools_provider
         self._external_tools_loaded = False
+        self._max_tokens = max_tokens or None  # 0/None → vendor default
         self.last_turn_usage: dict[str, Any] = {}
         if not self._api_key:
             raise RuntimeError(
@@ -622,6 +624,8 @@ class ChatCompletionsAgent(Agent):
                     "messages": messages,
                     **self.EXTRA_COMPLETION_KWARGS,
                 }
+                if self._max_tokens:
+                    kwargs["max_tokens"] = self._max_tokens
                 if tools:
                     kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
@@ -741,18 +745,24 @@ class ChatCompletionsAgent(Agent):
 
 
 class OpenAIAgent(ChatCompletionsAgent):
+    # Paid tier has generous TPM, but the full ~60-tool schema (~7k tokens) is
+    # still billed on every turn — subsetting cuts most of it with the same
+    # safety nets (always-on connectors, empty→full fallback) as Groq/Gemini.
     DEFAULT_MODEL = "gpt-4o-mini"
     DEFAULT_BASE_URL = None
     API_KEY_ENV = "OPENAI_API_KEY"
     REQUIRED_ENV = ["OPENAI_API_KEY"]
     SUPPORTS_VISION = True
+    SUBSET_TOOLS = True
 
 
 class DeepSeekAgent(ChatCompletionsAgent):
+    # Subsets tools for the same billed-schema reason as OpenAIAgent.
     DEFAULT_MODEL = "deepseek-chat"
     DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
     API_KEY_ENV = "DEEPSEEK_API_KEY"
     REQUIRED_ENV = ["DEEPSEEK_API_KEY"]
+    SUBSET_TOOLS = True
 
 
 class GeminiAgent(ChatCompletionsAgent):

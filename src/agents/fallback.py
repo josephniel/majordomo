@@ -94,6 +94,11 @@ class CascadingAgent(Agent):
         # Compaction guards (B3): serialized, referenced, backed-off.
         self._compact_lock = asyncio.Lock()
         self._compact_backoff_until: float = 0.0
+        # Server-side-history vendors flagged for session rotation after a
+        # compaction: their session is reset and reseeded from the mirror
+        # (summary + kept tail) on their next turn, so per-turn input tokens
+        # stay bounded instead of replaying the whole conversation forever.
+        self._pending_rotation: set[str] = set()
         self._bg_tasks: set[asyncio.Task] = set()
         # Tools invoked during the most recent successful turn — the
         # orchestrator's hallucination detector (Layer 3) reads these to spot
@@ -256,6 +261,17 @@ class CascadingAgent(Agent):
                 continue
             try:
                 await self._ensure_started(vendor)
+                if vendor in self._pending_rotation:
+                    reset = getattr(agent, "reset_session", None)
+                    if reset is not None:
+                        await reset()
+                        # Watermark 0 makes the digest below replay the whole
+                        # post-compaction mirror (summary row + kept tail)
+                        # into the fresh session's first turn — seeded exactly
+                        # once, since success bumps the watermark.
+                        self._last_seen_row_id[vendor] = 0
+                        log.info("%s: session rotated after compaction", vendor)
+                    self._pending_rotation.discard(vendor)
                 outgoing = await self._compose_outgoing(
                     vendor, agent, text, memory_block, user_row_id,
                 )
@@ -419,20 +435,29 @@ class CascadingAgent(Agent):
             return self._prefix_memories(memory_block, text)
 
         lines: list[str] = []
+        summary_lines: list[str] = []
         for r in rows:
             role, content = r["role"], r["content"]
             if role == "system" and r.get("metadata", {}).get("tool_use"):
                 lines.append(f"  ({content})")
-            elif role in ("user", "assistant", "summary"):
+            elif role == "summary":
+                # Summaries are the compressed record of everything already
+                # folded — exempt from truncation, else the seed after a
+                # session rotation loses exactly the context it exists for.
+                summary_lines.append(f"  {role}: {content}")
+            elif role in ("user", "assistant"):
                 vend = (r.get("metadata") or {}).get("vendor", "")
                 label = f"{role} ({vend})" if role == "assistant" and vend else role
                 lines.append(f"  {label}: {content}")
         digest = "\n".join(lines)
         if len(digest) > DIGEST_CHAR_LIMIT:
             digest = "  […older portion truncated]\n" + digest[-DIGEST_CHAR_LIMIT:]
+        if summary_lines:
+            digest = "\n".join(summary_lines) + (f"\n{digest}" if digest else "")
         block = (
-            "[Context recovery — while you were unavailable, this conversation "
-            "continued with a fallback model. The exchange you missed:\n"
+            "[Context recovery — earlier turns of this conversation are not "
+            "in your current session (they were served by a fallback model, "
+            "or your session was refreshed). The exchange you missed:\n"
             f"{digest}\n"
             "End of missed exchange. Do not re-answer it; it is context for "
             "the message below.]"
@@ -532,6 +557,13 @@ class CascadingAgent(Agent):
                     self._persona_id, self._chat_id, summary, cutoff_id=cutoff_id,
                 )
                 log.info("compacted %d turns into a single summary row", folded)
+                # Server-side sessions (Claude) don't shrink with the mirror —
+                # flag them for rotation so the next turn opens a fresh
+                # session seeded from the summary instead of replaying the
+                # whole conversation as input tokens forever.
+                for name, a in self._chain:
+                    if a.USES_SERVER_SIDE_HISTORY and hasattr(a, "reset_session"):
+                        self._pending_rotation.add(name)
             except asyncio.CancelledError:
                 raise
             except Exception:

@@ -305,3 +305,30 @@ class TestSendContract:
         messages = await self._send(history, "do it", current_row_id=row_id)
         user_msgs = [m for m in messages if m["role"] == "user"]
         assert len(user_msgs) == 1
+
+
+class TestMaxTokens:
+    class _Composer:
+        def build(self):
+            return "SYSTEM"
+
+    async def _captured_kwargs(self, **agent_kw):
+        from agents.history import EphemeralConversationHistory
+        agent = OpenAIAgent(
+            context_builder=self._Composer(),
+            history=EphemeralConversationHistory(),
+            persona_id="p", chat_id=1, connectors=[], persona=None,
+            api_key="test-key", **agent_kw,
+        )
+        client = TestSendContract._CapturingClient()
+        agent._client = client
+        await agent.send("hi")
+        return client.captured
+
+    async def test_cap_flows_into_create(self):
+        kwargs = await self._captured_kwargs(max_tokens=4096)
+        assert kwargs["max_tokens"] == 4096
+
+    async def test_unset_and_zero_omit_the_kwarg(self):
+        assert "max_tokens" not in await self._captured_kwargs()
+        assert "max_tokens" not in await self._captured_kwargs(max_tokens=0)

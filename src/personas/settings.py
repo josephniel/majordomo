@@ -54,6 +54,14 @@ class RuntimeSettings:
     # from the chat chain (same reasoning as COMPACTION_MODEL).
     heartbeat_model: str = "claude-haiku-4-5"
 
+    # ---- token/cost caps ----
+    # Per-turn output cap for chat-completions vendors; 0 disables the cap.
+    llm_max_output_tokens: int = 4096
+    # Claude SDK: agentic-loop turn cap and per-response output-token cap
+    # (passed to the CLI via CLAUDE_CODE_MAX_OUTPUT_TOKENS); 0 disables.
+    claude_max_turns: int = 50
+    claude_max_output_tokens: int = 16000
+
     # ---- sandboxed code execution ----
     code_exec_image: Optional[str] = None
     code_exec_network: Optional[str] = None
@@ -85,6 +93,9 @@ class RuntimeSettings:
             schedule_timezone=env.get("SCHEDULE_TIMEZONE") or None,
             webhook_token=env.get("WEBHOOK_TOKEN") or "",
             heartbeat_model=env.get("HEARTBEAT_MODEL") or "claude-haiku-4-5",
+            llm_max_output_tokens=int(env.get("LLM_MAX_OUTPUT_TOKENS") or 4096),
+            claude_max_turns=int(env.get("CLAUDE_MAX_TURNS") or 50),
+            claude_max_output_tokens=int(env.get("CLAUDE_MAX_OUTPUT_TOKENS") or 16000),
             code_exec_image=env.get("CODE_EXEC_IMAGE") or None,
             code_exec_network=env.get("CODE_EXEC_NETWORK") or None,
             status_push_url=env.get("STATUS_PUSH_URL") or "",

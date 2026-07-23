@@ -5,6 +5,9 @@ import pytest
 
 from agents.chat_completions import (
     ALWAYS_ON_CONNECTORS,
+    ChatCompletionsAgent,
+    DeepSeekAgent,
+    GeminiAgent,
     GroqAgent,
     OpenAIAgent,
 )
@@ -46,13 +49,18 @@ def selected_connectors(agent, text):
 
 
 class TestSubsetting:
-    def test_groq_subsets(self):
-        assert GroqAgent.SUBSET_TOOLS is True
+    @pytest.mark.parametrize(
+        "cls", [GroqAgent, GeminiAgent, OpenAIAgent, DeepSeekAgent]
+    )
+    def test_every_vendor_subsets(self, cls):
+        # The full ~60-tool schema is billed on every turn, so all vendors
+        # subset — free tiers for quota, paid tiers for cost.
+        assert cls.SUBSET_TOOLS is True
 
-    def test_openai_does_not_subset(self):
-        agent = make_agent(OpenAIAgent)
+    def test_base_class_does_not_subset(self):
+        agent = make_agent(ChatCompletionsAgent)
         assert agent.SUBSET_TOOLS is False
-        # non-constrained vendor always sends everything
+        # non-subsetting agent always sends everything
         assert agent._select_tools("any new email?") is agent._openai_tools
 
     def test_always_on_present_for_generic_message(self):

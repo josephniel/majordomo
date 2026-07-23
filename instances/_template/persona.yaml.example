@@ -33,6 +33,15 @@ connectors: {}
 #  splitwise: true
 #  yahoo: true
 
+# Background agents (heartbeat, mail_watch) get THIS toolset instead of the
+# chat one — same grammar as faculties:/connectors:. Every background fire
+# pays the full tool-schema token cost with no cache reuse, so keep it to
+# what the background prompts actually use. Omit to fall back to the chat
+# toolset downgraded to read-only.
+# background_tools:
+#   memory: true
+#   gmail: true
+
 # Layer 5: every write tool call asks for an inline Approve/Deny tap before
 # executing. Only set false if you fully trust every read_write surface.
 write_approval: true

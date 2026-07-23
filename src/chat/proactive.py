@@ -45,10 +45,16 @@ class HeartbeatConfig:
 @dataclass(frozen=True)
 class MailWatchConfig:
     """Push-style mail alerts: `watcher.check()` is a token-free REST
-    prefilter on a cron; an LLM turn runs only when new mail exists."""
+    prefilter on a cron; an LLM turn runs only when new mail exists.
+
+    agent_factory, when set, supplies a DEDICATED agent per fire with a
+    reduced background toolset — mail headers arrive as injected context,
+    so the fire doesn't need (or pay the schema cost of) the chat's full
+    tool surface."""
     cron: str
     chat_id: int
     watcher: Any  # services.mailwatch.MailWatcher
+    agent_factory: Any = None  # Callable[[int], Agent] | None
 
 
 _HEARTBEAT_PREAMBLE = """\
@@ -154,13 +160,16 @@ class ProactiveMixin:
         if not block:
             return
         from services.mailwatch import MAIL_WATCH_PROMPT_PREAMBLE
-        delivered = await self._on_schedule_fire(ScheduledTask(
-            name="mail_watch",
-            cron=mw.cron,
-            chat_id=mw.chat_id,
-            prompt=MAIL_WATCH_PROMPT_PREAMBLE + block,
-            description="mail watch",
-        ))
+        delivered = await self._on_schedule_fire(
+            ScheduledTask(
+                name="mail_watch",
+                cron=mw.cron,
+                chat_id=mw.chat_id,
+                prompt=MAIL_WATCH_PROMPT_PREAMBLE + block,
+                description="mail watch",
+            ),
+            agent_factory=mw.agent_factory,
+        )
         if delivered:
             # Only now does the watermark advance — a vendor/Telegram outage
             # at fire time re-reports the same mail next poll instead of
