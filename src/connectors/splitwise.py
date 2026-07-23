@@ -279,8 +279,10 @@ class SplitwiseConnector(Connector):
 
     # ---- Connector contract ----
 
-    def builtin_servers(self) -> dict[str, list]:
-        servers: dict[str, list] = {}
+    def build_clients(self) -> dict[str, SplitwiseClient]:
+        """One API client per enabled profile — the narrow surface services
+        (splitwise watch) consume without touching tool machinery."""
+        clients: dict[str, SplitwiseClient] = {}
         for profile in self._config.load_all():
             if not profile.enabled or not self.owns_profile(profile.name):
                 continue
@@ -292,9 +294,14 @@ class SplitwiseConnector(Connector):
                     profile.name,
                 )
                 continue
-            client = SplitwiseClient(api_key=api_key)
-            servers[profile.name] = self._build_tools_for_profile(client)
-        return servers
+            clients[profile.name] = SplitwiseClient(api_key=api_key)
+        return clients
+
+    def builtin_servers(self) -> dict[str, list]:
+        return {
+            name: self._build_tools_for_profile(client)
+            for name, client in self.build_clients().items()
+        }
 
     def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
         return self.STATUS.get(local)

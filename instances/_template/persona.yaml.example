@@ -71,6 +71,14 @@ system_prompt: |
 # mail_watch:
 #   every_minutes: 3
 
+# Splitwise -> budget-ledger mirroring (needs splitwise AND budget
+# connectors): Splitwise has no webhooks, so a token-free poll every N
+# minutes checks get_expenses?updated_after=<watermark>; the LLM wakes only
+# for new/edited expenses and records them via record_split /
+# record_transaction (writes still ride the approval gate).
+# splitwise_watch:
+#   every_minutes: 10
+
 # Event-driven triggers: POST /trigger/<name> with Bearer WEBHOOK_TOKEN.
 # webhooks:
 #   port: 18790
