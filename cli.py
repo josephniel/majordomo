@@ -1,0 +1,488 @@
+"""CLI entry point for managing connector profiles.
+
+Generic verbs (list / add / auth / enable / disable / remove / show / rename)
+are implemented in ConnectorCLI. Per-connector flags for `add` and `auth`
+are parsed by each connector's cmd_add / cmd_auth methods.
+
+Usage:
+    python cli.py list
+    python cli.py add      <connector> <profile> [connector-flags...]
+    python cli.py auth     <connector> <profile> [connector-flags...]
+    python cli.py enable   <connector> <profile>
+    python cli.py disable  <connector> <profile>
+    python cli.py remove   <connector> <profile>
+    python cli.py show     <connector>
+    python cli.py rename   <old-connector-name> <new-connector-name>
+    python cli.py memory   inspect
+    python cli.py comms    inspect [--limit N]
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import sys
+from pathlib import Path
+from typing import Optional
+
+import yaml
+
+from connectors import ServiceRegistry, Connector
+from personas import Persona, PersonaRuntime
+
+
+class ConnectorCLI:
+    """Generic CLI driving the connector registry.
+
+    Receives its dependencies via constructor — same DI pattern as the rest
+    of the codebase. Per-connector commands are dispatched via the registry.
+    """
+
+    def __init__(
+        self,
+        config: ServiceRegistry,
+        connectors: list[Connector],
+        runtime=None,  # PersonaRuntime; needed by memory/comms inspect commands.
+    ) -> None:
+        self._config = config
+        self._connectors = connectors
+        self._runtime = runtime
+
+    def run(self, args: Optional[list[str]] = None) -> None:
+        parser = self._build_parser()
+        args = parser.parse_args(args)
+        try:
+            args.func(args)
+        except (KeyError, ValueError) as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    # ---- command handlers ----
+
+    def _cmd_list(self, _args) -> None:
+        items = self._config.load_all()
+        if not items:
+            print("(no connectors configured)")
+            return
+        width = max(len(i.name) for i in items)
+        for i in items:
+            status = "ON " if i.enabled else "OFF"
+            print(f"  [{status}]  {i.name:<{width}}  {i.description}")
+
+    def _cmd_add(self, args) -> None:
+        c = self._find_connector(args.connector)
+        try:
+            c.cmd_add(args.profile, args.extra)
+        except NotImplementedError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    def _cmd_auth(self, args) -> None:
+        c = self._find_connector(args.connector)
+        try:
+            c.cmd_auth(args.profile, args.extra)
+        except NotImplementedError as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    def _cmd_enable(self, args) -> None:
+        self._config.set_profile_enabled(args.connector, args.profile, True)
+        print(f"enabled: {args.connector} / {args.profile}")
+
+    def _cmd_disable(self, args) -> None:
+        self._config.set_profile_enabled(args.connector, args.profile, False)
+        print(f"disabled: {args.connector} / {args.profile}")
+
+    def _cmd_remove(self, args) -> None:
+        self._config.remove_profile(args.connector, args.profile)
+        print(f"removed: {args.connector} / {args.profile}")
+
+    def _cmd_show(self, args) -> None:
+        block = self._config.read_connector(args.connector)
+        print(yaml.safe_dump({args.connector: block}, sort_keys=False, default_flow_style=False))
+
+    def _cmd_rename(self, args) -> None:
+        self._config.rename_connector(args.old, args.new)
+        print(f"renamed: {args.old} -> {args.new}")
+
+    def _cmd_memory_inspect(self, _args) -> None:
+        if self._runtime is None:
+            print("error: persona container not available", file=sys.stderr)
+            sys.exit(1)
+        asyncio.run(_inspect_memory(self._runtime))
+
+    def _cmd_memory_reembed(self, _args) -> None:
+        if self._runtime is None:
+            print("error: persona container not available", file=sys.stderr)
+            sys.exit(1)
+        asyncio.run(_reembed_memory(self._runtime))
+
+    def _cmd_canary(self, _args) -> None:
+        if self._runtime is None:
+            print("error: persona container not available", file=sys.stderr)
+            sys.exit(1)
+        asyncio.run(_run_canary(self._runtime))
+
+    def _cmd_comms_inspect(self, args) -> None:
+        if self._runtime is None:
+            print("error: persona container not available", file=sys.stderr)
+            sys.exit(1)
+        asyncio.run(_inspect_comms(self._runtime, limit=args.limit))
+
+    def _cmd_schedules(self, _args) -> None:
+        engine = self._runtime.schedule_runtime
+        engine._load()  # read the JSON store without starting APScheduler
+        scheds = sorted(engine._schedules.values(), key=lambda s: s.name)
+        tz = engine.timezone_name or "host-local"
+        print(f"=== Schedules for {self._runtime.persona.id} (timezone: {tz}) ===")
+        if not scheds:
+            print("(none)")
+        for s in scheds:
+            state = "on " if s.enabled else "off"
+            when = s.run_at if s.is_one_shot else s.cron
+            kind = "once" if s.is_one_shot else "cron"
+            print(f"  [{state}] {s.name}  ({kind}: {when})  chat={s.chat_id}")
+            if s.description:
+                print(f"        {s.description}")
+
+    def _cmd_skills(self, _args) -> None:
+        skills = self._runtime.skills_library._scan()
+        print(f"=== Skills for {self._runtime.persona.id} ===")
+        if not skills:
+            print("(none)")
+        for s in skills:
+            flags = []
+            if s.always:
+                flags.append("always")
+            if s.keywords:
+                flags.append("keywords: " + ", ".join(s.keywords))
+            suffix = f"  [{'; '.join(flags)}]" if flags else ""
+            print(f"  {s.name}{suffix}")
+            if s.description:
+                print(f"        {s.description}")
+
+    def _cmd_documents_inspect(self, _args) -> None:
+        asyncio.run(_inspect_documents(self._runtime))
+
+    def _cmd_prune(self, _args) -> None:
+        asyncio.run(_run_prune(self._runtime))
+
+    # ---- helpers ----
+
+    def _find_connector(self, name: str) -> Connector:
+        externals = [c for c in self._connectors if isinstance(c, Connector)]
+        for c in externals:
+            if c.name == name:
+                return c
+        if any(c.name == name for c in self._connectors):
+            print(
+                f"error: {name!r} is a built-in faculty, not an external "
+                f"connector — it has no accounts to add or auth. Enable it "
+                f"in persona.yaml under `faculties:`.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        known = ", ".join(x.name for x in externals)
+        print(f"error: unknown connector {name!r}\n  known: {known}", file=sys.stderr)
+        sys.exit(1)
+
+    def _build_parser(self) -> argparse.ArgumentParser:
+        parser = argparse.ArgumentParser(
+            description=__doc__.strip().splitlines()[0],
+        )
+        sub = parser.add_subparsers(dest="cmd", required=True)
+
+        sub.add_parser(
+            "list", help="show all connector profiles and their status"
+        ).set_defaults(func=self._cmd_list)
+
+        p = sub.add_parser(
+            "add",
+            help="add a profile to a connector (extra flags are connector-specific)",
+        )
+        p.add_argument("connector")
+        p.add_argument("profile")
+        p.add_argument(
+            "extra",
+            nargs=argparse.REMAINDER,
+            help="connector-specific flags (e.g. --oauth-keys)",
+        )
+        p.set_defaults(func=self._cmd_add)
+
+        p = sub.add_parser("auth", help="re-run auth for an existing profile")
+        p.add_argument("connector")
+        p.add_argument("profile")
+        p.add_argument("extra", nargs=argparse.REMAINDER)
+        p.set_defaults(func=self._cmd_auth)
+
+        p = sub.add_parser("enable", help="turn a profile on")
+        p.add_argument("connector")
+        p.add_argument("profile")
+        p.set_defaults(func=self._cmd_enable)
+
+        p = sub.add_parser("disable", help="turn a profile off")
+        p.add_argument("connector")
+        p.add_argument("profile")
+        p.set_defaults(func=self._cmd_disable)
+
+        p = sub.add_parser("remove", help="delete a profile from a connector")
+        p.add_argument("connector")
+        p.add_argument("profile")
+        p.set_defaults(func=self._cmd_remove)
+
+        p = sub.add_parser("show", help="print one connector's full config block")
+        p.add_argument("connector")
+        p.set_defaults(func=self._cmd_show)
+
+        p = sub.add_parser("rename", help="rename a connector")
+        p.add_argument("old")
+        p.add_argument("new")
+        p.set_defaults(func=self._cmd_rename)
+
+        # `memory <action>` — Phase 1 memory layer maintenance.
+        p_memory = sub.add_parser("memory", help="memory layer maintenance")
+        p_memory_sub = p_memory.add_subparsers(dest="memory_action", required=True)
+        p_inspect = p_memory_sub.add_parser(
+            "inspect",
+            help="show memory_core summaries + active entry counts per compartment",
+        )
+        p_inspect.set_defaults(func=self._cmd_memory_inspect)
+
+        # `canary` — probe that each chain vendor actually calls tools.
+        sub.add_parser(
+            "canary",
+            help="test each LLM vendor in the chain actually calls tools",
+        ).set_defaults(func=self._cmd_canary)
+        p_reembed = p_memory_sub.add_parser(
+            "reembed",
+            help="re-embed all memory entries with the current embedding model "
+                 "(run once after an embedding-model change)",
+        )
+        p_reembed.set_defaults(func=self._cmd_memory_reembed)
+
+        # `comms <action>` — Phase 2/control-room comms log.
+        p_comms = sub.add_parser("comms", help="control-room comms log")
+        p_comms_sub = p_comms.add_subparsers(dest="comms_action", required=True)
+        p_comms_inspect = p_comms_sub.add_parser(
+            "inspect",
+            help="show recent control-room comms_log entries",
+        )
+        p_comms_inspect.add_argument(
+            "--limit", type=int, default=20, help="number of entries (default 20)",
+        )
+        p_comms_inspect.set_defaults(func=self._cmd_comms_inspect)
+
+        # `schedules` — list scheduled tasks straight from the JSON store.
+        sub.add_parser(
+            "schedules", help="list this persona's scheduled tasks",
+        ).set_defaults(func=self._cmd_schedules)
+
+        # `skills` — list skill notes.
+        sub.add_parser(
+            "skills", help="list this persona's skill notes",
+        ).set_defaults(func=self._cmd_skills)
+
+        # `documents inspect` — document library contents.
+        p_docs = sub.add_parser("documents", help="document library (RAG corpus)")
+        p_docs_sub = p_docs.add_subparsers(dest="documents_action", required=True)
+        p_docs_sub.add_parser(
+            "inspect", help="list saved documents",
+        ).set_defaults(func=self._cmd_documents_inspect)
+
+        # `prune` — run retention now instead of waiting for the nightly cron.
+        sub.add_parser(
+            "prune",
+            help="run retention now (archived chat, turn_log, comms, documents)",
+        ).set_defaults(func=self._cmd_prune)
+
+        return parser
+
+
+async def _run_canary(container) -> None:
+    """Probe each chain vendor's tool-calling ability and print results."""
+    container.load_env()
+    agent = container.create_agent(chat_id=0)
+    run = getattr(agent, "run_canary", None)
+    if run is None:
+        print("this agent doesn't support canary probing")
+        return
+    print("probing tool-calling per vendor...")
+    results = await run()
+    for vendor, (ok, detail) in results.items():
+        print(f"  [{'PASS' if ok else 'FAIL'}] {vendor}: {detail}")
+    try:
+        await agent.stop()
+    except Exception:
+        pass
+
+
+async def _reembed_memory(container) -> None:
+    """Re-embed every memory entry with the current local embedding model.
+    Idempotent; entries already embedded by the current model are skipped."""
+    from storage.embeddings import MODEL_NAME
+
+    db = container.memory_database
+    await db.connect()
+    print(f"re-embedding with model: {MODEL_NAME} (first run downloads the model)")
+    done = await db.backfill_embeddings(force=True)
+    print(f"re-embedded {done} entries")
+    await db.close()
+
+
+async def _inspect_memory(container) -> None:
+    """Print a snapshot of this persona's second brain.
+
+    Three sections:
+      1. memory_core summaries (auto-injected into every system prompt).
+      2. Active memory_entries grouped by (scope, domain_key).
+      3. The 5 most-recent entries, full content.
+    """
+    persona = container.persona
+    db = container.memory_database
+    await db.connect()
+
+    print(f"=== Memory for persona: {persona.id} ===")
+
+    cores = await db.get_core(persona.id)
+    print(f"\n-- Core summaries ({len(cores)}) --")
+    if not cores:
+        print("(none — no compartment has been compacted yet)")
+    for c in cores:
+        label = f"{c.scope}/{c.domain_key}" if c.domain_key else c.scope
+        ts = c.last_compacted_at.strftime("%Y-%m-%d %H:%M")
+        print(f"\n[{label}] (compacted {ts}, {c.last_source_count} sources)")
+        print(f"  {c.summary}")
+
+    # Active entry counts by compartment.
+    rows = await db.fetch(
+        """
+        SELECT scope, domain_key, COUNT(*) AS n
+        FROM memory_entries
+        WHERE persona_id = $1 AND superseded_by IS NULL
+        GROUP BY scope, domain_key
+        ORDER BY scope, domain_key
+        """,
+        persona.id,
+    )
+    recent = await db.fetch(
+        """
+        SELECT * FROM memory_entries
+        WHERE persona_id = $1 AND superseded_by IS NULL
+        ORDER BY created_at DESC
+        LIMIT 5
+        """,
+        persona.id,
+    )
+
+    print(f"\n-- Active entries by compartment --")
+    if not rows:
+        print("(no active entries)")
+    else:
+        total = 0
+        for r in rows:
+            label = f"{r['scope']}/{r['domain_key']}" if r["domain_key"] else r["scope"]
+            print(f"  {label}: {r['n']}")
+            total += r["n"]
+        print(f"  ----")
+        print(f"  total: {total}")
+
+    print(f"\n-- 5 most recent entries --")
+    if not recent:
+        print("(none)")
+    for r in recent:
+        label = f"{r['scope']}/{r['domain_key']}" if r["domain_key"] else r["scope"]
+        title = f" [{r['title']}]" if r["title"] else ""
+        ts = r["created_at"].strftime("%Y-%m-%d %H:%M")
+        print(f"\n  ({ts}) {label}{title}")
+        print(f"    id={r['id']}")
+        print(f"    {r['content'][:300]}")
+
+    await db.close()
+
+
+async def _inspect_documents(container) -> None:
+    """List the document library (name, size, age)."""
+    lib = container.document_library
+    store = lib._store
+    await store.connect()
+    docs = await store.list_docs(container.persona.id)
+    print(f"=== Documents for {container.persona.id} ({len(docs)}) ===")
+    for d in docs:
+        ts = d["ts"].strftime("%Y-%m-%d %H:%M")
+        print(
+            f"  #{d['id']} {d['name']}  ({d['mime'] or 'text'}, "
+            f"{d['num_chunks']} chunks, {d['char_count']} chars, saved {ts})"
+        )
+    if not docs:
+        print("(none)")
+    await store.close()
+
+
+async def _run_prune(container) -> None:
+    """Run the retention job once, with connected stores, and report."""
+    job = container.retention_job
+    p = job.policy
+    print(
+        f"retention policy: chat-archive {p.chat_archive_days}d, "
+        f"turn_log {p.turn_log_days}d, comms {p.comms_days}d, "
+        f"documents {p.documents_days or 'off'}"
+        + ("d" if p.documents_days else "")
+    )
+    await container.conversation_history.connect()
+    if job._comms is not None:
+        await job._comms.connect()
+    if job._docs is not None:
+        await job._docs.connect()
+    deleted = await job.run()
+    total = sum(deleted.values())
+    for table, n in sorted(deleted.items()):
+        print(f"  {table}: {n} deleted")
+    print(f"total: {total} rows pruned")
+
+
+async def _inspect_comms(container, limit: int = 20) -> None:
+    """Print the most recent control-room comms_log rows, oldest-first."""
+    log = container.comms_log
+    await log.connect()
+    rows = await log.read_recent(limit=limit)
+    print(f"=== Last {len(rows)} comms_log entries ===\n")
+    for r in reversed(rows):  # API returns newest first; render chronologically
+        ts = r["ts"].strftime("%Y-%m-%d %H:%M:%S")
+        arrow = "→" if r["direction"] == "out" else "←"
+        if r["direction"] == "in":
+            speaker = r.get("from_username") or (
+                f"user-{r['from_user']}" if r.get("from_user") else "unknown"
+            )
+        else:
+            speaker = r["instance"]
+        text = (r["text"] or "").replace("\n", " ")
+        if len(text) > 200:
+            text = text[:200] + "…"
+        print(f"{ts}  [{r['instance']}] {arrow} {speaker}: {text}")
+    await log.close()
+
+
+def main() -> None:
+    """Parse the leading --persona arg, load the persona, then dispatch to the CLI."""
+    project_root = Path(__file__).parent
+
+    # `--persona` is a top-level option that must come BEFORE the subcommand.
+    # We strip it here, then pass the remaining args to ConnectorCLI's parser.
+    top = argparse.ArgumentParser(add_help=False)
+    top.add_argument("--persona", required=True)
+    persona_args, remaining = top.parse_known_args()
+
+    persona = Persona.load(persona_args.persona, project_root)
+    container = PersonaRuntime(persona)
+    # Load .env before touching active_services — memory/comms connectors read
+    # MEMORY_DATABASE_URL from env at construction time.
+    container.load_env()
+    cli = ConnectorCLI(
+        config=container.config,
+        connectors=container.active_services,
+        runtime=container,
+    )
+    cli.run(remaining)
+
+
+if __name__ == "__main__":
+    main()

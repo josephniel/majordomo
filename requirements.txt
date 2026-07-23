@@ -1,0 +1,13 @@
+claude-agent-sdk>=0.1.0
+python-telegram-bot>=21.0
+python-dotenv>=1.0.0
+PyYAML>=6.0
+apscheduler>=3.10
+httpx>=0.27
+# Phase 1 memory layer: Postgres-backed second brain
+asyncpg>=0.29
+# Phase 2 fallback agents: OpenAI + DeepSeek (DeepSeek uses an OpenAI-compatible endpoint).
+openai>=1.40
+# Local, provider-independent embeddings for semantic memory recall (ONNX, no API).
+fastembed>=0.3
+pypdf

@@ -1,0 +1,32 @@
+# Vendor tool-calling eval cases (./manage eval). Each case runs against
+# real vendor APIs with fake recording connectors — no side effects.
+# Fields: name, prompt, expect_tool (substring of a called tool name),
+#         expect_no_tool, reply_matches (regex over the reply).
+
+- name: one_shot_reminder
+  prompt: "Remind me in 20 minutes to stand up and stretch."
+  expect_tool: schedule_once
+
+- name: recurring_schedule
+  prompt: "Every weekday at 8am, remind me to check the deploy queue."
+  expect_tool: schedule_create
+
+- name: memory_save_fact
+  prompt: "Remember that my sister's birthday is March 14."
+  expect_tool: memory_save
+
+- name: memory_save_preference
+  prompt: "For future reference: I hate morning meetings, never suggest anything before 10am."
+  expect_tool: memory_save
+
+- name: recall_before_denying
+  prompt: "What did I tell you about my sister?"
+  expect_tool: memory_recall
+
+- name: smalltalk_no_tools
+  prompt: "Good morning! How's it going?"
+  expect_no_tool: true
+
+- name: taglish_reminder
+  prompt: "Paalala mo ako bukas ng 9am na tawagan si mama."
+  expect_tool: schedule_once

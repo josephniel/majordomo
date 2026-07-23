@@ -1,0 +1,45 @@
+"""Connector classes — instantiated by the composition root, not here.
+
+Adding a new connector:
+  1. Create connectors/<name>.py with a class extending Connector.
+  2. Export the class below.
+  3. Add an instance to PersonaRuntime.active_services in persona_container.py.
+"""
+from __future__ import annotations
+
+# Foundational data layer — must be imported before any connector class
+# (every connector takes ServiceRegistry via constructor injection).
+from .registry import ServiceRegistry, ConnectorEntry  # ConnectorEntry: internal
+
+from .approvals import WriteApprovalGate
+from .base import (
+    AttachmentIngestor,
+    Connector,
+    ContextInjector,
+    Faculty,
+    Summarizer,
+    ToolProvider,
+)
+from .chat_context import current_chat_id
+from .clickup import ClickUpConnector
+from .gmail import GmailConnector
+from .google_calendar import GoogleCalendarConnector
+from .splitwise import SplitwiseConnector
+from .yahoo import YahooConnector
+
+__all__ = [
+    "AttachmentIngestor",
+    "ContextInjector",
+    "ServiceRegistry",
+    "ClickUpConnector",
+    "Connector",
+    "Faculty",
+    "ToolProvider",
+    "GmailConnector",
+    "GoogleCalendarConnector",
+    "SplitwiseConnector",
+    "Summarizer",
+    "WriteApprovalGate",
+    "YahooConnector",
+    "current_chat_id",
+]

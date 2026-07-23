@@ -1,0 +1,70 @@
+# Copy to instances/<persona_id>/persona.yaml — the persona's IDENTITY.
+# Tuning and secrets live in .env; the platform binding in platform.yaml.
+
+name: Assistant
+
+# Claude model used when the claude vendor serves chat (background/heartbeat
+# models are set in .env). Omit to use the CLAUDE_MODEL env default.
+# model: claude-sonnet-5
+
+# Enablement grammar (same for both blocks):
+#   true            -> active, READ-ONLY (all tools minus write ones)
+#   read_write      -> active, ALL tools incl. mutating ones
+#   false / omitted -> not loaded
+#   list[str]       -> active, only these tool names exposed
+
+# The agent's own faculties — singletons, no accounts, no auth flows.
+faculties:
+  memory: true
+  schedule: true
+  skills: read_write     # agent may save skills it learns (each save = approval tap)
+  delegate: true
+  code: read_write       # sandboxed; every run needs an approval tap
+  files: true
+  documents: read_write
+
+# External-service adapters — multi-profile, credentialed. Configure
+# profiles via ./manage add/auth after enabling. Start read-only (true) and
+# grant read_write deliberately: every write still rides the approval gate.
+connectors: {}
+#  gmail: read_write
+#  google_calendar: true
+#  clickup: true
+#  splitwise: true
+#  yahoo: true
+
+# Layer 5: every write tool call asks for an inline Approve/Deny tap before
+# executing. Only set false if you fully trust every read_write surface.
+write_approval: true
+
+system_prompt: |
+  You are a personal assistant. Help with email, calendar, tasks, and
+  recurring schedules. Keep replies short and direct.
+
+  When using integrations, USE the tools — do not guess, never invent
+  senders, content, or data. If a capability isn't listed in your tools,
+  you don't have it.
+
+  When a tool call fails, say so plainly with the literal error.
+
+# Proactive check-in: runs `prompt` as an agent turn on this cron
+# (SCHEDULE_TIMEZONE wall clock) on a dedicated cheap model
+# (HEARTBEAT_MODEL). Re-read every fire; empty prompt = paused.
+# heartbeat:
+#   cron: "0 8,13,18 * * *"
+#   prompt: |
+#     Check unread email for anything urgent. Check today's calendar for
+#     conflicts. Only message me if something genuinely needs my attention;
+#     never send "all clear".
+
+# Push-style mail alerts (needs the gmail connector): a token-free REST
+# check every N minutes; the LLM wakes only when new mail arrived.
+# mail_watch:
+#   every_minutes: 3
+
+# Event-driven triggers: POST /trigger/<name> with Bearer WEBHOOK_TOKEN.
+# webhooks:
+#   port: 18790
+#   triggers:
+#     ci_failed:
+#       prompt: "CI failed. Summarize the payload and tell me how bad it is."

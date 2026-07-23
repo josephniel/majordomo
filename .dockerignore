@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+.idea/
+.vscode/
+*.md
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# At-rest data and secrets — never bake these into the image. They mount in
+# at runtime via volumes / env files.
+**/data/
+**/credentials/
+instances/*/.env

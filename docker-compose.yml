@@ -1,0 +1,32 @@
+# Only Postgres is dockerized. The bot itself runs on the HOST (via ./manage
+# bot / up), so it keeps this machine's LLM connections — notably the Claude
+# Code subscription auth a container can't see — plus the .env API keys.
+#
+# Postgres is published on host port 5433 (NOT 5432) to avoid colliding with
+# any Postgres already on the host. Data lives in the external named volume
+# (created by `./manage db-up` if missing)
+# `tc_pgdata` (created out-of-band; holds the imported memory/history), so
+# `docker compose down` never destroys it.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: telegram-bot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: telegram_claude
+      POSTGRES_USER: tc
+      POSTGRES_PASSWORD: tc_local_dev
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - tc_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tc -d telegram_claude"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  tc_pgdata:
+    external: true

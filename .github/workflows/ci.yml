@@ -1,0 +1,48 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # fastembed defaults its model cache to a temp dir — pin it so the
+  # actions/cache step below actually saves the ~100MB download.
+  FASTEMBED_CACHE_PATH: /home/runner/.cache/fastembed
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: tc
+          POSTGRES_PASSWORD: tc_local_dev
+          POSTGRES_DB: telegram_claude
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U tc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Cache local embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/fastembed
+          key: fastembed-${{ runner.os }}-paraphrase-multilingual-MiniLM-L12-v2
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Pull code-sandbox image
+        run: docker pull -q python:3.13-slim
+      - name: Run test suite
+        run: python -m pytest tests -q

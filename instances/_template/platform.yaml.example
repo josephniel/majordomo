@@ -1,0 +1,17 @@
+# Copy to instances/<persona_id>/platform.yaml. Exactly ONE platform block —
+# the top-level key names the platform, its object is that platform's config.
+# Secrets (TELEGRAM_TOKEN, ...) live in .env, never here.
+
+telegram:
+  # Telegram user IDs allowed to talk to this bot. Anyone else is rejected;
+  # an empty list refuses to start (no open bots).
+  allowed_user_ids:
+    - 123456789
+
+  # Optional: a group chat shared by the operator and peer bots.
+  # control_room:
+  #   chat_id: -100200300
+
+# A future Discord persona would instead have:
+# discord:
+#   guild_id: ...

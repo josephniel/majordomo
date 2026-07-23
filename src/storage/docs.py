@@ -1,0 +1,244 @@
+"""Document store: RAG over files the user sends.
+
+The second brain (memory_entries) remembers FACTS; this remembers FILES.
+Attachments the user sends are chunked (with overlap), embedded with the
+same local multilingual model memory uses, and become searchable via the
+doc_search tool — hybrid trigram + embedding-cosine scoring, max-combined,
+mirroring MemoryDatabase.recall_scored's approach.
+
+Raw bytes are not stored; only extracted text (chunked) plus metadata.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any, Optional
+
+import asyncpg
+
+from .embeddings import MODEL_NAME as _EMBED_MODEL, embed as _embed, to_pgvector as _to_pgvector
+
+log = logging.getLogger(__name__)
+
+CHUNK_CHARS = 1500
+CHUNK_OVERLAP = 200
+MAX_CHUNKS_PER_DOC = 400  # ~600k chars; plenty for chat-sized documents
+
+_SCHEMA = """
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS documents (
+    id          BIGSERIAL PRIMARY KEY,
+    persona_id  TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    mime        TEXT NOT NULL DEFAULT '',
+    chat_id     BIGINT,
+    num_chunks  INT NOT NULL DEFAULT 0,
+    char_count  INT NOT NULL DEFAULT 0,
+    ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS documents_persona_idx ON documents (persona_id, ts DESC);
+
+CREATE TABLE IF NOT EXISTS document_chunks (
+    id              BIGSERIAL PRIMARY KEY,
+    doc_id          BIGINT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    persona_id      TEXT NOT NULL,
+    chunk_index     INT NOT NULL,
+    content         TEXT NOT NULL,
+    embedding       vector(384),
+    embedding_model TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS document_chunks_doc_idx
+    ON document_chunks (doc_id, chunk_index);
+CREATE INDEX IF NOT EXISTS document_chunks_trgm_idx
+    ON document_chunks USING gin (content gin_trgm_ops);
+"""
+
+
+def chunk_text(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[str]:
+    """Sliding-window chunks; prefers to cut at a newline/space near the end
+    of the window so sentences survive chunk boundaries."""
+    text = (text or "").strip()
+    if not text:
+        return []
+    if len(text) <= size:
+        return [text]
+    chunks: list[str] = []
+    start = 0
+    while start < len(text) and len(chunks) < MAX_CHUNKS_PER_DOC:
+        end = min(start + size, len(text))
+        if end < len(text):
+            # Look for a natural break in the last 20% of the window.
+            window = text[start:end]
+            cut = max(window.rfind("\n", int(size * 0.8)), window.rfind(" ", int(size * 0.8)))
+            if cut > 0:
+                end = start + cut
+        chunks.append(text[start:end].strip())
+        if end >= len(text):
+            break
+        start = max(end - overlap, start + 1)
+    return [c for c in chunks if c]
+
+
+class DocumentStore:
+    """Async client for the documents + document_chunks tables."""
+
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+        self._pool: Optional[asyncpg.Pool] = None
+
+    async def connect(self) -> None:
+        if self._pool is not None:
+            return
+        self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=4)
+        async with self._pool.acquire() as conn:
+            await conn.execute(_SCHEMA)
+
+    async def close(self) -> None:
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
+
+    # ---- writes ----
+
+    async def ingest(
+        self,
+        *,
+        persona_id: str,
+        name: str,
+        mime: str,
+        text: str,
+        chat_id: Optional[int] = None,
+    ) -> tuple[int, int]:
+        """Chunk + embed + store. Returns (doc_id, num_chunks)."""
+        chunks = chunk_text(text)
+        if not chunks:
+            raise ValueError("document has no extractable text")
+        # Embed off the event loop, one pass (the model batches internally).
+        vectors = await asyncio.to_thread(lambda: [_embed(c) for c in chunks])
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                doc_id = await conn.fetchval(
+                    """
+                    INSERT INTO documents (persona_id, name, mime, chat_id, num_chunks, char_count)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    RETURNING id
+                    """,
+                    persona_id, name, mime, chat_id, len(chunks), len(text),
+                )
+                await conn.executemany(
+                    """
+                    INSERT INTO document_chunks
+                        (doc_id, persona_id, chunk_index, content, embedding, embedding_model)
+                    VALUES ($1, $2, $3, $4, $5::vector, $6)
+                    """,
+                    [
+                        (doc_id, persona_id, i, chunk, _to_pgvector(vec), _EMBED_MODEL)
+                        for i, (chunk, vec) in enumerate(zip(chunks, vectors))
+                    ],
+                )
+        log.info("ingested document %r (#%d, %d chunks)", name, doc_id, len(chunks))
+        return int(doc_id), len(chunks)
+
+    async def prune(self, persona_id: str, older_than_days: int) -> int:
+        """Delete documents older than N days (chunks cascade). Disabled by
+        default in the retention policy — these are user-saved files."""
+        if older_than_days <= 0:
+            return 0
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                DELETE FROM documents
+                WHERE persona_id = $1 AND ts < NOW() - make_interval(days => $2)
+                """,
+                persona_id, older_than_days,
+            )
+        return int(result.split()[-1])
+
+    async def delete(self, persona_id: str, doc_id: int) -> bool:
+        async with self._pool.acquire() as conn:
+            deleted = await conn.fetchval(
+                "DELETE FROM documents WHERE persona_id = $1 AND id = $2 RETURNING id",
+                persona_id, doc_id,
+            )
+        return deleted is not None
+
+    # ---- reads ----
+
+    async def list_docs(self, persona_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, name, mime, num_chunks, char_count, ts
+                FROM documents WHERE persona_id = $1
+                ORDER BY ts DESC LIMIT $2
+                """,
+                persona_id, limit,
+            )
+        return [dict(r) for r in rows]
+
+    async def read_doc(
+        self,
+        persona_id: str,
+        doc_id: int,
+        start_chunk: int = 0,
+        max_chunks: int = 4,
+    ) -> Optional[dict[str, Any]]:
+        async with self._pool.acquire() as conn:
+            doc = await conn.fetchrow(
+                "SELECT id, name, num_chunks FROM documents WHERE persona_id = $1 AND id = $2",
+                persona_id, doc_id,
+            )
+            if doc is None:
+                return None
+            rows = await conn.fetch(
+                """
+                SELECT chunk_index, content FROM document_chunks
+                WHERE doc_id = $1 AND chunk_index >= $2
+                ORDER BY chunk_index ASC LIMIT $3
+                """,
+                doc_id, start_chunk, max_chunks,
+            )
+        return {
+            "name": doc["name"],
+            "num_chunks": doc["num_chunks"],
+            "chunks": [dict(r) for r in rows],
+        }
+
+    async def search(
+        self,
+        persona_id: str,
+        query: str,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Hybrid chunk search: max(trigram similarity, embedding cosine),
+        same shape as memory recall. Vector arm only trusts current-model
+        embeddings (graceful degradation after a model migration)."""
+        query = (query or "").strip()
+        if not query:
+            return []
+        vec_literal = await asyncio.to_thread(lambda: _to_pgvector(_embed(query)))
+        # Everything variable is a bound parameter — even the (currently
+        # constant) embedding model name, so a future model rename can't
+        # break or inject the query.
+        vec_expr = (
+            "(CASE WHEN c.embedding IS NOT NULL AND c.embedding_model = $4 "
+            "THEN (1 - (c.embedding <=> $5::vector)) ELSE 0.0 END)"
+            if vec_literal else "0.0"
+        )
+        sql = f"""
+            SELECT c.doc_id, d.name AS doc_name, c.chunk_index, c.content,
+                   GREATEST(similarity(c.content, $2), {vec_expr}) AS score
+            FROM document_chunks c
+            JOIN documents d ON d.id = c.doc_id
+            WHERE c.persona_id = $1
+            ORDER BY score DESC
+            LIMIT $3
+        """
+        args: list[Any] = [persona_id, query, int(limit)]
+        if vec_literal:
+            args += [_EMBED_MODEL, vec_literal]
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *args)
+        return [dict(r) for r in rows if r["score"] and r["score"] > 0.1]

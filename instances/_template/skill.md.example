@@ -1,0 +1,14 @@
+---
+description: One-line summary shown to the model in its skill listing
+keywords: [words, that, trigger, auto-attach]
+always: false
+---
+
+Files starting with "_" or "." are ignored — copy this template to
+<skill_name>.md to create a real skill.
+
+Write instructions the assistant should follow when this topic comes up.
+Plain prose and bullets work best. Keep it under a screenful; it gets
+attached to the conversation when a keyword matches, inlined into the
+system prompt permanently if `always: true`, or fetched on demand via the
+skill_read tool.

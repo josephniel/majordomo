@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+# manage — single entry point for the telegram-bot stack.
+#
+# All commands run from the project root and assume:
+#   - .venv/ exists (`python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt`)
+#   - docker is running locally (for Postgres)
+#   - per-instance .env files exist at instances/<id>/.env
+#
+# Usage: ./manage <command> [args...]
+# Run with no args (or `help`) to print the command list.
+
+set -euo pipefail
+cd "$(dirname "$0")"
+
+export PYTHONPATH="$(pwd)/src"
+VENV_PY="./.venv/bin/python"
+DEFAULT_PERSONA="personal_assistant"
+
+# When the default persona doesn't exist (fresh clone), fall back to the
+# single persona under instances/, or fail with the list.
+detect_persona() {
+    if [[ -d "instances/$DEFAULT_PERSONA" ]]; then
+        echo "$DEFAULT_PERSONA"; return
+    fi
+    local found=()
+    for d in instances/*/; do
+        [[ -f "$d/persona.yaml" ]] && found+=("$(basename "$d")")
+    done
+    if [[ ${#found[@]} -eq 1 ]]; then
+        echo "${found[0]}"; return
+    fi
+    echo ""
+}
+
+# ---- helpers ----
+
+die() { echo "error: $*" >&2; exit 1; }
+
+require_venv() {
+    [[ -x "$VENV_PY" ]] || die "$VENV_PY not found. Run: python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt"
+}
+
+require_docker() {
+    docker info >/dev/null 2>&1 || die "Docker isn't running. Start Docker Desktop."
+}
+
+# Resolve persona arg with default. Accepts as $1 if set; otherwise the
+# detected persona (Persona.load prints the available list if this comes
+# back empty).
+persona_or_default() {
+    if [[ -n "${1:-}" ]]; then echo "$1"; else detect_persona; fi
+}
+
+cmd_help() {
+cat <<'USAGE'
+manage — telegram-bot stack
+
+  Bot lifecycle:
+    up [persona]                     start Postgres + run a bot in foreground
+                                     (persona defaults to the sole instance)
+    bot [persona]                    run a bot only (assumes db is up)
+    list-personas                    show every persona under instances/
+
+  Postgres:
+    db-up                            start Postgres in background
+    db-down                          stop the whole compose stack
+    db-status                        show Postgres health
+    db-shell                         open psql against the running container
+
+  Connectors (passthrough to cli.py — accepts any extra args):
+    list [persona]                   list all configured integrations
+    show [persona] <connector>       print one connector's full config
+    add [persona] <connector> <account> [flags...]    add an integration
+    auth [persona] <connector> <account>              re-run OAuth/auth
+    enable / disable / remove [persona] <connector> <account>
+
+  Memory (Phase 1 second brain):
+    memory inspect [persona]         show core summaries + entry counts
+
+  Comms (control-room log):
+    comms inspect [persona] [limit]  show recent control-room entries (default 20)
+
+  Introspection & maintenance:
+    schedules [persona]              list scheduled tasks (+ timezone)
+    skills [persona]                 list skill notes
+    documents inspect [persona]      list the document library
+    prune [persona]                  run retention now (nightly cron does this too)
+
+  Misc:
+    canary [persona]                 test each LLM vendor actually calls tools
+    cli [persona] -- <args...>       raw passthrough to python cli.py
+    test [pytest-args...]            run the test suite (unit + integration)
+    eval [--vendor groq,gemini]      replay tool-calling evals against live vendors
+    help                             this message
+
+  Examples:
+    ./manage up                      # start everything (sole persona auto-detected)
+    ./manage memory inspect          # peek at the default persona's memory
+    ./manage comms inspect my_assistant 50
+    ./manage add my_assistant gmail joe@example.com --oauth-keys ./creds.json
+USAGE
+}
+
+# ---- bot lifecycle ----
+
+cmd_up() {
+    require_docker
+    require_venv
+    docker volume create tc_pgdata >/dev/null
+    docker compose up -d postgres
+    # Wait briefly for healthcheck.
+    until docker compose exec -T postgres pg_isready -U tc -d telegram_claude >/dev/null 2>&1; do
+        sleep 1
+    done
+    local persona; persona="$(persona_or_default "${1:-}")"
+    echo "[manage] postgres ready; starting persona=$persona"
+    exec "$VENV_PY" -m chat --persona "$persona"
+}
+
+cmd_chat() {
+    require_venv
+    local persona; persona="$(persona_or_default "${1:-}")"
+    exec "$VENV_PY" -m chat --persona "$persona"
+}
+
+cmd_list_personas() {
+    for d in instances/*/; do
+        local p; p="$(basename "$d")"
+        [[ -f "$d/persona.yaml" ]] && echo "$p"
+    done
+}
+
+# ---- postgres ----
+
+cmd_db_up() {
+    require_docker
+    # The data volume is declared external so `db-down` can never delete it;
+    # create it on first run.
+    docker volume create tc_pgdata >/dev/null
+    docker compose up -d postgres
+}
+cmd_db_down()   { require_docker; docker compose down; }
+cmd_db_status() { require_docker; docker compose ps postgres; }
+cmd_db_shell() {
+    require_docker
+    docker compose exec postgres psql -U tc -d telegram_claude
+}
+
+# ---- connector passthrough ----
+
+# Many cli.py subcommands take `--persona <id>` then `<verb> <args...>`. We accept
+# the persona as either an explicit first positional (if it matches a known
+# persona dir) or fall back to the default. Subsequent args go to cli.py.
+
+resolve_persona_arg() {
+    # Echoes "persona arg1 arg2 ..." with the persona disambiguated.
+    if [[ $# -ge 1 && -d "instances/$1" ]]; then
+        echo "$@"
+    else
+        echo "$(detect_persona) $@"
+    fi
+}
+
+cmd_passthrough() {
+    # $1 = the cli.py verb (list / show / add / auth / enable / disable / remove)
+    require_venv
+    local verb="$1"; shift
+    # shellcheck disable=SC2046
+    set -- $(resolve_persona_arg "$@")
+    local persona="$1"; shift
+    exec "$VENV_PY" cli.py --persona "$persona" "$verb" "$@"
+}
+
+cmd_list()    { cmd_passthrough list "$@"; }
+cmd_show()    { cmd_passthrough show "$@"; }
+cmd_add()     { cmd_passthrough add "$@"; }
+cmd_auth()    { cmd_passthrough auth "$@"; }
+cmd_enable()  { cmd_passthrough enable "$@"; }
+cmd_disable() { cmd_passthrough disable "$@"; }
+cmd_remove()  { cmd_passthrough remove "$@"; }
+
+# ---- memory + comms ----
+
+cmd_memory() {
+    require_venv
+    local action="${1:-}"
+    [[ -n "$action" ]] || die "usage: ./manage memory <inspect> [persona]"
+    shift
+    # shellcheck disable=SC2046
+    set -- $(resolve_persona_arg "$@")
+    local persona="$1"; shift
+    exec "$VENV_PY" cli.py --persona "$persona" memory "$action" "$@"
+}
+
+cmd_canary() {
+    require_venv
+    # shellcheck disable=SC2046
+    set -- $(resolve_persona_arg "$@")
+    local persona="$1"; shift
+    exec "$VENV_PY" cli.py --persona "$persona" canary
+}
+
+cmd_documents() {
+    require_venv
+    local action="${1:-inspect}"
+    case "$action" in inspect) shift || true ;; *) action="inspect" ;; esac
+    # shellcheck disable=SC2046
+    set -- $(resolve_persona_arg "$@")
+    local persona="$1"; shift
+    exec "$VENV_PY" cli.py --persona "$persona" documents "$action"
+}
+
+# Simple one-word cli passthroughs: ./manage <verb> [persona]
+cmd_simple_cli() {
+    local verb="$1"; shift
+    require_venv
+    # shellcheck disable=SC2046
+    set -- $(resolve_persona_arg "$@")
+    local persona="$1"; shift
+    exec "$VENV_PY" cli.py --persona "$persona" "$verb" "$@"
+}
+
+cmd_comms() {
+    require_venv
+    local action="${1:-}"
+    [[ -n "$action" ]] || die "usage: ./manage comms <inspect> [persona] [limit]"
+    shift
+    # First arg might be persona, second might be limit.
+    local persona limit_args=()
+    if [[ $# -ge 1 && -d "instances/$1" ]]; then
+        persona="$1"; shift
+    else
+        persona="$DEFAULT_PERSONA"
+    fi
+    if [[ $# -ge 1 ]]; then
+        limit_args+=(--limit "$1")
+        shift
+    fi
+    exec "$VENV_PY" cli.py --persona "$persona" comms "$action" "${limit_args[@]}"
+}
+
+# ---- raw cli passthrough ----
+
+cmd_cli() {
+    require_venv
+    # shellcheck disable=SC2046
+    set -- $(resolve_persona_arg "$@")
+    local persona="$1"; shift
+    # Strip leading "--" if the user used `./manage cli persona -- args`.
+    [[ "${1:-}" == "--" ]] && shift
+    exec "$VENV_PY" cli.py --persona "$persona" "$@"
+}
+
+# ---- dispatcher ----
+
+main() {
+    local cmd="${1:-help}"
+    shift || true
+    case "$cmd" in
+        help|--help|-h|"")  cmd_help ;;
+        up)                 cmd_up "$@" ;;
+        bot)                cmd_chat "$@" ;;
+        list-personas)      cmd_list_personas ;;
+        db-up)              cmd_db_up ;;
+        db-down)            cmd_db_down ;;
+        db-status)          cmd_db_status ;;
+        db-shell)           cmd_db_shell ;;
+        list)               cmd_list "$@" ;;
+        show)               cmd_show "$@" ;;
+        add)                cmd_add "$@" ;;
+        auth)               cmd_auth "$@" ;;
+        enable)             cmd_enable "$@" ;;
+        disable)            cmd_disable "$@" ;;
+        remove)             cmd_remove "$@" ;;
+        memory)             cmd_memory "$@" ;;
+        canary)             cmd_canary "$@" ;;
+        comms)              cmd_comms "$@" ;;
+        schedules)          cmd_simple_cli schedules "$@" ;;
+        skills)             cmd_simple_cli skills "$@" ;;
+        documents)          cmd_documents "$@" ;;
+        prune)              cmd_simple_cli prune "$@" ;;
+        cli)                cmd_cli "$@" ;;
+        test)               require_venv; exec "$VENV_PY" -m pytest tests "$@" ;;
+        eval)               require_venv; exec "$VENV_PY" -m evals "$@" ;;
+        *)
+            echo "unknown command: $cmd" >&2
+            echo "" >&2
+            cmd_help >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
