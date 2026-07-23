@@ -50,6 +50,7 @@ from connectors import (
     ClickUpConnector,
     Connector,
     Faculty,
+    GatedToolProvider,
     ToolProvider,
     GmailConnector,
     GoogleCalendarConnector,
@@ -364,14 +365,19 @@ class PersonaRuntime:
     @cached_property
     def active_services(self) -> list[ToolProvider]:
         """Every enabled tool provider (connectors first, then faculties —
-        preserves the historical system-prompt section order). The approval
-        gate installs here, so both kinds are covered."""
-        providers = [*self.active_connectors, *self.active_faculties]
+        preserves the historical system-prompt section order). Raw instances:
+        lifecycle hooks, /status, and identity checks run against these."""
+        return [*self.active_connectors, *self.active_faculties]
+
+    @cached_property
+    def gated_services(self) -> list[ToolProvider]:
+        """The view AGENT BUILDERS consume: WRITE_TOOLS specs wrapped with
+        the approval gate (Layer 5). Same objects as active_services when
+        the persona opts out of write approval."""
         gate = self.approval_gate
-        if gate is not None:
-            for c in providers:
-                gate.install(c)
-        return providers
+        if gate is None:
+            return self.active_services
+        return [GatedToolProvider(c, gate) for c in self.active_services]
 
     # ---- platform ----
 
@@ -467,7 +473,7 @@ class PersonaRuntime:
         return AnthropicOptionsBuilder(
             context_builder=self.context_builder,
             config=self.config,
-            connectors=self.active_services,
+            connectors=self.gated_services,
             persona=self.persona,
             max_turns=self.settings.claude_max_turns,
             max_output_tokens=self.settings.claude_max_output_tokens,
@@ -522,7 +528,7 @@ class PersonaRuntime:
             claude_builder = AnthropicOptionsBuilder(
                 context_builder=context_builder,
                 config=self.config,
-                connectors=self.active_services,
+                connectors=self.gated_services,
                 persona=persona,
                 max_turns=self.settings.claude_max_turns,
                 max_output_tokens=self.settings.claude_max_output_tokens,
@@ -548,7 +554,7 @@ class PersonaRuntime:
                 history=hist,
                 persona_id=self.persona.id,
                 chat_id=chat_id,
-                connectors=self.active_services,
+                connectors=self.gated_services,
                 persona=persona,
                 # External stdio MCP servers reach the non-Claude vendors
                 # through this hook (Claude mounts them natively).
@@ -673,7 +679,7 @@ class PersonaRuntime:
         return AnthropicOptionsBuilder(
             context_builder=self.background_context_builder,
             config=self.config,
-            connectors=self.active_services,
+            connectors=self.gated_services,
             persona=self.background_persona,
             model=model,
             max_turns=self.settings.claude_max_turns,

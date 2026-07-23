@@ -21,7 +21,15 @@ from .llm import (
     UsageLimitError,
 )
 from .messaging import Attachment
-from .protocols import AttachmentIngestor, ContextInjector
+from .protocols import (
+    AttachmentIngestor,
+    CanaryRunner,
+    ContextInjector,
+    SessionResettable,
+    ToolCallProbe,
+    ToolTraceReporting,
+    VendorIntrospectable,
+)
 from .tools import (
     Connector,
     Faculty,
@@ -37,9 +45,14 @@ __all__ = [
     "Agent",
     "Attachment",
     "AttachmentIngestor",
+    "CanaryRunner",
     "Connector",
     "ContextInjector",
     "Faculty",
+    "SessionResettable",
+    "ToolCallProbe",
+    "ToolTraceReporting",
+    "VendorIntrospectable",
     "PersonaLike",
     "Summarizer",
     "ToolProvider",

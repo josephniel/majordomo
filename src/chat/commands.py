@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from core import VendorIntrospectable
 from platforms import CommandEvent
 
 log = logging.getLogger(__name__)
@@ -89,25 +90,23 @@ class CommandsMixin:
         lines: list[str] = [f"Persona: {self._persona_id}"]
 
         agent = self._agents.get(chat_id)
-        if agent is not None:
-            vendor = getattr(agent, "active_vendor", None)
-            chain = getattr(agent, "vendor_names", None)
-            model = getattr(agent, "model_name", "") or ""
-            if vendor:
-                lines.append(f"Vendor: {vendor}" + (f" ({model})" if model else ""))
-            if chain:
-                lines.append("Chain: " + " -> ".join(chain))
-            health = getattr(agent, "health", None) or {}
+        if isinstance(agent, VendorIntrospectable):
+            model = agent.model_name or ""
+            lines.append(
+                f"Vendor: {agent.active_vendor}" + (f" ({model})" if model else "")
+            )
+            lines.append("Chain: " + " -> ".join(agent.vendor_names))
+            health = agent.health
             if health:
                 cooling = ", ".join(f"{v} ({int(s)}s)" for v, s in health.items())
                 lines.append(f"Cooling down: {cooling}")
-            canary = getattr(agent, "canary", None) or {}
+            canary = agent.canary
             if canary:
                 marks = ", ".join(
                     f"{v} {'OK' if r.get('ok') else 'FAIL'}" for v, r in canary.items()
                 )
                 lines.append(f"Tool-calling: {marks}")
-        else:
+        elif agent is None:
             lines.append("Vendor: (no active conversation yet)")
 
         # Connectors report their own state (status_line) — the command

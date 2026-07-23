@@ -128,6 +128,7 @@ class TestHallucinationDetector:
     class AgentWithToolCalls:
         def __init__(self, n):
             self.last_turn_tool_calls = n
+            self.last_turn_tool_names = ()
 
     def _orch_with_reflection(self, tmp_path):
         from chat.core import ConversationOrchestrator
@@ -175,6 +176,7 @@ class TestScheduleHallucinationRecovery:
         `retry_tools` as the tools called during that retry."""
         def __init__(self, first_tools=(), retry_reply="Reminder set!", retry_tools=()):
             self.session_id = None
+            self.last_turn_tool_calls = len(first_tools)
             self.last_turn_tool_names = tuple(first_tools)
             self._retry_reply = retry_reply
             self._retry_tools = tuple(retry_tools)

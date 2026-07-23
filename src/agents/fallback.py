@@ -34,6 +34,8 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Optional
 
+from core import SessionResettable, ToolCallProbe
+
 from .base import Agent, Attachment, Summarizer, ToolUseCallback, UsageLimitError
 from .health import VendorHealthBoard
 from .history import ConversationHistory
@@ -262,9 +264,8 @@ class CascadingAgent(Agent):
             try:
                 await self._ensure_started(vendor)
                 if vendor in self._pending_rotation:
-                    reset = getattr(agent, "reset_session", None)
-                    if reset is not None:
-                        await reset()
+                    if isinstance(agent, SessionResettable):
+                        await agent.reset_session()
                         # Watermark 0 makes the digest below replay the whole
                         # post-compaction mirror (summary row + kept tail)
                         # into the fresh session's first turn — seeded exactly
@@ -358,11 +359,10 @@ class CascadingAgent(Agent):
         fallback) and skipped."""
         results: dict[str, tuple[bool, str]] = {}
         for name, agent in self._chain:
-            probe = getattr(agent, "probe_tool_calling", None)
-            if probe is None:
+            if not isinstance(agent, ToolCallProbe):
                 continue
             try:
-                ok, detail = await probe()
+                ok, detail = await agent.probe_tool_calling()
             except Exception as e:
                 ok, detail = False, str(e)[:140]
             results[name] = (ok, detail)
@@ -562,7 +562,7 @@ class CascadingAgent(Agent):
                 # session seeded from the summary instead of replaying the
                 # whole conversation as input tokens forever.
                 for name, a in self._chain:
-                    if a.USES_SERVER_SIDE_HISTORY and hasattr(a, "reset_session"):
+                    if a.USES_SERVER_SIDE_HISTORY and isinstance(a, SessionResettable):
                         self._pending_rotation.add(name)
             except asyncio.CancelledError:
                 raise

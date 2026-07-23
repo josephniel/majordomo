@@ -18,6 +18,7 @@ import logging
 import re
 
 from agents import Agent
+from core import ToolTraceReporting
 
 from .formatting import chunk_for_platform
 
@@ -93,8 +94,7 @@ class RecoveryMixin:
         instead of waiting for the idle timer — turning a hallucinated save
         into a self-healing extraction. Cheap: reflection dedups, so a false
         positive just costs one summarizer call."""
-        tool_calls = getattr(agent, "last_turn_tool_calls", None)
-        if tool_calls is None or tool_calls > 0:
+        if not isinstance(agent, ToolTraceReporting) or agent.last_turn_tool_calls > 0:
             return
         if not _CLAIMS_MEMORY_SAVE.search(reply or ""):
             return
@@ -111,16 +111,17 @@ class RecoveryMixin:
     @staticmethod
     def _detect_missed_schedule(reply: str, agent: Agent) -> bool:
         """True when the reply claims a reminder/schedule was created but no
-        schedule-creating tool ran this turn. Requires the agent to expose
-        last_turn_tool_names (CascadingAgent does); agents that don't are
-        skipped — without the tool trace we can't tell claim from fact."""
-        tool_names = getattr(agent, "last_turn_tool_names", None)
-        if tool_names is None:
+        schedule-creating tool ran this turn. Requires a ToolTraceReporting
+        agent (CascadingAgent is one); agents without the trace are skipped —
+        we can't tell claim from fact blind."""
+        if not isinstance(agent, ToolTraceReporting):
             return False
         if not _CLAIMS_SCHEDULE_SET.search(reply or ""):
             return False
         return not any(
-            sat in name for name in tool_names for sat in _SCHEDULE_SATISFYING_TOOLS
+            sat in name
+            for name in agent.last_turn_tool_names
+            for sat in _SCHEDULE_SATISFYING_TOOLS
         )
 
     async def _recover_missed_schedule(
@@ -150,7 +151,10 @@ class RecoveryMixin:
             await self._send_safe(chat_id, _SCHEDULE_RECOVERY_FAILED_TEXT)
             return
 
-        tool_names = getattr(agent, "last_turn_tool_names", None) or ()
+        tool_names = (
+            agent.last_turn_tool_names
+            if isinstance(agent, ToolTraceReporting) else ()
+        )
         recovered = any(
             sat in name for name in tool_names for sat in _SCHEDULE_SATISFYING_TOOLS
         )

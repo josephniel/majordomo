@@ -26,7 +26,7 @@ from typing import Any, Optional
 from agents import Agent, ConversationHistory
 from comms import CommsLog, CommsRelay
 from connectors import ServiceRegistry
-from core import Connector, current_chat_id
+from core import CanaryRunner, Connector, current_chat_id
 from capabilities import ReflectionEngine, ScheduledTask, TaskScheduler
 from platforms import ChatPlatform, InboundMessage
 
@@ -177,12 +177,9 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         await asyncio.sleep(20)  # let startup settle; don't compete with first turns
         try:
             agent = self._agent_factory(chat_id=0)
-            run = getattr(agent, "run_canary", None)
-            if run is not None:
-                await run()
-            stop = getattr(agent, "stop", None)
-            if stop is not None:
-                await stop()
+            if isinstance(agent, CanaryRunner):
+                await agent.run_canary()
+            await agent.stop()
         except Exception:
             log.exception("startup tool-calling canary failed")
 

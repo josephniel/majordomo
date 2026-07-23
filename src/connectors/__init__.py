@@ -11,7 +11,7 @@ from __future__ import annotations
 # (every connector takes ServiceRegistry via constructor injection).
 from .registry import ServiceRegistry, ConnectorEntry  # ConnectorEntry: internal
 
-from .approvals import WriteApprovalGate
+from .approvals import GatedToolProvider, WriteApprovalGate
 from core import (
     AttachmentIngestor,
     Connector,
@@ -39,6 +39,7 @@ __all__ = [
     "GoogleCalendarConnector",
     "SplitwiseConnector",
     "Summarizer",
+    "GatedToolProvider",
     "WriteApprovalGate",
     "YahooConnector",
     "current_chat_id",
