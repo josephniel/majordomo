@@ -44,7 +44,7 @@ from typing import Any, Optional
 
 import yaml
 
-from core import Faculty, tool
+from core import Faculty, ToolResult, tool
 
 log = logging.getLogger(__name__)
 
@@ -186,15 +186,11 @@ class SkillsLibrary(Faculty):
             skills = {s.name: s for s in outer._scan()}
             skill = skills.get(wanted)
             if skill is None:
-                return {
-                    "content": [{
-                        "type": "text",
-                        "text": f"no skill named {wanted!r}. Available: "
-                                f"{', '.join(sorted(skills)) or '(none)'}",
-                    }],
-                    "isError": True,
-                }
-            return {"content": [{"type": "text", "text": skill.body}]}
+                return ToolResult.error(
+                    f"no skill named {wanted!r}. Available: "
+                    f"{', '.join(sorted(skills)) or '(none)'}"
+                )
+            return ToolResult.ok(skill.body)
 
         @tool(
             "skill_save",
@@ -235,18 +231,11 @@ class SkillsLibrary(Faculty):
             name = str(args.get("name") or "").strip().lower()
             body = str(args.get("body") or "").strip()
             if not _NAME_RE.match(name):
-                return {
-                    "content": [{
-                        "type": "text",
-                        "text": f"invalid skill name {name!r} (snake_case, 2-64 chars)",
-                    }],
-                    "isError": True,
-                }
+                return ToolResult.error(
+                    f"invalid skill name {name!r} (snake_case, 2-64 chars)"
+                )
             if not body:
-                return {
-                    "content": [{"type": "text", "text": "skill body is empty"}],
-                    "isError": True,
-                }
+                return ToolResult.error("skill body is empty")
             keywords = [
                 str(k).strip().lower()
                 for k in (args.get("keywords") or []) if str(k).strip()
@@ -263,12 +252,9 @@ class SkillsLibrary(Faculty):
                 existed = path.exists()
                 path.write_text(text, encoding="utf-8")
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
             log.info("skill %r %s", name, "updated" if existed else "created")
-            return {"content": [{
-                "type": "text",
-                "text": f"skill {name!r} {'updated' if existed else 'saved'}",
-            }]}
+            return ToolResult.ok(f"skill {name!r} {'updated' if existed else 'saved'}")
 
         @tool(
             "skill_delete",
@@ -279,24 +265,14 @@ class SkillsLibrary(Faculty):
             name = str(args.get("name") or "").strip().lower()
             path = outer._dir / f"{name}.md"
             if not _NAME_RE.match(name) or not path.exists():
-                return {
-                    "content": [{"type": "text", "text": f"no skill named {name!r}"}],
-                    "isError": True,
-                }
+                return ToolResult.error(f"no skill named {name!r}")
             try:
                 path.unlink()
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
-            return {"content": [{"type": "text", "text": f"skill {name!r} deleted"}]}
+                return ToolResult.error(f"error: {e}")
+            return ToolResult.ok(f"skill {name!r} deleted")
 
         return [skill_read_tool, skill_save_tool, skill_delete_tool]
-
-    def builtin_allowed_tools(self) -> list[str]:
-        return [
-            "mcp__skills__skill_read",
-            "mcp__skills__skill_save",
-            "mcp__skills__skill_delete",
-        ]
 
     def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
         return self.STATUS.get(local)

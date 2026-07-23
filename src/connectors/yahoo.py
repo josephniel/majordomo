@@ -20,7 +20,7 @@ from email.header import decode_header, make_header
 from pathlib import Path
 from typing import Any, Optional
 
-from core import tool
+from core import ToolResult, tool
 
 from .registry import ServiceRegistry
 
@@ -86,30 +86,15 @@ class YahooConnector(Connector):
             servers[profile.name] = self._build_tools(env)
         return servers
 
-    def builtin_allowed_tools(self) -> list[str]:
-        out: list[str] = []
-        for profile in self._config.load_all():
-            if not profile.enabled or not self.owns_profile(profile.name):
-                continue
-            env = profile.env
-            if not env.get("EMAIL_USER") or not env.get("EMAIL_PASS"):
-                continue
-            for tname in self.ALL_TOOLS:
-                out.append(f"mcp__{profile.name}__{tname}")
-        return out
-
     def _build_tools(self, env: dict[str, str]) -> list:
         def _err(e: Exception):
-            return {"content": [{"type": "text", "text": f"IMAP error: {e}"}], "isError": True}
-
-        def _ok(text: str):
-            return {"content": [{"type": "text", "text": text}]}
+            return ToolResult.error(f"IMAP error: {e}")
 
         async def _search(criteria: list[str], mailbox: str, limit: int, full: bool = False):
             rows = await asyncio.to_thread(_imap_search, env, mailbox, criteria, limit, full)
             if not rows:
-                return _ok("(no matching messages)")
-            return _ok("\n\n".join(_format_msg(r, full) for r in rows))
+                return ToolResult.ok("(no matching messages)")
+            return ToolResult.ok("\n\n".join(_format_msg(r, full) for r in rows))
 
         @tool("search_by_sender",
               "Search Yahoo Mail for messages from a sender. Args: query (email/name substring), "
@@ -183,7 +168,7 @@ class YahooConnector(Connector):
             try:
                 rows = await asyncio.to_thread(
                     _imap_fetch_uids, env, args.get("mailbox") or "INBOX", [str(args["uid"]).strip()], True)
-                return _ok(_format_msg(rows[0], True)) if rows else _ok("(message not found)")
+                return ToolResult.ok(_format_msg(rows[0], True)) if rows else ToolResult.ok("(message not found)")
             except Exception as e:
                 return _err(e)
 
@@ -194,7 +179,7 @@ class YahooConnector(Connector):
             try:
                 uids = [u.strip() for u in str(args["uids"]).split(",") if u.strip()]
                 rows = await asyncio.to_thread(_imap_fetch_uids, env, args.get("mailbox") or "INBOX", uids, True)
-                return _ok("\n\n".join(_format_msg(r, True) for r in rows)) if rows else _ok("(no messages)")
+                return ToolResult.ok("\n\n".join(_format_msg(r, True) for r in rows)) if rows else ToolResult.ok("(no messages)")
             except Exception as e:
                 return _err(e)
 
@@ -204,7 +189,7 @@ class YahooConnector(Connector):
         async def list_mailboxes(args):
             try:
                 names = await asyncio.to_thread(_imap_list_mailboxes, env)
-                return _ok("Mailboxes:\n" + "\n".join(f"- {n}" for n in names))
+                return ToolResult.ok("Mailboxes:\n" + "\n".join(f"- {n}" for n in names))
             except Exception as e:
                 return _err(e)
 
@@ -215,8 +200,8 @@ class YahooConnector(Connector):
             try:
                 atts = await asyncio.to_thread(_imap_attachments, env, args.get("mailbox") or "INBOX", str(args["uid"]).strip())
                 if not atts:
-                    return _ok("(no attachments)")
-                return _ok("Attachments:\n" + "\n".join(f"- {a['name']} ({a['type']}, {a['size']} bytes)" for a in atts))
+                    return ToolResult.ok("(no attachments)")
+                return ToolResult.ok("Attachments:\n" + "\n".join(f"- {a['name']} ({a['type']}, {a['size']} bytes)" for a in atts))
             except Exception as e:
                 return _err(e)
 
@@ -228,7 +213,7 @@ class YahooConnector(Connector):
                 host, port, secure, user, password = _conn_params(env)
                 await asyncio.to_thread(_imap_mark_read, host, port, secure, user, password,
                                         args.get("mailbox") or "INBOX", str(args["uid"]).strip())
-                return _ok(f"marked uid={args['uid']} as read")
+                return ToolResult.ok(f"marked uid={args['uid']} as read")
             except Exception as e:
                 return _err(e)
 

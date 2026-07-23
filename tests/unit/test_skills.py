@@ -121,16 +121,16 @@ class TestSkillReadTool:
         _write_skill(d, "expense", "The full expense procedure.")
         spec = await self._tool(d)
         result = await spec.handler({"name": "expense"})
-        assert not result.get("isError")
-        assert result["content"][0]["text"] == "The full expense procedure."
+        assert not result.is_error
+        assert result.text == "The full expense procedure."
 
     async def test_unknown_name_lists_available(self, tmp_path):
         d = tmp_path / "skills"
         _write_skill(d, "expense", "body")
         spec = await self._tool(d)
         result = await spec.handler({"name": "nope"})
-        assert result["isError"]
-        assert "expense" in result["content"][0]["text"]
+        assert result.is_error
+        assert "expense" in result.text
 
 
 class TestSelfWrittenSkills:
@@ -160,7 +160,7 @@ class TestSelfWrittenSkills:
             "description": "How to file expenses",
             "keywords": ["Expense", "gastos"],
         })
-        assert not result.get("isError")
+        assert not result.is_error
         lib = SkillsLibrary(skills_dir=d)
         (skill,) = lib._scan()
         assert skill.name == "expense_filing"
@@ -181,7 +181,7 @@ class TestSelfWrittenSkills:
         spec = _tool_by_name(d, "skill_save")
         await spec.handler({"name": "myskill", "body": "v1"})
         result = await spec.handler({"name": "myskill", "body": "v2"})
-        assert "updated" in result["content"][0]["text"]
+        assert "updated" in result.text
         (skill,) = SkillsLibrary(skills_dir=d)._scan()
         assert skill.body == "v2"
 
@@ -190,27 +190,27 @@ class TestSelfWrittenSkills:
         d = tmp_path / "skills"
         spec = _tool_by_name(d, "skill_save")
         result = await spec.handler({"name": bad, "body": "body"})
-        assert result["isError"]
+        assert result.is_error
 
     async def test_empty_body_rejected(self, tmp_path):
         d = tmp_path / "skills"
         spec = _tool_by_name(d, "skill_save")
         result = await spec.handler({"name": "valid_name", "body": "  "})
-        assert result["isError"]
+        assert result.is_error
 
     async def test_delete_removes_skill(self, tmp_path):
         d = tmp_path / "skills"
         _write_skill(d, "old_habit", "body")
         spec = _tool_by_name(d, "skill_delete")
         result = await spec.handler({"name": "old_habit"})
-        assert not result.get("isError")
+        assert not result.is_error
         assert SkillsLibrary(skills_dir=d)._scan() == []
 
     async def test_delete_unknown_errors(self, tmp_path):
         d = tmp_path / "skills"
         spec = _tool_by_name(d, "skill_delete")
         result = await spec.handler({"name": "ghost"})
-        assert result["isError"]
+        assert result.is_error
 
     async def test_delete_cannot_escape_dir(self, tmp_path):
         d = tmp_path / "skills"
@@ -219,5 +219,5 @@ class TestSelfWrittenSkills:
         outside.write_text("data")
         spec = _tool_by_name(d, "skill_delete")
         result = await spec.handler({"name": "../victim"})
-        assert result["isError"]
+        assert result.is_error
         assert outside.exists()

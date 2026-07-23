@@ -15,6 +15,54 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
+@dataclass
+class ToolResult:
+    """Vendor-neutral outcome of one tool invocation.
+
+    Handlers return this; each vendor edge (the Anthropic options builder,
+    the chat-completions tool loop) translates it into its own wire format.
+    Tool providers never see — or build — any vendor's result shape.
+    """
+    text: str
+    is_error: bool = False
+
+    @staticmethod
+    def ok(text: str) -> "ToolResult":
+        return ToolResult(text)
+
+    @staticmethod
+    def error(text: str) -> "ToolResult":
+        return ToolResult(text, is_error=True)
+
+
+def as_tool_result(raw: Any) -> ToolResult:
+    """Normalize a handler's return value at a vendor edge.
+
+    Accepts ToolResult (the canonical form) or the legacy MCP content-block
+    dict ({"content": [{"type": "text", ...}], "isError": bool?}) that
+    external stdio MCP servers still produce. Anything else is stringified.
+    """
+    if isinstance(raw, ToolResult):
+        return raw
+    if isinstance(raw, dict):
+        texts = [
+            c.get("text", "")
+            for c in (raw.get("content") or [])
+            if isinstance(c, dict) and c.get("type") == "text"
+        ]
+        return ToolResult("\n".join(t for t in texts if t), bool(raw.get("isError")))
+    return ToolResult("" if raw is None else str(raw))
+
+
+def mcp_content(raw: Any) -> dict[str, Any]:
+    """MCP wire shape from a handler result — the Anthropic SDK edge."""
+    r = as_tool_result(raw)
+    out: dict[str, Any] = {"content": [{"type": "text", "text": r.text}]}
+    if r.is_error:
+        out["isError"] = True
+    return out
+
+
 # Python type → JSON Schema fragment, for legacy {arg: type} parameter maps.
 _TYPE_TO_JSON: dict[Any, dict[str, str]] = {
     str: {"type": "string"},
@@ -39,14 +87,15 @@ class ToolSpec:
                       carry per-arg descriptions, enums, and required lists —
                       strict schemas matter most for the smaller fallback
                       vendors, whose tool-calling is less forgiving.
-        handler     — async callable that takes the args dict and returns an
-                      MCP-shaped response: {"content": [{"type": "text",
-                      "text": "..."}], "isError": <bool>?}.
+        handler     — async callable that takes the args dict and returns a
+                      ToolResult. (Legacy MCP-shaped dicts are still accepted
+                      and normalized at the vendor edges via as_tool_result —
+                      external stdio MCP servers produce them.)
     """
     name: str
     description: str
     parameters: dict[str, Any]
-    handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+    handler: Callable[[dict[str, Any]], Awaitable[Any]]  # -> ToolResult (or legacy dict)
 
     def json_schema(self) -> dict[str, Any]:
         """Normalize `parameters` into a full JSON Schema object. Every agent
@@ -72,9 +121,9 @@ def tool(name: str, description: str, parameters: dict[str, Any]):
         @tool("memory_save", "Save a fact.", {"scope": str, "content": str})
         async def memory_save_tool(args: dict[str, Any]):
             ...
-            return {"content": [{"type": "text", "text": "saved"}]}
+            return ToolResult.ok("saved")
     """
-    def decorator(handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]) -> ToolSpec:
+    def decorator(handler: Callable[[dict[str, Any]], Awaitable[Any]]) -> ToolSpec:
         return ToolSpec(
             name=name,
             description=description,
@@ -137,9 +186,6 @@ class ToolProvider:
         if tools:
             return {self.name: tools}
         return {}
-
-    def builtin_allowed_tools(self) -> list[str]:
-        return []
 
     def system_prompt_section(self) -> str:
         return ""

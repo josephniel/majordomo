@@ -22,7 +22,16 @@ from .llm import (
 )
 from .messaging import Attachment
 from .protocols import AttachmentIngestor, ContextInjector
-from .tools import Connector, Faculty, ToolProvider, ToolSpec, tool
+from .tools import (
+    Connector,
+    Faculty,
+    ToolProvider,
+    ToolResult,
+    ToolSpec,
+    as_tool_result,
+    mcp_content,
+    tool,
+)
 
 __all__ = [
     "Agent",
@@ -34,9 +43,12 @@ __all__ = [
     "PersonaLike",
     "Summarizer",
     "ToolProvider",
+    "ToolResult",
     "ToolSpec",
     "ToolUseCallback",
     "UsageLimitError",
+    "as_tool_result",
     "current_chat_id",
+    "mcp_content",
     "tool",
 ]

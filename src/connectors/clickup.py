@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from core import tool
+from core import ToolResult, tool
 
 from .registry import ServiceRegistry
 
@@ -325,15 +325,6 @@ class ClickUpConnector(Connector):
             servers[profile.name] = self._build_tools_for_profile(client)
         return servers
 
-    def builtin_allowed_tools(self) -> list[str]:
-        out: list[str] = []
-        for profile in self._config.load_all():
-            if not profile.enabled or not self.owns_profile(profile.name):
-                continue
-            for tool_name in self.TOOL_NAMES:
-                out.append(f"mcp__{profile.name}__{tool_name}")
-        return out
-
     def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
         return self.STATUS.get(local)
 
@@ -496,11 +487,11 @@ class ClickUpConnector(Connector):
                     page=int(args.get("page", 0)),
                     include_subtasks=bool(args.get("include_subtasks", True)),
                 )
-                return {"content": [{"type": "text", "text": _summarize_tasks_response(resp)}]}
+                return ToolResult.ok(_summarize_tasks_response(resp))
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "get_task",
@@ -516,11 +507,11 @@ class ClickUpConnector(Connector):
                     args["task_id"],
                     include_subtasks=bool(args.get("include_subtasks", True)),
                 )
-                return {"content": [{"type": "text", "text": json.dumps(resp, indent=2)[:4000]}]}
+                return ToolResult.ok(json.dumps(resp, indent=2)[:4000])
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "list_spaces",
@@ -532,13 +523,13 @@ class ClickUpConnector(Connector):
                 resp = await client.list_spaces()
                 spaces = resp.get("spaces", [])
                 if not spaces:
-                    return {"content": [{"type": "text", "text": "No spaces found."}]}
+                    return ToolResult.ok("No spaces found.")
                 lines = [f"- [{s.get('id', '?')}] {s.get('name', '(unnamed)')}" for s in spaces]
-                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+                return ToolResult.ok("\n".join(lines))
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "get_my_tasks",
@@ -553,18 +544,18 @@ class ClickUpConnector(Connector):
                 user_resp = await client.get_authorized_user()
                 user_id = user_resp.get("user", {}).get("id")
                 if user_id is None:
-                    return {"content": [{"type": "text", "text": "could not resolve current user id"}], "isError": True}
+                    return ToolResult.error("could not resolve current user id")
                 resp = await client.list_tasks_for_user(
                     user_id=user_id,
                     include_closed=bool(args.get("include_closed", False)),
                     page=int(args.get("page", 0)),
                     include_subtasks=bool(args.get("include_subtasks", True)),
                 )
-                return {"content": [{"type": "text", "text": _summarize_tasks_response(resp)}]}
+                return ToolResult.ok(_summarize_tasks_response(resp))
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "list_workspace_members",
@@ -577,7 +568,7 @@ class ClickUpConnector(Connector):
             try:
                 members = await client.list_workspace_members()
                 if not members:
-                    return {"content": [{"type": "text", "text": "No members found."}]}
+                    return ToolResult.ok("No members found.")
                 lines = []
                 for m in members:
                     user = m.get("user") or {}
@@ -585,11 +576,11 @@ class ClickUpConnector(Connector):
                     uname = user.get("username", "(unnamed)")
                     email = user.get("email", "")
                     lines.append(f"- [{uid}] {uname}{' <' + email + '>' if email else ''}")
-                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+                return ToolResult.ok("\n".join(lines))
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "list_folders",
@@ -602,7 +593,7 @@ class ClickUpConnector(Connector):
                 resp = await client.list_folders(args["space_id"])
                 folders = resp.get("folders", [])
                 if not folders:
-                    return {"content": [{"type": "text", "text": "No folders in this space."}]}
+                    return ToolResult.ok("No folders in this space.")
                 lines = []
                 for f in folders:
                     fid = f.get("id", "?")
@@ -610,11 +601,11 @@ class ClickUpConnector(Connector):
                     is_sprint = f.get("sprint_folder")
                     label = " [SPRINT FOLDER]" if is_sprint else ""
                     lines.append(f"- [{fid}] {name}{label}")
-                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+                return ToolResult.ok("\n".join(lines))
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "list_lists_in_folder",
@@ -628,13 +619,13 @@ class ClickUpConnector(Connector):
                 resp = await client.list_lists_in_folder(args["folder_id"])
                 lists = resp.get("lists", [])
                 if not lists:
-                    return {"content": [{"type": "text", "text": "No lists in this folder."}]}
+                    return ToolResult.ok("No lists in this folder.")
                 lines = [f"- [{lst.get('id', '?')}] {lst.get('name', '(unnamed)')}" for lst in lists]
-                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+                return ToolResult.ok("\n".join(lines))
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         # ---- WRITE TOOLS ----
 
@@ -658,22 +649,14 @@ class ClickUpConnector(Connector):
             if args.get("status"):
                 body["status"] = args["status"]
             if not body:
-                return {
-                    "content": [{"type": "text", "text": "no fields supplied — nothing to update"}],
-                    "isError": True,
-                }
+                return ToolResult.error("no fields supplied — nothing to update")
             try:
                 await client.update_task(args["task_id"], body)
-                return {
-                    "content": [{
-                        "type": "text",
-                        "text": f"updated task {args['task_id']}: " + ", ".join(body.keys()),
-                    }]
-                }
+                return ToolResult.ok(f"updated task {args['task_id']}: " + ", ".join(body.keys()))
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "set_assignees",
@@ -688,23 +671,15 @@ class ClickUpConnector(Connector):
             add_ids = _parse_id_csv(args.get("add"))
             rem_ids = _parse_id_csv(args.get("remove"))
             if not add_ids and not rem_ids:
-                return {
-                    "content": [{"type": "text", "text": "nothing to add or remove"}],
-                    "isError": True,
-                }
+                return ToolResult.error("nothing to add or remove")
             body = {"assignees": {"add": add_ids, "rem": rem_ids}}
             try:
                 await client.update_task(args["task_id"], body)
-                return {
-                    "content": [{
-                        "type": "text",
-                        "text": f"task {args['task_id']}: added {add_ids or '[]'}, removed {rem_ids or '[]'}",
-                    }]
-                }
+                return ToolResult.ok(f"task {args['task_id']}: added {add_ids or '[]'}, removed {rem_ids or '[]'}")
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "add_task_to_list",
@@ -717,16 +692,11 @@ class ClickUpConnector(Connector):
         async def add_task_to_list_tool(args: dict[str, Any]):
             try:
                 await client.add_task_to_list(args["task_id"], args["list_id"])
-                return {
-                    "content": [{
-                        "type": "text",
-                        "text": f"added task {args['task_id']} to list {args['list_id']}",
-                    }]
-                }
+                return ToolResult.ok(f"added task {args['task_id']} to list {args['list_id']}")
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "remove_task_from_list",
@@ -738,16 +708,11 @@ class ClickUpConnector(Connector):
         async def remove_task_from_list_tool(args: dict[str, Any]):
             try:
                 await client.remove_task_from_list(args["task_id"], args["list_id"])
-                return {
-                    "content": [{
-                        "type": "text",
-                        "text": f"removed task {args['task_id']} from list {args['list_id']}",
-                    }]
-                }
+                return ToolResult.ok(f"removed task {args['task_id']} from list {args['list_id']}")
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         return [
             # read

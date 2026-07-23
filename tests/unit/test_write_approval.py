@@ -6,8 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from connectors.approvals import WriteApprovalGate, format_approval_prompt
-from connectors.base import Connector, tool
-from connectors.chat_context import current_chat_id
+from core import Connector, ToolResult, current_chat_id, tool
 
 
 class FakeMailConnector(Connector):
@@ -25,12 +24,12 @@ class FakeMailConnector(Connector):
         @tool("search_mail", "Search the mailbox.", {"query": str})
         async def search_tool(args):
             outer.read.append(args)
-            return {"content": [{"type": "text", "text": "results"}]}
+            return ToolResult.ok("results")
 
         @tool("send_mail", "Send an email.", {"to": str, "body": str})
         async def send_tool(args):
             outer.sent.append(args)
-            return {"content": [{"type": "text", "text": "sent"}]}
+            return ToolResult.ok("sent")
 
         return [search_tool, send_tool]
 
@@ -105,7 +104,7 @@ class TestGateDecision:
             return True
         conn, spec = await self._gated_send(yes)
         result = await spec.handler({"to": "a@b.c", "body": "hi"})
-        assert not result.get("isError")
+        assert not result.is_error
         assert conn.sent == [{"to": "a@b.c", "body": "hi"}]
 
     async def test_denied_blocks_execution(self, chat_ctx):
@@ -113,8 +112,8 @@ class TestGateDecision:
             return False
         conn, spec = await self._gated_send(no)
         result = await spec.handler({"to": "a@b.c", "body": "hi"})
-        assert result["isError"]
-        assert "NOT executed" in result["content"][0]["text"]
+        assert result.is_error
+        assert "NOT executed" in result.text
         assert conn.sent == []
 
     async def test_confirmer_error_denies(self, chat_ctx):
@@ -122,7 +121,7 @@ class TestGateDecision:
             raise RuntimeError("telegram down")
         conn, spec = await self._gated_send(boom)
         result = await spec.handler({"to": "a@b.c", "body": "hi"})
-        assert result["isError"]
+        assert result.is_error
         assert conn.sent == []
 
     async def test_no_chat_context_denies(self):
@@ -130,14 +129,14 @@ class TestGateDecision:
             return True
         conn, spec = await self._gated_send(yes)
         result = await spec.handler({"to": "a@b.c", "body": "hi"})
-        assert result["isError"]
+        assert result.is_error
         assert conn.sent == []
 
     async def test_unbound_gate_allows(self, chat_ctx):
         # CLI/test contexts: composition never bound a platform confirmer.
         conn, spec = await self._gated_send(None)
         result = await spec.handler({"to": "a@b.c", "body": "hi"})
-        assert not result.get("isError")
+        assert not result.is_error
         assert conn.sent == [{"to": "a@b.c", "body": "hi"}]
 
     async def test_read_tools_never_prompt(self, chat_ctx):
@@ -146,7 +145,7 @@ class TestGateDecision:
         conn, _ = await self._gated_send(never)
         spec = _specs_by_name(conn)["search_mail"]
         result = await spec.handler({"query": "x"})
-        assert not result.get("isError")
+        assert not result.is_error
 
 
 class TestApprovalPromptFormat:

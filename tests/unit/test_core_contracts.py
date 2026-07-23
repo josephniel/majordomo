@@ -60,3 +60,31 @@ class TestShimsPreserveIdentity:
     def test_platform_attachment_is_core_attachment(self):
         import platforms.base as pb
         assert pb.Attachment is core.Attachment
+
+
+class TestToolResult:
+    def test_ok_and_error_constructors(self):
+        assert core.ToolResult.ok("hi") == core.ToolResult("hi", is_error=False)
+        assert core.ToolResult.error("no") == core.ToolResult("no", is_error=True)
+
+    def test_as_tool_result_passthrough(self):
+        r = core.ToolResult.ok("x")
+        assert core.as_tool_result(r) is r
+
+    def test_as_tool_result_legacy_mcp_dict(self):
+        raw = {"content": [{"type": "text", "text": "a"},
+                           {"type": "text", "text": "b"}], "isError": True}
+        r = core.as_tool_result(raw)
+        assert r.text == "a\nb" and r.is_error
+
+    def test_as_tool_result_stringifies_unknown(self):
+        assert core.as_tool_result(42).text == "42"
+        assert core.as_tool_result(None).text == ""
+
+    def test_mcp_content_wire_shape(self):
+        assert core.mcp_content(core.ToolResult.ok("hi")) == {
+            "content": [{"type": "text", "text": "hi"}]
+        }
+        assert core.mcp_content(core.ToolResult.error("no")) == {
+            "content": [{"type": "text", "text": "no"}], "isError": True,
+        }

@@ -100,8 +100,8 @@ class TestDocumentLibraryTools:
         result = await self._tool(library, "doc_search").handler(
             {"query": "billboard campaign EDSA"}
         )
-        assert not result.get("isError")
-        assert "EDSA" in result["content"][0]["text"]
+        assert not result.is_error
+        assert "EDSA" in result.text
 
     async def test_doc_read_pagination_hint(self, library, store, persona_id):
         await library.ingest_attachment(
@@ -109,7 +109,7 @@ class TestDocumentLibraryTools:
         )
         (doc,) = await store.list_docs(persona_id)
         result = await self._tool(library, "doc_read").handler({"doc_id": doc["id"]})
-        text = result["content"][0]["text"]
+        text = result.text
         assert "budget.txt" in text
         if doc["num_chunks"] > 4:
             assert "start_chunk=" in text
@@ -123,6 +123,6 @@ class TestDocumentLibraryTools:
         )
         (doc,) = await store.list_docs(persona_id)
         result = await self._tool(library, "doc_delete").handler({"doc_id": doc["id"]})
-        assert not result.get("isError")
+        assert not result.is_error
         list_result = await self._tool(library, "doc_list").handler({})
-        assert "no documents" in list_result["content"][0]["text"]
+        assert "no documents" in list_result.text

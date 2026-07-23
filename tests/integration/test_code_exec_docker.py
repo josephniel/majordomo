@@ -28,8 +28,8 @@ async def test_python_stdout_roundtrip(executor):
     result = await _spec(executor).handler({
         "language": "python", "code": "print(6 * 7)",
     })
-    text = result["content"][0]["text"]
-    assert not result.get("isError"), text
+    text = result.text
+    assert not result.is_error, text
     assert "42" in text
     assert "exit code: 0" in text
 
@@ -37,14 +37,14 @@ async def test_bash_works(executor):
     result = await _spec(executor).handler({
         "language": "bash", "code": "echo hello-from-sh",
     })
-    assert "hello-from-sh" in result["content"][0]["text"]
+    assert "hello-from-sh" in result.text
 
 async def test_artifacts_survive_and_are_listed(executor, tmp_path):
     result = await _spec(executor).handler({
         "language": "python",
         "code": "open('report.txt','w').write('artifact-body')",
     })
-    text = result["content"][0]["text"]
+    text = result.text
     assert "files created:" in text
     assert "report.txt" in text
     (artifact,) = list((tmp_path / "code_runs").rglob("report.txt"))
@@ -62,19 +62,19 @@ async def test_network_is_disabled(executor):
             "    print('NETWORK-BLOCKED')\n"
         ),
     })
-    assert "NETWORK-BLOCKED" in result["content"][0]["text"]
+    assert "NETWORK-BLOCKED" in result.text
 
 async def test_nonzero_exit_is_error(executor):
     result = await _spec(executor).handler({
         "language": "python", "code": "raise SystemExit(3)",
     })
-    assert result["isError"]
-    assert "exit code: 3" in result["content"][0]["text"]
+    assert result.is_error
+    assert "exit code: 3" in result.text
 
 async def test_timeout_kills_container(executor):
     result = await _spec(executor).handler({
         "language": "python", "code": "import time; time.sleep(120)",
         "timeout_seconds": 1,
     })
-    assert result["isError"]
-    assert "timed out" in result["content"][0]["text"]
+    assert result.is_error
+    assert "timed out" in result.text

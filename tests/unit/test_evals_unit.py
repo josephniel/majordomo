@@ -52,7 +52,7 @@ class TestFakes:
         result = await specs["schedule_once"].handler(
             {"name": "stretch", "when": "+20m", "prompt": "stretch now"}
         )
-        assert not result.get("isError")
+        assert not result.is_error
         assert fake.calls == [
             ("schedule_once", {"name": "stretch", "when": "+20m", "prompt": "stretch now"})
         ]

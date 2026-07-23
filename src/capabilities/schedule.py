@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
-from core import Faculty, current_chat_id, tool
+from core import Faculty, ToolResult, current_chat_id, tool
 
 log = logging.getLogger(__name__)
 
@@ -363,15 +363,6 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             self._tools_cache = self._build_tools()
         return list(self._tools_cache)
 
-    def builtin_allowed_tools(self) -> list[str]:
-        return [
-            "mcp__schedule__schedule_create",
-            "mcp__schedule__schedule_once",
-            "mcp__schedule__schedule_list",
-            "mcp__schedule__schedule_remove",
-            "mcp__schedule__schedule_set_enabled",
-        ]
-
     def system_prompt_section(self) -> str:
         tz = self._runtime.timezone_name
         if tz:
@@ -402,10 +393,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
         async def schedule_create_tool(args: dict[str, Any]):
             chat_id = current_chat_id.get()
             if chat_id is None:
-                return {
-                    "content": [{"type": "text", "text": "no current chat context (cannot create schedule)"}],
-                    "isError": True,
-                }
+                return ToolResult.error("no current chat context (cannot create schedule)")
             try:
                 entry = runtime.add(
                     name=args["name"],
@@ -414,14 +402,11 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
                     prompt=args["prompt"],
                     description=args.get("description", ""),
                 )
-                return {
-                    "content": [{
-                        "type": "text",
-                        "text": f"created schedule {entry.name!r} ({entry.cron}) — {entry.description or '(no description)'}",
-                    }]
-                }
+                return ToolResult.ok(
+                    f"created schedule {entry.name!r} ({entry.cron}) — {entry.description or '(no description)'}"
+                )
             except (ValueError, KeyError) as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "schedule_once",
@@ -436,10 +421,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
         async def schedule_once_tool(args: dict[str, Any]):
             chat_id = current_chat_id.get()
             if chat_id is None:
-                return {
-                    "content": [{"type": "text", "text": "no current chat context (cannot create reminder)"}],
-                    "isError": True,
-                }
+                return ToolResult.error("no current chat context (cannot create reminder)")
             try:
                 entry = runtime.add_once(
                     name=args["name"],
@@ -448,14 +430,11 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
                     prompt=args["prompt"],
                     description=args.get("description", ""),
                 )
-                return {
-                    "content": [{
-                        "type": "text",
-                        "text": f"one-shot reminder {entry.name!r} set for {entry.run_at} — {entry.description or '(no description)'}",
-                    }]
-                }
+                return ToolResult.ok(
+                    f"one-shot reminder {entry.name!r} set for {entry.run_at} — {entry.description or '(no description)'}"
+                )
             except (ValueError, KeyError) as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "schedule_list",
@@ -465,18 +444,15 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
         async def schedule_list_tool(_args: dict[str, Any]):
             chat_id = current_chat_id.get()
             if chat_id is None:
-                return {
-                    "content": [{"type": "text", "text": "no current chat context"}],
-                    "isError": True,
-                }
+                return ToolResult.error("no current chat context")
             items = runtime.list_for_chat(chat_id)
             if not items:
-                return {"content": [{"type": "text", "text": "(no schedules for this chat)"}]}
+                return ToolResult.ok("(no schedules for this chat)")
             lines = []
             for s in items:
                 status = "ON " if s.enabled else "OFF"
                 lines.append(f"[{status}] {s.name}: {s.cron} — {s.description or '(no description)'}")
-            return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+            return ToolResult.ok("\n".join(lines))
 
         @tool(
             "schedule_remove",
@@ -486,9 +462,9 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
         async def schedule_remove_tool(args: dict[str, Any]):
             try:
                 runtime.remove(args["name"])
-                return {"content": [{"type": "text", "text": f"removed schedule: {args['name']}"}]}
+                return ToolResult.ok(f"removed schedule: {args['name']}")
             except KeyError as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "schedule_set_enabled",
@@ -499,9 +475,9 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             try:
                 runtime.set_enabled(args["name"], bool(args["enabled"]))
                 action = "enabled" if args["enabled"] else "disabled"
-                return {"content": [{"type": "text", "text": f"{action}: {args['name']}"}]}
+                return ToolResult.ok(f"{action}: {args['name']}")
             except KeyError as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         return [
             schedule_create_tool,

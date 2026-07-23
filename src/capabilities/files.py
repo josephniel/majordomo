@@ -18,7 +18,7 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from core import Faculty, current_chat_id, tool
+from core import Faculty, ToolResult, current_chat_id, tool
 
 log = logging.getLogger(__name__)
 
@@ -40,9 +40,6 @@ class FileCourier(Faculty):
     def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
         return self.STATUS.get(local)
 
-    def builtin_allowed_tools(self) -> list[str]:
-        return ["mcp__files__chat_send_file"]
-
     def builtin_tools(self) -> list:
         outer = self
 
@@ -59,35 +56,32 @@ class FileCourier(Faculty):
 
         return [chat_send_file_tool]
 
-    async def _send(self, args: dict[str, Any]) -> dict[str, Any]:
-        def _err(text: str) -> dict[str, Any]:
-            return {"content": [{"type": "text", "text": text}], "isError": True}
-
+    async def _send(self, args: dict[str, Any]) -> ToolResult:
         if self._sender is None:
-            return _err("file sending is not available on this platform")
+            return ToolResult.error("file sending is not available on this platform")
         chat_id = current_chat_id.get()
         if chat_id is None:
-            return _err("no chat context to send the file to")
+            return ToolResult.error("no chat context to send the file to")
         raw = str(args.get("path") or "").strip()
         if not raw:
-            return _err("path is empty")
+            return ToolResult.error("path is empty")
         try:
             path = Path(raw).resolve()
             allowed_root = self._data_dir.resolve()
         except OSError as e:
-            return _err(f"bad path: {e}")
+            return ToolResult.error(f"bad path: {e}")
         if not path.is_relative_to(allowed_root):
-            return _err(
+            return ToolResult.error(
                 f"refusing: only files under {allowed_root} can be sent"
             )
         if not path.is_file():
-            return _err(f"no such file: {path}")
+            return ToolResult.error(f"no such file: {path}")
         caption = str(args.get("caption") or "").strip() or None
         try:
             delivered = await self._sender(chat_id, str(path), caption)
         except Exception as e:
             log.exception("chat_send_file failed")
-            return _err(f"sending failed: {e}")
+            return ToolResult.error(f"sending failed: {e}")
         if not delivered:
-            return _err("the platform could not deliver the file (too large, or unsupported)")
-        return {"content": [{"type": "text", "text": f"sent {path.name} to the chat"}]}
+            return ToolResult.error("the platform could not deliver the file (too large, or unsupported)")
+        return ToolResult.ok(f"sent {path.name} to the chat")

@@ -23,7 +23,7 @@ import logging
 from contextvars import ContextVar
 from typing import Any, Callable, Optional
 
-from core import Faculty, current_chat_id, tool
+from core import Faculty, ToolResult, current_chat_id, tool
 
 log = logging.getLogger(__name__)
 
@@ -31,10 +31,6 @@ DELEGATE_TIMEOUT_SECONDS = 300.0
 MAX_CONCURRENT_DELEGATES = 2
 
 _delegation_depth: ContextVar[int] = ContextVar("delegation_depth", default=0)
-
-
-def _error(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
 class Delegator(Faculty):
@@ -52,9 +48,6 @@ class Delegator(Faculty):
 
     def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
         return self.STATUS.get(local)
-
-    def builtin_allowed_tools(self) -> list[str]:
-        return ["mcp__delegate__delegate_task"]
 
     def builtin_tools(self) -> list:
         outer = self
@@ -74,9 +67,9 @@ class Delegator(Faculty):
         async def delegate_task_tool(args: dict[str, Any]):
             task = str(args.get("task") or "").strip()
             if not task:
-                return _error("delegate_task needs a non-empty `task`")
+                return ToolResult.error("delegate_task needs a non-empty `task`")
             if _delegation_depth.get() >= 1:
-                return _error(
+                return ToolResult.error(
                     "delegation cannot nest — you ARE the delegate; "
                     "do the work directly with your own tools"
                 )
@@ -97,15 +90,15 @@ class Delegator(Faculty):
                             log.exception("delegate sub-agent stop failed")
             except asyncio.TimeoutError:
                 log.warning("delegated task timed out after %.0fs", outer._timeout)
-                return _error(
+                return ToolResult.error(
                     f"the delegated task timed out after {int(outer._timeout)}s; "
                     "try a smaller, more specific task"
                 )
             except Exception as e:
                 log.exception("delegated task failed")
-                return _error(f"the delegated task failed: {e}")
+                return ToolResult.error(f"the delegated task failed: {e}")
             finally:
                 _delegation_depth.reset(depth_token)
-            return {"content": [{"type": "text", "text": reply}]}
+            return ToolResult.ok(reply)
 
         return [delegate_task_tool]

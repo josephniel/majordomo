@@ -14,7 +14,7 @@ import io
 import logging
 from typing import Any, Optional
 
-from core import Faculty, tool
+from core import Faculty, ToolResult, tool
 from storage.docs import DocumentStore
 
 log = logging.getLogger(__name__)
@@ -38,13 +38,6 @@ def extract_text(mime: str, data: bytes) -> Optional[str]:
             log.exception("pdf text extraction failed")
             return None
     return None
-
-
-def _text(text: str, is_error: bool = False) -> dict[str, Any]:
-    out: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
-    if is_error:
-        out["isError"] = True
-    return out
 
 
 class DocumentLibrary(Faculty):
@@ -128,14 +121,6 @@ Prefer doc_search over asking the user to re-send anything."""
 
     # ---- tools ----
 
-    def builtin_allowed_tools(self) -> list[str]:
-        return [
-            "mcp__documents__doc_list",
-            "mcp__documents__doc_search",
-            "mcp__documents__doc_read",
-            "mcp__documents__doc_delete",
-        ]
-
     def builtin_tools(self) -> list:
         outer = self
 
@@ -147,13 +132,13 @@ Prefer doc_search over asking the user to re-send anything."""
         async def doc_list_tool(_args: dict[str, Any]):
             docs = await outer._store.list_docs(outer._persona_id)
             if not docs:
-                return _text("no documents saved yet")
+                return ToolResult.ok("no documents saved yet")
             lines = [
                 f"- #{d['id']} {d['name']} ({d['mime'] or 'text'}, "
                 f"{d['num_chunks']} chunks, {d['char_count']} chars)"
                 for d in docs
             ]
-            return _text("\n".join(lines))
+            return ToolResult.ok("\n".join(lines))
 
         @tool(
             "doc_search",
@@ -166,13 +151,13 @@ Prefer doc_search over asking the user to re-send anything."""
                 outer._persona_id, str(args.get("query") or ""),
             )
             if not hits:
-                return _text("no matching passages")
+                return ToolResult.ok("no matching passages")
             parts = [
                 f"[doc #{h['doc_id']} {h['doc_name']!r} chunk {h['chunk_index']} "
                 f"score {h['score']:.2f}]\n{h['content']}"
                 for h in hits
             ]
-            return _text("\n\n".join(parts))
+            return ToolResult.ok("\n\n".join(parts))
 
         @tool(
             "doc_read",
@@ -184,16 +169,16 @@ Prefer doc_search over asking the user to re-send anything."""
             try:
                 doc_id = int(args.get("doc_id"))
             except (TypeError, ValueError):
-                return _text("doc_id must be an integer", True)
+                return ToolResult.error("doc_id must be an integer")
             start = int(args.get("start_chunk") or 0)
             doc = await outer._store.read_doc(outer._persona_id, doc_id, start_chunk=start)
             if doc is None:
-                return _text(f"no document #{doc_id}", True)
+                return ToolResult.error(f"no document #{doc_id}")
             body = "\n\n".join(c["content"] for c in doc["chunks"])
             last = doc["chunks"][-1]["chunk_index"] if doc["chunks"] else start
             more = doc["num_chunks"] - last - 1
             suffix = f"\n\n({more} more chunks; continue with start_chunk={last + 1})" if more > 0 else ""
-            return _text(f"{doc['name']} (chunks {start}..{last} of {doc['num_chunks']}):\n\n{body}{suffix}")
+            return ToolResult.ok(f"{doc['name']} (chunks {start}..{last} of {doc['num_chunks']}):\n\n{body}{suffix}")
 
         @tool(
             "doc_delete",
@@ -204,10 +189,10 @@ Prefer doc_search over asking the user to re-send anything."""
             try:
                 doc_id = int(args.get("doc_id"))
             except (TypeError, ValueError):
-                return _text("doc_id must be an integer", True)
+                return ToolResult.error("doc_id must be an integer")
             ok = await outer._store.delete(outer._persona_id, doc_id)
             if not ok:
-                return _text(f"no document #{doc_id}", True)
-            return _text(f"document #{doc_id} deleted")
+                return ToolResult.error(f"no document #{doc_id}")
+            return ToolResult.ok(f"document #{doc_id} deleted")
 
         return [doc_list_tool, doc_search_tool, doc_read_tool, doc_delete_tool]

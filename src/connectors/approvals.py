@@ -27,7 +27,7 @@ import logging
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Optional
 
-from core import Connector, ToolSpec, current_chat_id
+from core import Connector, ToolResult, ToolSpec, current_chat_id
 
 log = logging.getLogger(__name__)
 
@@ -92,14 +92,8 @@ def format_approval_prompt(connector_name: str, tool_name: str, args: dict[str, 
     return "\n".join(lines)
 
 
-def _refusal(tool_name: str, reason: str) -> dict[str, Any]:
-    return {
-        "content": [{
-            "type": "text",
-            "text": f"{tool_name} was NOT executed: {reason}",
-        }],
-        "isError": True,
-    }
+def _refusal(tool_name: str, reason: str) -> ToolResult:
+    return ToolResult.error(f"{tool_name} was NOT executed: {reason}")
 
 
 # auditor(chat_id, connector, tool, args_preview, decision, reason)
@@ -183,7 +177,7 @@ class WriteApprovalGate:
         inner = spec.handler
         tool_name = spec.name
 
-        async def gated_handler(args: dict[str, Any]) -> dict[str, Any]:
+        async def gated_handler(args: dict[str, Any]) -> Any:
             approved, reason = await self._confirm(connector_name, tool_name, args)
             if not approved:
                 log.warning("write tool %s denied: %s", tool_name, reason)

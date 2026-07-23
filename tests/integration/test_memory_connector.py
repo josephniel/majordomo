@@ -97,7 +97,7 @@ class TestCompaction:
         await memory.compact_compartment("user")
         forget = tool_by_name(memory, "memory_forget")
         result = await forget.handler({"id": str(entry.id)})
-        assert "forgotten" in result["content"][0]["text"]
+        assert "forgotten" in result.text
         await asyncio.sleep(0.2)  # background recompaction
         # The summarizer ran again over the (now empty) compartment.
         cores = await memdb.get_core(persona_id)
@@ -109,7 +109,7 @@ class TestCompaction:
         update = tool_by_name(memory, "memory_update")
         result = await update.handler({"id": str(entry.id),
                                        "content": "the user lives in Makati"})
-        assert "superseded" in result["content"][0]["text"]
+        assert "superseded" in result.text
         await asyncio.sleep(0.2)
         cores = await memdb.get_core(persona_id)
         assert any(c.scope == "user" and c.last_source_count == 1 for c in cores)
@@ -119,22 +119,22 @@ class TestTools:
     async def test_memory_save_tool(self, memory):
         save = tool_by_name(memory, "memory_save")
         result = await save.handler({"scope": "user", "content": "tool-saved fact"})
-        assert "saved" in result["content"][0]["text"]
+        assert "saved" in result.text
 
     async def test_memory_save_tool_invalid_scope_is_error(self, memory):
         save = tool_by_name(memory, "memory_save")
         result = await save.handler({"scope": "nope", "content": "x"})
-        assert result.get("isError") is True
+        assert result.is_error is True
 
     async def test_memory_recall_tool(self, memory):
         await memory.save_fact("user", "the wifi password is stored in 1password")
         recall = tool_by_name(memory, "memory_recall")
         result = await recall.handler({"query": "wifi password"})
-        assert "1password" in result["content"][0]["text"]
+        assert "1password" in result.text
 
     async def test_recall_tool_empty_query_is_error(self, memory):
         recall = tool_by_name(memory, "memory_recall")
-        assert (await recall.handler({"query": ""})).get("isError") is True
+        assert (await recall.handler({"query": ""})).is_error is True
 
     async def test_history_search_tool_uses_chat_context(self, memory, history, persona_id):
         await history.append(persona_id=persona_id, chat_id=CHAT_ID, role="user",
@@ -145,19 +145,19 @@ class TestTools:
             result = await search.handler({"query": "durian tariffs"})
         finally:
             current_chat_id.reset(token)
-        assert "durian" in result["content"][0]["text"]
+        assert "durian" in result.text
 
     async def test_history_search_without_chat_context_errors(self, memory):
         search = tool_by_name(memory, "history_search")
         result = await search.handler({"query": "anything"})
-        assert result.get("isError") is True
+        assert result.is_error is True
 
     async def test_history_search_absent_without_history(self, memdb, persona_id):
         m = LongTermMemory(db=memdb, persona_id=persona_id,
                            summarizer=FakeSummarizer(), history=None)
         names = [s.name for s in m.builtin_tools()]
         assert "history_search" not in names
-        assert "mcp__memory__history_search" not in m.builtin_allowed_tools()
+        assert "history_search" not in {t.name for t in m.builtin_tools()}
 
 
 class TestSystemPrompt:

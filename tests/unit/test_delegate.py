@@ -54,8 +54,8 @@ class TestDelegateTask:
         agent = FakeSubAgent(reply="3 urgent, 2 can wait")
         d, spec, made = _delegator(agent)
         result = await spec.handler({"task": "triage my inbox"})
-        assert not result.get("isError")
-        assert result["content"][0]["text"] == "3 urgent, 2 can wait"
+        assert not result.is_error
+        assert result.text == "3 urgent, 2 can wait"
         assert made == [42]
         assert agent.prompts == ["triage my inbox"]
         assert agent.started == 1 and agent.stopped == 1
@@ -64,15 +64,15 @@ class TestDelegateTask:
         agent = FakeSubAgent()
         _, spec, made = _delegator(agent)
         result = await spec.handler({"task": "  "})
-        assert result["isError"]
+        assert result.is_error
         assert made == []
 
     async def test_timeout_fails_the_call_not_the_turn(self, chat_ctx):
         agent = FakeSubAgent(delay=1.0)
         _, spec, _ = _delegator(agent, timeout=0.05)
         result = await spec.handler({"task": "slow thing"})
-        assert result["isError"]
-        assert "timed out" in result["content"][0]["text"]
+        assert result.is_error
+        assert "timed out" in result.text
         assert agent.stopped == 1, "sub-agent still torn down"
 
     async def test_subagent_error_becomes_tool_error(self, chat_ctx):
@@ -82,8 +82,8 @@ class TestDelegateTask:
         agent = Exploding()
         _, spec, _ = _delegator(agent)
         result = await spec.handler({"task": "x"})
-        assert result["isError"]
-        assert "all vendors failed" in result["content"][0]["text"]
+        assert result.is_error
+        assert "all vendors failed" in result.text
 
     async def test_nesting_blocked(self, chat_ctx):
         """A delegate that tries to delegate gets refused."""
@@ -94,16 +94,16 @@ class TestDelegateTask:
                 # The sub-agent's tool calls run inside the parent handler's
                 # async context — so the depth guard must trip here.
                 inner = await outer_spec_holder["spec"].handler({"task": "deeper"})
-                assert inner["isError"]
-                assert "cannot nest" in inner["content"][0]["text"]
+                assert inner.is_error
+                assert "cannot nest" in inner.text
                 return "did it myself instead"
 
         agent = NestingAgent()
         _, spec, made = _delegator(agent)
         outer_spec_holder["spec"] = spec
         result = await spec.handler({"task": "outer task"})
-        assert not result.get("isError")
-        assert result["content"][0]["text"] == "did it myself instead"
+        assert not result.is_error
+        assert result.text == "did it myself instead"
         assert len(made) == 1, "no second sub-agent was built"
 
     async def test_depth_resets_after_completion(self, chat_ctx):
@@ -111,7 +111,7 @@ class TestDelegateTask:
         _, spec, made = _delegator(agent)
         await spec.handler({"task": "first"})
         result = await spec.handler({"task": "second"})
-        assert not result.get("isError"), "sequential delegations both allowed"
+        assert not result.is_error, "sequential delegations both allowed"
         assert len(made) == 2
 
 

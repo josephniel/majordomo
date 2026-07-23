@@ -29,7 +29,7 @@ from claude_agent_sdk import (
 )
 
 from connectors import ServiceRegistry
-from core import Connector, ToolSpec
+from core import Connector, ToolSpec, mcp_content
 
 from .base import (
     Agent,
@@ -202,11 +202,13 @@ def _to_claude_sdk_tool(spec: ToolSpec):
     when emitting the in-process MCP server. We unbox the ToolSpec back into
     that wrapper here so connectors stay vendor-neutral. `json_schema()` is
     the normalized form (full JSON Schema with required/descriptions/enums);
-    the SDK passes schema dicts through to MCP unchanged.
+    the SDK passes schema dicts through to MCP unchanged. Handler results
+    (ToolResult, or legacy dicts from external MCP servers) become the MCP
+    wire shape HERE — providers never build it.
     """
     @_claude_sdk_tool(spec.name, spec.description, spec.json_schema())
     async def _wrapped(args: dict[str, Any]):
-        return await spec.handler(args)
+        return mcp_content(await spec.handler(args))
     return _wrapped
 
 
@@ -260,10 +262,12 @@ class AnthropicOptionsBuilder:
                 mcp_servers[server_name] = create_sdk_mcp_server(
                     name=server_name, version="1.0.0", tools=sdk_tools,
                 )
-            for full_name in c.builtin_allowed_tools():
-                local = full_name.rsplit("__", 1)[-1]
-                if allowed_for_c is None or local in allowed_for_c:
-                    allowed_tools.append(full_name)
+                # The SDK's allow-list wants full MCP names; the mcp__ naming
+                # convention is THIS vendor's concern, derived here from the
+                # same persona-filtered specs that were just mounted.
+                allowed_tools.extend(
+                    f"mcp__{server_name}__{spec.name}" for spec in filtered
+                )
 
         # External MCPs (subprocess stdio) from connectors.yaml.
         for i in enabled:

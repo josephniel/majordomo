@@ -24,7 +24,7 @@ import logging
 import os
 from typing import Any, Optional
 
-from core import Connector, ToolSpec
+from core import Connector, ToolSpec, as_tool_result
 
 from .base import (
     Agent,
@@ -234,17 +234,11 @@ def _recover_failed_tool_calls(exc: BaseException) -> list[tuple[str, str]]:
 
 
 def _extract_text_from_tool_result(result: Any) -> str:
-    """ToolSpec handlers return MCP-shaped dicts ({"content":[{"type":"text",
-    "text":"…"}], "isError":bool?}). Flatten that into a single string for
-    OpenAI's `tool` message content field."""
-    if not isinstance(result, dict):
-        return str(result)
-    parts: list[str] = []
-    for c in result.get("content", []) or []:
-        if isinstance(c, dict) and c.get("type") == "text":
-            parts.append(str(c.get("text", "")))
-    text = "\n".join(p for p in parts if p)
-    return text or "(empty)"
+    """Flatten a handler result (ToolResult, or a legacy MCP-shaped dict from
+    external MCP servers) into the single string OpenAI's `tool` message
+    content field wants. (The error flag isn't surfaced separately here —
+    handlers word their error text self-descriptively.)"""
+    return as_tool_result(result).text or "(empty)"
 
 
 class ChatCompletionsAgent(Agent):
