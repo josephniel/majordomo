@@ -23,7 +23,7 @@ import logging
 from contextvars import ContextVar
 from typing import Any, Callable, Optional
 
-from core import Faculty, ToolResult, current_chat_id, tool
+from core import Faculty, ToolContext, ToolResult, tool
 
 log = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ class Delegator(Faculty):
             "Not for quick single-tool lookups; call those directly.",
             {"task": str},
         )
-        async def delegate_task_tool(args: dict[str, Any]):
+        async def delegate_task_tool(args: dict[str, Any], ctx: ToolContext):
             task = str(args.get("task") or "").strip()
             if not task:
                 return ToolResult.error("delegate_task needs a non-empty `task`")
@@ -75,7 +75,7 @@ class Delegator(Faculty):
                     "delegation cannot nest — you ARE the delegate; "
                     "do the work directly with your own tools"
                 )
-            chat_id = current_chat_id.get() or 0
+            chat_id = ctx.chat_id or 0
             depth_token = _delegation_depth.set(_delegation_depth.get() + 1)
             try:
                 async with outer._sem:

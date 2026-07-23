@@ -29,7 +29,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID
 
-from core import Faculty, Summarizer, ToolResult, current_chat_id, tool
+from core import Faculty, Summarizer, ToolContext, ToolResult, tool
 
 from storage import MemoryCoreEntry, MemoryDatabase, MemoryEntry
 
@@ -385,7 +385,7 @@ Three principles:
                 "required": ["scope", "content"],
             },
         )
-        async def memory_save_tool(args: dict[str, Any]):
+        async def memory_save_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 msg, entry = await connector.save_fact(
                     scope=args.get("scope") or "",
@@ -420,7 +420,7 @@ Three principles:
                 "required": ["query"],
             },
         )
-        async def memory_recall_tool(args: dict[str, Any]):
+        async def memory_recall_tool(args: dict[str, Any], _ctx: ToolContext):
             query = (args.get("query") or "").strip()
             if not query:
                 return _tool_error("query is empty")
@@ -457,7 +457,7 @@ Three principles:
                 "required": ["id", "content"],
             },
         )
-        async def memory_update_tool(args: dict[str, Any]):
+        async def memory_update_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 eid = UUID(str(args.get("id") or "").strip())
             except ValueError:
@@ -491,7 +491,7 @@ Three principles:
                 "required": ["id"],
             },
         )
-        async def memory_forget_tool(args: dict[str, Any]):
+        async def memory_forget_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 eid = UUID(str(args.get("id") or "").strip())
             except ValueError:
@@ -534,7 +534,7 @@ Three principles:
                 "required": ["scope"],
             },
         )
-        async def memory_compact_tool(args: dict[str, Any]):
+        async def memory_compact_tool(args: dict[str, Any], _ctx: ToolContext):
             scope = (args.get("scope") or "").strip().lower()
             if scope not in ("user", "agent", "domain"):
                 return _tool_error("scope must be user/agent/domain")
@@ -574,11 +574,11 @@ Three principles:
                     "required": ["query"],
                 },
             )
-            async def history_search_tool(args: dict[str, Any]):
+            async def history_search_tool(args: dict[str, Any], ctx: ToolContext):
                 query = (args.get("query") or "").strip()
                 if not query:
                     return _tool_error("query is empty")
-                chat_id = current_chat_id.get()
+                chat_id = ctx.chat_id
                 if chat_id is None:
                     return _tool_error("no current chat context")
                 limit = max(1, min(int(args.get("limit") or 10), 25))

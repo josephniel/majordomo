@@ -578,7 +578,9 @@ class PersonaRuntime:
             if v.backend is None:
                 # Natively-integrated vendor (claude): SDK adapter with
                 # session resume; keyless under subscription auth.
-                available[v.name] = AnthropicAgent(claude_builder, session_id=session_id)
+                available[v.name] = AnthropicAgent(
+                    claude_builder, session_id=session_id, chat_id=chat_id,
+                )
             else:
                 available[v.name] = _oai(
                     v.backend, model=v.model(s), api_key=v.api_key(s),
@@ -705,7 +707,10 @@ class PersonaRuntime:
                 chat_id=chat_id, persona_override=self.background_persona
             )
         return CascadingAgent(
-            chain=[("claude", AnthropicAgent(self._background_options_builder(model), session_id=None))],
+            chain=[("claude", AnthropicAgent(
+                self._background_options_builder(model),
+                session_id=None, chat_id=chat_id,
+            ))],
             history=self.conversation_history,
             persona_id=self.persona.id,
             chat_id=chat_id,

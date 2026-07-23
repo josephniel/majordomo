@@ -18,7 +18,7 @@ import logging
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
-from core import Faculty, ToolResult, current_chat_id, tool
+from core import Faculty, ToolContext, ToolResult, tool
 
 log = logging.getLogger(__name__)
 
@@ -53,15 +53,15 @@ class FileCourier(Faculty):
             "tools), caption (optional short text shown with the file).",
             {"path": str, "caption": str},
         )
-        async def chat_send_file_tool(args: dict[str, Any]):
-            return await outer._send(args)
+        async def chat_send_file_tool(args: dict[str, Any], ctx: ToolContext):
+            return await outer._send(args, ctx)
 
         return [chat_send_file_tool]
 
-    async def _send(self, args: dict[str, Any]) -> ToolResult:
+    async def _send(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         if self._sender is None:
             return ToolResult.error("file sending is not available on this platform")
-        chat_id = current_chat_id.get()
+        chat_id = ctx.chat_id
         if chat_id is None:
             return ToolResult.error("no chat context to send the file to")
         raw = str(args.get("path") or "").strip()

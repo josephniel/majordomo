@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from core import ToolResult, tool
+from core import ToolContext, ToolResult, tool
 
 from .registry import ServiceRegistry
 
@@ -410,7 +410,7 @@ class GmailConnector(Connector):
             "Args: query (Gmail search string), max_results (default 25, max 100).",
             {"query": str, "max_results": int},
         )
-        async def search_emails_tool(args: dict[str, Any]):
+        async def search_emails_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 query = args.get("query", "")
                 max_results = max(1, min(int(args.get("max_results", 25) or 25), 100))
@@ -435,7 +435,7 @@ class GmailConnector(Connector):
             "To, Subject, Date, and decoded body (truncated at 5000 chars).",
             {"message_id": str},
         )
-        async def read_email_tool(args: dict[str, Any]):
+        async def read_email_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 msg = await client.get_message(args["message_id"], fmt="full")
                 return ToolResult.ok(_format_message_full(msg))
@@ -450,7 +450,7 @@ class GmailConnector(Connector):
             "labels). Useful for filtering with search_emails 'label:LabelName'.",
             {},
         )
-        async def list_email_labels_tool(_args: dict[str, Any]):
+        async def list_email_labels_tool(_args: dict[str, Any], _ctx: ToolContext):
             try:
                 resp = await client.list_labels()
                 labels = resp.get("labels", [])
@@ -474,7 +474,7 @@ class GmailConnector(Connector):
             "incoming mail).",
             {},
         )
-        async def list_filters_tool(_args: dict[str, Any]):
+        async def list_filters_tool(_args: dict[str, Any], _ctx: ToolContext):
             try:
                 resp = await client.list_filters()
                 filters = resp.get("filter", [])
@@ -492,7 +492,7 @@ class GmailConnector(Connector):
             "message_id (the value in [brackets] from search_emails).",
             {"message_id": str},
         )
-        async def mark_as_read_tool(args: dict[str, Any]):
+        async def mark_as_read_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 await client.mark_message_read(args["message_id"])
                 return ToolResult.ok(f"marked {args['message_id']} as read")
@@ -511,7 +511,7 @@ class GmailConnector(Connector):
             "bcc (optional, comma-separated).",
             {"to": str, "subject": str, "body": str, "cc": str, "bcc": str},
         )
-        async def send_email_tool(args: dict[str, Any]):
+        async def send_email_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 result = await client.send_message(
                     to=args["to"],

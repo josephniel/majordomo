@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from core import Faculty, ToolResult, tool
+from core import Faculty, ToolContext, ToolResult, tool
 
 log = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ script instead of many small runs."""
                 "required": ["language", "code"],
             },
         )
-        async def run_code_tool(args: dict[str, Any]):
+        async def run_code_tool(args: dict[str, Any], _ctx: ToolContext):
             return await outer._run(args)
 
         return [run_code_tool]

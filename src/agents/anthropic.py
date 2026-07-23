@@ -28,7 +28,7 @@ from claude_agent_sdk import (
 )
 
 from connectors import ServiceRegistry
-from core import Connector, ToolSpec, mcp_content
+from core import Connector, ToolContext, ToolSpec, mcp_content
 
 from .base import (
     Agent,
@@ -194,7 +194,7 @@ class SubscriptionAuthSummarizer(Summarizer):
         )
 
 
-def _to_claude_sdk_tool(spec: ToolSpec):
+def _to_claude_sdk_tool(spec: ToolSpec, ctx: ToolContext):
     """Translate a vendor-neutral ToolSpec into a claude_agent_sdk @tool.
 
     The SDK's `@tool` decorator wraps an async handler with metadata it uses
@@ -203,11 +203,12 @@ def _to_claude_sdk_tool(spec: ToolSpec):
     the normalized form (full JSON Schema with required/descriptions/enums);
     the SDK passes schema dicts through to MCP unchanged. Handler results
     (ToolResult, or legacy dicts from external MCP servers) become the MCP
-    wire shape HERE — providers never build it.
+    wire shape HERE — providers never build it. `ctx` is the dispatching
+    agent's chat scope, bound per mount since each agent is chat-scoped.
     """
     @_claude_sdk_tool(spec.name, spec.description, spec.json_schema())
     async def _wrapped(args: dict[str, Any]):
-        return mcp_content(await spec.handler(args))
+        return mcp_content(await spec.handler(args, ctx))
     return _wrapped
 
 
@@ -244,8 +245,13 @@ class AnthropicOptionsBuilder:
     def model(self) -> str:
         return self._model
 
-    def build(self, resume_session_id: Optional[str] = None) -> ClaudeAgentOptions:
+    def build(
+        self,
+        resume_session_id: Optional[str] = None,
+        chat_id: Optional[int] = None,
+    ) -> ClaudeAgentOptions:
         enabled = self._config.load_enabled()
+        ctx = ToolContext(chat_id=chat_id)
         mcp_servers: dict[str, Any] = {}
         allowed_tools: list[str] = []
 
@@ -261,7 +267,7 @@ class AnthropicOptionsBuilder:
                 filtered = self._filter_tool_specs(specs, allowed_for_c)
                 if not filtered:
                     continue
-                sdk_tools = [_to_claude_sdk_tool(spec) for spec in filtered]
+                sdk_tools = [_to_claude_sdk_tool(spec, ctx) for spec in filtered]
                 mcp_servers[server_name] = create_sdk_mcp_server(
                     name=server_name, version="1.0.0", tools=sdk_tools,
                 )
@@ -338,9 +344,13 @@ class AnthropicAgent(Agent):
         self,
         options_builder: AnthropicOptionsBuilder,
         session_id: Optional[str] = None,
+        chat_id: Optional[int] = None,
     ) -> None:
         self._options_builder = options_builder
         self._session_id: Optional[str] = session_id
+        # The chat this agent serves — bound into every mounted tool's
+        # ToolContext so handlers know their scope without ambient state.
+        self._chat_id = chat_id
         self._client: Optional[ClaudeSDKClient] = None
         self.last_turn_usage: dict[str, Any] = {}
 
@@ -380,7 +390,7 @@ class AnthropicAgent(Agent):
         await self._open(None)
 
     async def _open(self, session_id: Optional[str]) -> None:
-        opts = self._options_builder.build(session_id)
+        opts = self._options_builder.build(session_id, chat_id=self._chat_id)
         self._client = ClaudeSDKClient(options=opts)
         await self._client.__aenter__()
 

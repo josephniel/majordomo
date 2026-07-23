@@ -51,12 +51,6 @@ class TestShimsPreserveIdentity:
         assert base.UsageLimitError is core.UsageLimitError
         assert base.Summarizer is core.Summarizer
 
-    def test_chat_context_reexports_same_contextvar(self):
-        # Identity matters here: two ContextVars would silently split the
-        # orchestrator's writes from the tool handlers' reads.
-        from connectors import chat_context
-        assert chat_context.current_chat_id is core.current_chat_id
-
     def test_platform_attachment_is_core_attachment(self):
         import platforms.base as pb
         assert pb.Attachment is core.Attachment
@@ -88,3 +82,19 @@ class TestToolResult:
         assert core.mcp_content(core.ToolResult.error("no")) == {
             "content": [{"type": "text", "text": "no"}], "isError": True,
         }
+
+
+class TestToolContext:
+    def test_defaults_to_no_chat(self):
+        assert core.ToolContext().chat_id is None
+
+    def test_frozen(self):
+        import dataclasses
+        import pytest
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            core.ToolContext(chat_id=1).chat_id = 2
+
+    def test_no_ambient_chat_state_remains(self):
+        # The ContextVar is gone for good — scope travels only through the
+        # explicit handler parameter.
+        assert not hasattr(core, "current_chat_id")

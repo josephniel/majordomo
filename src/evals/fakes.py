@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from capabilities.schedule import TaskScheduler
-from core import Connector, ToolResult, tool
+from core import Connector, ToolContext, ToolResult, tool
 
 
 class RecordingConnector(Connector):
@@ -24,7 +24,7 @@ class RecordingConnector(Connector):
         outer = self
 
         @tool(name, description, parameters)
-        async def handler(args: dict[str, Any]):
+        async def handler(args: dict[str, Any], _ctx: ToolContext):
             outer.calls.append((name, dict(args)))
             return ToolResult.ok(reply)
 

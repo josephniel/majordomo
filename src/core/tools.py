@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
+from .context import ToolContext
+
 @dataclass
 class ToolResult:
     """Vendor-neutral outcome of one tool invocation.
@@ -87,15 +89,17 @@ class ToolSpec:
                       carry per-arg descriptions, enums, and required lists —
                       strict schemas matter most for the smaller fallback
                       vendors, whose tool-calling is less forgiving.
-        handler     — async callable that takes the args dict and returns a
-                      ToolResult. (Legacy MCP-shaped dicts are still accepted
-                      and normalized at the vendor edges via as_tool_result —
-                      external stdio MCP servers produce them.)
+        handler     — async callable (args, ctx: ToolContext) returning a
+                      ToolResult. ctx carries the invocation scope (which
+                      chat this turn acts for) — explicit parameter, no
+                      ambient state. (Legacy MCP-shaped dict returns are
+                      still accepted and normalized at the vendor edges via
+                      as_tool_result.)
     """
     name: str
     description: str
     parameters: dict[str, Any]
-    handler: Callable[[dict[str, Any]], Awaitable[Any]]  # -> ToolResult (or legacy dict)
+    handler: Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
 
     def json_schema(self) -> dict[str, Any]:
         """Normalize `parameters` into a full JSON Schema object. Every agent
@@ -119,11 +123,11 @@ def tool(name: str, description: str, parameters: dict[str, Any]):
     """Decorator — wraps an async handler as a ToolSpec.
 
         @tool("memory_save", "Save a fact.", {"scope": str, "content": str})
-        async def memory_save_tool(args: dict[str, Any]):
+        async def memory_save_tool(args: dict[str, Any], ctx: ToolContext):
             ...
             return ToolResult.ok("saved")
     """
-    def decorator(handler: Callable[[dict[str, Any]], Awaitable[Any]]) -> ToolSpec:
+    def decorator(handler: Callable[[dict[str, Any], ToolContext], Awaitable[Any]]) -> ToolSpec:
         return ToolSpec(
             name=name,
             description=description,

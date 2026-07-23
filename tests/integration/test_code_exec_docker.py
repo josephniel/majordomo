@@ -8,6 +8,7 @@ import shutil
 import pytest
 
 from capabilities.code_exec import CodeExecutor
+from core import ToolContext
 
 pytestmark = pytest.mark.skipif(
     shutil.which("docker") is None, reason="docker not available"
@@ -27,7 +28,7 @@ def _spec(executor):
 async def test_python_stdout_roundtrip(executor):
     result = await _spec(executor).handler({
         "language": "python", "code": "print(6 * 7)",
-    })
+    }, ToolContext())
     text = result.text
     assert not result.is_error, text
     assert "42" in text
@@ -36,14 +37,14 @@ async def test_python_stdout_roundtrip(executor):
 async def test_bash_works(executor):
     result = await _spec(executor).handler({
         "language": "bash", "code": "echo hello-from-sh",
-    })
+    }, ToolContext())
     assert "hello-from-sh" in result.text
 
 async def test_artifacts_survive_and_are_listed(executor, tmp_path):
     result = await _spec(executor).handler({
         "language": "python",
         "code": "open('report.txt','w').write('artifact-body')",
-    })
+    }, ToolContext())
     text = result.text
     assert "files created:" in text
     assert "report.txt" in text
@@ -61,13 +62,13 @@ async def test_network_is_disabled(executor):
             "except Exception as e:\n"
             "    print('NETWORK-BLOCKED')\n"
         ),
-    })
+    }, ToolContext())
     assert "NETWORK-BLOCKED" in result.text
 
 async def test_nonzero_exit_is_error(executor):
     result = await _spec(executor).handler({
         "language": "python", "code": "raise SystemExit(3)",
-    })
+    }, ToolContext())
     assert result.is_error
     assert "exit code: 3" in result.text
 
@@ -75,6 +76,6 @@ async def test_timeout_kills_container(executor):
     result = await _spec(executor).handler({
         "language": "python", "code": "import time; time.sleep(120)",
         "timeout_seconds": 1,
-    })
+    }, ToolContext())
     assert result.is_error
     assert "timed out" in result.text

@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
-from core import Faculty, ToolResult, current_chat_id, tool
+from core import Faculty, ToolContext, ToolResult, tool
 
 log = logging.getLogger(__name__)
 
@@ -395,8 +395,8 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             "optional).",
             {"name": str, "cron": str, "prompt": str, "description": str},
         )
-        async def schedule_create_tool(args: dict[str, Any]):
-            chat_id = current_chat_id.get()
+        async def schedule_create_tool(args: dict[str, Any], ctx: ToolContext):
+            chat_id = ctx.chat_id
             if chat_id is None:
                 return ToolResult.error("no current chat context (cannot create schedule)")
             try:
@@ -423,8 +423,8 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             "self), description (optional). Prefer relative offsets for 'in N ...'.",
             {"name": str, "when": str, "prompt": str, "description": str},
         )
-        async def schedule_once_tool(args: dict[str, Any]):
-            chat_id = current_chat_id.get()
+        async def schedule_once_tool(args: dict[str, Any], ctx: ToolContext):
+            chat_id = ctx.chat_id
             if chat_id is None:
                 return ToolResult.error("no current chat context (cannot create reminder)")
             try:
@@ -446,8 +446,8 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             "List all scheduled tasks for the current chat.",
             {},
         )
-        async def schedule_list_tool(_args: dict[str, Any]):
-            chat_id = current_chat_id.get()
+        async def schedule_list_tool(_args: dict[str, Any], ctx: ToolContext):
+            chat_id = ctx.chat_id
             if chat_id is None:
                 return ToolResult.error("no current chat context")
             items = runtime.list_for_chat(chat_id)
@@ -464,7 +464,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             "Permanently delete a scheduled task by name.",
             {"name": str},
         )
-        async def schedule_remove_tool(args: dict[str, Any]):
+        async def schedule_remove_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 runtime.remove(args["name"])
                 return ToolResult.ok(f"removed schedule: {args['name']}")
@@ -476,7 +476,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             "Pause or resume a scheduled task without deleting it.",
             {"name": str, "enabled": bool},
         )
-        async def schedule_set_enabled_tool(args: dict[str, Any]):
+        async def schedule_set_enabled_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 runtime.set_enabled(args["name"], bool(args["enabled"]))
                 action = "enabled" if args["enabled"] else "disabled"

@@ -14,7 +14,7 @@ import io
 import logging
 from typing import Any, Optional
 
-from core import Faculty, ToolResult, tool
+from core import Faculty, ToolContext, ToolResult, tool
 from storage.docs import DocumentStore
 
 log = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ Prefer doc_search over asking the user to re-send anything."""
             "List the saved documents (id, name, size).",
             {},
         )
-        async def doc_list_tool(_args: dict[str, Any]):
+        async def doc_list_tool(_args: dict[str, Any], _ctx: ToolContext):
             docs = await outer._store.list_docs(outer._persona_id)
             if not docs:
                 return ToolResult.ok("no documents saved yet")
@@ -148,7 +148,7 @@ Prefer doc_search over asking the user to re-send anything."""
             "passages with their doc ids. Args: query.",
             {"query": str},
         )
-        async def doc_search_tool(args: dict[str, Any]):
+        async def doc_search_tool(args: dict[str, Any], _ctx: ToolContext):
             hits = await outer._store.search(
                 outer._persona_id, str(args.get("query") or ""),
             )
@@ -167,7 +167,7 @@ Prefer doc_search over asking the user to re-send anything."""
             "doc_id, start_chunk (optional, default 0).",
             {"doc_id": int, "start_chunk": int},
         )
-        async def doc_read_tool(args: dict[str, Any]):
+        async def doc_read_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 doc_id = int(args.get("doc_id"))
             except (TypeError, ValueError):
@@ -187,7 +187,7 @@ Prefer doc_search over asking the user to re-send anything."""
             "Delete a saved document permanently. Args: doc_id.",
             {"doc_id": int},
         )
-        async def doc_delete_tool(args: dict[str, Any]):
+        async def doc_delete_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 doc_id = int(args.get("doc_id"))
             except (TypeError, ValueError):

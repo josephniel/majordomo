@@ -10,9 +10,9 @@ here and never from each other's internals.
     tools.py     — ToolProvider/Faculty/Connector, ToolSpec, @tool
     llm.py       — Agent ABC, Summarizer, UsageLimitError, PersonaLike
     protocols.py — structural capability protocols (AttachmentIngestor, …)
-    context.py   — per-turn request state (current_chat_id)
+    context.py   — ToolContext (explicit per-invocation scope for handlers)
 """
-from .context import current_chat_id
+from .context import ToolContext
 from .llm import (
     Agent,
     PersonaLike,
@@ -51,6 +51,7 @@ __all__ = [
     "Faculty",
     "SessionResettable",
     "ToolCallProbe",
+    "ToolContext",
     "ToolTraceReporting",
     "VendorIntrospectable",
     "PersonaLike",
@@ -61,7 +62,6 @@ __all__ = [
     "ToolUseCallback",
     "UsageLimitError",
     "as_tool_result",
-    "current_chat_id",
     "mcp_content",
     "tool",
 ]

@@ -44,7 +44,7 @@ from typing import Any, Optional
 
 import yaml
 
-from core import Faculty, ToolResult, tool
+from core import Faculty, ToolContext, ToolResult, tool
 
 log = logging.getLogger(__name__)
 
@@ -183,7 +183,7 @@ class SkillsLibrary(Faculty):
             "'Skills').",
             {"name": str},
         )
-        async def skill_read_tool(args: dict[str, Any]):
+        async def skill_read_tool(args: dict[str, Any], _ctx: ToolContext):
             wanted = str(args.get("name") or "").strip()
             skills = {s.name: s for s in outer._scan()}
             skill = skills.get(wanted)
@@ -229,7 +229,7 @@ class SkillsLibrary(Faculty):
                 "required": ["name", "body"],
             },
         )
-        async def skill_save_tool(args: dict[str, Any]):
+        async def skill_save_tool(args: dict[str, Any], _ctx: ToolContext):
             name = str(args.get("name") or "").strip().lower()
             body = str(args.get("body") or "").strip()
             if not _NAME_RE.match(name):
@@ -263,7 +263,7 @@ class SkillsLibrary(Faculty):
             "Delete one of your skill notes by name.",
             {"name": str},
         )
-        async def skill_delete_tool(args: dict[str, Any]):
+        async def skill_delete_tool(args: dict[str, Any], _ctx: ToolContext):
             name = str(args.get("name") or "").strip().lower()
             path = outer._dir / f"{name}.md"
             if not _NAME_RE.match(name) or not path.exists():

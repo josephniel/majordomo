@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from core import ToolResult, tool
+from core import ToolContext, ToolResult, tool
 
 from .registry import ServiceRegistry
 
@@ -417,7 +417,7 @@ class SplitwiseConnector(Connector):
             "a sanity check or to confirm which profile is connected.",
             {},
         )
-        async def get_current_user_tool(_args: dict[str, Any]):
+        async def get_current_user_tool(_args: dict[str, Any], _ctx: ToolContext):
             try:
                 resp = await client.get_current_user()
                 user = resp.get("user") or {}
@@ -437,7 +437,7 @@ class SplitwiseConnector(Connector):
             "that group (only currencies with non-zero balance shown).",
             {},
         )
-        async def list_groups_tool(_args: dict[str, Any]):
+        async def list_groups_tool(_args: dict[str, Any], _ctx: ToolContext):
             try:
                 me = await client.current_user_id()
                 resp = await client.get_groups()
@@ -458,7 +458,7 @@ class SplitwiseConnector(Connector):
             "negative = you owe them.",
             {},
         )
-        async def list_friends_tool(_args: dict[str, Any]):
+        async def list_friends_tool(_args: dict[str, Any], _ctx: ToolContext):
             try:
                 resp = await client.get_friends()
                 friends = resp.get("friends", []) or []
@@ -487,7 +487,7 @@ class SplitwiseConnector(Connector):
                 "limit": int,
             },
         )
-        async def list_expenses_tool(args: dict[str, Any]):
+        async def list_expenses_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 me = await client.current_user_id()
                 limit = max(1, min(int(args.get("limit") or 20), 100))
@@ -511,7 +511,7 @@ class SplitwiseConnector(Connector):
             "who paid, who owes, breakdown per user.",
             {"expense_id": str},
         )
-        async def get_expense_tool(args: dict[str, Any]):
+        async def get_expense_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 resp = await client.get_expense(args["expense_id"])
                 return ToolResult.ok(json.dumps(resp, indent=2)[:4000])
@@ -556,7 +556,7 @@ class SplitwiseConnector(Connector):
                 "date": str,
             },
         )
-        async def create_expense_tool(args: dict[str, Any]):
+        async def create_expense_tool(args: dict[str, Any], _ctx: ToolContext):
             cost = (args.get("cost") or "").strip()
             description = (args.get("description") or "").strip()
             if not cost or not description:
@@ -622,7 +622,7 @@ class SplitwiseConnector(Connector):
             "who paid is not supported here — use the Splitwise app for that.",
             {"expense_id": str, "cost": str, "description": str, "date": str},
         )
-        async def update_expense_tool(args: dict[str, Any]):
+        async def update_expense_tool(args: dict[str, Any], _ctx: ToolContext):
             expense_id = (args.get("expense_id") or "").strip()
             if not expense_id:
                 return ToolResult.error("expense_id is required")
@@ -658,7 +658,7 @@ class SplitwiseConnector(Connector):
             "you fetch it again). Args: expense_id.",
             {"expense_id": str},
         )
-        async def delete_expense_tool(args: dict[str, Any]):
+        async def delete_expense_tool(args: dict[str, Any], _ctx: ToolContext):
             expense_id = (args.get("expense_id") or "").strip()
             if not expense_id:
                 return ToolResult.error("expense_id is required")

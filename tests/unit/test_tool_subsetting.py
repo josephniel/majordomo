@@ -17,7 +17,7 @@ from core import Connector, tool
 
 def _mk_tool(name):
     @tool(name, f"does {name}", {"x": str})
-    async def _t(args): ...
+    async def _t(args, _ctx): ...
     return _t
 
 

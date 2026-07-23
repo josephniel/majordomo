@@ -20,7 +20,6 @@ from core import (
     Summarizer,
     ToolProvider,
 )
-from core import current_chat_id
 from .clickup import ClickUpConnector
 from .gmail import GmailConnector
 from .google_calendar import GoogleCalendarConnector
@@ -42,5 +41,4 @@ __all__ = [
     "GatedToolProvider",
     "WriteApprovalGate",
     "YahooConnector",
-    "current_chat_id",
 ]

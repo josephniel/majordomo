@@ -1,6 +1,6 @@
 """connectors.base — ToolSpec schema normalization + @tool decorator."""
 from connectors.base import Connector, ToolSpec, tool
-from core import ToolResult
+from core import ToolContext, ToolResult
 
 
 class TestJsonSchema:
@@ -48,13 +48,13 @@ class TestJsonSchema:
 class TestToolDecorator:
     async def test_wraps_handler_as_toolspec(self):
         @tool("my_tool", "does things", {"x": str})
-        async def handler(args):
+        async def handler(args, _ctx):
             return ToolResult.ok(args["x"])
 
         assert isinstance(handler, ToolSpec)
         assert handler.name == "my_tool"
         assert handler.description == "does things"
-        result = await handler.handler({"x": "hi"})
+        result = await handler.handler({"x": "hi"}, ToolContext())
         assert result.text == "hi"
         assert not result.is_error
 
@@ -71,7 +71,7 @@ class TestConnectorDefaults:
 
     def test_builtin_servers_wraps_builtin_tools(self):
         @tool("t1", "d", {})
-        async def t1(args): ...
+        async def t1(args, _ctx): ...
 
         class C(Connector):
             name = "x"

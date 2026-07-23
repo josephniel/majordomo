@@ -1,11 +1,9 @@
 """capabilities.delegate — sub-agent one-shot delegation."""
 import asyncio
 
-import pytest
-
 from agents.history import EphemeralConversationHistory
 from capabilities.delegate import Delegator
-from connectors.chat_context import current_chat_id
+from core import ToolContext
 
 
 class FakeSubAgent:
@@ -42,50 +40,43 @@ def _delegator(agent, timeout=5.0):
     return d, spec, made
 
 
-@pytest.fixture
-def chat_ctx():
-    token = current_chat_id.set(42)
-    yield
-    current_chat_id.reset(token)
-
-
 class TestDelegateTask:
-    async def test_returns_subagent_reply(self, chat_ctx):
+    async def test_returns_subagent_reply(self):
         agent = FakeSubAgent(reply="3 urgent, 2 can wait")
         d, spec, made = _delegator(agent)
-        result = await spec.handler({"task": "triage my inbox"})
+        result = await spec.handler({"task": "triage my inbox"}, ToolContext(chat_id=42))
         assert not result.is_error
         assert result.text == "3 urgent, 2 can wait"
         assert made == [42]
         assert agent.prompts == ["triage my inbox"]
         assert agent.started == 1 and agent.stopped == 1
 
-    async def test_empty_task_rejected(self, chat_ctx):
+    async def test_empty_task_rejected(self):
         agent = FakeSubAgent()
         _, spec, made = _delegator(agent)
-        result = await spec.handler({"task": "  "})
+        result = await spec.handler({"task": "  "}, ToolContext(chat_id=42))
         assert result.is_error
         assert made == []
 
-    async def test_timeout_fails_the_call_not_the_turn(self, chat_ctx):
+    async def test_timeout_fails_the_call_not_the_turn(self):
         agent = FakeSubAgent(delay=1.0)
         _, spec, _ = _delegator(agent, timeout=0.05)
-        result = await spec.handler({"task": "slow thing"})
+        result = await spec.handler({"task": "slow thing"}, ToolContext(chat_id=42))
         assert result.is_error
         assert "timed out" in result.text
         assert agent.stopped == 1, "sub-agent still torn down"
 
-    async def test_subagent_error_becomes_tool_error(self, chat_ctx):
+    async def test_subagent_error_becomes_tool_error(self):
         class Exploding(FakeSubAgent):
             async def send(self, text, **kwargs):
                 raise RuntimeError("all vendors failed")
         agent = Exploding()
         _, spec, _ = _delegator(agent)
-        result = await spec.handler({"task": "x"})
+        result = await spec.handler({"task": "x"}, ToolContext(chat_id=42))
         assert result.is_error
         assert "all vendors failed" in result.text
 
-    async def test_nesting_blocked(self, chat_ctx):
+    async def test_nesting_blocked(self):
         """A delegate that tries to delegate gets refused."""
         outer_spec_holder = {}
 
@@ -93,7 +84,9 @@ class TestDelegateTask:
             async def send(self, text, **kwargs):
                 # The sub-agent's tool calls run inside the parent handler's
                 # async context — so the depth guard must trip here.
-                inner = await outer_spec_holder["spec"].handler({"task": "deeper"})
+                inner = await outer_spec_holder["spec"].handler(
+                    {"task": "deeper"}, ToolContext(chat_id=42),
+                )
                 assert inner.is_error
                 assert "cannot nest" in inner.text
                 return "did it myself instead"
@@ -101,16 +94,16 @@ class TestDelegateTask:
         agent = NestingAgent()
         _, spec, made = _delegator(agent)
         outer_spec_holder["spec"] = spec
-        result = await spec.handler({"task": "outer task"})
+        result = await spec.handler({"task": "outer task"}, ToolContext(chat_id=42))
         assert not result.is_error
         assert result.text == "did it myself instead"
         assert len(made) == 1, "no second sub-agent was built"
 
-    async def test_depth_resets_after_completion(self, chat_ctx):
+    async def test_depth_resets_after_completion(self):
         agent = FakeSubAgent()
         _, spec, made = _delegator(agent)
-        await spec.handler({"task": "first"})
-        result = await spec.handler({"task": "second"})
+        await spec.handler({"task": "first"}, ToolContext(chat_id=42))
+        result = await spec.handler({"task": "second"}, ToolContext(chat_id=42))
         assert not result.is_error, "sequential delegations both allowed"
         assert len(made) == 2
 

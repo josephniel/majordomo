@@ -18,7 +18,7 @@ from contextlib import AsyncExitStack
 from typing import Any, Callable, Optional
 
 from connectors import ServiceRegistry
-from core import ToolResult, ToolSpec
+from core import ToolContext, ToolResult, ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -109,7 +109,9 @@ class ExternalMCPManager:
     def _make_spec(session: Any, profile: str, tool: Any) -> ToolSpec:
         tool_name = tool.name
 
-        async def _handler(args: dict[str, Any]) -> ToolResult:
+        async def _handler(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+            # External MCP servers get no chat scope — they're out-of-process
+            # and speak plain MCP.
             try:
                 res = await session.call_tool(tool_name, arguments=args or {})
                 return _result_to_tool_result(res)

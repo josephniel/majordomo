@@ -29,7 +29,7 @@ import logging
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Optional
 
-from core import ToolResult, ToolSpec, current_chat_id
+from core import ToolContext, ToolResult, ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -140,12 +140,14 @@ class WriteApprovalGate:
         inner = spec.handler
         tool_name = spec.name
 
-        async def gated_handler(args: dict[str, Any]) -> Any:
-            approved, reason = await self._confirm(connector_name, tool_name, args)
+        async def gated_handler(args: dict[str, Any], ctx: ToolContext) -> Any:
+            approved, reason = await self._confirm(
+                connector_name, tool_name, args, chat_id=ctx.chat_id,
+            )
             if not approved:
                 log.warning("write tool %s denied: %s", tool_name, reason)
                 return _refusal(tool_name, reason)
-            return await inner(args)
+            return await inner(args, ctx)
 
         return replace(
             spec,
@@ -156,7 +158,11 @@ class WriteApprovalGate:
     # ---- the decision ----
 
     async def _confirm(
-        self, connector_name: str, tool_name: str, args: dict[str, Any]
+        self,
+        connector_name: str,
+        tool_name: str,
+        args: dict[str, Any],
+        chat_id: Optional[int],
     ) -> tuple[bool, str]:
         if self._confirmer is None:
             # Only reachable outside the bot process (CLI, tests):
@@ -167,7 +173,6 @@ class WriteApprovalGate:
                 tool_name,
             )
             return True, ""
-        chat_id = current_chat_id.get()
         if chat_id is None:
             await self._audit(None, connector_name, tool_name, args, "no_chat", "")
             return False, "no chat context to request approval in"

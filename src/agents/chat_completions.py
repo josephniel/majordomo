@@ -23,7 +23,7 @@ import re
 import logging
 from typing import Any, Optional
 
-from core import Connector, ToolSpec, as_tool_result
+from core import Connector, ToolContext, ToolSpec, as_tool_result
 
 from .base import (
     Agent,
@@ -710,7 +710,9 @@ class ChatCompletionsAgent(Agent):
                 result_text = f"error: unknown tool {tool_name!r}"
             else:
                 try:
-                    result = await spec.handler(args)
+                    result = await spec.handler(
+                        args, ToolContext(chat_id=self._chat_id),
+                    )
                     result_text = _extract_text_from_tool_result(result)
                 except Exception as e:
                     result_text = f"error: {e}"

@@ -11,9 +11,9 @@ port. Everything context-specific lives in sibling modules and mixes in:
 
 This module knows only about running turns: `_execute_agent_turn` is THE
 single place an agent.send happens for a chat — it registers the task in
-_pending_turns (so /cancel reaches every turn kind) and sets the
-current_chat_id ContextVar (so tool handlers know their chat) in exactly
-one place.
+_pending_turns so /cancel reaches every turn kind. (Tool handlers learn
+their chat via the explicit ToolContext parameter the agents pass — no
+ambient state.)
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from typing import Any, Optional
 from agents import Agent, ConversationHistory
 from comms import CommsLog, CommsRelay
 from connectors import ServiceRegistry
-from core import CanaryRunner, Connector, current_chat_id
+from core import CanaryRunner, Connector
 from capabilities import ReflectionEngine, ScheduledTask, TaskScheduler
 from platforms import ChatPlatform, InboundMessage
 
@@ -259,23 +259,17 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         typing: bool = True,
     ) -> str:
         """THE single place an agent turn runs. Registers the task in
-        _pending_turns (so /cancel reaches user, scheduled, AND recovery
-        turns) and sets the current_chat_id ContextVar (so tool handlers —
-        schedules, approvals, file sends — know which chat they belong to).
-        Caller holds the chat lock and owns exception handling."""
+        _pending_turns so /cancel reaches user, scheduled, AND recovery
+        turns. Caller holds the chat lock and owns exception handling."""
         async def _run() -> str:
-            token = current_chat_id.set(chat_id)
-            try:
-                if typing:
-                    async with self._platform.keep_typing(chat_id):
-                        return await agent.send(
-                            text, on_tool_use=on_tool_use, attachments=attachments,
-                        )
-                return await agent.send(
-                    text, on_tool_use=on_tool_use, attachments=attachments,
-                )
-            finally:
-                current_chat_id.reset(token)
+            if typing:
+                async with self._platform.keep_typing(chat_id):
+                    return await agent.send(
+                        text, on_tool_use=on_tool_use, attachments=attachments,
+                    )
+            return await agent.send(
+                text, on_tool_use=on_tool_use, attachments=attachments,
+            )
 
         task = asyncio.create_task(_run())
         self._pending_turns[chat_id] = (task, agent)

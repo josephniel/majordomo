@@ -1,6 +1,7 @@
 """evals — case loading, judging, and fake-connector recording."""
 import pytest
 
+from core import ToolContext
 from evals.fakes import FakeMemory, FakeSchedule
 from evals.runner import EvalCase, judge, load_cases
 
@@ -50,7 +51,8 @@ class TestFakes:
         fake = FakeSchedule()
         specs = {s.name: s for s in fake.builtin_tools()}
         result = await specs["schedule_once"].handler(
-            {"name": "stretch", "when": "+20m", "prompt": "stretch now"}
+            {"name": "stretch", "when": "+20m", "prompt": "stretch now"},
+            ToolContext(),
         )
         assert not result.is_error
         assert fake.calls == [
@@ -60,7 +62,9 @@ class TestFakes:
     async def test_fake_memory_records_calls(self):
         fake = FakeMemory()
         specs = {s.name: s for s in fake.builtin_tools()}
-        await specs["memory_save"].handler({"title": "t", "content": "c", "scope": "user"})
+        await specs["memory_save"].handler(
+            {"title": "t", "content": "c", "scope": "user"}, ToolContext(),
+        )
         assert fake.calls[0][0] == "memory_save"
 
     def test_fakes_mirror_production_tool_names(self):
