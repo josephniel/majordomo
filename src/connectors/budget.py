@@ -98,6 +98,11 @@ class BudgetClient:
             "POST", f"/accounts/{account_id}/transactions", body=payload
         )
 
+    async def create_split(self, account_id: int, payload: dict) -> dict:
+        return await self._request(
+            "POST", f"/accounts/{account_id}/split", body=payload
+        )
+
 
 # ---- formatting helpers ----
 
@@ -142,7 +147,7 @@ class BudgetConnector(Connector):
     TRIGGER_KEYWORDS = ("budget", "expense", "spent", "spend", "paid",
                         "bought", "purchase", "transaction", "gastos",
                         "track", "ledger")
-    WRITE_TOOLS = frozenset({"record_transaction"})
+    WRITE_TOOLS = frozenset({"record_transaction", "record_split"})
 
     TOOL_NAMES = [
         # read
@@ -151,6 +156,7 @@ class BudgetConnector(Connector):
         "recent_transactions",
         # write
         "record_transaction",
+        "record_split",
     ]
 
     STATUS = {
@@ -158,16 +164,23 @@ class BudgetConnector(Connector):
         "list_tags": "Listing budget tags",
         "recent_transactions": "Reading recent transactions",
         "record_transaction": "Recording the transaction",
+        "record_split": "Recording the split payment",
     }
 
     SYSTEM_PROMPT_SECTION = """== Budget tracker ==
 
 The user's personal ledger. IMPORTANT: whenever the user reports spending or
 receiving money — including expenses you just recorded in Splitwise or read
-from email — ALSO record it here with record_transaction so the ledger stays
-complete. Pick the account and tag from list_accounts/list_tags (they rarely
-change; remember the user's usual ones). If the paying account is genuinely
-ambiguous, ask once and remember the answer."""
+from email — ALSO record it here so the ledger stays complete. Pick the
+account and tag from list_accounts/list_tags (they rarely change; remember
+the user's usual ones). If the paying account is genuinely ambiguous, ask
+once and remember the answer.
+
+Solo expense/income -> record_transaction. Payment SHARED with other people
+(a Splitwise-style split) -> record_split with the FULL amount paid plus
+each other person's share — never record the full amount of a shared
+payment as a plain transaction (it would overstate the user's spending;
+the ledger books their share as expense and the rest as loans)."""
 
     def __init__(self, config: ServiceRegistry) -> None:
         self._config = config
@@ -269,9 +282,10 @@ ambiguous, ask once and remember the answer."""
 
         @tool(
             "record_transaction",
-            "Record a transaction in the budget tracker ledger. Use this for "
-            "EVERY expense/income the user mentions, even when it was also "
-            "logged elsewhere (e.g. Splitwise). Args: account_id and tag_id "
+            "Record a SOLO transaction in the budget tracker ledger (for a "
+            "payment shared with other people use record_split instead). Use "
+            "for every expense/income the user mentions, even when it was "
+            "also logged elsewhere (e.g. Splitwise). Args: account_id and tag_id "
             "(from list_accounts / list_tags), amount (positive number), type "
             "('debit' = money out, the default; 'credit' = money in), "
             "description, counterparty (who was paid / who paid, optional), "
@@ -316,11 +330,78 @@ ambiguous, ask once and remember the answer."""
             except Exception as e:
                 return ToolResult.error(f"error: {e}")
 
+        @tool(
+            "record_split",
+            "Record a payment SPLIT with other people: the user paid the full "
+            "amount, others owe their shares. Books the user's own share "
+            "(total minus all shares) as the expense and each person's share "
+            "as a loan in the people ledger — atomically. Args: account_id "
+            "(paying account) and tag_id (from list_accounts / list_tags), "
+            "total_amount (the FULL amount paid), shares (one entry per OTHER "
+            "person: their name + what they owe; do NOT include the user), "
+            "description, occurred_at (ISO datetime, optional — defaults to "
+            "now).",
+            {
+                "type": "object",
+                "properties": {
+                    "account_id": {"type": "integer", "description": "Account the full payment left (list_accounts)."},
+                    "tag_id": {"type": "integer", "description": "Category tag for the expense (list_tags)."},
+                    "total_amount": {"type": "number", "exclusiveMinimum": 0, "description": "Full amount paid, including everyone's shares."},
+                    "shares": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "person": {"type": "string", "description": "Name of the person who owes this share.", "maxLength": 120},
+                                "amount": {"type": "number", "exclusiveMinimum": 0, "description": "What this person owes."},
+                            },
+                            "required": ["person", "amount"],
+                        },
+                        "description": "The OTHER people's shares (never the user's own).",
+                    },
+                    "description": {"type": "string", "description": "What this was for."},
+                    "occurred_at": {"type": "string", "description": "ISO 8601 datetime; omit for now."},
+                },
+                "required": ["account_id", "tag_id", "total_amount", "shares"],
+            },
+        )
+        async def record_split_tool(args: dict[str, Any], _ctx: ToolContext):
+            try:
+                account_id = int(args["account_id"])
+                shares = [
+                    {"counterparty": str(s["person"]).strip()[:120], "amount": s["amount"]}
+                    for s in (args["shares"] or [])
+                ]
+                payload: dict[str, Any] = {
+                    "total_amount": args["total_amount"],
+                    "shares": shares,
+                    "tag_id": int(args["tag_id"]),
+                    "occurred_at": args.get("occurred_at")
+                    or datetime.now(timezone.utc).isoformat(),
+                }
+                if args.get("description"):
+                    payload["description"] = str(args["description"])
+                out = await client.create_split(account_id, payload)
+                lent = ", ".join(f"{s['counterparty']} owes {s['amount']}" for s in shares)
+                return ToolResult.ok(
+                    f"split recorded on account {account_id}: your share "
+                    f"{out.get('my_share', '?')} booked as expense, lent "
+                    f"{out.get('lent_amount', '?')} ({lent})"
+                )
+            except KeyError as e:
+                return ToolResult.error(f"error: missing required arg {e}")
+            except httpx.HTTPStatusError as e:
+                return ToolResult.error(_format_http_error(e))
+            except Exception as e:
+                return ToolResult.error(f"error: {e}")
+
         return [
             list_accounts_tool,
             list_tags_tool,
             recent_transactions_tool,
             record_transaction_tool,
+            record_split_tool,
         ]
 
     # ---- CLI ----

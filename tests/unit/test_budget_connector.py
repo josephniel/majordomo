@@ -94,6 +94,53 @@ class TestTools:
         assert result.is_error
         assert "422" in result.text
 
+    async def test_record_split_maps_person_to_counterparty(self):
+        seen = {}
+
+        def handler(request):
+            seen["path"] = request.url.path
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={
+                "expense_transaction_id": 11, "loan_transfer_ids": [5],
+                "my_share": "600.00", "lent_amount": "785.00",
+            })
+
+        tools = _connector_tools(handler)
+        result = await tools["record_split"].handler(
+            {"account_id": 10, "tag_id": 9, "total_amount": 1385,
+             "shares": [{"person": "Paul", "amount": 785}],
+             "description": "Army Navy"},
+            CTX,
+        )
+        assert not result.is_error
+        assert seen["path"] == "/accounts/10/split"
+        assert seen["body"]["total_amount"] == 1385
+        assert seen["body"]["shares"] == [{"counterparty": "Paul", "amount": 785}]
+        assert seen["body"]["occurred_at"]  # defaulted
+        assert "your share 600.00" in result.text
+        assert "Paul owes 785" in result.text
+
+    async def test_record_split_requires_shares(self):
+        tools = _connector_tools(lambda r: httpx.Response(200, json={}))
+        result = await tools["record_split"].handler(
+            {"account_id": 10, "tag_id": 9, "total_amount": 100}, CTX,
+        )
+        assert result.is_error
+        assert "shares" in result.text
+
+    async def test_record_split_surfaces_domain_errors(self):
+        def handler(request):
+            return httpx.Response(400, text='{"detail": "Shares cannot exceed the total"}')
+
+        tools = _connector_tools(handler)
+        result = await tools["record_split"].handler(
+            {"account_id": 10, "tag_id": 9, "total_amount": 100,
+             "shares": [{"person": "Ana", "amount": 200}]},
+            CTX,
+        )
+        assert result.is_error
+        assert "Shares cannot exceed the total" in result.text
+
     async def test_list_accounts_formats(self):
         def handler(request):
             return httpx.Response(200, json=[
@@ -138,7 +185,9 @@ class TestTools:
 
 class TestContract:
     def test_write_tools_declared(self):
-        assert BudgetConnector.WRITE_TOOLS == frozenset({"record_transaction"})
+        assert BudgetConnector.WRITE_TOOLS == frozenset(
+            {"record_transaction", "record_split"}
+        )
         # Reads must never be gated.
         assert "list_accounts" not in BudgetConnector.WRITE_TOOLS
 
