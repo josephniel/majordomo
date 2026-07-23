@@ -7,16 +7,25 @@ apart. The dependency rule: `chat/` (application) depends on ports and
 protocols, never on concrete capabilities; only `personas/container.py`
 (the composition root) touches concretes and the environment.
 
+- `core/`       — the neutral contracts leaf (2026-07-23 restructure):
+                  Agent ABC, Attachment, Summarizer, UsageLimitError,
+                  ToolProvider and its two refinements (Faculty = the
+                  agent's own, singleton, no auth; Connector = external
+                  adapter, multi-profile, credentialed), ToolSpec/@tool,
+                  the capability protocols (AttachmentIngestor,
+                  ContextInjector, the optional-agent-capability
+                  protocols), and ToolContext — the explicit per-invocation
+                  scope every tool handler receives as its second
+                  parameter (no ambient ContextVar). Imports only the
+                  stdlib; every other package imports shared contracts
+                  from here. `connectors/base.py` and `agents/base.py`
+                  re-export for back-compat.
 - `platforms/`  — ChatPlatform port + adapters (telegram; transcription).
-- `agents/`     — Agent port + vendor adapters, CascadingAgent failover,
-                  ConversationHistory mirror.
-- `connectors/` — the ToolProvider contract and its two refinements
-                  (Faculty = the agent's own, singleton, no auth;
-                  Connector = external adapter, multi-profile, credentialed),
-                  ToolSpec, capability protocols (AttachmentIngestor,
-                  ContextInjector, status_line), the approval gate, and the
-                  external-service connector implementations. persona.yaml
-                  enables them via separate `faculties:` / `connectors:`
+- `agents/`     — vendor adapters for the Agent port, CascadingAgent
+                  failover, ConversationHistory mirror, ContextBuilder.
+- `connectors/` — the external-service connector implementations, the
+                  approval gate, and ServiceRegistry. persona.yaml enables
+                  providers via separate `faculties:` / `connectors:`
                   blocks (same grammar; legacy `enabled_connectors` accepted).
 - `capabilities/` — the Faculty implementations (memory, schedule, skills,
                   code, files, documents, delegate).
@@ -24,9 +33,9 @@ protocols, never on concrete capabilities; only `personas/container.py`
                   schema (webhooks, mail watch, retention).
 - `chat/`       — the application layer: core.py is only the turn pipeline
                   (`_execute_agent_turn` = the single place a turn runs:
-                  one site for _pending_turns and the current_chat_id
-                  ContextVar); commands / recovery / proactive / ingestion
-                  are sibling context modules mixed in.
+                  one site for _pending_turns); commands / recovery /
+                  proactive / ingestion are sibling context modules mixed
+                  in.
 - `personas/`   — Persona (identity, from persona.yaml), RuntimeSettings
                   (the ONLY env reader, from .env), PersonaRuntime (the
                   composition root).

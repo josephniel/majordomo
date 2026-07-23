@@ -189,7 +189,7 @@ class TestStatusProactiveBlock:
         hb = HeartbeatConfig(cron="0 8 * * *", chat_id=7,
                              prompt_loader=lambda: "- check email")
         mw = MailWatchConfig(cron="*/3 * * * *", chat_id=7, watcher=FakeWatcher())
-        webhook = SimpleNamespace(port=18790, _triggers={"alert": None})
+        webhook = SimpleNamespace(port=18790, trigger_names=["alert"])
         orch, platform, _ = _orch(
             tmp_path, heartbeat=hb, mail_watch=mw, webhook_server=webhook,
         )
@@ -208,7 +208,8 @@ class TestStatusProactiveBlock:
 
 
 class TestContainerWiring:
-    def test_active_services_and_gate_install(self, tmp_path):
+    def test_agent_builders_get_the_gated_view(self, tmp_path):
+        from connectors.approvals import GatedToolProvider
         from personas.container import PersonaRuntime
         from personas.persona import Persona
         persona = Persona(
@@ -222,16 +223,23 @@ class TestContainerWiring:
             },
         )
         runtime = PersonaRuntime(persona)
-        services = runtime.active_services
-        names = {c.name for c in services}
+        names = {c.name for c in runtime.active_services}
         assert names == {"skills", "delegate", "code", "files"}
-        by_name = {c.name: c for c in services}
-        # WRITE_TOOLS connectors got the gate; read-only ones didn't need it.
-        assert getattr(by_name["skills"], "_write_gate", None) is runtime.approval_gate
-        assert getattr(by_name["code"], "_write_gate", None) is runtime.approval_gate
-        assert getattr(by_name["delegate"], "_write_gate", None) is None
+        # Raw providers stay unwrapped (lifecycle/identity run on these)…
+        assert not any(
+            isinstance(c, GatedToolProvider) for c in runtime.active_services
+        )
+        # …while the agent-facing view wraps every provider, and its write
+        # specs carry the approval annotation.
+        assert all(
+            isinstance(c, GatedToolProvider) for c in runtime.gated_services
+        )
+        gated_skills = next(c for c in runtime.gated_services if c.name == "skills")
+        by_tool = {s.name: s for s in gated_skills.builtin_tools()}
+        assert "approval" in by_tool["skill_save"].description
 
     def test_write_approval_optout_disables_gate(self, tmp_path):
+        from connectors.approvals import GatedToolProvider
         from personas.container import PersonaRuntime
         from personas.persona import Persona
         persona = Persona(
@@ -241,8 +249,11 @@ class TestContainerWiring:
         )
         runtime = PersonaRuntime(persona)
         assert runtime.approval_gate is None
-        (code,) = runtime.active_services
-        assert getattr(code, "_write_gate", None) is None
+        # No gate -> the "gated" view IS the raw provider list.
+        assert runtime.gated_services == runtime.active_services
+        assert not any(
+            isinstance(c, GatedToolProvider) for c in runtime.gated_services
+        )
 
 
 class TestFacultyConnectorTiering:

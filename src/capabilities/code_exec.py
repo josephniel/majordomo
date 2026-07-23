@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from connectors.base import Faculty, tool
+from core import Faculty, ToolContext, ToolResult, tool
 
 log = logging.getLogger(__name__)
 
@@ -44,15 +44,11 @@ _LANG_COMMANDS = {
 }
 
 
-def _result(text: str, is_error: bool = False) -> dict[str, Any]:
-    out: dict[str, Any] = {"content": [{"type": "text", "text": text}]}
-    if is_error:
-        out["isError"] = True
-    return out
-
-
 class CodeExecutor(Faculty):
     name = "code"
+    TRIGGER_KEYWORDS = ("code", "run", "script", "python", "compute",
+                        "calculate", "csv", "chart", "graph", "convert",
+                        "parse", "generate")
     WRITE_TOOLS = frozenset({"run_code"})
     STATUS = {"run_code": "Running code in the sandbox"}
 
@@ -82,9 +78,6 @@ script instead of many small runs."""
     def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
         return self.STATUS.get(local)
 
-    def builtin_allowed_tools(self) -> list[str]:
-        return ["mcp__code__run_code"]
-
     def builtin_tools(self) -> list:
         outer = self
 
@@ -106,22 +99,22 @@ script instead of many small runs."""
                 "required": ["language", "code"],
             },
         )
-        async def run_code_tool(args: dict[str, Any]):
+        async def run_code_tool(args: dict[str, Any], _ctx: ToolContext):
             return await outer._run(args)
 
         return [run_code_tool]
 
     # ---- execution ----
 
-    async def _run(self, args: dict[str, Any]) -> dict[str, Any]:
+    async def _run(self, args: dict[str, Any]) -> ToolResult:
         language = str(args.get("language") or "").strip().lower()
         code = str(args.get("code") or "")
         if language not in _LANG_COMMANDS:
-            return _result(f"unsupported language {language!r} (python or bash)", True)
+            return ToolResult.error(f"unsupported language {language!r} (python or bash)")
         if not code.strip():
-            return _result("code is empty", True)
+            return ToolResult.error("code is empty")
         if len(code) > MAX_CODE_CHARS:
-            return _result(f"code too large ({len(code)} chars; max {MAX_CODE_CHARS})", True)
+            return ToolResult.error(f"code too large ({len(code)} chars; max {MAX_CODE_CHARS})")
         try:
             timeout = int(args.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
         except (TypeError, ValueError):
@@ -129,7 +122,7 @@ script instead of many small runs."""
         timeout = max(1, min(timeout, MAX_TIMEOUT_SECONDS))
 
         if shutil.which("docker") is None:
-            return _result("docker is not available on this host; run_code is disabled", True)
+            return ToolResult.error("docker is not available on this host; run_code is disabled")
 
         run_id = uuid.uuid4().hex[:12]
         run_dir = self._runs_dir / run_id
@@ -191,12 +184,12 @@ script instead of many small runs."""
                         await proc.wait()
                     except Exception:
                         log.debug("proc.wait after timeout kill", exc_info=True)
-                    return _result(
+                    return ToolResult.error(
                         f"execution timed out after {timeout}s (container killed). "
-                        f"Partial artifacts, if any, are under {run_dir}", True,
+                        f"Partial artifacts, if any, are under {run_dir}",
                     )
         except Exception as e:
-            return _result(f"could not start the sandbox: {e}", True)
+            return ToolResult.error(f"could not start the sandbox: {e}")
 
         timed_out = proc.returncode == 124  # coreutils `timeout` exit code
         out = _read_head(out_path)
@@ -219,7 +212,7 @@ script instead of many small runs."""
         parts.append(f"exit code: {proc.returncode}")
         if artifacts:
             parts.append("files created:\n" + "\n".join(artifacts))
-        return _result("\n\n".join(parts), is_error=proc.returncode != 0)
+        return ToolResult("\n\n".join(parts), is_error=proc.returncode != 0)
 
     async def _force_remove(self, container: str) -> None:
         try:

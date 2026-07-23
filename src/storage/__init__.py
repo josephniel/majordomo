@@ -7,9 +7,8 @@ Two tiers (inspired by Letta/MemGPT and mem0):
   auto-injected into the agent's system prompt every turn so what's known
   is always at hand without a tool round-trip.
 
-Compaction folds active entries in a compartment into the core summary using
-a small Anthropic model (Haiku by default; "deep=True" upgrades to the
-persona's main model for tricky reconciliation).
+Compaction itself lives upstream (capabilities/memory.py, via the
+vendor-neutral Summarizer) — this layer only stores and retrieves.
 """
 from .db import MemoryDatabase, MemoryEntry, MemoryCoreEntry
 from .docs import DocumentStore

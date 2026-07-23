@@ -2,6 +2,7 @@
 import pytest
 
 from capabilities.documents import DocumentLibrary
+from core import ToolContext
 from storage.docs import DocumentStore
 from tests.conftest import TEST_DSN
 
@@ -98,18 +99,20 @@ class TestDocumentLibraryTools:
             chat_id=1, filename="budget.txt", mime="text/plain", data=SAMPLE.encode(),
         )
         result = await self._tool(library, "doc_search").handler(
-            {"query": "billboard campaign EDSA"}
+            {"query": "billboard campaign EDSA"}, ToolContext(),
         )
-        assert not result.get("isError")
-        assert "EDSA" in result["content"][0]["text"]
+        assert not result.is_error
+        assert "EDSA" in result.text
 
     async def test_doc_read_pagination_hint(self, library, store, persona_id):
         await library.ingest_attachment(
             chat_id=1, filename="budget.txt", mime="text/plain", data=SAMPLE.encode(),
         )
         (doc,) = await store.list_docs(persona_id)
-        result = await self._tool(library, "doc_read").handler({"doc_id": doc["id"]})
-        text = result["content"][0]["text"]
+        result = await self._tool(library, "doc_read").handler(
+            {"doc_id": doc["id"]}, ToolContext(),
+        )
+        text = result.text
         assert "budget.txt" in text
         if doc["num_chunks"] > 4:
             assert "start_chunk=" in text
@@ -122,7 +125,9 @@ class TestDocumentLibraryTools:
             chat_id=1, filename="x.txt", mime="text/plain", data=SAMPLE.encode(),
         )
         (doc,) = await store.list_docs(persona_id)
-        result = await self._tool(library, "doc_delete").handler({"doc_id": doc["id"]})
-        assert not result.get("isError")
-        list_result = await self._tool(library, "doc_list").handler({})
-        assert "no documents" in list_result["content"][0]["text"]
+        result = await self._tool(library, "doc_delete").handler(
+            {"doc_id": doc["id"]}, ToolContext(),
+        )
+        assert not result.is_error
+        list_result = await self._tool(library, "doc_list").handler({}, ToolContext())
+        assert "no documents" in list_result.text

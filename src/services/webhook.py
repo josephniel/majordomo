@@ -97,6 +97,11 @@ class WebhookServer:
         self._cooldown_lock = threading.Lock()
 
     @property
+    def trigger_names(self) -> list[str]:
+        """Configured trigger names, for status surfaces."""
+        return sorted(self._triggers)
+
+    @property
     def port(self) -> int:
         """Actual bound port (differs from the requested one when 0)."""
         if self._httpd is None:

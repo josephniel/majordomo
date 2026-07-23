@@ -113,3 +113,12 @@ class TestTriggerPrompt:
     def test_no_payload_no_section(self):
         p = build_trigger_prompt(self._trigger(), "")
         assert "payload" not in p.lower()
+
+
+class TestTriggerNames:
+    def test_trigger_names_is_public_and_sorted(self):
+        s = WebhookServer(token="sekret", triggers={
+            "b": WebhookTrigger(name="b", prompt="x", chat_id=1),
+            "a": WebhookTrigger(name="a", prompt="y", chat_id=1),
+        })
+        assert s.trigger_names == ["a", "b"]

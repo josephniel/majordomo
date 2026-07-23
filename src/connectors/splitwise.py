@@ -19,11 +19,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 import httpx
-from .base import tool
+from core import ToolContext, ToolResult, tool
 
 from .registry import ServiceRegistry
 
-from .base import Connector
+from core import Connector
 
 log = logging.getLogger(__name__)
 
@@ -238,6 +238,9 @@ def _splitwise_errors(resp: dict) -> Optional[str]:
 
 class SplitwiseConnector(Connector):
     name = "splitwise"
+    TRIGGER_KEYWORDS = ("split", "splitwise", "expense", "owe", "owed",
+                        "paid", "settle", "reimburse", "bill", "share",
+                        "cost", "debt")
     WRITE_TOOLS = frozenset({"create_expense", "update_expense", "delete_expense"})
 
     TOOL_NAMES = [
@@ -292,15 +295,6 @@ class SplitwiseConnector(Connector):
             client = SplitwiseClient(api_key=api_key)
             servers[profile.name] = self._build_tools_for_profile(client)
         return servers
-
-    def builtin_allowed_tools(self) -> list[str]:
-        out: list[str] = []
-        for profile in self._config.load_all():
-            if not profile.enabled or not self.owns_profile(profile.name):
-                continue
-            for tname in self.TOOL_NAMES:
-                out.append(f"mcp__{profile.name}__{tname}")
-        return out
 
     def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
         return self.STATUS.get(local)
@@ -423,18 +417,18 @@ class SplitwiseConnector(Connector):
             "a sanity check or to confirm which profile is connected.",
             {},
         )
-        async def get_current_user_tool(_args: dict[str, Any]):
+        async def get_current_user_tool(_args: dict[str, Any], _ctx: ToolContext):
             try:
                 resp = await client.get_current_user()
                 user = resp.get("user") or {}
                 name = f"{user.get('first_name', '')} {user.get('last_name', '') or ''}".strip()
                 email = user.get("email", "")
                 uid = user.get("id", "?")
-                return {"content": [{"type": "text", "text": f"[{uid}] {name} <{email}>"}]}
+                return ToolResult.ok(f"[{uid}] {name} <{email}>")
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "list_groups",
@@ -443,19 +437,19 @@ class SplitwiseConnector(Connector):
             "that group (only currencies with non-zero balance shown).",
             {},
         )
-        async def list_groups_tool(_args: dict[str, Any]):
+        async def list_groups_tool(_args: dict[str, Any], _ctx: ToolContext):
             try:
                 me = await client.current_user_id()
                 resp = await client.get_groups()
                 groups = resp.get("groups", []) or []
                 if not groups:
-                    return {"content": [{"type": "text", "text": "No groups."}]}
+                    return ToolResult.ok("No groups.")
                 lines = [_format_group(g, me) for g in groups]
-                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+                return ToolResult.ok("\n".join(lines))
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "list_friends",
@@ -464,18 +458,18 @@ class SplitwiseConnector(Connector):
             "negative = you owe them.",
             {},
         )
-        async def list_friends_tool(_args: dict[str, Any]):
+        async def list_friends_tool(_args: dict[str, Any], _ctx: ToolContext):
             try:
                 resp = await client.get_friends()
                 friends = resp.get("friends", []) or []
                 if not friends:
-                    return {"content": [{"type": "text", "text": "No friends."}]}
+                    return ToolResult.ok("No friends.")
                 lines = [_format_friend(f) for f in friends]
-                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+                return ToolResult.ok("\n".join(lines))
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "list_expenses",
@@ -493,7 +487,7 @@ class SplitwiseConnector(Connector):
                 "limit": int,
             },
         )
-        async def list_expenses_tool(args: dict[str, Any]):
+        async def list_expenses_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 me = await client.current_user_id()
                 limit = max(1, min(int(args.get("limit") or 20), 100))
@@ -504,11 +498,11 @@ class SplitwiseConnector(Connector):
                     dated_before=args.get("dated_before") or None,
                     limit=limit,
                 )
-                return {"content": [{"type": "text", "text": _summarize_expenses_response(resp, me)}]}
+                return ToolResult.ok(_summarize_expenses_response(resp, me))
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "get_expense",
@@ -517,14 +511,14 @@ class SplitwiseConnector(Connector):
             "who paid, who owes, breakdown per user.",
             {"expense_id": str},
         )
-        async def get_expense_tool(args: dict[str, Any]):
+        async def get_expense_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 resp = await client.get_expense(args["expense_id"])
-                return {"content": [{"type": "text", "text": json.dumps(resp, indent=2)[:4000]}]}
+                return ToolResult.ok(json.dumps(resp, indent=2)[:4000])
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         # ---- WRITE TOOLS ----
 
@@ -562,14 +556,11 @@ class SplitwiseConnector(Connector):
                 "date": str,
             },
         )
-        async def create_expense_tool(args: dict[str, Any]):
+        async def create_expense_tool(args: dict[str, Any], _ctx: ToolContext):
             cost = (args.get("cost") or "").strip()
             description = (args.get("description") or "").strip()
             if not cost or not description:
-                return {
-                    "content": [{"type": "text", "text": "cost and description are required"}],
-                    "isError": True,
-                }
+                return ToolResult.error("cost and description are required")
 
             shares_json = (args.get("shares") or "").strip()
 
@@ -589,15 +580,9 @@ class SplitwiseConnector(Connector):
                 try:
                     shares_list = json.loads(shares_json)
                 except json.JSONDecodeError as e:
-                    return {
-                        "content": [{"type": "text", "text": f"shares is not valid JSON: {e}"}],
-                        "isError": True,
-                    }
+                    return ToolResult.error(f"shares is not valid JSON: {e}")
                 if not isinstance(shares_list, list) or not shares_list:
-                    return {
-                        "content": [{"type": "text", "text": "shares must be a non-empty JSON array of {user_id, paid_share, owed_share}"}],
-                        "isError": True,
-                    }
+                    return ToolResult.error("shares must be a non-empty JSON array of {user_id, paid_share, owed_share}")
 
                 # Validate that share sums match cost (within 1¢ tolerance).
                 try:
@@ -605,20 +590,11 @@ class SplitwiseConnector(Connector):
                     paid_sum = sum(float(u.get("paid_share", 0) or 0) for u in shares_list)
                     owed_sum = sum(float(u.get("owed_share", 0) or 0) for u in shares_list)
                 except (TypeError, ValueError) as e:
-                    return {
-                        "content": [{"type": "text", "text": f"invalid numeric value in shares: {e}"}],
-                        "isError": True,
-                    }
+                    return ToolResult.error(f"invalid numeric value in shares: {e}")
                 if abs(paid_sum - cost_num) > 0.01:
-                    return {
-                        "content": [{"type": "text", "text": f"sum of paid_share ({paid_sum:.2f}) doesn't match cost ({cost_num:.2f})"}],
-                        "isError": True,
-                    }
+                    return ToolResult.error(f"sum of paid_share ({paid_sum:.2f}) doesn't match cost ({cost_num:.2f})")
                 if abs(owed_sum - cost_num) > 0.01:
-                    return {
-                        "content": [{"type": "text", "text": f"sum of owed_share ({owed_sum:.2f}) doesn't match cost ({cost_num:.2f})"}],
-                        "isError": True,
-                    }
+                    return ToolResult.error(f"sum of owed_share ({owed_sum:.2f}) doesn't match cost ({cost_num:.2f})")
 
                 form = _to_form(base)
                 form.update(_flatten_users_to_form(shares_list))
@@ -628,14 +604,14 @@ class SplitwiseConnector(Connector):
                 resp = await client.create_expense(form)
                 err = _splitwise_errors(resp)
                 if err:
-                    return {"content": [{"type": "text", "text": f"Splitwise rejected the expense: {err}"}], "isError": True}
+                    return ToolResult.error(f"Splitwise rejected the expense: {err}")
                 created = (resp.get("expenses") or [{}])[0]
                 summary = _format_expense(created, me)
-                return {"content": [{"type": "text", "text": f"created:\n{summary}"}]}
+                return ToolResult.ok(f"created:\n{summary}")
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "update_expense",
@@ -646,13 +622,10 @@ class SplitwiseConnector(Connector):
             "who paid is not supported here — use the Splitwise app for that.",
             {"expense_id": str, "cost": str, "description": str, "date": str},
         )
-        async def update_expense_tool(args: dict[str, Any]):
+        async def update_expense_tool(args: dict[str, Any], _ctx: ToolContext):
             expense_id = (args.get("expense_id") or "").strip()
             if not expense_id:
-                return {
-                    "content": [{"type": "text", "text": "expense_id is required"}],
-                    "isError": True,
-                }
+                return ToolResult.error("expense_id is required")
             updates: dict[str, Any] = {}
             if args.get("cost"):
                 updates["cost"] = args["cost"]
@@ -661,25 +634,22 @@ class SplitwiseConnector(Connector):
             if args.get("date"):
                 updates["date"] = args["date"]
             if not updates:
-                return {
-                    "content": [{"type": "text", "text": "no fields supplied — nothing to update"}],
-                    "isError": True,
-                }
+                return ToolResult.error("no fields supplied — nothing to update")
             form = _to_form(updates)
             try:
                 me = await client.current_user_id()
                 resp = await client.update_expense(expense_id, form)
                 err = _splitwise_errors(resp)
                 if err:
-                    return {"content": [{"type": "text", "text": f"Splitwise rejected the update: {err}"}], "isError": True}
+                    return ToolResult.error(f"Splitwise rejected the update: {err}")
                 updated = (resp.get("expenses") or [{}])[0]
                 summary = _format_expense(updated, me)
                 changed = ", ".join(updates.keys())
-                return {"content": [{"type": "text", "text": f"updated ({changed}):\n{summary}"}]}
+                return ToolResult.ok(f"updated ({changed}):\n{summary}")
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         @tool(
             "delete_expense",
@@ -688,23 +658,20 @@ class SplitwiseConnector(Connector):
             "you fetch it again). Args: expense_id.",
             {"expense_id": str},
         )
-        async def delete_expense_tool(args: dict[str, Any]):
+        async def delete_expense_tool(args: dict[str, Any], _ctx: ToolContext):
             expense_id = (args.get("expense_id") or "").strip()
             if not expense_id:
-                return {
-                    "content": [{"type": "text", "text": "expense_id is required"}],
-                    "isError": True,
-                }
+                return ToolResult.error("expense_id is required")
             try:
                 resp = await client.delete_expense(expense_id)
                 if resp.get("success") is False:
                     err = _splitwise_errors(resp) or "(no details)"
-                    return {"content": [{"type": "text", "text": f"delete failed: {err}"}], "isError": True}
-                return {"content": [{"type": "text", "text": f"deleted expense {expense_id}"}]}
+                    return ToolResult.error(f"delete failed: {err}")
+                return ToolResult.ok(f"deleted expense {expense_id}")
             except httpx.HTTPStatusError as e:
-                return {"content": [{"type": "text", "text": _format_http_error(e)}], "isError": True}
+                return ToolResult.error(_format_http_error(e))
             except Exception as e:
-                return {"content": [{"type": "text", "text": f"error: {e}"}], "isError": True}
+                return ToolResult.error(f"error: {e}")
 
         return [
             # read

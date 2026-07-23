@@ -23,8 +23,7 @@ import logging
 from contextvars import ContextVar
 from typing import Any, Callable, Optional
 
-from connectors.base import Faculty, tool
-from connectors.chat_context import current_chat_id
+from core import Faculty, ToolContext, ToolResult, tool
 
 log = logging.getLogger(__name__)
 
@@ -34,12 +33,10 @@ MAX_CONCURRENT_DELEGATES = 2
 _delegation_depth: ContextVar[int] = ContextVar("delegation_depth", default=0)
 
 
-def _error(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": text}], "isError": True}
-
-
 class Delegator(Faculty):
     name = "delegate"
+    TRIGGER_KEYWORDS = ("delegate", "summarize all", "audit", "go through",
+                        "digest", "triage", "review all", "every")
     STATUS = {"delegate_task": "Working on a delegated task"}
 
     def __init__(
@@ -53,9 +50,6 @@ class Delegator(Faculty):
 
     def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
         return self.STATUS.get(local)
-
-    def builtin_allowed_tools(self) -> list[str]:
-        return ["mcp__delegate__delegate_task"]
 
     def builtin_tools(self) -> list:
         outer = self
@@ -72,16 +66,16 @@ class Delegator(Faculty):
             "Not for quick single-tool lookups; call those directly.",
             {"task": str},
         )
-        async def delegate_task_tool(args: dict[str, Any]):
+        async def delegate_task_tool(args: dict[str, Any], ctx: ToolContext):
             task = str(args.get("task") or "").strip()
             if not task:
-                return _error("delegate_task needs a non-empty `task`")
+                return ToolResult.error("delegate_task needs a non-empty `task`")
             if _delegation_depth.get() >= 1:
-                return _error(
+                return ToolResult.error(
                     "delegation cannot nest — you ARE the delegate; "
                     "do the work directly with your own tools"
                 )
-            chat_id = current_chat_id.get() or 0
+            chat_id = ctx.chat_id or 0
             depth_token = _delegation_depth.set(_delegation_depth.get() + 1)
             try:
                 async with outer._sem:
@@ -98,15 +92,15 @@ class Delegator(Faculty):
                             log.exception("delegate sub-agent stop failed")
             except asyncio.TimeoutError:
                 log.warning("delegated task timed out after %.0fs", outer._timeout)
-                return _error(
+                return ToolResult.error(
                     f"the delegated task timed out after {int(outer._timeout)}s; "
                     "try a smaller, more specific task"
                 )
             except Exception as e:
                 log.exception("delegated task failed")
-                return _error(f"the delegated task failed: {e}")
+                return ToolResult.error(f"the delegated task failed: {e}")
             finally:
                 _delegation_depth.reset(depth_token)
-            return {"content": [{"type": "text", "text": reply}]}
+            return ToolResult.ok(reply)
 
         return [delegate_task_tool]

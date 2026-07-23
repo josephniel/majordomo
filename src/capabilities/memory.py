@@ -29,8 +29,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID
 
-from connectors.base import Faculty, Summarizer, tool
-from connectors.chat_context import current_chat_id
+from core import Faculty, Summarizer, ToolContext, ToolResult, tool
 
 from storage import MemoryCoreEntry, MemoryDatabase, MemoryEntry
 
@@ -59,6 +58,9 @@ AUTO_COMPACT_THRESHOLD = 30
 
 class LongTermMemory(Faculty):
     name = "memory"
+    # Cheap and relevant to almost any turn — rides every turn even under
+    # tool subsetting.
+    ALWAYS_ATTACH = True
 
     STATUS = {
         "memory_save": "Saving to memory",
@@ -248,18 +250,6 @@ Three principles:
             self._tools_cache = self._build_tools()
         return list(self._tools_cache)
 
-    def builtin_allowed_tools(self) -> list[str]:
-        names = [
-            "mcp__memory__memory_save",
-            "mcp__memory__memory_recall",
-            "mcp__memory__memory_update",
-            "mcp__memory__memory_forget",
-            "mcp__memory__memory_compact",
-        ]
-        if self._history is not None:
-            names.append("mcp__memory__history_search")
-        return names
-
     def system_prompt_section(self) -> str:
         out = self.SYSTEM_PROMPT_HEADER
         rendered = self._render_memory_for_context()
@@ -395,7 +385,7 @@ Three principles:
                 "required": ["scope", "content"],
             },
         )
-        async def memory_save_tool(args: dict[str, Any]):
+        async def memory_save_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 msg, entry = await connector.save_fact(
                     scope=args.get("scope") or "",
@@ -406,7 +396,7 @@ Three principles:
                 )
                 if entry is None and not msg.startswith("not saved"):
                     return _tool_error(msg)
-                return {"content": [{"type": "text", "text": msg}]}
+                return ToolResult.ok(msg)
             except Exception as e:
                 return _tool_error(str(e))
 
@@ -430,7 +420,7 @@ Three principles:
                 "required": ["query"],
             },
         )
-        async def memory_recall_tool(args: dict[str, Any]):
+        async def memory_recall_tool(args: dict[str, Any], _ctx: ToolContext):
             query = (args.get("query") or "").strip()
             if not query:
                 return _tool_error("query is empty")
@@ -443,13 +433,13 @@ Three principles:
                     scope=scope, domain_key=domain_key, limit=limit,
                 )
                 if not results:
-                    return {"content": [{"type": "text", "text": "(no matching memories)"}]}
+                    return ToolResult.ok("(no matching memories)")
                 lines = []
                 for r in results:
                     label = r.scope if not r.domain_key else f"{r.scope}/{r.domain_key}"
                     title = f" [{r.title}]" if r.title else ""
                     lines.append(f"id={r.id} ({label}){title}\n  {r.content}")
-                return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+                return ToolResult.ok("\n".join(lines))
             except Exception as e:
                 return _tool_error(str(e))
 
@@ -467,7 +457,7 @@ Three principles:
                 "required": ["id", "content"],
             },
         )
-        async def memory_update_tool(args: dict[str, Any]):
+        async def memory_update_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 eid = UUID(str(args.get("id") or "").strip())
             except ValueError:
@@ -485,10 +475,7 @@ Three principles:
                 connector._spawn_bg(connector.compact_compartment(
                     new_entry.scope, new_entry.domain_key,
                 ))
-                return {"content": [{
-                    "type": "text",
-                    "text": f"superseded {eid} with new id={new_entry.id}",
-                }]}
+                return ToolResult.ok(f"superseded {eid} with new id={new_entry.id}")
             except Exception as e:
                 return _tool_error(str(e))
 
@@ -504,7 +491,7 @@ Three principles:
                 "required": ["id"],
             },
         )
-        async def memory_forget_tool(args: dict[str, Any]):
+        async def memory_forget_tool(args: dict[str, Any], _ctx: ToolContext):
             try:
                 eid = UUID(str(args.get("id") or "").strip())
             except ValueError:
@@ -520,7 +507,7 @@ Three principles:
                     connector._spawn_bg(connector.compact_compartment(
                         entry.scope, entry.domain_key,
                     ))
-                return {"content": [{"type": "text", "text": f"forgotten: {eid}"}]}
+                return ToolResult.ok(f"forgotten: {eid}")
             except Exception as e:
                 return _tool_error(str(e))
 
@@ -547,7 +534,7 @@ Three principles:
                 "required": ["scope"],
             },
         )
-        async def memory_compact_tool(args: dict[str, Any]):
+        async def memory_compact_tool(args: dict[str, Any], _ctx: ToolContext):
             scope = (args.get("scope") or "").strip().lower()
             if scope not in ("user", "agent", "domain"):
                 return _tool_error("scope must be user/agent/domain")
@@ -556,10 +543,9 @@ Three principles:
                 return _tool_error("scope='domain' requires a domain_key")
             deep = bool(args.get("deep"))
             summary = await connector.compact_compartment(scope, domain_key, deep=deep)
-            return {"content": [{
-                "type": "text",
-                "text": f"compacted {scope}{('/' + domain_key) if domain_key else ''}:\n\n{summary}",
-            }]}
+            return ToolResult.ok(
+                f"compacted {scope}{('/' + domain_key) if domain_key else ''}:\n\n{summary}"
+            )
 
         tools = [
             memory_save_tool,
@@ -588,11 +574,11 @@ Three principles:
                     "required": ["query"],
                 },
             )
-            async def history_search_tool(args: dict[str, Any]):
+            async def history_search_tool(args: dict[str, Any], ctx: ToolContext):
                 query = (args.get("query") or "").strip()
                 if not query:
                     return _tool_error("query is empty")
-                chat_id = current_chat_id.get()
+                chat_id = ctx.chat_id
                 if chat_id is None:
                     return _tool_error("no current chat context")
                 limit = max(1, min(int(args.get("limit") or 10), 25))
@@ -601,7 +587,7 @@ Three principles:
                 except Exception as e:
                     return _tool_error(str(e))
                 if not rows:
-                    return {"content": [{"type": "text", "text": "(no matching turns)"}]}
+                    return ToolResult.ok("(no matching turns)")
                 lines = []
                 for r in rows:
                     when = r["ts"].strftime("%Y-%m-%d %H:%M") if r.get("ts") else "?"
@@ -609,7 +595,7 @@ Three principles:
                     if len(content) > 400:
                         content = content[:400] + "…"
                     lines.append(f"[{when}] {r['role']}: {content}")
-                return {"content": [{"type": "text", "text": "\n\n".join(lines)}]}
+                return ToolResult.ok("\n\n".join(lines))
 
             tools.append(history_search_tool)
 
@@ -634,5 +620,5 @@ Three principles:
             log.exception("auto-compaction check failed")
 
 
-def _tool_error(msg: str) -> dict:
-    return {"content": [{"type": "text", "text": f"error: {msg}"}], "isError": True}
+def _tool_error(msg: str) -> ToolResult:
+    return ToolResult.error(f"error: {msg}")

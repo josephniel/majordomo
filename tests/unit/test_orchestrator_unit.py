@@ -128,6 +128,7 @@ class TestHallucinationDetector:
     class AgentWithToolCalls:
         def __init__(self, n):
             self.last_turn_tool_calls = n
+            self.last_turn_tool_names = ()
 
     def _orch_with_reflection(self, tmp_path):
         from chat.core import ConversationOrchestrator
@@ -175,6 +176,7 @@ class TestScheduleHallucinationRecovery:
         `retry_tools` as the tools called during that retry."""
         def __init__(self, first_tools=(), retry_reply="Reminder set!", retry_tools=()):
             self.session_id = None
+            self.last_turn_tool_calls = len(first_tools)
             self.last_turn_tool_names = tuple(first_tools)
             self._retry_reply = retry_reply
             self._retry_tools = tuple(retry_tools)
@@ -184,12 +186,19 @@ class TestScheduleHallucinationRecovery:
             self.last_turn_tool_names = self._retry_tools
             return self._retry_reply
 
+    class FakeSchedulerProvider:
+        """Declares which of its tools satisfy a schedule claim, like the
+        real TaskScheduler/calendar providers do."""
+        SCHEDULE_CLAIM_TOOLS = frozenset(
+            {"schedule_once", "schedule_create", "create_event"}
+        )
+
     def _orch(self, tmp_path):
         platform = self.FakePlatform()
         o = ConversationOrchestrator(
             platform=platform, agent_factory=lambda **k: None,
             session_store=SessionStore(tmp_path / "s.json"), config=object(),
-            connectors_list=[], persona_id="t",
+            connectors_list=[self.FakeSchedulerProvider()], persona_id="t",
             task_scheduler=object(),  # persona has a scheduler
         )
         return o, platform

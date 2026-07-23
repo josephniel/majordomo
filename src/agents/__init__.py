@@ -8,9 +8,10 @@ Public surface:
         ConversationHistory,
     )
 
-PersonaRuntime typically constructs a CascadingAgent — it composes the
-chain Claude → OpenAI → DeepSeek (omitting any vendor whose API key is
-unset) and surfaces the same `Agent` interface to ConversationOrchestrator.
+PersonaRuntime typically constructs a CascadingAgent — a failover chain of
+whichever vendors are configured (PRIMARY_LLM/LLM_CHAIN pick the order; no
+vendor is privileged) surfacing the same `Agent` interface to
+ConversationOrchestrator.
 """
 from .base import (
     Agent,

@@ -30,7 +30,7 @@ from telegram.ext import (
     filters,
 )
 
-from agents import Attachment
+from core import Attachment
 from comms import CommsLog
 
 from .base import (

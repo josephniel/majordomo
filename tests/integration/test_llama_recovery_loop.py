@@ -3,7 +3,7 @@ the failed generation, running the tool, and producing a final answer."""
 import pytest
 
 from agents.chat_completions import GroqAgent
-from connectors.base import Connector, tool
+from core import Connector, ToolResult, tool
 
 pytestmark = pytest.mark.integration  # uses the memory tool + DB-free connector
 
@@ -56,9 +56,9 @@ class RecordingConnector(Connector):
         connector = self
 
         @tool("memory_save", "save a fact", {"scope": str, "content": str})
-        async def memory_save(args):
+        async def memory_save(args, _ctx):
             connector.saved.append(args)
-            return {"content": [{"type": "text", "text": "saved"}]}
+            return ToolResult.ok("saved")
         self._t = [memory_save]
     def builtin_tools(self):
         return self._t

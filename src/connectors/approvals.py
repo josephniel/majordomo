@@ -8,12 +8,14 @@ agents run with bypassPermissions while reading untrusted external content
 model reads can mutate any `read_write` system. The gate makes every
 mutation cost one explicit operator tap.
 
-Mechanics: `install(connector)` wraps the connector's `builtin_servers`/
-`builtin_tools` methods on the instance so every consumer (the Claude SDK's
-in-process MCP mount, the chat-completions tool collector, the persona tool
-policy) sees gated ToolSpecs for names in `WRITE_TOOLS`. The gated handler
-asks the bound confirmer (the platform's `request_approval`) and returns an
-isError result instead of executing when denied.
+Mechanics: the composition root wraps each provider in a `GatedToolProvider`
+— a read-through view whose `builtin_servers`/`builtin_tools` yield gated
+ToolSpecs for names in `WRITE_TOOLS` — and hands THAT view to the agent
+builders. The provider instance itself is never mutated; lifecycle hooks,
+status lines, and identity checks keep running against the raw provider.
+The gated handler asks the bound confirmer (the platform's
+`request_approval`) and returns an error result instead of executing when
+denied.
 
 External stdio MCP servers: their tools are gated WHOLESALE (reads too —
 we can't know which mutate) on the chat-completions path via wrap_spec().
@@ -27,8 +29,7 @@ import logging
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Optional
 
-from .base import Connector, ToolSpec
-from .chat_context import current_chat_id
+from core import ToolContext, ToolResult, ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -93,14 +94,8 @@ def format_approval_prompt(connector_name: str, tool_name: str, args: dict[str, 
     return "\n".join(lines)
 
 
-def _refusal(tool_name: str, reason: str) -> dict[str, Any]:
-    return {
-        "content": [{
-            "type": "text",
-            "text": f"{tool_name} was NOT executed: {reason}",
-        }],
-        "isError": True,
-    }
+def _refusal(tool_name: str, reason: str) -> ToolResult:
+    return ToolResult.error(f"{tool_name} was NOT executed: {reason}")
 
 
 # auditor(chat_id, connector, tool, args_preview, decision, reason)
@@ -136,62 +131,24 @@ class WriteApprovalGate:
         except Exception:
             log.debug("approval audit failed (continuing)", exc_info=True)
 
-    # ---- installation ----
-
-    def install(self, connector: Connector) -> None:
-        """Gate a connector's WRITE_TOOLS. Idempotent; no-op for read-only
-        connectors. Wraps the instance's builtin_* methods (not the specs in
-        place) because most connectors rebuild their ToolSpecs per call."""
-        if getattr(connector, "_write_gate", None) is self:
-            return
-        write = set(connector.WRITE_TOOLS or ())
-        if not write:
-            return
-
-        orig_servers = connector.builtin_servers
-        orig_tools = connector.builtin_tools
-        label = connector.name
-
-        def gated_servers() -> dict[str, list]:
-            return {
-                srv: [
-                    self._wrap_spec(label, s) if s.name in write else s
-                    for s in specs
-                ]
-                for srv, specs in orig_servers().items()
-            }
-
-        def gated_tools() -> list:
-            return [
-                self._wrap_spec(label, s) if s.name in write else s
-                for s in orig_tools()
-            ]
-
-        connector.builtin_servers = gated_servers  # type: ignore[method-assign]
-        connector.builtin_tools = gated_tools  # type: ignore[method-assign]
-        connector._write_gate = self  # type: ignore[attr-defined]
+    # ---- spec wrapping ----
 
     def wrap_spec(self, connector_name: str, spec: ToolSpec) -> ToolSpec:
-        """Public wrapper for tools that don't arrive via a Connector's
-        builtin_* methods (external stdio MCP)."""
-        return self._wrap_spec(connector_name, spec)
-
-    def _wrap_spec(self, connector_name: str, spec: ToolSpec) -> ToolSpec:
-        # The default builtin_servers() derives from builtin_tools(), so a
-        # spec can arrive here already gated — never double-wrap.
-        if getattr(spec.handler, "_write_gated", False):
-            return spec
+        """A copy of `spec` whose handler asks for approval first. Used by
+        GatedToolProvider for WRITE_TOOLS and by the composition root for
+        external stdio MCP tools (gated wholesale — reads too)."""
         inner = spec.handler
         tool_name = spec.name
 
-        async def gated_handler(args: dict[str, Any]) -> dict[str, Any]:
-            approved, reason = await self._confirm(connector_name, tool_name, args)
+        async def gated_handler(args: dict[str, Any], ctx: ToolContext) -> Any:
+            approved, reason = await self._confirm(
+                connector_name, tool_name, args, chat_id=ctx.chat_id,
+            )
             if not approved:
                 log.warning("write tool %s denied: %s", tool_name, reason)
                 return _refusal(tool_name, reason)
-            return await inner(args)
+            return await inner(args, ctx)
 
-        gated_handler._write_gated = True  # type: ignore[attr-defined]
         return replace(
             spec,
             description=spec.description + _DESCRIPTION_SUFFIX,
@@ -201,7 +158,11 @@ class WriteApprovalGate:
     # ---- the decision ----
 
     async def _confirm(
-        self, connector_name: str, tool_name: str, args: dict[str, Any]
+        self,
+        connector_name: str,
+        tool_name: str,
+        args: dict[str, Any],
+        chat_id: Optional[int],
     ) -> tuple[bool, str]:
         if self._confirmer is None:
             # Only reachable outside the bot process (CLI, tests):
@@ -212,7 +173,6 @@ class WriteApprovalGate:
                 tool_name,
             )
             return True, ""
-        chat_id = current_chat_id.get()
         if chat_id is None:
             await self._audit(None, connector_name, tool_name, args, "no_chat", "")
             return False, "no chat context to request approval in"
@@ -237,3 +197,39 @@ class WriteApprovalGate:
             "the user denied this action (or the request timed out). "
             "Do not retry unless the user explicitly asks."
         )
+
+
+class GatedToolProvider:
+    """Read-through view of a ToolProvider whose WRITE_TOOLS specs are
+    wrapped with the approval gate.
+
+    Composition instead of instance mutation: the wrapped provider is never
+    modified, so lifecycle hooks, /status lines, and isinstance checks keep
+    operating on the raw instance while agent builders consume this view.
+    Only `builtin_tools`/`builtin_servers` are intercepted; everything else
+    (name, WRITE_TOOLS, owns_profile, prompts, capability protocols)
+    delegates — a provider that caches its specs still can't leak an
+    ungated write handler through here, because wrapping happens on OUR
+    side of the call.
+    """
+
+    def __init__(self, inner: Any, gate: WriteApprovalGate) -> None:
+        self._inner = inner
+        self._gate = gate
+
+    def _gated(self, spec: ToolSpec) -> ToolSpec:
+        if spec.name in (self._inner.WRITE_TOOLS or ()):
+            return self._gate.wrap_spec(self._inner.name, spec)
+        return spec
+
+    def builtin_tools(self) -> list:
+        return [self._gated(s) for s in self._inner.builtin_tools()]
+
+    def builtin_servers(self) -> dict[str, list]:
+        return {
+            srv: [self._gated(s) for s in specs]
+            for srv, specs in self._inner.builtin_servers().items()
+        }
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._inner, item)

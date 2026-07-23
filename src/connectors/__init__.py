@@ -3,7 +3,7 @@
 Adding a new connector:
   1. Create connectors/<name>.py with a class extending Connector.
   2. Export the class below.
-  3. Add an instance to PersonaRuntime.active_services in persona_container.py.
+  3. Register a factory for it in PersonaRuntime (personas/container.py).
 """
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from __future__ import annotations
 # (every connector takes ServiceRegistry via constructor injection).
 from .registry import ServiceRegistry, ConnectorEntry  # ConnectorEntry: internal
 
-from .approvals import WriteApprovalGate
-from .base import (
+from .approvals import GatedToolProvider, WriteApprovalGate
+from core import (
     AttachmentIngestor,
     Connector,
     ContextInjector,
@@ -20,7 +20,6 @@ from .base import (
     Summarizer,
     ToolProvider,
 )
-from .chat_context import current_chat_id
 from .clickup import ClickUpConnector
 from .gmail import GmailConnector
 from .google_calendar import GoogleCalendarConnector
@@ -39,7 +38,7 @@ __all__ = [
     "GoogleCalendarConnector",
     "SplitwiseConnector",
     "Summarizer",
+    "GatedToolProvider",
     "WriteApprovalGate",
     "YahooConnector",
-    "current_chat_id",
 ]

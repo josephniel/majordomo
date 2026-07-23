@@ -5,9 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from connectors.approvals import WriteApprovalGate, format_approval_prompt
-from connectors.base import Connector, tool
-from connectors.chat_context import current_chat_id
+from connectors.approvals import (
+    GatedToolProvider,
+    WriteApprovalGate,
+    format_approval_prompt,
+)
+from core import Connector, ToolContext, ToolResult, tool
 
 
 class FakeMailConnector(Connector):
@@ -23,14 +26,14 @@ class FakeMailConnector(Connector):
         outer = self
 
         @tool("search_mail", "Search the mailbox.", {"query": str})
-        async def search_tool(args):
+        async def search_tool(args, _ctx):
             outer.read.append(args)
-            return {"content": [{"type": "text", "text": "results"}]}
+            return ToolResult.ok("results")
 
         @tool("send_mail", "Send an email.", {"to": str, "body": str})
-        async def send_tool(args):
+        async def send_tool(args, _ctx):
             outer.sent.append(args)
-            return {"content": [{"type": "text", "text": "sent"}]}
+            return ToolResult.ok("sent")
 
         return [search_tool, send_tool]
 
@@ -40,41 +43,43 @@ def _specs_by_name(connector):
     return {s.name: s for specs in servers.values() for s in specs}
 
 
-@pytest.fixture
-def chat_ctx():
-    token = current_chat_id.set(42)
-    yield
-    current_chat_id.reset(token)
+CHAT_CTX = ToolContext(chat_id=42)
+NO_CHAT_CTX = ToolContext()
 
 
-class TestGateInstall:
+class TestGatedView:
     def test_write_spec_wrapped_and_annotated(self):
-        conn = FakeMailConnector()
-        WriteApprovalGate().install(conn)
-        specs = _specs_by_name(conn)
+        gated = GatedToolProvider(FakeMailConnector(), WriteApprovalGate())
+        specs = _specs_by_name(gated)
         assert "approval" in specs["send_mail"].description
         assert "approval" not in specs["search_mail"].description
 
-    def test_read_only_connector_untouched(self):
-        class ReadOnly(Connector):
-            name = "ro"
-        conn = ReadOnly()
-        gate = WriteApprovalGate()
-        gate.install(conn)
-        assert getattr(conn, "_write_gate", None) is None
-
-    def test_install_idempotent(self):
+    def test_inner_provider_never_mutated(self):
         conn = FakeMailConnector()
-        gate = WriteApprovalGate()
-        gate.install(conn)
-        gate.install(conn)
-        # A wrapped handler must never be wrapped twice (the default
-        # builtin_servers path routes through builtin_tools).
-        spec = _specs_by_name(conn)["send_mail"]
-        assert getattr(spec.handler, "_write_gated", False)
+        GatedToolProvider(conn, WriteApprovalGate())
+        # The raw provider still serves ungated specs — lifecycle, /status,
+        # and identity checks all run against the unmodified instance.
+        assert "approval" not in _specs_by_name(conn)["send_mail"].description
+        assert not hasattr(conn, "_write_gate")
 
-    async def test_confirmer_called_exactly_once_per_invocation(self, chat_ctx):
+    def test_view_delegates_identity(self):
         conn = FakeMailConnector()
+        gated = GatedToolProvider(conn, WriteApprovalGate())
+        assert gated.name == "fakemail"
+        assert gated.WRITE_TOOLS == frozenset({"send_mail"})
+        assert gated.owns_profile("fakemail_work")
+
+    def test_builtin_servers_path_wraps_exactly_once(self):
+        # The default builtin_servers derives from the INNER builtin_tools,
+        # so the view's wrap must be the only one.
+        gated = GatedToolProvider(FakeMailConnector(), WriteApprovalGate())
+        (spec,) = [
+            s for specs in gated.builtin_servers().values()
+            for s in specs if s.name == "send_mail"
+        ]
+        assert spec.description.count("approval") == 1
+
+    async def test_confirmer_called_exactly_once_per_invocation(self):
         gate = WriteApprovalGate()
         calls = []
 
@@ -83,9 +88,9 @@ class TestGateInstall:
             return True
 
         gate.bind(confirmer)
-        gate.install(conn)
-        spec = _specs_by_name(conn)["send_mail"]
-        await spec.handler({"to": "a@b.c", "body": "hi"})
+        gated = GatedToolProvider(FakeMailConnector(), gate)
+        spec = _specs_by_name(gated)["send_mail"]
+        await spec.handler({"to": "a@b.c", "body": "hi"}, CHAT_CTX)
         assert len(calls) == 1
 
 
@@ -95,58 +100,59 @@ class TestGateDecision:
         gate = WriteApprovalGate()
         if confirmer is not None:
             gate.bind(confirmer)
-        gate.install(conn)
-        return conn, _specs_by_name(conn)["send_mail"]
+        gated = GatedToolProvider(conn, gate)
+        return conn, _specs_by_name(gated)["send_mail"]
 
-    async def test_approved_executes(self, chat_ctx):
+    async def test_approved_executes(self):
         async def yes(chat_id, text):
             assert chat_id == 42
             assert "fakemail/send_mail" in text
             return True
         conn, spec = await self._gated_send(yes)
-        result = await spec.handler({"to": "a@b.c", "body": "hi"})
-        assert not result.get("isError")
+        result = await spec.handler({"to": "a@b.c", "body": "hi"}, CHAT_CTX)
+        assert not result.is_error
         assert conn.sent == [{"to": "a@b.c", "body": "hi"}]
 
-    async def test_denied_blocks_execution(self, chat_ctx):
+    async def test_denied_blocks_execution(self):
         async def no(chat_id, text):
             return False
         conn, spec = await self._gated_send(no)
-        result = await spec.handler({"to": "a@b.c", "body": "hi"})
-        assert result["isError"]
-        assert "NOT executed" in result["content"][0]["text"]
+        result = await spec.handler({"to": "a@b.c", "body": "hi"}, CHAT_CTX)
+        assert result.is_error
+        assert "NOT executed" in result.text
         assert conn.sent == []
 
-    async def test_confirmer_error_denies(self, chat_ctx):
+    async def test_confirmer_error_denies(self):
         async def boom(chat_id, text):
             raise RuntimeError("telegram down")
         conn, spec = await self._gated_send(boom)
-        result = await spec.handler({"to": "a@b.c", "body": "hi"})
-        assert result["isError"]
+        result = await spec.handler({"to": "a@b.c", "body": "hi"}, CHAT_CTX)
+        assert result.is_error
         assert conn.sent == []
 
     async def test_no_chat_context_denies(self):
         async def yes(chat_id, text):
             return True
         conn, spec = await self._gated_send(yes)
-        result = await spec.handler({"to": "a@b.c", "body": "hi"})
-        assert result["isError"]
+        result = await spec.handler({"to": "a@b.c", "body": "hi"}, NO_CHAT_CTX)
+        assert result.is_error
         assert conn.sent == []
 
-    async def test_unbound_gate_allows(self, chat_ctx):
+    async def test_unbound_gate_allows(self):
         # CLI/test contexts: composition never bound a platform confirmer.
         conn, spec = await self._gated_send(None)
-        result = await spec.handler({"to": "a@b.c", "body": "hi"})
-        assert not result.get("isError")
+        result = await spec.handler({"to": "a@b.c", "body": "hi"}, CHAT_CTX)
+        assert not result.is_error
         assert conn.sent == [{"to": "a@b.c", "body": "hi"}]
 
-    async def test_read_tools_never_prompt(self, chat_ctx):
+    async def test_read_tools_never_prompt(self):
         async def never(chat_id, text):
             raise AssertionError("read tool must not ask for approval")
-        conn, _ = await self._gated_send(never)
-        spec = _specs_by_name(conn)["search_mail"]
-        result = await spec.handler({"query": "x"})
-        assert not result.get("isError")
+        gate = WriteApprovalGate()
+        gate.bind(never)
+        gated = GatedToolProvider(FakeMailConnector(), gate)
+        result = await _specs_by_name(gated)["search_mail"].handler({"query": "x"}, CHAT_CTX)
+        assert not result.is_error
 
 
 class TestApprovalPromptFormat:

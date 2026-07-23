@@ -18,23 +18,20 @@ from contextlib import AsyncExitStack
 from typing import Any, Callable, Optional
 
 from connectors import ServiceRegistry
-from connectors.base import ToolSpec
+from core import ToolContext, ToolResult, ToolSpec
 
 log = logging.getLogger(__name__)
 
 
-def _result_to_dict(res: Any) -> dict[str, Any]:
-    """mcp CallToolResult → the MCP-shaped dict ToolSpec handlers return."""
-    content: list[dict[str, Any]] = []
-    for c in getattr(res, "content", None) or []:
-        if getattr(c, "type", None) == "text":
-            content.append({"type": "text", "text": getattr(c, "text", "")})
-    if not content:
-        content = [{"type": "text", "text": "(no text content)"}]
-    out: dict[str, Any] = {"content": content}
-    if bool(getattr(res, "isError", False)):
-        out["isError"] = True
-    return out
+def _result_to_tool_result(res: Any) -> ToolResult:
+    """mcp CallToolResult → the vendor-neutral ToolResult handlers return."""
+    parts = [
+        getattr(c, "text", "")
+        for c in (getattr(res, "content", None) or [])
+        if getattr(c, "type", None) == "text"
+    ]
+    text = "\n".join(p for p in parts if p) or "(no text content)"
+    return ToolResult(text, is_error=bool(getattr(res, "isError", False)))
 
 
 class ExternalMCPManager:
@@ -112,15 +109,14 @@ class ExternalMCPManager:
     def _make_spec(session: Any, profile: str, tool: Any) -> ToolSpec:
         tool_name = tool.name
 
-        async def _handler(args: dict[str, Any]) -> dict[str, Any]:
+        async def _handler(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+            # External MCP servers get no chat scope — they're out-of-process
+            # and speak plain MCP.
             try:
                 res = await session.call_tool(tool_name, arguments=args or {})
-                return _result_to_dict(res)
+                return _result_to_tool_result(res)
             except Exception as e:
-                return {
-                    "content": [{"type": "text", "text": f"error calling {tool_name}: {e}"}],
-                    "isError": True,
-                }
+                return ToolResult.error(f"error calling {tool_name}: {e}")
 
         return ToolSpec(
             name=tool_name,

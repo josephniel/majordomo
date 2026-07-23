@@ -21,11 +21,9 @@ import base64
 import json
 import re
 import logging
-import os
 from typing import Any, Optional
 
-from connectors import Connector
-from connectors.base import ToolSpec
+from core import Connector, ToolContext, ToolSpec, as_tool_result
 
 from .base import (
     Agent,
@@ -45,40 +43,9 @@ log = logging.getLogger(__name__)
 # before we bail. Keeps a misbehaving model from spinning forever.
 MAX_TOOL_LOOP_ITERATIONS = 12
 
-# ---- tool subsetting (for token-constrained vendors) ----
-# Connectors whose tools are ALWAYS sent — the agent's own faculties, cheap
-# and relevant to almost any turn.
-ALWAYS_ON_CONNECTORS = frozenset({"memory", "schedule"})
-
-# Connector base name -> trigger keywords. A connector's tools are attached
-# only when the user's message contains its base name or one of these. Lists
-# are deliberately generous — a missed tool is worse than a few extra.
-CONNECTOR_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "gmail": ("email", "e-mail", "mail", "inbox", "unread", "reply", "send",
-              "message", "draft", "compose", "attachment"),
-    "google_calendar": ("calendar", "event", "meeting", "appointment", "invite",
-                         "schedule", "free", "busy", "availab", "reschedule",
-                         "tomorrow", "today", "agenda"),
-    "clickup": ("task", "todo", "to-do", "ticket", "clickup", "project",
-                "assign", "due", "backlog", "sprint", "status"),
-    "splitwise": ("split", "splitwise", "expense", "owe", "owed", "paid",
-                  "settle", "reimburse", "bill", "share", "cost", "debt"),
-    "yahoo": ("stock", "yahoo", "portfolio", "ticker", "market", "share price",
-              "equity", "quote", "index"),
-    # In-process faculties added later — keyword-routed, NOT always-on:
-    # without entries here they'd hit the unknown-connector fallback and
-    # ride every TPM-capped turn.
-    "code": ("code", "run", "script", "python", "compute", "calculate",
-             "csv", "chart", "graph", "convert", "parse", "generate"),
-    "files": ("file", "send", "download", "csv", "chart", "artifact",
-              "attachment", "report"),
-    "documents": ("document", "doc", "pdf", "file", "search", "saved",
-                  "read", "attachment", "notes", "paper", "contract"),
-    "skills": ("skill", "always", "never", "remember how", "from now on",
-               "procedure", "instructions", "teach"),
-    "delegate": ("delegate", "summarize all", "audit", "go through",
-                 "digest", "triage", "review all", "every"),
-}
+# Tool subsetting for token-constrained vendors is driven by what each
+# provider DECLARES on the ToolProvider contract (TRIGGER_KEYWORDS /
+# ALWAYS_ATTACH) — this layer holds no per-service knowledge.
 
 
 _USAGE_LIMIT_HINTS = (
@@ -235,17 +202,11 @@ def _recover_failed_tool_calls(exc: BaseException) -> list[tuple[str, str]]:
 
 
 def _extract_text_from_tool_result(result: Any) -> str:
-    """ToolSpec handlers return MCP-shaped dicts ({"content":[{"type":"text",
-    "text":"…"}], "isError":bool?}). Flatten that into a single string for
-    OpenAI's `tool` message content field."""
-    if not isinstance(result, dict):
-        return str(result)
-    parts: list[str] = []
-    for c in result.get("content", []) or []:
-        if isinstance(c, dict) and c.get("type") == "text":
-            parts.append(str(c.get("text", "")))
-    text = "\n".join(p for p in parts if p)
-    return text or "(empty)"
+    """Flatten a handler result (ToolResult, or a legacy MCP-shaped dict from
+    external MCP servers) into the single string OpenAI's `tool` message
+    content field wants. (The error flag isn't surfaced separately here —
+    handlers word their error text self-descriptively.)"""
+    return as_tool_result(result).text or "(empty)"
 
 
 class ChatCompletionsAgent(Agent):
@@ -297,7 +258,9 @@ class ChatCompletionsAgent(Agent):
         self._connectors = connectors or []
         self._persona = persona
         self._model = model or self.DEFAULT_MODEL
-        self._api_key = api_key or os.environ.get(self.API_KEY_ENV)
+        # No env fallback: the composition root (or eval harness) resolves
+        # API_KEY_ENV and passes the key in — settings own the environment.
+        self._api_key = api_key
         self._base_url = base_url or self.DEFAULT_BASE_URL
         self._client = None
         self._current_task: Optional[asyncio.Task] = None
@@ -328,6 +291,13 @@ class ChatCompletionsAgent(Agent):
         self._tool_connector = {
             name: self._connector_base_for(name) for name in self._tools_by_name
         }
+        # Provider-declared routing: base name -> (always_attach, keywords).
+        # Providers absent from this map (external MCP servers) opted out of
+        # routing and ride every turn.
+        self._provider_routing = {
+            c.name: (c.ALWAYS_ATTACH, tuple(c.TRIGGER_KEYWORDS))
+            for c in self._connectors
+        }
 
     def _connector_base_for(self, prefixed_name: str) -> str:
         """Map a `<server>__<tool>` key to its connector's base name
@@ -343,22 +313,29 @@ class ChatCompletionsAgent(Agent):
 
         Token-constrained vendors (SUBSET_TOOLS) can't afford all ~60 tool
         schemas every request (Groq free tier is 12k TPM; the full set is
-        ~8.8k before history). So we always include the ALWAYS_ON connectors
-        (memory, schedule) and attach a connector's tools only when the
-        message looks relevant to it — keyword routing with a safe fallback.
-        Non-constrained vendors send everything.
+        ~8.8k before history). So we always include providers that declared
+        ALWAYS_ATTACH (memory, schedule) and attach the rest only when the
+        message mentions their name or one of their TRIGGER_KEYWORDS —
+        provider-declared routing with a safe fallback (providers that
+        declared nothing always ride). Non-constrained vendors send
+        everything.
         """
         if not self.SUBSET_TOOLS or not self._openai_tools:
             return self._openai_tools
         low = (text or "").lower()
-        selected: set[str] = set(ALWAYS_ON_CONNECTORS)
-        for base, keywords in CONNECTOR_KEYWORDS.items():
-            if base in low or any(k in low for k in keywords):
-                selected.add(base)
+
+        def _attach(base: Optional[str]) -> bool:
+            routing = self._provider_routing.get(base)
+            if routing is None:
+                return True  # unknown/external provider → always keep
+            always, keywords = routing
+            if always or not keywords:
+                return True
+            return base in low or any(k in low for k in keywords)
+
         tools = [
             t for name, t in self._openai_tool_by_name.items()
-            if self._tool_connector.get(name) in selected
-            or self._tool_connector.get(name) not in CONNECTOR_KEYWORDS  # unknown → always keep
+            if _attach(self._tool_connector.get(name))
         ]
         return tools or self._openai_tools
 
@@ -733,7 +710,9 @@ class ChatCompletionsAgent(Agent):
                 result_text = f"error: unknown tool {tool_name!r}"
             else:
                 try:
-                    result = await spec.handler(args)
+                    result = await spec.handler(
+                        args, ToolContext(chat_id=self._chat_id),
+                    )
                     result_text = _extract_text_from_tool_result(result)
                 except Exception as e:
                     result_text = f"error: {e}"
@@ -807,15 +786,6 @@ class GroqAgent(ChatCompletionsAgent):
     MAX_HISTORY_CHARS = 10_000  # ≈ 2.5k tokens — leaves headroom under 12k TPM
 
 
-# Map a PRIMARY_LLM vendor name to its OpenAI-compatible backend class.
-_VENDOR_BACKENDS = {
-    "groq": GroqAgent,
-    "gemini": GeminiAgent,
-    "openai": OpenAIAgent,
-    "deepseek": DeepSeekAgent,
-}
-
-
 class ChatCompletionsSummarizer(Summarizer):
     """`Summarizer` that runs memory/history compaction through any
     OpenAI-compatible vendor (Gemini/OpenAI/DeepSeek). This is what keeps the
@@ -833,15 +803,20 @@ class ChatCompletionsSummarizer(Summarizer):
         self._client = None  # lazy AsyncOpenAI
 
     @classmethod
-    def for_vendor(cls, vendor: str) -> "ChatCompletionsSummarizer":
-        backend = _VENDOR_BACKENDS.get(vendor)
-        if backend is None:
-            raise ValueError(f"no OpenAI-compatible summarizer for vendor {vendor!r}")
-        # Per-vendor model override env var, if the operator set one.
-        model = os.environ.get({"gemini": "GEMINI_MODEL", "groq": "GROQ_MODEL"}.get(vendor, ""))
-        api_key = os.environ.get(backend.API_KEY_ENV)
+    def for_backend(
+        cls,
+        backend: type,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> "ChatCompletionsSummarizer":
+        """Build from a ChatCompletionsAgent subclass — single source of
+        truth for base_url/extra kwargs per vendor. The composition root
+        resolves model/api_key from settings; no env reads here."""
         if not api_key:
-            raise RuntimeError(f"{vendor} summarizer: env var {backend.API_KEY_ENV!r} is not set")
+            raise RuntimeError(
+                f"{backend.__name__} summarizer: no API key configured "
+                f"(set {backend.API_KEY_ENV})"
+            )
         return cls(
             model=model or backend.DEFAULT_MODEL,
             api_key=api_key,

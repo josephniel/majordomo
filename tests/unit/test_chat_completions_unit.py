@@ -332,3 +332,10 @@ class TestMaxTokens:
     async def test_unset_and_zero_omit_the_kwarg(self):
         assert "max_tokens" not in await self._captured_kwargs()
         assert "max_tokens" not in await self._captured_kwargs(max_tokens=0)
+
+
+class TestExtractToolResultCanonical:
+    def test_tool_result_passthrough(self):
+        from core import ToolResult
+        assert _extract_text_from_tool_result(ToolResult.ok("hi")) == "hi"
+        assert _extract_text_from_tool_result(ToolResult.ok("")) == "(empty)"

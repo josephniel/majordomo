@@ -2,6 +2,7 @@
 import pytest
 
 from capabilities.code_exec import CodeExecutor, _read_head, MAX_OUTPUT_CHARS
+from core import ToolContext
 
 
 @pytest.fixture
@@ -17,25 +18,27 @@ def _spec(executor):
 
 class TestValidation:
     async def test_unsupported_language(self, executor):
-        result = await _spec(executor).handler({"language": "cobol", "code": "x"})
-        assert result["isError"]
+        result = await _spec(executor).handler({"language": "cobol", "code": "x"}, ToolContext())
+        assert result.is_error
 
     async def test_empty_code(self, executor):
-        result = await _spec(executor).handler({"language": "python", "code": "  "})
-        assert result["isError"]
+        result = await _spec(executor).handler({"language": "python", "code": "  "}, ToolContext())
+        assert result.is_error
 
     async def test_oversized_code(self, executor):
         result = await _spec(executor).handler(
-            {"language": "python", "code": "x" * 60_000}
+            {"language": "python", "code": "x" * 60_000}, ToolContext()
         )
-        assert result["isError"]
-        assert "too large" in result["content"][0]["text"]
+        assert result.is_error
+        assert "too large" in result.text
 
     async def test_docker_missing_reported(self, executor, monkeypatch):
         monkeypatch.setattr("capabilities.code_exec.shutil.which", lambda _: None)
-        result = await _spec(executor).handler({"language": "python", "code": "print(1)"})
-        assert result["isError"]
-        assert "docker is not available" in result["content"][0]["text"]
+        result = await _spec(executor).handler(
+            {"language": "python", "code": "print(1)"}, ToolContext()
+        )
+        assert result.is_error
+        assert "docker is not available" in result.text
 
 
 class TestPolicy:

@@ -24,7 +24,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Optional
 
-from connectors.base import Summarizer
+from core import Summarizer
 
 if TYPE_CHECKING:
     from agents.history import ConversationHistory

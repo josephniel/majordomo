@@ -52,10 +52,10 @@ class Persona:
     # (their DM). The prompt is re-read from persona.yaml per fire.
     heartbeat: Optional[dict] = None
     # Inbound webhook triggers: {port: 18790, triggers: {name: {prompt: ...}}}.
-    # Requires WEBHOOK_TOKEN in the instance .env. See capabilities/webhook.py.
+    # Requires WEBHOOK_TOKEN in the instance .env. See services/webhook.py.
     webhooks: Optional[dict] = None
     # Push-style mail alerts: {every_minutes: 3, chat_id: <optional>}.
-    # Needs the gmail connector enabled. See capabilities/mailwatch.py.
+    # Needs the gmail connector enabled. See services/mailwatch.py.
     mail_watch: Optional[dict] = None
     # Enablement map for BACKGROUND agents (heartbeat, mail-watch) — same
     # grammar as faculties:/connectors:. When unset, the chat map is used

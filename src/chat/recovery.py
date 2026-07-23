@@ -18,6 +18,7 @@ import logging
 import re
 
 from agents import Agent
+from core import ToolTraceReporting
 
 from .formatting import chunk_for_platform
 
@@ -49,18 +50,10 @@ _CLAIMS_SCHEDULE_SET = re.compile(
     re.IGNORECASE,
 )
 
-# Tool-name substrings that legitimately satisfy a "reminder is set" claim.
-# Substring match because vendors report different name forms
-# ("mcp__schedule__schedule_once" vs "schedule_once"), and external
-# connectors have their own reminder/event creators.
-_SCHEDULE_SATISFYING_TOOLS = (
-    "schedule_once",
-    "schedule_create",
-    "schedule_set_enabled",
-    "create_reminder",
-    "update_reminder",
-    "create_event",
-)
+# The tool names that satisfy a "reminder is set" claim are declared by the
+# providers themselves (ToolProvider.SCHEDULE_CLAIM_TOOLS) and collected by
+# the orchestrator into self._schedule_claim_tools — this layer holds no
+# service-specific tool names.
 
 # Corrective turn sent when a schedule claim had no backing tool call. The
 # <silent> escape hatch keeps regex false-positives cheap: the model just
@@ -93,8 +86,7 @@ class RecoveryMixin:
         instead of waiting for the idle timer — turning a hallucinated save
         into a self-healing extraction. Cheap: reflection dedups, so a false
         positive just costs one summarizer call."""
-        tool_calls = getattr(agent, "last_turn_tool_calls", None)
-        if tool_calls is None or tool_calls > 0:
+        if not isinstance(agent, ToolTraceReporting) or agent.last_turn_tool_calls > 0:
             return
         if not _CLAIMS_MEMORY_SAVE.search(reply or ""):
             return
@@ -108,19 +100,21 @@ class RecoveryMixin:
 
     # ---- Layer 3b: hallucinated schedule ----
 
-    @staticmethod
-    def _detect_missed_schedule(reply: str, agent: Agent) -> bool:
+    def _detect_missed_schedule(self, reply: str, agent: Agent) -> bool:
         """True when the reply claims a reminder/schedule was created but no
-        schedule-creating tool ran this turn. Requires the agent to expose
-        last_turn_tool_names (CascadingAgent does); agents that don't are
-        skipped — without the tool trace we can't tell claim from fact."""
-        tool_names = getattr(agent, "last_turn_tool_names", None)
-        if tool_names is None:
+        schedule-creating tool ran this turn. Requires a ToolTraceReporting
+        agent (CascadingAgent is one); agents without the trace are skipped —
+        we can't tell claim from fact blind."""
+        if not self._schedule_claim_tools:
+            return False  # no enabled provider can satisfy the claim anyway
+        if not isinstance(agent, ToolTraceReporting):
             return False
         if not _CLAIMS_SCHEDULE_SET.search(reply or ""):
             return False
         return not any(
-            sat in name for name in tool_names for sat in _SCHEDULE_SATISFYING_TOOLS
+            sat in name
+            for name in agent.last_turn_tool_names
+            for sat in self._schedule_claim_tools
         )
 
     async def _recover_missed_schedule(
@@ -150,9 +144,12 @@ class RecoveryMixin:
             await self._send_safe(chat_id, _SCHEDULE_RECOVERY_FAILED_TEXT)
             return
 
-        tool_names = getattr(agent, "last_turn_tool_names", None) or ()
+        tool_names = (
+            agent.last_turn_tool_names
+            if isinstance(agent, ToolTraceReporting) else ()
+        )
         recovered = any(
-            sat in name for name in tool_names for sat in _SCHEDULE_SATISFYING_TOOLS
+            sat in name for name in tool_names for sat in self._schedule_claim_tools
         )
         if recovered:
             log.info("chat %d: schedule recovered on corrective turn", chat_id)

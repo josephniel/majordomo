@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from connectors import AttachmentIngestor, Connector
+from core import AttachmentIngestor, Connector
 from platforms import InboundMessage
 
 log = logging.getLogger(__name__)

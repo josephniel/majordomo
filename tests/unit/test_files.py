@@ -2,17 +2,8 @@
 Telegram send_file implementation."""
 from types import SimpleNamespace
 
-import pytest
-
 from capabilities.files import FileCourier
-from connectors.chat_context import current_chat_id
-
-
-@pytest.fixture
-def chat_ctx():
-    token = current_chat_id.set(42)
-    yield
-    current_chat_id.reset(token)
+from core import ToolContext
 
 
 class RecordingSender:
@@ -36,63 +27,69 @@ def _courier(tmp_path, sender):
 
 
 class TestChatSendFile:
-    async def test_sends_file_inside_data_dir(self, tmp_path, chat_ctx):
+    async def test_sends_file_inside_data_dir(self, tmp_path):
         sender = RecordingSender()
         _, spec, data_dir = _courier(tmp_path, sender)
         f = data_dir / "code_runs" / "abc" / "report.csv"
         f.parent.mkdir(parents=True)
         f.write_text("a,b\n1,2\n")
-        result = await spec.handler({"path": str(f), "caption": "your report"})
-        assert not result.get("isError")
+        result = await spec.handler(
+            {"path": str(f), "caption": "your report"}, ToolContext(chat_id=42),
+        )
+        assert not result.is_error
         ((chat_id, path, caption),) = sender.calls
         assert chat_id == 42 and path == str(f.resolve()) and caption == "your report"
 
-    async def test_refuses_paths_outside_data_dir(self, tmp_path, chat_ctx):
+    async def test_refuses_paths_outside_data_dir(self, tmp_path):
         sender = RecordingSender()
         _, spec, _ = _courier(tmp_path, sender)
         secret = tmp_path / "credentials" / "token.json"
         secret.parent.mkdir(parents=True)
         secret.write_text("secret")
-        result = await spec.handler({"path": str(secret)})
-        assert result["isError"]
-        assert "refusing" in result["content"][0]["text"]
+        result = await spec.handler({"path": str(secret)}, ToolContext(chat_id=42))
+        assert result.is_error
+        assert "refusing" in result.text
         assert sender.calls == []
 
-    async def test_refuses_traversal(self, tmp_path, chat_ctx):
+    async def test_refuses_traversal(self, tmp_path):
         sender = RecordingSender()
         _, spec, data_dir = _courier(tmp_path, sender)
         outside = tmp_path / "outside.txt"
         outside.write_text("x")
-        result = await spec.handler({"path": str(data_dir / ".." / "outside.txt")})
-        assert result["isError"]
+        result = await spec.handler(
+            {"path": str(data_dir / ".." / "outside.txt")}, ToolContext(chat_id=42),
+        )
+        assert result.is_error
         assert sender.calls == []
 
-    async def test_missing_file(self, tmp_path, chat_ctx):
+    async def test_missing_file(self, tmp_path):
         _, spec, data_dir = _courier(tmp_path, RecordingSender())
-        result = await spec.handler({"path": str(data_dir / "ghost.txt")})
-        assert result["isError"]
+        result = await spec.handler(
+            {"path": str(data_dir / "ghost.txt")}, ToolContext(chat_id=42),
+        )
+        assert result.is_error
 
-    async def test_unbound_platform(self, tmp_path, chat_ctx):
+    async def test_unbound_platform(self, tmp_path):
         _, spec, data_dir = _courier(tmp_path, None)
         f = data_dir / "x.txt"
         f.write_text("x")
-        result = await spec.handler({"path": str(f)})
-        assert result["isError"]
+        result = await spec.handler({"path": str(f)}, ToolContext(chat_id=42))
+        assert result.is_error
 
-    async def test_delivery_failure_reported(self, tmp_path, chat_ctx):
+    async def test_delivery_failure_reported(self, tmp_path):
         _, spec, data_dir = _courier(tmp_path, RecordingSender(result=False))
         f = data_dir / "x.txt"
         f.write_text("x")
-        result = await spec.handler({"path": str(f)})
-        assert result["isError"]
-        assert "could not deliver" in result["content"][0]["text"]
+        result = await spec.handler({"path": str(f)}, ToolContext(chat_id=42))
+        assert result.is_error
+        assert "could not deliver" in result.text
 
     async def test_no_chat_context(self, tmp_path):
         _, spec, data_dir = _courier(tmp_path, RecordingSender())
         f = data_dir / "x.txt"
         f.write_text("x")
-        result = await spec.handler({"path": str(f)})
-        assert result["isError"]
+        result = await spec.handler({"path": str(f)}, ToolContext())
+        assert result.is_error
 
 
 class TestTelegramSendFile:
