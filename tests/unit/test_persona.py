@@ -77,3 +77,25 @@ class TestIsConnectorEnabled:
     def test_false_and_missing_disable(self):
         assert not make_persona({"svc": False}).is_connector_enabled("svc")
         assert not make_persona({}).is_connector_enabled("svc")
+
+
+class TestBackgroundView:
+    def test_default_downgrades_read_write_to_read_only(self):
+        p = make_persona({"svc": "read_write", "ro": True, "listed": ["a"]})
+        bg = p.background_view()
+        assert bg.enabled_connectors == {"svc": True, "ro": True, "listed": ["a"]}
+        # read-only grant now excludes writes
+        assert bg.allowed_tool_names(RWConnector()) == ["read_thing"]
+
+    def test_background_tools_wins_when_set(self):
+        p = make_persona({"svc": "read_write", "ro": True})
+        p.background_tools = {"svc": True}
+        bg = p.background_view()
+        assert bg.enabled_connectors == {"svc": True}
+        assert not bg.is_connector_enabled("ro")
+
+    def test_view_does_not_mutate_original(self):
+        p = make_persona({"svc": "read_write"})
+        p.background_view()
+        assert p.enabled_connectors == {"svc": "read_write"}
+        assert p.allowed_tool_names(RWConnector()) is None  # still full access

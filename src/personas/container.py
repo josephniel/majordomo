@@ -469,6 +469,8 @@ class PersonaRuntime:
             config=self.config,
             connectors=self.active_services,
             persona=self.persona,
+            max_turns=self.settings.claude_max_turns,
+            max_output_tokens=self.settings.claude_max_output_tokens,
         )
 
     @cached_property
@@ -486,6 +488,7 @@ class PersonaRuntime:
         chat_id: int,
         session_id: Optional[str] = None,
         history: Optional[ConversationHistory] = None,
+        persona_override: Optional[Persona] = None,
     ) -> Agent:
         """Build the per-chat fallback chain — LLM-agnostic, no privileged vendor.
 
@@ -501,6 +504,29 @@ class PersonaRuntime:
         # `history` override: delegated sub-agents pass an EphemeralConversationHistory
         # so their turns stay out of the chat mirror and turn_log.
         hist = history if history is not None else self.conversation_history
+
+        # `persona_override`: background agents pass a reduced-tool persona
+        # view; the context builder must match it so the system prompt
+        # doesn't advertise tools that aren't mounted.
+        persona = persona_override or self.persona
+        if persona_override is None:
+            context_builder = self.context_builder
+            claude_builder = self.anthropic_options_builder
+        else:
+            context_builder = ContextBuilder(
+                config=self.config,
+                connectors=self.active_services,
+                persona=persona,
+                platform_context=self.platform.system_prompt_section(),
+            )
+            claude_builder = AnthropicOptionsBuilder(
+                context_builder=context_builder,
+                config=self.config,
+                connectors=self.active_services,
+                persona=persona,
+                max_turns=self.settings.claude_max_turns,
+                max_output_tokens=self.settings.claude_max_output_tokens,
+            )
 
         # External stdio MCP tools are gated wholesale — we can't tell an
         # external server's reads from its writes. (Claude mounts external
@@ -518,15 +544,16 @@ class PersonaRuntime:
 
         def _oai(cls, **extra):
             return cls(
-                context_builder=self.context_builder,
+                context_builder=context_builder,
                 history=hist,
                 persona_id=self.persona.id,
                 chat_id=chat_id,
                 connectors=self.active_services,
-                persona=self.persona,
+                persona=persona,
                 # External stdio MCP servers reach the non-Claude vendors
                 # through this hook (Claude mounts them natively).
                 external_tools_provider=external_provider,
+                max_tokens=self.settings.llm_max_output_tokens,
                 **extra,
             )
 
@@ -545,7 +572,7 @@ class PersonaRuntime:
             available["deepseek"] = _oai(DeepSeekAgent)
         # Claude is opt-in (see docstring); no key needed when using subscription auth.
         if s.claude_enabled or s.anthropic_api_key or primary == "claude":
-            available["claude"] = AnthropicAgent(self.anthropic_options_builder, session_id=session_id)
+            available["claude"] = AnthropicAgent(claude_builder, session_id=session_id)
 
         if not available:
             raise RuntimeError(
@@ -623,38 +650,74 @@ class PersonaRuntime:
         return _inject_context
 
     @cached_property
-    def heartbeat_options_builder(self) -> AnthropicOptionsBuilder:
-        """Same toolset/prompt as the chat agent, pinned to the cheap
-        heartbeat model (HEARTBEAT_MODEL, default Haiku) — heartbeats are
-        background work and must not spend chat-vendor quota."""
-        return AnthropicOptionsBuilder(
-            context_builder=self.context_builder,
+    def background_persona(self) -> Persona:
+        """Reduced-tool persona view for background agents (heartbeat,
+        mail-watch): persona.yaml `background_tools:` when set, else the
+        chat enablement downgraded to read-only. Background fires pay the
+        full tool-schema cost per fire with no cache reuse, so the surface
+        stays minimal by default."""
+        return self.persona.background_view()
+
+    @cached_property
+    def background_context_builder(self) -> ContextBuilder:
+        return ContextBuilder(
             config=self.config,
             connectors=self.active_services,
-            persona=self.persona,
-            model=self.settings.heartbeat_model,
+            persona=self.background_persona,
+            platform_context=self.platform.system_prompt_section(),
         )
 
-    def _heartbeat_agent_factory(self, chat_id: int) -> Agent:
-        """Dedicated per-fire heartbeat agent on Haiku. Falls back to the
-        normal chat chain when Claude isn't enabled. Fresh session each
-        fire; turns still mirror into the chat history so the main agent
-        sees what the heartbeat reported."""
+    def _background_options_builder(
+        self, model: Optional[str] = None
+    ) -> AnthropicOptionsBuilder:
+        return AnthropicOptionsBuilder(
+            context_builder=self.background_context_builder,
+            config=self.config,
+            connectors=self.active_services,
+            persona=self.background_persona,
+            model=model,
+            max_turns=self.settings.claude_max_turns,
+            max_output_tokens=self.settings.claude_max_output_tokens,
+        )
+
+    def _background_agent_factory(
+        self, chat_id: int, model: Optional[str] = None
+    ) -> Agent:
+        """Dedicated per-fire background agent on the reduced background
+        toolset. `model=None` resolves to the persona/chat Claude model.
+        Falls back to the normal chat chain (still with the reduced
+        toolset) when Claude isn't enabled. Fresh session each fire; turns
+        still mirror into the chat history so the main agent sees what the
+        background fire reported."""
         s = self.settings
         if not (s.claude_enabled or s.anthropic_api_key or s.primary_llm == "claude"):
-            return self.create_agent(chat_id=chat_id)
+            return self.create_agent(
+                chat_id=chat_id, persona_override=self.background_persona
+            )
         return CascadingAgent(
-            chain=[("claude", AnthropicAgent(self.heartbeat_options_builder, session_id=None))],
+            chain=[("claude", AnthropicAgent(self._background_options_builder(model), session_id=None))],
             history=self.conversation_history,
             persona_id=self.persona.id,
             chat_id=chat_id,
             summarizer=self.summarizer,
-            # Deliberately NOT the shared board: a Haiku hiccup during a
-            # background heartbeat must not put the CHAT chain's claude
+            # Deliberately NOT the shared board: a hiccup during a
+            # background fire must not put the CHAT chain's claude
             # into cooldown.
             health_board=None,
             memory_recaller=self.context_injector,
         )
+
+    def _heartbeat_agent_factory(self, chat_id: int) -> Agent:
+        """Heartbeats run on the cheap heartbeat model (HEARTBEAT_MODEL,
+        default Haiku) — background work must not spend chat-vendor quota."""
+        return self._background_agent_factory(
+            chat_id, model=self.settings.heartbeat_model
+        )
+
+    def _mail_watch_agent_factory(self, chat_id: int) -> Agent:
+        """Mail-watch keeps the main model (urgency judgment) but sheds the
+        chat toolset — headers arrive as injected context, not via tools."""
+        return self._background_agent_factory(chat_id)
 
     @cached_property
     def heartbeat_config(self) -> Optional[HeartbeatConfig]:
@@ -741,6 +804,7 @@ class PersonaRuntime:
                 gmail_connector=self.gmail_connector,
                 state_file=self.persona.data_dir / "mail_watch.json",
             ),
+            agent_factory=self._mail_watch_agent_factory,
         )
 
     @cached_property

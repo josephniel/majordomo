@@ -35,3 +35,21 @@ class TestRuntimeSettings:
             assert RuntimeSettings.from_env({"CLAUDE_ENABLED": v}).claude_enabled
         for v in ("", "0", "false", "off", "no"):
             assert not RuntimeSettings.from_env({"CLAUDE_ENABLED": v}).claude_enabled
+
+
+class TestTokenCaps:
+    def test_defaults(self):
+        s = RuntimeSettings.from_env({})
+        assert s.llm_max_output_tokens == 4096
+        assert s.claude_max_turns == 50
+        assert s.claude_max_output_tokens == 16000
+
+    def test_overrides_and_disable(self):
+        s = RuntimeSettings.from_env({
+            "LLM_MAX_OUTPUT_TOKENS": "1024",
+            "CLAUDE_MAX_TURNS": "0",
+            "CLAUDE_MAX_OUTPUT_TOKENS": "8000",
+        })
+        assert s.llm_max_output_tokens == 1024
+        assert s.claude_max_turns == 0
+        assert s.claude_max_output_tokens == 8000

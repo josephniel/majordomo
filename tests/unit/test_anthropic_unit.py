@@ -69,3 +69,63 @@ class TestAgentFlags:
     def test_openai_agents_are_client_side(self):
         from agents.chat_completions import ChatCompletionsAgent
         assert ChatCompletionsAgent.USES_SERVER_SIDE_HISTORY is False
+
+
+class _FakeComposer:
+    def build(self):
+        return "sys"
+
+
+class _FakeRegistry:
+    def load_enabled(self):
+        return []
+
+
+class _FakePersona:
+    model = None
+
+    def allowed_tool_names(self, c):
+        return []
+
+
+class TestOptionsBuilder:
+    def _builder(self, **kw):
+        from agents.anthropic import AnthropicOptionsBuilder
+        return AnthropicOptionsBuilder(
+            context_builder=_FakeComposer(),
+            config=_FakeRegistry(),
+            connectors=[],
+            persona=_FakePersona(),
+            model="m",
+            **kw,
+        )
+
+    def test_caps_flow_into_options(self):
+        opts = self._builder(max_turns=50, max_output_tokens=16000).build()
+        assert opts.max_turns == 50
+        assert opts.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "16000"
+
+    def test_zero_caps_mean_uncapped(self):
+        opts = self._builder(max_turns=0, max_output_tokens=0).build()
+        assert opts.max_turns is None
+        assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in (opts.env or {})
+
+
+class TestResetSession:
+    async def test_reset_discards_session_and_reopens(self):
+        agent = AnthropicAgent.__new__(AnthropicAgent)
+        agent._session_id = "old"
+        agent._client = None
+        calls = []
+
+        async def _discard():
+            calls.append("discard")
+
+        async def _open(sid):
+            calls.append(("open", sid))
+
+        agent._discard_client = _discard
+        agent._open = _open
+        await agent.reset_session()
+        assert agent._session_id is None
+        assert calls == ["discard", ("open", None)]

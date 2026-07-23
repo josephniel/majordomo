@@ -17,7 +17,7 @@ DI factory that turns one Persona into a running ConversationOrchestrator.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional, Union
 
@@ -57,6 +57,11 @@ class Persona:
     # Push-style mail alerts: {every_minutes: 3, chat_id: <optional>}.
     # Needs the gmail connector enabled. See capabilities/mailwatch.py.
     mail_watch: Optional[dict] = None
+    # Enablement map for BACKGROUND agents (heartbeat, mail-watch) — same
+    # grammar as faculties:/connectors:. When unset, the chat map is used
+    # downgraded to read-only. Background fires are unattended and pay the
+    # full tool-schema token cost per fire, so keep this minimal.
+    background_tools: Optional[dict[str, EnabledValue]] = None
 
     @classmethod
     def load(cls, persona_id: str, project_root: Path) -> "Persona":
@@ -86,6 +91,9 @@ class Persona:
             heartbeat=dict(cfg["heartbeat"]) if cfg.get("heartbeat") else None,
             webhooks=dict(cfg["webhooks"]) if cfg.get("webhooks") else None,
             mail_watch=dict(cfg["mail_watch"]) if cfg.get("mail_watch") else None,
+            background_tools=(
+                dict(cfg["background_tools"]) if cfg.get("background_tools") else None
+            ),
         )
 
     @staticmethod
@@ -147,6 +155,26 @@ class Persona:
         return self.dir / "credentials"
 
     # ---- enablement queries ----
+
+    def background_view(self) -> "Persona":
+        """This persona as seen by background agents (heartbeat, mail-watch).
+
+        Uses `background_tools:` when set; otherwise downgrades the chat
+        enablement to read-only ("read_write" -> True; True/lists kept).
+        Write access for unattended fires is opt-in via background_tools.
+        """
+        if self.background_tools is not None:
+            enabled: dict[str, EnabledValue] = dict(self.background_tools)
+        else:
+            enabled = {
+                name: (
+                    True
+                    if isinstance(v, str) and v.strip().lower() in _READ_WRITE
+                    else v
+                )
+                for name, v in self.enabled_connectors.items()
+            }
+        return replace(self, enabled_connectors=enabled)
 
     def is_connector_enabled(self, connector_name: str) -> bool:
         v = self.enabled_connectors.get(connector_name)

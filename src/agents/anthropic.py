@@ -224,12 +224,16 @@ class AnthropicOptionsBuilder:
         connectors: list[Connector],
         persona: PersonaLike,
         model: Optional[str] = None,
+        max_turns: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
     ) -> None:
         self._composer = context_builder
         self._config = config
         self._connectors = connectors
         self._persona = persona
         self._model = model or persona.model or os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
+        self._max_turns = max_turns or None  # 0/None → uncapped
+        self._max_output_tokens = max_output_tokens or None
 
     @property
     def model(self) -> str:
@@ -278,6 +282,12 @@ class AnthropicOptionsBuilder:
                 if allowed_for_c is None or tool_name in allowed_for_c:
                     allowed_tools.append(f"mcp__{i.name}__{tool_name}")
 
+        # The CLI reads its output cap from the environment; env here is
+        # additive to the inherited subprocess environment.
+        env: dict[str, str] = {}
+        if self._max_output_tokens:
+            env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(self._max_output_tokens)
+
         return ClaudeAgentOptions(
             system_prompt=self._composer.build(),
             model=self._model,
@@ -288,6 +298,8 @@ class AnthropicOptionsBuilder:
             setting_sources=[],
             tools=[],
             resume=resume_session_id,
+            max_turns=self._max_turns,
+            env=env,
         )
 
     def _allowed_for_profile(self, profile_name: str) -> Optional[list[str]]:
@@ -350,6 +362,15 @@ class AnthropicAgent(Agent):
             await self._discard_client()
             self._session_id = None
             await self._open(None)
+
+    async def reset_session(self) -> None:
+        """Abandon the resumed session and open a fresh one. The caller
+        (CascadingAgent rotation) reseeds context from the mirror; without
+        this, a resumed session replays the entire conversation as input
+        tokens on every turn, forever."""
+        await self._discard_client()
+        self._session_id = None
+        await self._open(None)
 
     async def _open(self, session_id: Optional[str]) -> None:
         opts = self._options_builder.build(session_id)
