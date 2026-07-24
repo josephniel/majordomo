@@ -98,3 +98,14 @@ CREATE TABLE IF NOT EXISTS memory_links (
 );
 
 CREATE INDEX IF NOT EXISTS memory_links_to_idx ON memory_links (to_id);
+
+-- Pinned facts are rendered verbatim (with their id) in the always-injected
+-- context, exempt from the narrative's char budget and never blurred by
+-- compaction — the lossless counterpart to the lossy core summary, matching
+-- how a file-based index keeps every pointer individually addressable.
+ALTER TABLE memory_entries
+    ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS memory_entries_pinned_idx
+    ON memory_entries (persona_id)
+    WHERE pinned AND superseded_by IS NULL;

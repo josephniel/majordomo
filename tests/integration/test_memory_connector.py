@@ -218,6 +218,36 @@ class TestLinks:
         assert "unlinked" in result.text and not result.is_error
 
 
+class TestPinned:
+    async def test_pin_renders_verbatim_with_id(self, memory):
+        _, entry = await memory.save_fact("user", "the user's daughter is named Liwayway")
+        pin = tool_by_name(memory, "memory_pin")
+        result = await pin.handler({"id": str(entry.id)}, ToolContext())
+        assert "pinned" in result.text and not result.is_error
+        section = memory.system_prompt_section()
+        assert "Liwayway" in section
+        assert str(entry.id) in section  # individually addressable
+
+    async def test_pinned_exempt_from_truncation(self, memory, memdb, persona_id):
+        from capabilities.memory import MEMORY_CONTEXT_CHAR_LIMIT
+        # Oversized core narrative that will be truncated...
+        await memdb.set_core(persona_id, "user", "", "y" * (MEMORY_CONTEXT_CHAR_LIMIT + 500), 1)
+        _, entry = await memory.save_fact("agent", "the assistant must always reply in English")
+        pin = tool_by_name(memory, "memory_pin")
+        await pin.handler({"id": str(entry.id)}, ToolContext())
+        section = memory.system_prompt_section()
+        assert "truncated" in section  # narrative was cut
+        assert "reply in English" in section  # ...but the pinned fact survived
+
+    async def test_unpin_removes_from_section(self, memory):
+        _, entry = await memory.save_fact("user", "the user drives a red pickup")
+        pin = tool_by_name(memory, "memory_pin")
+        unpin = tool_by_name(memory, "memory_unpin")
+        await pin.handler({"id": str(entry.id)}, ToolContext())
+        await unpin.handler({"id": str(entry.id)}, ToolContext())
+        assert "red pickup" not in memory.system_prompt_section()
+
+
 class TestSystemPrompt:
     async def test_core_narrative_rendered(self, memory, memdb, persona_id):
         await memdb.set_core(persona_id, "user", "", "knows all about mangoes", 3)

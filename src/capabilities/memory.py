@@ -70,6 +70,8 @@ class LongTermMemory(Faculty):
         "memory_compact": "Compacting memory",
         "memory_link": "Linking memories",
         "memory_unlink": "Unlinking memories",
+        "memory_pin": "Pinning memory",
+        "memory_unpin": "Unpinning memory",
         "history_search": "Searching our past conversations",
     }
 
@@ -94,6 +96,8 @@ Tools:
   memory_compact(scope, domain_key?, deep?)                — fold compartment entries into the running narrative below.
   memory_link(from_id, to_id, relation?)                   — connect two related facts (relation: relates_to/refines/depends_on/contradicts/caused_by).
   memory_unlink(from_id, to_id, relation?)                 — remove a connection.
+  memory_pin(id)                                           — keep a fact verbatim in your always-on context (for load-bearing facts a summary must never blur).
+  memory_unpin(id)                                         — stop pinning a fact.
   history_search(query, limit?)                            — search the FULL past conversation record of this chat
                                                              (including turns long since summarized away). Use it for
                                                              "what did we discuss about X?" / "when did I ask you to...".
@@ -125,6 +129,8 @@ Three principles:
         # Cache of memory_core rows so the sync system_prompt_section() can
         # render without awaiting. Refreshed on writes and at startup.
         self._memory_core_cache: list[MemoryCoreEntry] = []
+        # Pinned facts rendered verbatim in context; refreshed alongside core.
+        self._pinned_cache: list[MemoryEntry] = []
         self._tools_cache: Optional[list] = None
         # Bumped whenever the injected "What you know" narrative changes;
         # the orchestrator watches this to refresh stale agents (gap A2).
@@ -148,6 +154,7 @@ Three principles:
         fresh state. Bumps context_version so long-lived agents rebuild."""
         try:
             self._memory_core_cache = await self._db.get_core(self._persona_id)
+            self._pinned_cache = await self._db.list_pinned(self._persona_id)
             self._context_version += 1
         except Exception:
             log.exception("could not refresh memory core cache")
@@ -263,6 +270,9 @@ Three principles:
 
     def system_prompt_section(self) -> str:
         out = self.SYSTEM_PROMPT_HEADER
+        pinned = self._render_pinned()
+        if pinned:
+            out += "\n\n== Pinned facts (always current, verbatim) ==\n\n" + pinned
         rendered = self._render_memory_for_context()
         if rendered:
             out += "\n\n== What you know ==\n\n" + rendered
@@ -272,6 +282,17 @@ Three principles:
         return self.STATUS.get(local)
 
     # ---- prompt rendering ----
+
+    def _render_pinned(self) -> str:
+        """Pinned facts, verbatim, each with its id so the agent can act on
+        it (update/forget/link). Deliberately NOT subject to the core-narrative
+        char budget — these are the facts the operator/agent decided must never
+        blur away."""
+        lines = []
+        for e in self._pinned_cache:
+            label = e.scope if not e.domain_key else f"{e.scope}/{e.domain_key}"
+            lines.append(f"- ({label}) {e.content}  [id={e.id}]")
+        return "\n".join(lines)
 
     def _render_memory_for_context(self) -> str:
         """Concatenate cached core summaries; truncate to the budget."""
@@ -656,6 +677,55 @@ Three principles:
                 return _tool_error("no such link")
             return ToolResult.ok(f"unlinked {from_id} -x- {to_id}")
 
+        @tool(
+            "memory_pin",
+            "Pin a fact so it stays in your always-on context verbatim — use "
+            "for load-bearing facts a rolling summary must never blur or drop "
+            "(allergies, credentials location, hard preferences, key ids). Use "
+            "an id from memory_recall.",
+            {
+                "type": "object",
+                "properties": {"id": {"type": "string", "description": "UUID from memory_recall."}},
+                "required": ["id"],
+            },
+        )
+        async def memory_pin_tool(args: dict[str, Any], _ctx: ToolContext):
+            eid, err = await _resolve_own_entry(args.get("id"))
+            if err:
+                return _tool_error(err)
+            try:
+                ok = await db.set_pinned(eid, True)
+            except Exception as e:
+                return _tool_error(str(e))
+            if not ok:
+                return _tool_error(f"no active entry with id={eid}")
+            await connector.refresh_core_cache()
+            return ToolResult.ok(f"pinned {eid}")
+
+        @tool(
+            "memory_unpin",
+            "Stop pinning a fact (it stays in memory, just no longer forced "
+            "verbatim into context).",
+            {
+                "type": "object",
+                "properties": {"id": {"type": "string", "description": "UUID of a pinned entry."}},
+                "required": ["id"],
+            },
+        )
+        async def memory_unpin_tool(args: dict[str, Any], _ctx: ToolContext):
+            try:
+                eid = UUID(str(args.get("id") or "").strip())
+            except ValueError:
+                return _tool_error("id must be a valid UUID")
+            try:
+                ok = await db.set_pinned(eid, False)
+            except Exception as e:
+                return _tool_error(str(e))
+            if not ok:
+                return _tool_error(f"no active entry with id={eid}")
+            await connector.refresh_core_cache()
+            return ToolResult.ok(f"unpinned {eid}")
+
         tools = [
             memory_save_tool,
             memory_recall_tool,
@@ -664,6 +734,8 @@ Three principles:
             memory_compact_tool,
             memory_link_tool,
             memory_unlink_tool,
+            memory_pin_tool,
+            memory_unpin_tool,
         ]
 
         if self._history is not None:

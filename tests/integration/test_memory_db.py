@@ -193,6 +193,31 @@ class TestLinks:
         assert await memdb.neighbors(b.id) == []
 
 
+class TestPinned:
+    async def test_pin_and_list(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="user",
+                                   content="the user's blood type is O-negative")
+        assert e.pinned is False
+        assert await memdb.set_pinned(e.id, True) is True
+        pinned = await memdb.list_pinned(persona_id)
+        assert [p.id for p in pinned] == [e.id]
+        assert pinned[0].pinned is True
+
+    async def test_unpin(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="user", content="pin me")
+        await memdb.set_pinned(e.id, True)
+        await memdb.set_pinned(e.id, False)
+        assert await memdb.list_pinned(persona_id) == []
+
+    async def test_pinned_survives_supersession(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="user",
+                                   content="the user's allergy is peanuts")
+        await memdb.set_pinned(e.id, True)
+        e2 = await memdb.supersede_entry(e.id, "the user's allergy is tree nuts")
+        assert e2.pinned is True
+        assert [p.id for p in await memdb.list_pinned(persona_id)] == [e2.id]
+
+
 class TestRollupsAndCore:
     async def test_counts_by_scope(self, memdb, persona_id):
         await memdb.save_entry(persona_id=persona_id, scope="user", content="a")
