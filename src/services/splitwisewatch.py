@@ -157,6 +157,10 @@ class SplitwiseWatcher:
         else:
             # First run: don't replay the whole expense history.
             updated_after = _iso(now - FIRST_RUN_LOOKBACK)
+            log.info(
+                "splitwise_watch: first poll for profile %s (lookback %s)",
+                name, FIRST_RUN_LOOKBACK,
+            )
 
         resp = await client.get_expenses(updated_after=updated_after, limit=40)
         expenses = resp.get("expenses") or []
@@ -165,6 +169,16 @@ class SplitwiseWatcher:
             e for e in expenses
             if str(e.get("updated_at") or "") != seen.get(str(e.get("id")))
         ]
+
+        # A successful poll used to log nothing, so a firing-but-broken watch
+        # and a quiet-but-healthy one looked identical (the bug that hid this
+        # watch's silent no-op for 16h). One INFO line per poll that finds
+        # something makes the watch observable in bot.err.log.
+        if fresh:
+            log.info(
+                "splitwise_watch: %d new/edited expense(s) for profile %s",
+                len(fresh), name,
+            )
 
         lines: list[str] = []
         if fresh:

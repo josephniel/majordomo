@@ -118,3 +118,10 @@ class TestCheck:
         w = make_watcher(tmp_path, {"broken": bad, "ok": good})
         block = await w.check()
         assert block is not None and "Army Navy" in block
+
+    async def test_fresh_poll_logs_observability_line(self, tmp_path, caplog):
+        import logging
+        w = make_watcher(tmp_path, {"splitwise": FakeClient([_expense()])})
+        with caplog.at_level(logging.INFO):
+            await w.check()
+        assert any("new/edited expense" in r.getMessage() for r in caplog.records)
