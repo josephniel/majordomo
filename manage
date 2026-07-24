@@ -76,6 +76,7 @@ manage — majordomo stack
 
   Memory (Phase 1 second brain):
     memory inspect [persona]         show core summaries + entry counts
+    memory export <dir>              dump memory to a greppable/diffable markdown tree
 
   Comms (control-room log):
     comms inspect [persona] [limit]  show recent control-room entries (default 20)

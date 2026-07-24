@@ -40,6 +40,16 @@ class TestSaveFact:
         msg, entry = await memory.save_fact("domain", "content")
         assert entry is None and "domain_key" in msg
 
+    async def test_reference_scope_saves(self, memory):
+        msg, entry = await memory.save_fact(
+            "reference", "The Go SOP lives at https://wiki.example.com/go-sop")
+        assert entry is not None and "saved" in msg
+        assert entry.scope == "reference"
+
+    async def test_reference_scope_needs_no_domain_key(self, memory):
+        _, entry = await memory.save_fact("reference", "crm-docs repo has the schema")
+        assert entry is not None and entry.domain_key == ""
+
     async def test_empty_content_rejected(self, memory):
         msg, entry = await memory.save_fact("user", "   ")
         assert entry is None and "empty" in msg
@@ -159,6 +169,128 @@ class TestTools:
         names = [s.name for s in m.builtin_tools()]
         assert "history_search" not in names
         assert "history_search" not in {t.name for t in m.builtin_tools()}
+
+
+class TestLinks:
+    async def _two_facts(self, memory):
+        _, a = await memory.save_fact("user", "the user owns a homelab server")
+        _, b = await memory.save_fact("user", "the homelab runs Proxmox virtualization")
+        return a, b
+
+    async def test_memory_link_tool(self, memory):
+        a, b = await self._two_facts(memory)
+        link = tool_by_name(memory, "memory_link")
+        result = await link.handler(
+            {"from_id": str(a.id), "to_id": str(b.id), "relation": "relates_to"},
+            ToolContext(),
+        )
+        assert "linked" in result.text and not result.is_error
+
+    async def test_memory_link_invalid_relation(self, memory):
+        a, b = await self._two_facts(memory)
+        link = tool_by_name(memory, "memory_link")
+        result = await link.handler(
+            {"from_id": str(a.id), "to_id": str(b.id), "relation": "bogus"}, ToolContext())
+        assert result.is_error
+
+    async def test_memory_link_unknown_id_errors(self, memory):
+        import uuid
+        _, a = await memory.save_fact("user", "a real fact")
+        link = tool_by_name(memory, "memory_link")
+        result = await link.handler(
+            {"from_id": str(a.id), "to_id": str(uuid.uuid4())}, ToolContext())
+        assert result.is_error
+
+    async def test_recall_surfaces_neighbors(self, memory):
+        a, b = await self._two_facts(memory)
+        link = tool_by_name(memory, "memory_link")
+        await link.handler({"from_id": str(a.id), "to_id": str(b.id)}, ToolContext())
+        recall = tool_by_name(memory, "memory_recall")
+        result = await recall.handler({"query": "homelab server"}, ToolContext())
+        assert "Proxmox" in result.text and "related" in result.text.lower()
+
+    async def test_memory_unlink_tool(self, memory):
+        a, b = await self._two_facts(memory)
+        link = tool_by_name(memory, "memory_link")
+        unlink = tool_by_name(memory, "memory_unlink")
+        await link.handler({"from_id": str(a.id), "to_id": str(b.id)}, ToolContext())
+        result = await unlink.handler({"from_id": str(a.id), "to_id": str(b.id)}, ToolContext())
+        assert "unlinked" in result.text and not result.is_error
+
+
+class TestPinned:
+    async def test_pin_renders_verbatim_with_id(self, memory):
+        _, entry = await memory.save_fact("user", "the user's daughter is named Liwayway")
+        pin = tool_by_name(memory, "memory_pin")
+        result = await pin.handler({"id": str(entry.id)}, ToolContext())
+        assert "pinned" in result.text and not result.is_error
+        section = memory.system_prompt_section()
+        assert "Liwayway" in section
+        assert str(entry.id) in section  # individually addressable
+
+    async def test_pinned_exempt_from_truncation(self, memory, memdb, persona_id):
+        from capabilities.memory import MEMORY_CONTEXT_CHAR_LIMIT
+        # Oversized core narrative that will be truncated...
+        await memdb.set_core(persona_id, "user", "", "y" * (MEMORY_CONTEXT_CHAR_LIMIT + 500), 1)
+        _, entry = await memory.save_fact("agent", "the assistant must always reply in English")
+        pin = tool_by_name(memory, "memory_pin")
+        await pin.handler({"id": str(entry.id)}, ToolContext())
+        section = memory.system_prompt_section()
+        assert "truncated" in section  # narrative was cut
+        assert "reply in English" in section  # ...but the pinned fact survived
+
+    async def test_unpin_removes_from_section(self, memory):
+        _, entry = await memory.save_fact("user", "the user drives a red pickup")
+        pin = tool_by_name(memory, "memory_pin")
+        unpin = tool_by_name(memory, "memory_unpin")
+        await pin.handler({"id": str(entry.id)}, ToolContext())
+        await unpin.handler({"id": str(entry.id)}, ToolContext())
+        assert "red pickup" not in memory.system_prompt_section()
+
+
+class TestStaleness:
+    async def _backdate(self, memdb, entry_id, days):
+        async with memdb._acquire() as conn:
+            await conn.execute(
+                f"UPDATE memory_entries SET verified_at = NOW() - INTERVAL '{days} days' WHERE id=$1",
+                entry_id)
+
+    async def test_stale_volatile_annotated_in_recall(self, memory, memdb, persona_id):
+        _, e = await memory.save_fact("agent", "the deploy flag is --prod", volatile=True)
+        await self._backdate(memdb, e.id, 60)
+        recall = tool_by_name(memory, "memory_recall")
+        result = await recall.handler({"query": "deploy flag prod"}, ToolContext())
+        assert "unverified" in result.text.lower()
+
+    async def test_fresh_volatile_not_annotated(self, memory):
+        await memory.save_fact("agent", "the deploy flag is --prod", volatile=True)
+        recall = tool_by_name(memory, "memory_recall")
+        result = await recall.handler({"query": "deploy flag prod"}, ToolContext())
+        assert "unverified" not in result.text.lower()
+
+    async def test_nonvolatile_never_annotated(self, memory, memdb, persona_id):
+        _, e = await memory.save_fact("user", "the user enjoys drinking oolong tea")
+        await self._backdate(memdb, e.id, 400)
+        recall = tool_by_name(memory, "memory_recall")
+        result = await recall.handler({"query": "what tea does the user enjoy"}, ToolContext())
+        assert "unverified" not in result.text.lower()
+
+    async def test_memory_verify_clears_staleness(self, memory, memdb, persona_id):
+        _, e = await memory.save_fact("agent", "the deploy flag is --prod", volatile=True)
+        await self._backdate(memdb, e.id, 60)
+        verify = tool_by_name(memory, "memory_verify")
+        r = await verify.handler({"id": str(e.id)}, ToolContext())
+        assert "verified" in r.text and not r.is_error
+        recall = tool_by_name(memory, "memory_recall")
+        result = await recall.handler({"query": "deploy flag prod"}, ToolContext())
+        assert "unverified" not in result.text.lower()
+
+    async def test_stale_pinned_fact_annotated(self, memory, memdb, persona_id):
+        _, e = await memory.save_fact("agent", "credentials live under data/credentials/", volatile=True)
+        await self._backdate(memdb, e.id, 90)
+        pin = tool_by_name(memory, "memory_pin")
+        await pin.handler({"id": str(e.id)}, ToolContext())
+        assert "unverified" in memory.system_prompt_section().lower()
 
 
 class TestSystemPrompt:

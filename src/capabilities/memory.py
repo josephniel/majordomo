@@ -26,12 +26,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID
 
 from core import Faculty, Summarizer, ToolContext, ToolResult, tool
 
-from storage import MemoryCoreEntry, MemoryDatabase, MemoryEntry
+from storage import LINK_RELATIONS, MemoryCoreEntry, MemoryDatabase, MemoryEntry, VALID_SCOPES
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime; duck-typed otherwise
     from agents.history import ConversationHistory
@@ -55,6 +56,9 @@ MEMORY_CONTEXT_CHAR_LIMIT = 6000  # ≈ 1500 tokens
 # the last compaction. Per-compartment, count-based.
 AUTO_COMPACT_THRESHOLD = 30
 
+# A volatile fact unconfirmed for this long is flagged for re-verification.
+STALE_AFTER_DAYS = 30
+
 
 class LongTermMemory(Faculty):
     name = "memory"
@@ -68,6 +72,11 @@ class LongTermMemory(Faculty):
         "memory_update": "Updating memory",
         "memory_forget": "Forgetting memory",
         "memory_compact": "Compacting memory",
+        "memory_link": "Linking memories",
+        "memory_unlink": "Unlinking memories",
+        "memory_pin": "Pinning memory",
+        "memory_unpin": "Unpinning memory",
+        "memory_verify": "Re-verifying memory",
         "history_search": "Searching our past conversations",
     }
 
@@ -81,6 +90,8 @@ Scopes:
   agent     — facts about you (the assistant), your configured behavior or persona-specific knowledge.
   domain    — knowledge tied to a specific connector / external system. Set domain_key:
               gmail, google_calendar, clickup, splitwise, yahoo, schedule, etc.
+  reference — a pointer to an external resource (a URL, dashboard, doc, repo, ticket).
+              Save the locator itself; put the raw URL in the content so it survives verbatim.
 
 Tools:
   memory_save(scope, content, domain_key?, title?)         — append one atomic fact.
@@ -88,6 +99,11 @@ Tools:
   memory_update(id, content)                               — supersede an existing entry (use the id from recall).
   memory_forget(id)                                        — soft-delete an entry.
   memory_compact(scope, domain_key?, deep?)                — fold compartment entries into the running narrative below.
+  memory_link(from_id, to_id, relation?)                   — connect two related facts (relation: relates_to/refines/depends_on/contradicts/caused_by).
+  memory_unlink(from_id, to_id, relation?)                 — remove a connection.
+  memory_pin(id)                                           — keep a fact verbatim in your always-on context (for load-bearing facts a summary must never blur).
+  memory_unpin(id)                                         — stop pinning a fact.
+  memory_verify(id)                                        — mark a volatile fact re-confirmed (clears its "unverified" warning).
   history_search(query, limit?)                            — search the FULL past conversation record of this chat
                                                              (including turns long since summarized away). Use it for
                                                              "what did we discuss about X?" / "when did I ask you to...".
@@ -119,6 +135,8 @@ Three principles:
         # Cache of memory_core rows so the sync system_prompt_section() can
         # render without awaiting. Refreshed on writes and at startup.
         self._memory_core_cache: list[MemoryCoreEntry] = []
+        # Pinned facts rendered verbatim in context; refreshed alongside core.
+        self._pinned_cache: list[MemoryEntry] = []
         self._tools_cache: Optional[list] = None
         # Bumped whenever the injected "What you know" narrative changes;
         # the orchestrator watches this to refresh stale agents (gap A2).
@@ -142,6 +160,7 @@ Three principles:
         fresh state. Bumps context_version so long-lived agents rebuild."""
         try:
             self._memory_core_cache = await self._db.get_core(self._persona_id)
+            self._pinned_cache = await self._db.list_pinned(self._persona_id)
             self._context_version += 1
         except Exception:
             log.exception("could not refresh memory core cache")
@@ -156,6 +175,20 @@ Three principles:
 
     # ---- shared write path (tool + reflection engine) ----
 
+    @staticmethod
+    def _staleness_suffix(entry: MemoryEntry) -> str:
+        """A re-verification note for a volatile fact that hasn't been
+        confirmed within STALE_AFTER_DAYS. Empty for stable/fresh facts."""
+        if not entry.volatile:
+            return ""
+        ref = entry.verified_at or entry.created_at
+        if ref is None:
+            return ""
+        age_days = (datetime.now(timezone.utc) - ref).days
+        if age_days >= STALE_AFTER_DAYS:
+            return f"  ⚠ unverified for {age_days}d — confirm before trusting"
+        return ""
+
     async def save_fact(
         self,
         scope: str,
@@ -163,12 +196,13 @@ Three principles:
         domain_key: str = "",
         title: str = "",
         source: str = "chat",
+        volatile: bool = False,
     ) -> tuple[str, Optional[MemoryEntry]]:
         """Validate → dedup → insert → schedule auto-compaction.
         Returns (human-readable outcome, entry-or-None)."""
         scope = (scope or "").strip().lower()
-        if scope not in ("user", "agent", "domain"):
-            return (f"invalid scope {scope!r}; must be one of user/agent/domain", None)
+        if scope not in VALID_SCOPES:
+            return (f"invalid scope {scope!r}; must be one of {'/'.join(VALID_SCOPES)}", None)
         domain_key = (domain_key or "").strip().lower()
         if scope == "domain" and not domain_key:
             return ("scope='domain' requires a non-empty domain_key", None)
@@ -200,12 +234,18 @@ Three principles:
             title=(title or "").strip(),
             content=content,
             metadata={"source": source},
+            volatile=volatile,
         )
         self._spawn_bg(self._maybe_auto_compact(scope, domain_key))
         return (
             f"saved (id={entry.id}) into {scope}{('/' + domain_key) if domain_key else ''}",
             entry,
         )
+
+    async def link(self, from_id: UUID, to_id: UUID, relation: str = "relates_to") -> bool:
+        """Public link helper (used by the reflection engine's auto-linking).
+        Best-effort; returns whether a new edge was created."""
+        return await self._db.add_link(from_id, to_id, relation)
 
     # ---- auto-RAG (called by CascadingAgent per user turn) ----
 
@@ -240,7 +280,7 @@ Three principles:
             if score < AUTO_RECALL_MIN_SCORE:
                 continue
             label = entry.scope if not entry.domain_key else f"{entry.scope}/{entry.domain_key}"
-            lines.append(f"- ({label}) {entry.content}")
+            lines.append(f"- ({label}) {entry.content}{self._staleness_suffix(entry)}")
         return "\n".join(lines)
 
     # ---- Connector contract ----
@@ -252,6 +292,9 @@ Three principles:
 
     def system_prompt_section(self) -> str:
         out = self.SYSTEM_PROMPT_HEADER
+        pinned = self._render_pinned()
+        if pinned:
+            out += "\n\n== Pinned facts (always current, verbatim) ==\n\n" + pinned
         rendered = self._render_memory_for_context()
         if rendered:
             out += "\n\n== What you know ==\n\n" + rendered
@@ -261,6 +304,17 @@ Three principles:
         return self.STATUS.get(local)
 
     # ---- prompt rendering ----
+
+    def _render_pinned(self) -> str:
+        """Pinned facts, verbatim, each with its id so the agent can act on
+        it (update/forget/link). Deliberately NOT subject to the core-narrative
+        char budget — these are the facts the operator/agent decided must never
+        blur away."""
+        lines = []
+        for e in self._pinned_cache:
+            label = e.scope if not e.domain_key else f"{e.scope}/{e.domain_key}"
+            lines.append(f"- ({label}) {e.content}  [id={e.id}]{self._staleness_suffix(e)}")
+        return "\n".join(lines)
 
     def _render_memory_for_context(self) -> str:
         """Concatenate cached core summaries; truncate to the budget."""
@@ -372,8 +426,8 @@ Three principles:
                 "properties": {
                     "scope": {
                         "type": "string",
-                        "enum": ["user", "agent", "domain"],
-                        "description": "user = about the operator; agent = about you; domain = about an external system",
+                        "enum": list(VALID_SCOPES),
+                        "description": "user = about the operator; agent = about you; domain = about an external system; reference = pointer to a URL/doc/resource",
                     },
                     "content": {"type": "string", "description": "The fact, in one sentence."},
                     "domain_key": {
@@ -381,6 +435,10 @@ Three principles:
                         "description": "Required when scope='domain': gmail, google_calendar, clickup, splitwise, yahoo, schedule, …",
                     },
                     "title": {"type": "string", "description": "Short label (optional)."},
+                    "volatile": {
+                        "type": "boolean",
+                        "description": "true if the fact can drift (cites a file path, flag, commit, version, config value) — it'll be flagged for re-verification when it ages.",
+                    },
                 },
                 "required": ["scope", "content"],
             },
@@ -393,6 +451,7 @@ Three principles:
                     domain_key=args.get("domain_key") or "",
                     title=args.get("title") or "",
                     source="chat",
+                    volatile=bool(args.get("volatile")),
                 )
                 if entry is None and not msg.startswith("not saved"):
                     return _tool_error(msg)
@@ -411,7 +470,7 @@ Three principles:
                     "query": {"type": "string", "description": "Search string."},
                     "scope": {
                         "type": "string",
-                        "enum": ["user", "agent", "domain"],
+                        "enum": list(VALID_SCOPES),
                         "description": "Optional scope filter.",
                     },
                     "domain_key": {"type": "string", "description": "Optional domain filter."},
@@ -438,7 +497,16 @@ Three principles:
                 for r in results:
                     label = r.scope if not r.domain_key else f"{r.scope}/{r.domain_key}"
                     title = f" [{r.title}]" if r.title else ""
-                    lines.append(f"id={r.id} ({label}){title}\n  {r.content}")
+                    lines.append(f"id={r.id} ({label}){title}\n  {r.content}{connector._staleness_suffix(r)}")
+                    # Surface 1-hop links so related facts travel together —
+                    # the graph payoff of memory_link.
+                    try:
+                        neigh = await db.neighbors(r.id)
+                    except Exception:
+                        neigh = []
+                    for n, relation, direction in neigh:
+                        arrow = "→" if direction == "out" else "←"
+                        lines.append(f"  related ({relation} {arrow}) id={n.id}: {n.content}")
                 return ToolResult.ok("\n".join(lines))
             except Exception as e:
                 return _tool_error(str(e))
@@ -520,7 +588,7 @@ Three principles:
                 "properties": {
                     "scope": {
                         "type": "string",
-                        "enum": ["user", "agent", "domain"],
+                        "enum": list(VALID_SCOPES),
                     },
                     "domain_key": {
                         "type": "string",
@@ -536,8 +604,8 @@ Three principles:
         )
         async def memory_compact_tool(args: dict[str, Any], _ctx: ToolContext):
             scope = (args.get("scope") or "").strip().lower()
-            if scope not in ("user", "agent", "domain"):
-                return _tool_error("scope must be user/agent/domain")
+            if scope not in VALID_SCOPES:
+                return _tool_error(f"scope must be one of {'/'.join(VALID_SCOPES)}")
             domain_key = (args.get("domain_key") or "").strip().lower()
             if scope == "domain" and not domain_key:
                 return _tool_error("scope='domain' requires a domain_key")
@@ -547,12 +615,179 @@ Three principles:
                 f"compacted {scope}{('/' + domain_key) if domain_key else ''}:\n\n{summary}"
             )
 
+        async def _resolve_own_entry(raw_id: str) -> tuple[Optional[UUID], Optional[str]]:
+            """Parse a UUID and confirm it's an active entry of THIS persona.
+            Returns (uuid, None) on success or (None, error-message)."""
+            try:
+                eid = UUID(str(raw_id or "").strip())
+            except ValueError:
+                return None, f"{raw_id!r} is not a valid UUID (use memory_recall to find ids)"
+            entry = await db.get_entry(eid)
+            if entry is None or entry.persona_id != persona_id:
+                return None, f"no memory with id={eid}"
+            if entry.superseded_by is not None:
+                return None, f"id={eid} is superseded/forgotten; link the current entry instead"
+            return eid, None
+
+        @tool(
+            "memory_link",
+            "Connect two related memories so they surface together on recall. "
+            "Directional: from_id --relation--> to_id. Relations: relates_to "
+            "(default), refines, depends_on, contradicts, caused_by. Use ids "
+            "from memory_recall.",
+            {
+                "type": "object",
+                "properties": {
+                    "from_id": {"type": "string", "description": "UUID of the source memory."},
+                    "to_id": {"type": "string", "description": "UUID of the target memory."},
+                    "relation": {
+                        "type": "string",
+                        "enum": list(LINK_RELATIONS),
+                        "description": "Edge type (default relates_to).",
+                    },
+                },
+                "required": ["from_id", "to_id"],
+            },
+        )
+        async def memory_link_tool(args: dict[str, Any], _ctx: ToolContext):
+            relation = (args.get("relation") or "relates_to").strip().lower()
+            if relation not in LINK_RELATIONS:
+                return _tool_error(f"relation must be one of {'/'.join(LINK_RELATIONS)}")
+            from_id, err = await _resolve_own_entry(args.get("from_id"))
+            if err:
+                return _tool_error(err)
+            to_id, err = await _resolve_own_entry(args.get("to_id"))
+            if err:
+                return _tool_error(err)
+            if from_id == to_id:
+                return _tool_error("cannot link a memory to itself")
+            try:
+                created = await db.add_link(from_id, to_id, relation)
+            except Exception as e:
+                return _tool_error(str(e))
+            if not created:
+                return ToolResult.ok(f"already linked ({relation})")
+            return ToolResult.ok(f"linked {from_id} --{relation}--> {to_id}")
+
+        @tool(
+            "memory_unlink",
+            "Remove the connection between two memories. Omit relation to "
+            "remove every edge from_id->to_id.",
+            {
+                "type": "object",
+                "properties": {
+                    "from_id": {"type": "string", "description": "UUID of the source memory."},
+                    "to_id": {"type": "string", "description": "UUID of the target memory."},
+                    "relation": {
+                        "type": "string",
+                        "enum": list(LINK_RELATIONS),
+                        "description": "Optional: only this edge type.",
+                    },
+                },
+                "required": ["from_id", "to_id"],
+            },
+        )
+        async def memory_unlink_tool(args: dict[str, Any], _ctx: ToolContext):
+            try:
+                from_id = UUID(str(args.get("from_id") or "").strip())
+                to_id = UUID(str(args.get("to_id") or "").strip())
+            except ValueError:
+                return _tool_error("from_id and to_id must be valid UUIDs")
+            relation = (args.get("relation") or "").strip().lower() or None
+            if relation is not None and relation not in LINK_RELATIONS:
+                return _tool_error(f"relation must be one of {'/'.join(LINK_RELATIONS)}")
+            try:
+                removed = await db.remove_link(from_id, to_id, relation)
+            except Exception as e:
+                return _tool_error(str(e))
+            if not removed:
+                return _tool_error("no such link")
+            return ToolResult.ok(f"unlinked {from_id} -x- {to_id}")
+
+        @tool(
+            "memory_pin",
+            "Pin a fact so it stays in your always-on context verbatim — use "
+            "for load-bearing facts a rolling summary must never blur or drop "
+            "(allergies, credentials location, hard preferences, key ids). Use "
+            "an id from memory_recall.",
+            {
+                "type": "object",
+                "properties": {"id": {"type": "string", "description": "UUID from memory_recall."}},
+                "required": ["id"],
+            },
+        )
+        async def memory_pin_tool(args: dict[str, Any], _ctx: ToolContext):
+            eid, err = await _resolve_own_entry(args.get("id"))
+            if err:
+                return _tool_error(err)
+            try:
+                ok = await db.set_pinned(eid, True)
+            except Exception as e:
+                return _tool_error(str(e))
+            if not ok:
+                return _tool_error(f"no active entry with id={eid}")
+            await connector.refresh_core_cache()
+            return ToolResult.ok(f"pinned {eid}")
+
+        @tool(
+            "memory_unpin",
+            "Stop pinning a fact (it stays in memory, just no longer forced "
+            "verbatim into context).",
+            {
+                "type": "object",
+                "properties": {"id": {"type": "string", "description": "UUID of a pinned entry."}},
+                "required": ["id"],
+            },
+        )
+        async def memory_unpin_tool(args: dict[str, Any], _ctx: ToolContext):
+            try:
+                eid = UUID(str(args.get("id") or "").strip())
+            except ValueError:
+                return _tool_error("id must be a valid UUID")
+            try:
+                ok = await db.set_pinned(eid, False)
+            except Exception as e:
+                return _tool_error(str(e))
+            if not ok:
+                return _tool_error(f"no active entry with id={eid}")
+            await connector.refresh_core_cache()
+            return ToolResult.ok(f"unpinned {eid}")
+
+        @tool(
+            "memory_verify",
+            "Mark a volatile fact as re-confirmed right now (you checked it "
+            "still holds). Clears its 'unverified' staleness warning and "
+            "resets the clock.",
+            {
+                "type": "object",
+                "properties": {"id": {"type": "string", "description": "UUID of the fact you re-checked."}},
+                "required": ["id"],
+            },
+        )
+        async def memory_verify_tool(args: dict[str, Any], _ctx: ToolContext):
+            try:
+                eid = UUID(str(args.get("id") or "").strip())
+            except ValueError:
+                return _tool_error("id must be a valid UUID")
+            try:
+                ok = await db.mark_verified(eid)
+            except Exception as e:
+                return _tool_error(str(e))
+            if not ok:
+                return _tool_error(f"no active entry with id={eid}")
+            return ToolResult.ok(f"verified {eid}")
+
         tools = [
             memory_save_tool,
             memory_recall_tool,
             memory_update_tool,
             memory_forget_tool,
             memory_compact_tool,
+            memory_link_tool,
+            memory_unlink_tool,
+            memory_pin_tool,
+            memory_unpin_tool,
+            memory_verify_tool,
         ]
 
         if self._history is not None:

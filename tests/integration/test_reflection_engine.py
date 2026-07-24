@@ -108,6 +108,58 @@ class TestRunReflection:
         assert await engine.run_reflection(CHAT_ID) == 1
 
 
+class TestAutoLink:
+    async def test_same_compartment_facts_autolinked(self, history, memory, memdb, persona_id):
+        summ = FakeSummarizer(facts_json(
+            {"scope": "domain", "domain_key": "gmail",
+             "content": "The user's newsletters arrive from Acme Corp"},
+            {"scope": "domain", "domain_key": "gmail",
+             "content": "The user archives promotional mail every Friday"},
+        ))
+        engine = make_engine(history, memory, persona_id, summ)
+        await seed_convo(history, persona_id)
+        assert await engine.run_reflection(CHAT_ID) == 2
+        rows = await memdb.recall(persona_id, "newsletters archives mail",
+                                  scope="domain", domain_key="gmail", limit=5)
+        ids = {r.id for r in rows}
+        assert len(ids) == 2
+        first = next(iter(ids))
+        neigh = await memdb.neighbors(first)
+        assert any(n.id in ids and rel == "relates_to" for n, rel, _ in neigh)
+
+    async def test_cross_compartment_not_autolinked(self, history, memory, memdb, persona_id):
+        summ = FakeSummarizer(facts_json(
+            {"scope": "user", "content": "The user enjoys trail running on weekends"},
+            {"scope": "domain", "domain_key": "gmail",
+             "content": "The user flags invoices from vendors"},
+        ))
+        engine = make_engine(history, memory, persona_id, summ)
+        await seed_convo(history, persona_id)
+        assert await engine.run_reflection(CHAT_ID) == 2
+        rows = await memdb.list_active(persona_id, scope="user")
+        assert rows and await memdb.neighbors(rows[0].id) == []
+
+
+class TestVolatileDetection:
+    async def test_path_citing_fact_marked_volatile(self, history, memory, memdb, persona_id):
+        summ = FakeSummarizer(facts_json(
+            {"scope": "agent", "content": "The bot reads config from src/personas/settings.py"}))
+        engine = make_engine(history, memory, persona_id, summ)
+        await seed_convo(history, persona_id)
+        await engine.run_reflection(CHAT_ID)
+        rows = await memdb.list_active(persona_id, scope="agent")
+        assert rows and rows[0].volatile is True
+
+    async def test_plain_fact_not_volatile(self, history, memory, memdb, persona_id):
+        summ = FakeSummarizer(facts_json(
+            {"scope": "user", "content": "The user enjoys hiking with friends on weekends"}))
+        engine = make_engine(history, memory, persona_id, summ)
+        await seed_convo(history, persona_id)
+        await engine.run_reflection(CHAT_ID)
+        rows = await memdb.list_active(persona_id, scope="user")
+        assert rows and rows[0].volatile is False
+
+
 class TestTimers:
     async def test_note_activity_rearms(self, history, memory, persona_id):
         engine = ReflectionEngine(history=history, memory=memory,

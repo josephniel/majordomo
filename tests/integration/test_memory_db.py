@@ -120,6 +120,128 @@ class TestForget:
         assert await memdb.forget_entry(e.id) is False
 
 
+class TestReferenceScope:
+    async def test_save_and_recall_reference_scope(self, memdb, persona_id):
+        e = await memdb.save_entry(
+            persona_id=persona_id, scope="reference",
+            title="status board",
+            content="The status dashboard lives at https://status.example.com",
+            metadata={"url": "https://status.example.com", "kind": "dashboard"},
+        )
+        assert e.scope == "reference"
+        results = await memdb.recall(persona_id, "status dashboard url")
+        assert any(r.scope == "reference" for r in results)
+
+    async def test_reference_scope_counts(self, memdb, persona_id):
+        await memdb.save_entry(persona_id=persona_id, scope="reference",
+                               content="SOP doc is in the crm-docs repo")
+        assert await memdb.counts_by_scope(persona_id) == {"reference": 1}
+
+    async def test_reference_core_compartment(self, memdb, persona_id):
+        await memdb.set_core(persona_id, "reference", "", "known pointers narrative", 2)
+        [core] = await memdb.get_core(persona_id)
+        assert core.scope == "reference"
+
+
+class TestLinks:
+    async def test_add_and_list_neighbors(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="the user owns a homelab")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="the homelab runs Proxmox")
+        assert await memdb.add_link(a.id, b.id, "relates_to") is True
+        neigh = await memdb.neighbors(a.id)
+        assert any(n.id == b.id and rel == "relates_to" and direction == "out"
+                   for n, rel, direction in neigh)
+        # reverse direction visible from b
+        back = await memdb.neighbors(b.id)
+        assert any(n.id == a.id and direction == "in" for n, rel, direction in back)
+
+    async def test_duplicate_link_is_noop(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact a")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact b")
+        assert await memdb.add_link(a.id, b.id, "relates_to") is True
+        assert await memdb.add_link(a.id, b.id, "relates_to") is False
+
+    async def test_remove_link(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact a")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact b")
+        await memdb.add_link(a.id, b.id, "depends_on")
+        assert await memdb.remove_link(a.id, b.id) is True
+        assert await memdb.neighbors(a.id) == []
+
+    async def test_neighbors_only_active(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact a")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact b to forget")
+        await memdb.add_link(a.id, b.id)
+        await memdb.forget_entry(b.id)
+        assert await memdb.neighbors(a.id) == []
+
+    async def test_links_carry_across_supersession(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="the user owns a car")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="the car is a sedan")
+        await memdb.add_link(a.id, b.id, "relates_to")
+        a2 = await memdb.supersede_entry(a.id, "the user owns two cars")
+        neigh = await memdb.neighbors(a2.id)
+        assert any(n.id == b.id for n, _, _ in neigh), "link should follow to the new entry"
+        assert await memdb.neighbors(a.id) == []
+
+    async def test_hard_delete_cascades_links(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact a")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact b")
+        await memdb.add_link(a.id, b.id)
+        await memdb.forget_entry(a.id, hard=True)
+        # the edge row is gone; b has no dangling neighbor
+        assert await memdb.neighbors(b.id) == []
+
+
+class TestPinned:
+    async def test_pin_and_list(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="user",
+                                   content="the user's blood type is O-negative")
+        assert e.pinned is False
+        assert await memdb.set_pinned(e.id, True) is True
+        pinned = await memdb.list_pinned(persona_id)
+        assert [p.id for p in pinned] == [e.id]
+        assert pinned[0].pinned is True
+
+    async def test_unpin(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="user", content="pin me")
+        await memdb.set_pinned(e.id, True)
+        await memdb.set_pinned(e.id, False)
+        assert await memdb.list_pinned(persona_id) == []
+
+    async def test_pinned_survives_supersession(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="user",
+                                   content="the user's allergy is peanuts")
+        await memdb.set_pinned(e.id, True)
+        e2 = await memdb.supersede_entry(e.id, "the user's allergy is tree nuts")
+        assert e2.pinned is True
+        assert [p.id for p in await memdb.list_pinned(persona_id)] == [e2.id]
+
+
+class TestVerification:
+    async def test_save_volatile_flag(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="agent",
+                                   content="config lives at src/settings.py", volatile=True)
+        assert e.volatile is True
+
+    async def test_default_not_volatile(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="user", content="plain fact")
+        assert e.volatile is False
+
+    async def test_mark_verified_sets_timestamp(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="agent",
+                                   content="the deploy flag is --prod", volatile=True)
+        assert await memdb.mark_verified(e.id) is True
+        got = await memdb.get_entry(e.id)
+        assert got.verified_at is not None
+
+    async def test_supersede_carries_volatile(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="agent",
+                                   content="flag --foo enables bar", volatile=True)
+        e2 = await memdb.supersede_entry(e.id, "flag --foo enables baz")
+        assert e2.volatile is True
+
+
 class TestRollupsAndCore:
     async def test_counts_by_scope(self, memdb, persona_id):
         await memdb.save_entry(persona_id=persona_id, scope="user", content="a")

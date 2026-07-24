@@ -116,6 +116,12 @@ class ConnectorCLI:
             sys.exit(1)
         asyncio.run(_reembed_memory(self._runtime))
 
+    def _cmd_memory_export(self, args) -> None:
+        if self._runtime is None:
+            print("error: persona container not available", file=sys.stderr)
+            sys.exit(1)
+        asyncio.run(_export_memory(self._runtime, args.dir))
+
     def _cmd_canary(self, _args) -> None:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
@@ -259,6 +265,14 @@ class ConnectorCLI:
         )
         p_reembed.set_defaults(func=self._cmd_memory_reembed)
 
+        p_export = p_memory_sub.add_parser(
+            "export",
+            help="dump memory to a greppable/diffable markdown tree "
+                 "(MEMORY.md index + entries/<id>.md + core/)",
+        )
+        p_export.add_argument("dir", help="output directory (created if absent)")
+        p_export.set_defaults(func=self._cmd_memory_export)
+
         # `comms <action>` — Phase 2/control-room comms log.
         p_comms = sub.add_parser("comms", help="control-room comms log")
         p_comms_sub = p_comms.add_subparsers(dest="comms_action", required=True)
@@ -313,6 +327,88 @@ async def _run_canary(container) -> None:
         await agent.stop()
     except Exception:
         pass
+
+
+async def _export_memory(container, out_dir: str) -> int:
+    """Dump the persona's ACTIVE memory to a greppable/diffable markdown tree:
+
+        <out_dir>/MEMORY.md            index — one line per fact
+        <out_dir>/entries/<id>.md      one file per fact (frontmatter + body + links)
+        <out_dir>/core/<compartment>.md  each compacted narrative
+
+    One-way: this is for inspection, backup, and `git diff`, never re-imported
+    (importing would reopen the dedup/supersession/embedding write path).
+    Returns the number of facts exported."""
+    import json
+    from pathlib import Path
+
+    persona = container.persona
+    db = container.memory_database
+    await db.connect()
+
+    root = Path(out_dir)
+    entries_dir = root / "entries"
+    core_dir = root / "core"
+    entries_dir.mkdir(parents=True, exist_ok=True)
+    core_dir.mkdir(parents=True, exist_ok=True)
+
+    cores = await db.get_core(persona.id)
+    for c in cores:
+        compartment = c.scope if not c.domain_key else f"{c.scope}/{c.domain_key}"
+        fname = c.scope if not c.domain_key else f"{c.scope}__{c.domain_key}"
+        (core_dir / f"{fname}.md").write_text(
+            f"# Core narrative — {compartment}\n\n{c.summary}\n", encoding="utf-8")
+
+    entries = await db.list_active(persona.id, limit=100000)
+    index = [
+        f"# Memory index — {persona.id}",
+        "",
+        f"{len(entries)} active facts. One line per fact; full detail in `entries/`.",
+        "",
+    ]
+    for e in sorted(entries, key=lambda x: (x.scope, x.domain_key, x.created_at)):
+        label = e.scope if not e.domain_key else f"{e.scope}/{e.domain_key}"
+        hook = (e.title or e.content).strip().replace("\n", " ")
+        if len(hook) > 80:
+            hook = hook[:80].rstrip() + "…"
+        flags = []
+        if e.pinned:
+            flags.append("📌")
+        if e.volatile:
+            flags.append("⚠volatile")
+        flag_s = (" " + " ".join(flags)) if flags else ""
+        index.append(f"- [{hook}](entries/{e.id}.md) — ({label}){flag_s}")
+
+        neigh = await db.neighbors(e.id)
+        lines = [
+            "---",
+            f"id: {e.id}",
+            f"scope: {e.scope}",
+            f'domain_key: "{e.domain_key}"',
+            f"title: {json.dumps(e.title or '')}",
+            f"pinned: {'true' if e.pinned else 'false'}",
+            f"volatile: {'true' if e.volatile else 'false'}",
+            f"created_at: {e.created_at.isoformat()}",
+            f"updated_at: {e.updated_at.isoformat()}",
+            f"verified_at: {e.verified_at.isoformat() if e.verified_at else ''}",
+            f"source: {json.dumps(e.metadata.get('source', ''))}",
+            "---",
+            "",
+            e.content,
+            "",
+        ]
+        if neigh:
+            lines.append("## Related")
+            lines.append("")
+            for n, relation, direction in neigh:
+                arrow = "→" if direction == "out" else "←"
+                lines.append(f"- {relation} {arrow} [[{n.id}]]: {n.content}")
+            lines.append("")
+        (entries_dir / f"{e.id}.md").write_text("\n".join(lines), encoding="utf-8")
+
+    (root / "MEMORY.md").write_text("\n".join(index) + "\n", encoding="utf-8")
+    print(f"exported {len(entries)} facts + {len(cores)} core summaries to {root}")
+    return len(entries)
 
 
 async def _reembed_memory(container) -> None:

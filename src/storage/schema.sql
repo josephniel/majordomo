@@ -12,7 +12,9 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     persona_id    TEXT NOT NULL,
     -- Scope is a discriminator: 'user' (about the operator), 'agent' (about
-    -- the bot itself), 'domain' (about a connector / external system).
+    -- the bot itself), 'domain' (about a connector / external system),
+    -- 'reference' (a pointer to an external resource). See VALID_SCOPES in
+    -- storage/__init__.py — the constraint is widened idempotently below.
     scope         TEXT NOT NULL CHECK (scope IN ('user', 'agent', 'domain')),
     -- For scope='domain', identifies which connector/system, e.g. 'gmail'.
     -- Empty string when scope is 'user' or 'agent'.
@@ -69,3 +71,52 @@ CREATE TABLE IF NOT EXISTS memory_core (
     last_compacted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (persona_id, scope, domain_key)
 );
+
+-- Widen the scope taxonomy to include 'reference' (external-resource
+-- pointers). Idempotent: drop the (possibly narrower) inline CHECK and
+-- re-add the current one. Keep in sync with VALID_SCOPES in storage/__init__.
+ALTER TABLE memory_entries DROP CONSTRAINT IF EXISTS memory_entries_scope_check;
+ALTER TABLE memory_entries ADD CONSTRAINT memory_entries_scope_check
+    CHECK (scope IN ('user', 'agent', 'domain', 'reference'));
+ALTER TABLE memory_core DROP CONSTRAINT IF EXISTS memory_core_scope_check;
+ALTER TABLE memory_core ADD CONSTRAINT memory_core_scope_check
+    CHECK (scope IN ('user', 'agent', 'domain', 'reference'));
+
+-- Typed edges between memory entries — the relational analog of the
+-- [[wiki-links]] a file-based second brain uses to traverse from one fact
+-- to a related one. Relations are directional (from_id --relation--> to_id).
+-- ON DELETE CASCADE keeps the graph clean when an entry is hard-deleted;
+-- supersession re-points edges to the surviving entry (see db.supersede_entry).
+CREATE TABLE IF NOT EXISTS memory_links (
+    from_id    UUID NOT NULL REFERENCES memory_entries(id) ON DELETE CASCADE,
+    to_id      UUID NOT NULL REFERENCES memory_entries(id) ON DELETE CASCADE,
+    relation   TEXT NOT NULL DEFAULT 'relates_to'
+               CHECK (relation IN ('relates_to', 'refines', 'depends_on', 'contradicts', 'caused_by')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (from_id, to_id, relation),
+    CHECK (from_id <> to_id)
+);
+
+CREATE INDEX IF NOT EXISTS memory_links_to_idx ON memory_links (to_id);
+
+-- Pinned facts are rendered verbatim (with their id) in the always-injected
+-- context, exempt from the narrative's char budget and never blurred by
+-- compaction — the lossless counterpart to the lossy core summary, matching
+-- how a file-based index keeps every pointer individually addressable.
+ALTER TABLE memory_entries
+    ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS memory_entries_pinned_idx
+    ON memory_entries (persona_id)
+    WHERE pinned AND superseded_by IS NULL;
+
+-- Staleness signal: `volatile` marks a fact whose truth can drift (it cites
+-- a file path, flag, commit, version, config value). `verified_at` records
+-- when it was last confirmed. Recall/context annotate a volatile fact that
+-- hasn't been verified recently with a "confirm before trusting" note —
+-- reproducing the discipline a file-based brain applies by re-checking cited
+-- files. NULL verified_at is treated as the entry's created_at.
+ALTER TABLE memory_entries
+    ADD COLUMN IF NOT EXISTS volatile BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE memory_entries
+    ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
