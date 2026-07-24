@@ -13,4 +13,20 @@ vendor-neutral Summarizer) — this layer only stores and retrieves.
 from .db import MemoryDatabase, MemoryEntry, MemoryCoreEntry
 from .docs import DocumentStore
 
-__all__ = ["DocumentStore", "MemoryDatabase", "MemoryEntry", "MemoryCoreEntry"]
+# The memory-scope taxonomy (mirrors the type system of a file-based second
+# brain). Single source of truth: schema.sql's CHECK constraints, the
+# connector's validators, the tool enums, and the reflection prompt all
+# derive from this. Keep in sync with schema.sql if you edit it.
+#   user      — about the operator
+#   agent     — about the assistant itself
+#   domain    — knowledge tied to a connector/external system (needs domain_key)
+#   reference — a pointer to an external resource (URL, dashboard, doc, ticket)
+VALID_SCOPES = ("user", "agent", "domain", "reference")
+
+__all__ = [
+    "DocumentStore",
+    "MemoryDatabase",
+    "MemoryEntry",
+    "MemoryCoreEntry",
+    "VALID_SCOPES",
+]

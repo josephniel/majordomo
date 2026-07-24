@@ -31,7 +31,7 @@ from uuid import UUID
 
 from core import Faculty, Summarizer, ToolContext, ToolResult, tool
 
-from storage import MemoryCoreEntry, MemoryDatabase, MemoryEntry
+from storage import MemoryCoreEntry, MemoryDatabase, MemoryEntry, VALID_SCOPES
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime; duck-typed otherwise
     from agents.history import ConversationHistory
@@ -81,6 +81,8 @@ Scopes:
   agent     — facts about you (the assistant), your configured behavior or persona-specific knowledge.
   domain    — knowledge tied to a specific connector / external system. Set domain_key:
               gmail, google_calendar, clickup, splitwise, yahoo, schedule, etc.
+  reference — a pointer to an external resource (a URL, dashboard, doc, repo, ticket).
+              Save the locator itself; put the raw URL in the content so it survives verbatim.
 
 Tools:
   memory_save(scope, content, domain_key?, title?)         — append one atomic fact.
@@ -167,8 +169,8 @@ Three principles:
         """Validate → dedup → insert → schedule auto-compaction.
         Returns (human-readable outcome, entry-or-None)."""
         scope = (scope or "").strip().lower()
-        if scope not in ("user", "agent", "domain"):
-            return (f"invalid scope {scope!r}; must be one of user/agent/domain", None)
+        if scope not in VALID_SCOPES:
+            return (f"invalid scope {scope!r}; must be one of {'/'.join(VALID_SCOPES)}", None)
         domain_key = (domain_key or "").strip().lower()
         if scope == "domain" and not domain_key:
             return ("scope='domain' requires a non-empty domain_key", None)
@@ -372,8 +374,8 @@ Three principles:
                 "properties": {
                     "scope": {
                         "type": "string",
-                        "enum": ["user", "agent", "domain"],
-                        "description": "user = about the operator; agent = about you; domain = about an external system",
+                        "enum": list(VALID_SCOPES),
+                        "description": "user = about the operator; agent = about you; domain = about an external system; reference = pointer to a URL/doc/resource",
                     },
                     "content": {"type": "string", "description": "The fact, in one sentence."},
                     "domain_key": {
@@ -411,7 +413,7 @@ Three principles:
                     "query": {"type": "string", "description": "Search string."},
                     "scope": {
                         "type": "string",
-                        "enum": ["user", "agent", "domain"],
+                        "enum": list(VALID_SCOPES),
                         "description": "Optional scope filter.",
                     },
                     "domain_key": {"type": "string", "description": "Optional domain filter."},
@@ -520,7 +522,7 @@ Three principles:
                 "properties": {
                     "scope": {
                         "type": "string",
-                        "enum": ["user", "agent", "domain"],
+                        "enum": list(VALID_SCOPES),
                     },
                     "domain_key": {
                         "type": "string",
@@ -536,8 +538,8 @@ Three principles:
         )
         async def memory_compact_tool(args: dict[str, Any], _ctx: ToolContext):
             scope = (args.get("scope") or "").strip().lower()
-            if scope not in ("user", "agent", "domain"):
-                return _tool_error("scope must be user/agent/domain")
+            if scope not in VALID_SCOPES:
+                return _tool_error(f"scope must be one of {'/'.join(VALID_SCOPES)}")
             domain_key = (args.get("domain_key") or "").strip().lower()
             if scope == "domain" and not domain_key:
                 return _tool_error("scope='domain' requires a domain_key")

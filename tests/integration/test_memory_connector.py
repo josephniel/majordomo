@@ -40,6 +40,16 @@ class TestSaveFact:
         msg, entry = await memory.save_fact("domain", "content")
         assert entry is None and "domain_key" in msg
 
+    async def test_reference_scope_saves(self, memory):
+        msg, entry = await memory.save_fact(
+            "reference", "The Go SOP lives at https://wiki.example.com/go-sop")
+        assert entry is not None and "saved" in msg
+        assert entry.scope == "reference"
+
+    async def test_reference_scope_needs_no_domain_key(self, memory):
+        _, entry = await memory.save_fact("reference", "crm-docs repo has the schema")
+        assert entry is not None and entry.domain_key == ""
+
     async def test_empty_content_rejected(self, memory):
         msg, entry = await memory.save_fact("user", "   ")
         assert entry is None and "empty" in msg

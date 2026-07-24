@@ -120,6 +120,29 @@ class TestForget:
         assert await memdb.forget_entry(e.id) is False
 
 
+class TestReferenceScope:
+    async def test_save_and_recall_reference_scope(self, memdb, persona_id):
+        e = await memdb.save_entry(
+            persona_id=persona_id, scope="reference",
+            title="status board",
+            content="The status dashboard lives at https://status.example.com",
+            metadata={"url": "https://status.example.com", "kind": "dashboard"},
+        )
+        assert e.scope == "reference"
+        results = await memdb.recall(persona_id, "status dashboard url")
+        assert any(r.scope == "reference" for r in results)
+
+    async def test_reference_scope_counts(self, memdb, persona_id):
+        await memdb.save_entry(persona_id=persona_id, scope="reference",
+                               content="SOP doc is in the crm-docs repo")
+        assert await memdb.counts_by_scope(persona_id) == {"reference": 1}
+
+    async def test_reference_core_compartment(self, memdb, persona_id):
+        await memdb.set_core(persona_id, "reference", "", "known pointers narrative", 2)
+        [core] = await memdb.get_core(persona_id)
+        assert core.scope == "reference"
+
+
 class TestRollupsAndCore:
     async def test_counts_by_scope(self, memdb, persona_id):
         await memdb.save_entry(persona_id=persona_id, scope="user", content="a")

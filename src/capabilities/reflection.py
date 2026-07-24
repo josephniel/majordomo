@@ -47,7 +47,7 @@ relationships, recurring situations, corrections the user made. NOT worth saving
 small talk, one-off task mechanics, anything already obviously transient.
 
 Output STRICT JSON: an array of objects, each with:
-  "scope":       "user" (about the operator) | "agent" (about the assistant's own behavior/configuration) | "domain" (about an external system)
+  "scope":       "user" (about the operator) | "agent" (about the assistant's own behavior/configuration) | "domain" (about an external system) | "reference" (a pointer to an external resource: URL, dashboard, doc, repo, ticket)
   "domain_key":  required non-empty when scope is "domain" (e.g. "gmail", "clickup"), else ""
   "title":       short label, <= 6 words
   "content":     the fact as ONE self-contained sentence (include names/dates — it must make sense with zero context)

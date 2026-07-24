@@ -12,7 +12,9 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     persona_id    TEXT NOT NULL,
     -- Scope is a discriminator: 'user' (about the operator), 'agent' (about
-    -- the bot itself), 'domain' (about a connector / external system).
+    -- the bot itself), 'domain' (about a connector / external system),
+    -- 'reference' (a pointer to an external resource). See VALID_SCOPES in
+    -- storage/__init__.py — the constraint is widened idempotently below.
     scope         TEXT NOT NULL CHECK (scope IN ('user', 'agent', 'domain')),
     -- For scope='domain', identifies which connector/system, e.g. 'gmail'.
     -- Empty string when scope is 'user' or 'agent'.
@@ -69,3 +71,13 @@ CREATE TABLE IF NOT EXISTS memory_core (
     last_compacted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (persona_id, scope, domain_key)
 );
+
+-- Widen the scope taxonomy to include 'reference' (external-resource
+-- pointers). Idempotent: drop the (possibly narrower) inline CHECK and
+-- re-add the current one. Keep in sync with VALID_SCOPES in storage/__init__.
+ALTER TABLE memory_entries DROP CONSTRAINT IF EXISTS memory_entries_scope_check;
+ALTER TABLE memory_entries ADD CONSTRAINT memory_entries_scope_check
+    CHECK (scope IN ('user', 'agent', 'domain', 'reference'));
+ALTER TABLE memory_core DROP CONSTRAINT IF EXISTS memory_core_scope_check;
+ALTER TABLE memory_core ADD CONSTRAINT memory_core_scope_check
+    CHECK (scope IN ('user', 'agent', 'domain', 'reference'));
