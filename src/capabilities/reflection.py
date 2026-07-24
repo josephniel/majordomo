@@ -141,12 +141,14 @@ class ReflectionEngine:
             saved_entries = []
             for fact in facts:
                 try:
+                    content = fact.get("content", "")
                     msg, entry = await self._memory.save_fact(
                         scope=fact.get("scope", ""),
-                        content=fact.get("content", ""),
+                        content=content,
                         domain_key=fact.get("domain_key", ""),
                         title=fact.get("title", ""),
                         source="reflection",
+                        volatile=_looks_volatile(content),
                     )
                     if entry is not None:
                         saved += 1
@@ -190,6 +192,26 @@ class ReflectionEngine:
                     await self._memory.link(a.id, b.id, "relates_to")
                 except Exception:
                     log.debug("reflection auto-link failed", exc_info=True)
+
+
+# A fact "looks volatile" when it cites something that drifts: a file path,
+# a CLI flag, a commit SHA, a version number, or a config/env key. Such facts
+# get flagged for re-verification as they age (staleness signal). Heuristic
+# and deliberately conservative — false negatives just mean no warning.
+_VOLATILE_PATTERNS = re.compile(
+    r"""
+      (?:[\w./-]+\.(?:py|ts|js|go|rs|yaml|yml|json|sql|sh|md|toml|cfg|ini))  # file
+    | (?:\s|^)--[a-z][\w-]+                                                   # --flag
+    | \b[0-9a-f]{7,40}\b(?=.*\bcommit\b)|\bcommit\s+[0-9a-f]{7,40}\b          # commit SHA
+    | \bv?\d+\.\d+(?:\.\d+)?\b                                                # version
+    | \b[A-Z][A-Z0-9]*_[A-Z0-9_]*\b                                          # ENV_VAR / CONFIG_KEY (must have _)
+    """,
+    re.VERBOSE,
+)
+
+
+def _looks_volatile(content: str) -> bool:
+    return bool(content) and _VOLATILE_PATTERNS.search(content) is not None
 
 
 def _parse_facts(raw: str) -> list[dict[str, Any]]:

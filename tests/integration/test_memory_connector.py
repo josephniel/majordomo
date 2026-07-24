@@ -248,6 +248,51 @@ class TestPinned:
         assert "red pickup" not in memory.system_prompt_section()
 
 
+class TestStaleness:
+    async def _backdate(self, memdb, entry_id, days):
+        async with memdb._acquire() as conn:
+            await conn.execute(
+                f"UPDATE memory_entries SET verified_at = NOW() - INTERVAL '{days} days' WHERE id=$1",
+                entry_id)
+
+    async def test_stale_volatile_annotated_in_recall(self, memory, memdb, persona_id):
+        _, e = await memory.save_fact("agent", "the deploy flag is --prod", volatile=True)
+        await self._backdate(memdb, e.id, 60)
+        recall = tool_by_name(memory, "memory_recall")
+        result = await recall.handler({"query": "deploy flag prod"}, ToolContext())
+        assert "unverified" in result.text.lower()
+
+    async def test_fresh_volatile_not_annotated(self, memory):
+        await memory.save_fact("agent", "the deploy flag is --prod", volatile=True)
+        recall = tool_by_name(memory, "memory_recall")
+        result = await recall.handler({"query": "deploy flag prod"}, ToolContext())
+        assert "unverified" not in result.text.lower()
+
+    async def test_nonvolatile_never_annotated(self, memory, memdb, persona_id):
+        _, e = await memory.save_fact("user", "the user enjoys drinking oolong tea")
+        await self._backdate(memdb, e.id, 400)
+        recall = tool_by_name(memory, "memory_recall")
+        result = await recall.handler({"query": "what tea does the user enjoy"}, ToolContext())
+        assert "unverified" not in result.text.lower()
+
+    async def test_memory_verify_clears_staleness(self, memory, memdb, persona_id):
+        _, e = await memory.save_fact("agent", "the deploy flag is --prod", volatile=True)
+        await self._backdate(memdb, e.id, 60)
+        verify = tool_by_name(memory, "memory_verify")
+        r = await verify.handler({"id": str(e.id)}, ToolContext())
+        assert "verified" in r.text and not r.is_error
+        recall = tool_by_name(memory, "memory_recall")
+        result = await recall.handler({"query": "deploy flag prod"}, ToolContext())
+        assert "unverified" not in result.text.lower()
+
+    async def test_stale_pinned_fact_annotated(self, memory, memdb, persona_id):
+        _, e = await memory.save_fact("agent", "credentials live under data/credentials/", volatile=True)
+        await self._backdate(memdb, e.id, 90)
+        pin = tool_by_name(memory, "memory_pin")
+        await pin.handler({"id": str(e.id)}, ToolContext())
+        assert "unverified" in memory.system_prompt_section().lower()
+
+
 class TestSystemPrompt:
     async def test_core_narrative_rendered(self, memory, memdb, persona_id):
         await memdb.set_core(persona_id, "user", "", "knows all about mangoes", 3)

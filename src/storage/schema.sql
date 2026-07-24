@@ -109,3 +109,14 @@ ALTER TABLE memory_entries
 CREATE INDEX IF NOT EXISTS memory_entries_pinned_idx
     ON memory_entries (persona_id)
     WHERE pinned AND superseded_by IS NULL;
+
+-- Staleness signal: `volatile` marks a fact whose truth can drift (it cites
+-- a file path, flag, commit, version, config value). `verified_at` records
+-- when it was last confirmed. Recall/context annotate a volatile fact that
+-- hasn't been verified recently with a "confirm before trusting" note —
+-- reproducing the discipline a file-based brain applies by re-checking cited
+-- files. NULL verified_at is treated as the entry's created_at.
+ALTER TABLE memory_entries
+    ADD COLUMN IF NOT EXISTS volatile BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE memory_entries
+    ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;

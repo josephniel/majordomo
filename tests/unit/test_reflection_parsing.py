@@ -1,5 +1,5 @@
 """capabilities.reflection — defensive JSON fact parsing."""
-from capabilities.reflection import _parse_facts
+from capabilities.reflection import _looks_volatile, _parse_facts
 
 
 class TestParseFacts:
@@ -49,3 +49,26 @@ class TestParseFacts:
                '{"scope":"domain","domain_key":"gmail","content":"second"}]')
         facts = _parse_facts(raw)
         assert [f["content"] for f in facts] == ["first", "second"]
+
+
+class TestLooksVolatile:
+    def test_file_path(self):
+        assert _looks_volatile("config lives at src/personas/settings.py")
+
+    def test_cli_flag(self):
+        assert _looks_volatile("the deploy command takes --prod")
+
+    def test_version(self):
+        assert _looks_volatile("the service pins postgres 5.2")
+
+    def test_env_var(self):
+        assert _looks_volatile("PRIMARY_LLM selects the chat vendor")
+
+    def test_plain_fact_not_volatile(self):
+        assert not _looks_volatile("the user enjoys hiking on weekends")
+
+    def test_name_not_volatile(self):
+        assert not _looks_volatile("the user lives in Makati and likes mango")
+
+    def test_empty_not_volatile(self):
+        assert not _looks_volatile("")

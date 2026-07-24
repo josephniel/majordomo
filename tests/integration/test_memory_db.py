@@ -218,6 +218,30 @@ class TestPinned:
         assert [p.id for p in await memdb.list_pinned(persona_id)] == [e2.id]
 
 
+class TestVerification:
+    async def test_save_volatile_flag(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="agent",
+                                   content="config lives at src/settings.py", volatile=True)
+        assert e.volatile is True
+
+    async def test_default_not_volatile(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="user", content="plain fact")
+        assert e.volatile is False
+
+    async def test_mark_verified_sets_timestamp(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="agent",
+                                   content="the deploy flag is --prod", volatile=True)
+        assert await memdb.mark_verified(e.id) is True
+        got = await memdb.get_entry(e.id)
+        assert got.verified_at is not None
+
+    async def test_supersede_carries_volatile(self, memdb, persona_id):
+        e = await memdb.save_entry(persona_id=persona_id, scope="agent",
+                                   content="flag --foo enables bar", volatile=True)
+        e2 = await memdb.supersede_entry(e.id, "flag --foo enables baz")
+        assert e2.volatile is True
+
+
 class TestRollupsAndCore:
     async def test_counts_by_scope(self, memdb, persona_id):
         await memdb.save_entry(persona_id=persona_id, scope="user", content="a")

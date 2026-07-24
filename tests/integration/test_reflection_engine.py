@@ -140,6 +140,26 @@ class TestAutoLink:
         assert rows and await memdb.neighbors(rows[0].id) == []
 
 
+class TestVolatileDetection:
+    async def test_path_citing_fact_marked_volatile(self, history, memory, memdb, persona_id):
+        summ = FakeSummarizer(facts_json(
+            {"scope": "agent", "content": "The bot reads config from src/personas/settings.py"}))
+        engine = make_engine(history, memory, persona_id, summ)
+        await seed_convo(history, persona_id)
+        await engine.run_reflection(CHAT_ID)
+        rows = await memdb.list_active(persona_id, scope="agent")
+        assert rows and rows[0].volatile is True
+
+    async def test_plain_fact_not_volatile(self, history, memory, memdb, persona_id):
+        summ = FakeSummarizer(facts_json(
+            {"scope": "user", "content": "The user enjoys hiking with friends on weekends"}))
+        engine = make_engine(history, memory, persona_id, summ)
+        await seed_convo(history, persona_id)
+        await engine.run_reflection(CHAT_ID)
+        rows = await memdb.list_active(persona_id, scope="user")
+        assert rows and rows[0].volatile is False
+
+
 class TestTimers:
     async def test_note_activity_rearms(self, history, memory, persona_id):
         engine = ReflectionEngine(history=history, memory=memory,

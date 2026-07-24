@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID
 
@@ -55,6 +56,9 @@ MEMORY_CONTEXT_CHAR_LIMIT = 6000  # ≈ 1500 tokens
 # the last compaction. Per-compartment, count-based.
 AUTO_COMPACT_THRESHOLD = 30
 
+# A volatile fact unconfirmed for this long is flagged for re-verification.
+STALE_AFTER_DAYS = 30
+
 
 class LongTermMemory(Faculty):
     name = "memory"
@@ -72,6 +76,7 @@ class LongTermMemory(Faculty):
         "memory_unlink": "Unlinking memories",
         "memory_pin": "Pinning memory",
         "memory_unpin": "Unpinning memory",
+        "memory_verify": "Re-verifying memory",
         "history_search": "Searching our past conversations",
     }
 
@@ -98,6 +103,7 @@ Tools:
   memory_unlink(from_id, to_id, relation?)                 — remove a connection.
   memory_pin(id)                                           — keep a fact verbatim in your always-on context (for load-bearing facts a summary must never blur).
   memory_unpin(id)                                         — stop pinning a fact.
+  memory_verify(id)                                        — mark a volatile fact re-confirmed (clears its "unverified" warning).
   history_search(query, limit?)                            — search the FULL past conversation record of this chat
                                                              (including turns long since summarized away). Use it for
                                                              "what did we discuss about X?" / "when did I ask you to...".
@@ -169,6 +175,20 @@ Three principles:
 
     # ---- shared write path (tool + reflection engine) ----
 
+    @staticmethod
+    def _staleness_suffix(entry: MemoryEntry) -> str:
+        """A re-verification note for a volatile fact that hasn't been
+        confirmed within STALE_AFTER_DAYS. Empty for stable/fresh facts."""
+        if not entry.volatile:
+            return ""
+        ref = entry.verified_at or entry.created_at
+        if ref is None:
+            return ""
+        age_days = (datetime.now(timezone.utc) - ref).days
+        if age_days >= STALE_AFTER_DAYS:
+            return f"  ⚠ unverified for {age_days}d — confirm before trusting"
+        return ""
+
     async def save_fact(
         self,
         scope: str,
@@ -176,6 +196,7 @@ Three principles:
         domain_key: str = "",
         title: str = "",
         source: str = "chat",
+        volatile: bool = False,
     ) -> tuple[str, Optional[MemoryEntry]]:
         """Validate → dedup → insert → schedule auto-compaction.
         Returns (human-readable outcome, entry-or-None)."""
@@ -213,6 +234,7 @@ Three principles:
             title=(title or "").strip(),
             content=content,
             metadata={"source": source},
+            volatile=volatile,
         )
         self._spawn_bg(self._maybe_auto_compact(scope, domain_key))
         return (
@@ -258,7 +280,7 @@ Three principles:
             if score < AUTO_RECALL_MIN_SCORE:
                 continue
             label = entry.scope if not entry.domain_key else f"{entry.scope}/{entry.domain_key}"
-            lines.append(f"- ({label}) {entry.content}")
+            lines.append(f"- ({label}) {entry.content}{self._staleness_suffix(entry)}")
         return "\n".join(lines)
 
     # ---- Connector contract ----
@@ -291,7 +313,7 @@ Three principles:
         lines = []
         for e in self._pinned_cache:
             label = e.scope if not e.domain_key else f"{e.scope}/{e.domain_key}"
-            lines.append(f"- ({label}) {e.content}  [id={e.id}]")
+            lines.append(f"- ({label}) {e.content}  [id={e.id}]{self._staleness_suffix(e)}")
         return "\n".join(lines)
 
     def _render_memory_for_context(self) -> str:
@@ -413,6 +435,10 @@ Three principles:
                         "description": "Required when scope='domain': gmail, google_calendar, clickup, splitwise, yahoo, schedule, …",
                     },
                     "title": {"type": "string", "description": "Short label (optional)."},
+                    "volatile": {
+                        "type": "boolean",
+                        "description": "true if the fact can drift (cites a file path, flag, commit, version, config value) — it'll be flagged for re-verification when it ages.",
+                    },
                 },
                 "required": ["scope", "content"],
             },
@@ -425,6 +451,7 @@ Three principles:
                     domain_key=args.get("domain_key") or "",
                     title=args.get("title") or "",
                     source="chat",
+                    volatile=bool(args.get("volatile")),
                 )
                 if entry is None and not msg.startswith("not saved"):
                     return _tool_error(msg)
@@ -470,7 +497,7 @@ Three principles:
                 for r in results:
                     label = r.scope if not r.domain_key else f"{r.scope}/{r.domain_key}"
                     title = f" [{r.title}]" if r.title else ""
-                    lines.append(f"id={r.id} ({label}){title}\n  {r.content}")
+                    lines.append(f"id={r.id} ({label}){title}\n  {r.content}{connector._staleness_suffix(r)}")
                     # Surface 1-hop links so related facts travel together —
                     # the graph payoff of memory_link.
                     try:
@@ -726,6 +753,30 @@ Three principles:
             await connector.refresh_core_cache()
             return ToolResult.ok(f"unpinned {eid}")
 
+        @tool(
+            "memory_verify",
+            "Mark a volatile fact as re-confirmed right now (you checked it "
+            "still holds). Clears its 'unverified' staleness warning and "
+            "resets the clock.",
+            {
+                "type": "object",
+                "properties": {"id": {"type": "string", "description": "UUID of the fact you re-checked."}},
+                "required": ["id"],
+            },
+        )
+        async def memory_verify_tool(args: dict[str, Any], _ctx: ToolContext):
+            try:
+                eid = UUID(str(args.get("id") or "").strip())
+            except ValueError:
+                return _tool_error("id must be a valid UUID")
+            try:
+                ok = await db.mark_verified(eid)
+            except Exception as e:
+                return _tool_error(str(e))
+            if not ok:
+                return _tool_error(f"no active entry with id={eid}")
+            return ToolResult.ok(f"verified {eid}")
+
         tools = [
             memory_save_tool,
             memory_recall_tool,
@@ -736,6 +787,7 @@ Three principles:
             memory_unlink_tool,
             memory_pin_tool,
             memory_unpin_tool,
+            memory_verify_tool,
         ]
 
         if self._history is not None:

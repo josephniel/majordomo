@@ -51,6 +51,8 @@ class MemoryEntry:
     created_at: datetime
     updated_at: datetime
     pinned: bool = False
+    volatile: bool = False
+    verified_at: Optional[datetime] = None
 
     @classmethod
     def from_row(cls, row: asyncpg.Record) -> "MemoryEntry":
@@ -66,6 +68,8 @@ class MemoryEntry:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             pinned=bool(row["pinned"]) if "pinned" in row else False,
+            volatile=bool(row["volatile"]) if "volatile" in row else False,
+            verified_at=row["verified_at"] if "verified_at" in row else None,
         )
 
 
@@ -127,6 +131,7 @@ class MemoryDatabase:
         domain_key: str = "",
         title: str = "",
         metadata: Optional[dict[str, Any]] = None,
+        volatile: bool = False,
     ) -> MemoryEntry:
         emb = await _embed_pg(f"{title}\n{content}" if title else content)
         async with self._acquire() as conn:
@@ -134,12 +139,12 @@ class MemoryDatabase:
                 """
                 INSERT INTO memory_entries
                     (persona_id, scope, domain_key, title, content, metadata,
-                     embedding, embedding_model)
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::vector, $8)
+                     embedding, embedding_model, volatile, verified_at)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::vector, $8, $9, NOW())
                 RETURNING *
                 """,
                 persona_id, scope, domain_key, title, content, metadata or {},
-                emb, _EMBED_MODEL if emb else "",
+                emb, _EMBED_MODEL if emb else "", volatile,
             )
         return MemoryEntry.from_row(row)
 
@@ -219,13 +224,13 @@ class MemoryDatabase:
                     """
                     INSERT INTO memory_entries
                         (persona_id, scope, domain_key, title, content, metadata,
-                         embedding, embedding_model, pinned)
-                    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::vector, $8, $9)
+                         embedding, embedding_model, pinned, volatile, verified_at)
+                    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::vector, $8, $9, $10, NOW())
                     RETURNING *
                     """,
                     old["persona_id"], old["scope"], old["domain_key"],
                     old["title"], new_content, dict(old["metadata"] or {}),
-                    emb, _EMBED_MODEL if emb else "", old["pinned"],
+                    emb, _EMBED_MODEL if emb else "", old["pinned"], old["volatile"],
                 )
                 await conn.execute(
                     "UPDATE memory_entries SET superseded_by = $1, updated_at = NOW() WHERE id = $2",
@@ -346,6 +351,16 @@ class MemoryDatabase:
                 WHERE id = $1 AND superseded_by IS NULL
                 """,
                 entry_id, pinned,
+            )
+        return result.split()[-1] != "0"
+
+    async def mark_verified(self, entry_id: UUID) -> bool:
+        """Record that a fact was just confirmed to still hold. Resets its
+        staleness clock. Returns True if a row was updated."""
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "UPDATE memory_entries SET verified_at = NOW() WHERE id = $1 AND superseded_by IS NULL",
+                entry_id,
             )
         return result.split()[-1] != "0"
 
