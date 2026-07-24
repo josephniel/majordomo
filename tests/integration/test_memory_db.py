@@ -143,6 +143,56 @@ class TestReferenceScope:
         assert core.scope == "reference"
 
 
+class TestLinks:
+    async def test_add_and_list_neighbors(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="the user owns a homelab")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="the homelab runs Proxmox")
+        assert await memdb.add_link(a.id, b.id, "relates_to") is True
+        neigh = await memdb.neighbors(a.id)
+        assert any(n.id == b.id and rel == "relates_to" and direction == "out"
+                   for n, rel, direction in neigh)
+        # reverse direction visible from b
+        back = await memdb.neighbors(b.id)
+        assert any(n.id == a.id and direction == "in" for n, rel, direction in back)
+
+    async def test_duplicate_link_is_noop(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact a")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact b")
+        assert await memdb.add_link(a.id, b.id, "relates_to") is True
+        assert await memdb.add_link(a.id, b.id, "relates_to") is False
+
+    async def test_remove_link(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact a")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact b")
+        await memdb.add_link(a.id, b.id, "depends_on")
+        assert await memdb.remove_link(a.id, b.id) is True
+        assert await memdb.neighbors(a.id) == []
+
+    async def test_neighbors_only_active(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact a")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact b to forget")
+        await memdb.add_link(a.id, b.id)
+        await memdb.forget_entry(b.id)
+        assert await memdb.neighbors(a.id) == []
+
+    async def test_links_carry_across_supersession(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="the user owns a car")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="the car is a sedan")
+        await memdb.add_link(a.id, b.id, "relates_to")
+        a2 = await memdb.supersede_entry(a.id, "the user owns two cars")
+        neigh = await memdb.neighbors(a2.id)
+        assert any(n.id == b.id for n, _, _ in neigh), "link should follow to the new entry"
+        assert await memdb.neighbors(a.id) == []
+
+    async def test_hard_delete_cascades_links(self, memdb, persona_id):
+        a = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact a")
+        b = await memdb.save_entry(persona_id=persona_id, scope="user", content="fact b")
+        await memdb.add_link(a.id, b.id)
+        await memdb.forget_entry(a.id, hard=True)
+        # the edge row is gone; b has no dangling neighbor
+        assert await memdb.neighbors(b.id) == []
+
+
 class TestRollupsAndCore:
     async def test_counts_by_scope(self, memdb, persona_id):
         await memdb.save_entry(persona_id=persona_id, scope="user", content="a")

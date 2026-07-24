@@ -138,6 +138,7 @@ class ReflectionEngine:
             facts = _parse_facts(raw)
 
             saved = 0
+            saved_entries = []
             for fact in facts:
                 try:
                     msg, entry = await self._memory.save_fact(
@@ -149,10 +150,13 @@ class ReflectionEngine:
                     )
                     if entry is not None:
                         saved += 1
+                        saved_entries.append(entry)
                     else:
                         log.debug("reflection fact skipped: %s", msg)
                 except Exception:
                     log.exception("could not save reflected fact")
+
+            await self._autolink_batch(saved_entries)
 
             # Advance the watermark past everything we read — even if zero
             # facts came out, these turns are done.
@@ -165,6 +169,27 @@ class ReflectionEngine:
                 chat_id, len(convo), len(facts), saved,
             )
             return saved
+
+
+    async def _autolink_batch(self, entries: list[Any]) -> None:
+        """Link facts extracted from the SAME conversation burst that also
+        share a compartment (scope + domain_key) with a `relates_to` edge.
+        Conservative on purpose: cross-compartment facts from one burst are
+        often unrelated (the user mentioned their dog AND a deadline), so we
+        only connect facts already grouped by subject. Best-effort."""
+        from itertools import combinations
+
+        groups: dict[tuple[str, str], list[Any]] = {}
+        for e in entries:
+            groups.setdefault((e.scope, e.domain_key), []).append(e)
+        for members in groups.values():
+            if len(members) < 2:
+                continue
+            for a, b in combinations(members, 2):
+                try:
+                    await self._memory.link(a.id, b.id, "relates_to")
+                except Exception:
+                    log.debug("reflection auto-link failed", exc_info=True)
 
 
 def _parse_facts(raw: str) -> list[dict[str, Any]]:

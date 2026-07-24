@@ -23,10 +23,15 @@ from .docs import DocumentStore
 #   reference — a pointer to an external resource (URL, dashboard, doc, ticket)
 VALID_SCOPES = ("user", "agent", "domain", "reference")
 
+# Allowed relation types for memory_links edges. Single source of truth for
+# the connector tool enum + validation; mirror of schema.sql's CHECK.
+LINK_RELATIONS = ("relates_to", "refines", "depends_on", "contradicts", "caused_by")
+
 __all__ = [
     "DocumentStore",
     "MemoryDatabase",
     "MemoryEntry",
     "MemoryCoreEntry",
     "VALID_SCOPES",
+    "LINK_RELATIONS",
 ]

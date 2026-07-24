@@ -171,6 +171,53 @@ class TestTools:
         assert "history_search" not in {t.name for t in m.builtin_tools()}
 
 
+class TestLinks:
+    async def _two_facts(self, memory):
+        _, a = await memory.save_fact("user", "the user owns a homelab server")
+        _, b = await memory.save_fact("user", "the homelab runs Proxmox virtualization")
+        return a, b
+
+    async def test_memory_link_tool(self, memory):
+        a, b = await self._two_facts(memory)
+        link = tool_by_name(memory, "memory_link")
+        result = await link.handler(
+            {"from_id": str(a.id), "to_id": str(b.id), "relation": "relates_to"},
+            ToolContext(),
+        )
+        assert "linked" in result.text and not result.is_error
+
+    async def test_memory_link_invalid_relation(self, memory):
+        a, b = await self._two_facts(memory)
+        link = tool_by_name(memory, "memory_link")
+        result = await link.handler(
+            {"from_id": str(a.id), "to_id": str(b.id), "relation": "bogus"}, ToolContext())
+        assert result.is_error
+
+    async def test_memory_link_unknown_id_errors(self, memory):
+        import uuid
+        _, a = await memory.save_fact("user", "a real fact")
+        link = tool_by_name(memory, "memory_link")
+        result = await link.handler(
+            {"from_id": str(a.id), "to_id": str(uuid.uuid4())}, ToolContext())
+        assert result.is_error
+
+    async def test_recall_surfaces_neighbors(self, memory):
+        a, b = await self._two_facts(memory)
+        link = tool_by_name(memory, "memory_link")
+        await link.handler({"from_id": str(a.id), "to_id": str(b.id)}, ToolContext())
+        recall = tool_by_name(memory, "memory_recall")
+        result = await recall.handler({"query": "homelab server"}, ToolContext())
+        assert "Proxmox" in result.text and "related" in result.text.lower()
+
+    async def test_memory_unlink_tool(self, memory):
+        a, b = await self._two_facts(memory)
+        link = tool_by_name(memory, "memory_link")
+        unlink = tool_by_name(memory, "memory_unlink")
+        await link.handler({"from_id": str(a.id), "to_id": str(b.id)}, ToolContext())
+        result = await unlink.handler({"from_id": str(a.id), "to_id": str(b.id)}, ToolContext())
+        assert "unlinked" in result.text and not result.is_error
+
+
 class TestSystemPrompt:
     async def test_core_narrative_rendered(self, memory, memdb, persona_id):
         await memdb.set_core(persona_id, "user", "", "knows all about mangoes", 3)

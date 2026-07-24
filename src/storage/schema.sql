@@ -81,3 +81,20 @@ ALTER TABLE memory_entries ADD CONSTRAINT memory_entries_scope_check
 ALTER TABLE memory_core DROP CONSTRAINT IF EXISTS memory_core_scope_check;
 ALTER TABLE memory_core ADD CONSTRAINT memory_core_scope_check
     CHECK (scope IN ('user', 'agent', 'domain', 'reference'));
+
+-- Typed edges between memory entries — the relational analog of the
+-- [[wiki-links]] a file-based second brain uses to traverse from one fact
+-- to a related one. Relations are directional (from_id --relation--> to_id).
+-- ON DELETE CASCADE keeps the graph clean when an entry is hard-deleted;
+-- supersession re-points edges to the surviving entry (see db.supersede_entry).
+CREATE TABLE IF NOT EXISTS memory_links (
+    from_id    UUID NOT NULL REFERENCES memory_entries(id) ON DELETE CASCADE,
+    to_id      UUID NOT NULL REFERENCES memory_entries(id) ON DELETE CASCADE,
+    relation   TEXT NOT NULL DEFAULT 'relates_to'
+               CHECK (relation IN ('relates_to', 'refines', 'depends_on', 'contradicts', 'caused_by')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (from_id, to_id, relation),
+    CHECK (from_id <> to_id)
+);
+
+CREATE INDEX IF NOT EXISTS memory_links_to_idx ON memory_links (to_id);

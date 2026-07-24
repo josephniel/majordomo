@@ -31,7 +31,7 @@ from uuid import UUID
 
 from core import Faculty, Summarizer, ToolContext, ToolResult, tool
 
-from storage import MemoryCoreEntry, MemoryDatabase, MemoryEntry, VALID_SCOPES
+from storage import LINK_RELATIONS, MemoryCoreEntry, MemoryDatabase, MemoryEntry, VALID_SCOPES
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime; duck-typed otherwise
     from agents.history import ConversationHistory
@@ -68,6 +68,8 @@ class LongTermMemory(Faculty):
         "memory_update": "Updating memory",
         "memory_forget": "Forgetting memory",
         "memory_compact": "Compacting memory",
+        "memory_link": "Linking memories",
+        "memory_unlink": "Unlinking memories",
         "history_search": "Searching our past conversations",
     }
 
@@ -90,6 +92,8 @@ Tools:
   memory_update(id, content)                               — supersede an existing entry (use the id from recall).
   memory_forget(id)                                        — soft-delete an entry.
   memory_compact(scope, domain_key?, deep?)                — fold compartment entries into the running narrative below.
+  memory_link(from_id, to_id, relation?)                   — connect two related facts (relation: relates_to/refines/depends_on/contradicts/caused_by).
+  memory_unlink(from_id, to_id, relation?)                 — remove a connection.
   history_search(query, limit?)                            — search the FULL past conversation record of this chat
                                                              (including turns long since summarized away). Use it for
                                                              "what did we discuss about X?" / "when did I ask you to...".
@@ -208,6 +212,11 @@ Three principles:
             f"saved (id={entry.id}) into {scope}{('/' + domain_key) if domain_key else ''}",
             entry,
         )
+
+    async def link(self, from_id: UUID, to_id: UUID, relation: str = "relates_to") -> bool:
+        """Public link helper (used by the reflection engine's auto-linking).
+        Best-effort; returns whether a new edge was created."""
+        return await self._db.add_link(from_id, to_id, relation)
 
     # ---- auto-RAG (called by CascadingAgent per user turn) ----
 
@@ -441,6 +450,15 @@ Three principles:
                     label = r.scope if not r.domain_key else f"{r.scope}/{r.domain_key}"
                     title = f" [{r.title}]" if r.title else ""
                     lines.append(f"id={r.id} ({label}){title}\n  {r.content}")
+                    # Surface 1-hop links so related facts travel together —
+                    # the graph payoff of memory_link.
+                    try:
+                        neigh = await db.neighbors(r.id)
+                    except Exception:
+                        neigh = []
+                    for n, relation, direction in neigh:
+                        arrow = "→" if direction == "out" else "←"
+                        lines.append(f"  related ({relation} {arrow}) id={n.id}: {n.content}")
                 return ToolResult.ok("\n".join(lines))
             except Exception as e:
                 return _tool_error(str(e))
@@ -549,12 +567,103 @@ Three principles:
                 f"compacted {scope}{('/' + domain_key) if domain_key else ''}:\n\n{summary}"
             )
 
+        async def _resolve_own_entry(raw_id: str) -> tuple[Optional[UUID], Optional[str]]:
+            """Parse a UUID and confirm it's an active entry of THIS persona.
+            Returns (uuid, None) on success or (None, error-message)."""
+            try:
+                eid = UUID(str(raw_id or "").strip())
+            except ValueError:
+                return None, f"{raw_id!r} is not a valid UUID (use memory_recall to find ids)"
+            entry = await db.get_entry(eid)
+            if entry is None or entry.persona_id != persona_id:
+                return None, f"no memory with id={eid}"
+            if entry.superseded_by is not None:
+                return None, f"id={eid} is superseded/forgotten; link the current entry instead"
+            return eid, None
+
+        @tool(
+            "memory_link",
+            "Connect two related memories so they surface together on recall. "
+            "Directional: from_id --relation--> to_id. Relations: relates_to "
+            "(default), refines, depends_on, contradicts, caused_by. Use ids "
+            "from memory_recall.",
+            {
+                "type": "object",
+                "properties": {
+                    "from_id": {"type": "string", "description": "UUID of the source memory."},
+                    "to_id": {"type": "string", "description": "UUID of the target memory."},
+                    "relation": {
+                        "type": "string",
+                        "enum": list(LINK_RELATIONS),
+                        "description": "Edge type (default relates_to).",
+                    },
+                },
+                "required": ["from_id", "to_id"],
+            },
+        )
+        async def memory_link_tool(args: dict[str, Any], _ctx: ToolContext):
+            relation = (args.get("relation") or "relates_to").strip().lower()
+            if relation not in LINK_RELATIONS:
+                return _tool_error(f"relation must be one of {'/'.join(LINK_RELATIONS)}")
+            from_id, err = await _resolve_own_entry(args.get("from_id"))
+            if err:
+                return _tool_error(err)
+            to_id, err = await _resolve_own_entry(args.get("to_id"))
+            if err:
+                return _tool_error(err)
+            if from_id == to_id:
+                return _tool_error("cannot link a memory to itself")
+            try:
+                created = await db.add_link(from_id, to_id, relation)
+            except Exception as e:
+                return _tool_error(str(e))
+            if not created:
+                return ToolResult.ok(f"already linked ({relation})")
+            return ToolResult.ok(f"linked {from_id} --{relation}--> {to_id}")
+
+        @tool(
+            "memory_unlink",
+            "Remove the connection between two memories. Omit relation to "
+            "remove every edge from_id->to_id.",
+            {
+                "type": "object",
+                "properties": {
+                    "from_id": {"type": "string", "description": "UUID of the source memory."},
+                    "to_id": {"type": "string", "description": "UUID of the target memory."},
+                    "relation": {
+                        "type": "string",
+                        "enum": list(LINK_RELATIONS),
+                        "description": "Optional: only this edge type.",
+                    },
+                },
+                "required": ["from_id", "to_id"],
+            },
+        )
+        async def memory_unlink_tool(args: dict[str, Any], _ctx: ToolContext):
+            try:
+                from_id = UUID(str(args.get("from_id") or "").strip())
+                to_id = UUID(str(args.get("to_id") or "").strip())
+            except ValueError:
+                return _tool_error("from_id and to_id must be valid UUIDs")
+            relation = (args.get("relation") or "").strip().lower() or None
+            if relation is not None and relation not in LINK_RELATIONS:
+                return _tool_error(f"relation must be one of {'/'.join(LINK_RELATIONS)}")
+            try:
+                removed = await db.remove_link(from_id, to_id, relation)
+            except Exception as e:
+                return _tool_error(str(e))
+            if not removed:
+                return _tool_error("no such link")
+            return ToolResult.ok(f"unlinked {from_id} -x- {to_id}")
+
         tools = [
             memory_save_tool,
             memory_recall_tool,
             memory_update_tool,
             memory_forget_tool,
             memory_compact_tool,
+            memory_link_tool,
+            memory_unlink_tool,
         ]
 
         if self._history is not None:

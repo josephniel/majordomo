@@ -229,7 +229,86 @@ class MemoryDatabase:
                     "UPDATE memory_entries SET superseded_by = $1, updated_at = NOW() WHERE id = $2",
                     new["id"], old["id"],
                 )
+                # Carry the old entry's graph edges onto its replacement so a
+                # correction doesn't orphan the fact's relationships. The new
+                # row was just inserted and has no edges of its own, so no PK
+                # collision is possible here.
+                await conn.execute(
+                    "UPDATE memory_links SET from_id = $1 WHERE from_id = $2",
+                    new["id"], old["id"],
+                )
+                await conn.execute(
+                    "UPDATE memory_links SET to_id = $1 WHERE to_id = $2",
+                    new["id"], old["id"],
+                )
         return MemoryEntry.from_row(new)
+
+    # ---- links (typed edges between entries) ----
+
+    async def add_link(
+        self,
+        from_id: UUID,
+        to_id: UUID,
+        relation: str = "relates_to",
+    ) -> bool:
+        """Create a directional edge from_id --relation--> to_id. Idempotent:
+        returns True if a new edge was created, False if it already existed."""
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO memory_links (from_id, to_id, relation)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (from_id, to_id, relation) DO NOTHING
+                RETURNING from_id
+                """,
+                from_id, to_id, relation,
+            )
+        return row is not None
+
+    async def remove_link(
+        self,
+        from_id: UUID,
+        to_id: UUID,
+        relation: Optional[str] = None,
+    ) -> bool:
+        """Delete the edge(s) between two entries. With `relation`, only that
+        edge; without it, every edge from_id->to_id. Returns True if anything
+        was deleted."""
+        async with self._acquire() as conn:
+            if relation is not None:
+                result = await conn.execute(
+                    "DELETE FROM memory_links WHERE from_id = $1 AND to_id = $2 AND relation = $3",
+                    from_id, to_id, relation,
+                )
+            else:
+                result = await conn.execute(
+                    "DELETE FROM memory_links WHERE from_id = $1 AND to_id = $2",
+                    from_id, to_id,
+                )
+        return result.split()[-1] != "0"
+
+    async def neighbors(
+        self,
+        entry_id: UUID,
+    ) -> list[tuple[MemoryEntry, str, str]]:
+        """Directly-linked ACTIVE entries. Returns (neighbor, relation,
+        direction) where direction is 'out' (entry_id --rel--> neighbor) or
+        'in' (neighbor --rel--> entry_id). Superseded/forgotten neighbors are
+        excluded so recall never surfaces stale links."""
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT m.*, l.relation AS _rel, 'out' AS _dir
+                FROM memory_links l JOIN memory_entries m ON m.id = l.to_id
+                WHERE l.from_id = $1 AND m.superseded_by IS NULL
+                UNION ALL
+                SELECT m.*, l.relation AS _rel, 'in' AS _dir
+                FROM memory_links l JOIN memory_entries m ON m.id = l.from_id
+                WHERE l.to_id = $1 AND m.superseded_by IS NULL
+                """,
+                entry_id,
+            )
+        return [(MemoryEntry.from_row(r), r["_rel"], r["_dir"]) for r in rows]
 
     async def forget_entry(self, entry_id: UUID, hard: bool = False) -> bool:
         async with self._acquire() as conn:
