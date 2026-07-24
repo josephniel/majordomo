@@ -33,7 +33,7 @@ from platforms import ChatPlatform, InboundMessage
 from .commands import CommandsMixin
 from .formatting import chunk_for_platform, is_cancel_intent
 from .ingestion import ingest_attachments
-from .proactive import HeartbeatConfig, MailWatchConfig, ProactiveMixin
+from .proactive import HeartbeatConfig, ProactiveMixin, WatchConfig
 from .recovery import RecoveryMixin
 from .sessions import SessionStore
 
@@ -70,7 +70,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         status_reporter=None,  # comms.status_report.StatusReporter | None
         heartbeat: Optional[HeartbeatConfig] = None,
         webhook_server=None,  # services.webhook.WebhookServer | None
-        mail_watch: Optional[MailWatchConfig] = None,
+        watches: Optional[list[WatchConfig]] = None,
         retention=None,  # services.retention.RetentionJob | None
     ) -> None:
         self._platform = platform
@@ -87,7 +87,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._status_reporter = status_reporter
         self._heartbeat = heartbeat
         self._webhook_server = webhook_server
-        self._mail_watch = mail_watch
+        self._watches: list[WatchConfig] = list(watches or [])
         self._retention = retention
         self._relay: Optional[CommsRelay] = (
             CommsRelay(comms_log, persona_id, self._on_peer_message)

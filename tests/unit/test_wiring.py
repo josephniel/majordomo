@@ -10,7 +10,7 @@ from agents.base import Attachment
 from capabilities.documents import DocumentLibrary
 from services.webhook import WebhookTrigger
 from chat.core import ConversationOrchestrator
-from chat.proactive import HeartbeatConfig, MailWatchConfig
+from chat.proactive import HeartbeatConfig, WatchConfig
 from chat.sessions import SessionStore
 from platforms.base import InboundMessage
 
@@ -152,35 +152,36 @@ class FakeWatcher:
 
 class TestMailWatchBridge:
     def _mw(self, watcher):
-        return MailWatchConfig(cron="*/3 * * * *", chat_id=7, watcher=watcher)
+        return WatchConfig(name="mail_watch", cron="*/3 * * * *", chat_id=7,
+                           watcher=watcher, preamble="[mail watch]\n")
 
     async def test_delivered_alert_commits(self, tmp_path):
         watcher = FakeWatcher()
         orch, platform, _ = _orch(tmp_path, reply="Boss needs you!",
-                                  mail_watch=self._mw(watcher))
-        await orch._on_mail_watch()
+                                  watches=[self._mw(watcher)])
+        await orch._on_watch(orch._watches[0])
         assert platform.sent == [(7, "Boss needs you!")]
         assert watcher.commits == 1
 
     async def test_silent_still_commits(self, tmp_path):
         watcher = FakeWatcher()
         orch, platform, _ = _orch(tmp_path, reply="<silent>",
-                                  mail_watch=self._mw(watcher))
-        await orch._on_mail_watch()
+                                  watches=[self._mw(watcher)])
+        await orch._on_watch(orch._watches[0])
         assert platform.sent == []
         assert watcher.commits == 1, "quiet triage is still a delivered turn"
 
     async def test_failed_turn_does_not_commit(self, tmp_path):
         watcher = FakeWatcher()
         orch, _, _ = _orch(tmp_path, error=RuntimeError("all vendors down"),
-                           mail_watch=self._mw(watcher))
-        await orch._on_mail_watch()
+                           watches=[self._mw(watcher)])
+        await orch._on_watch(orch._watches[0])
         assert watcher.commits == 0, "watermark held back for re-report"
 
     async def test_nothing_new_skips_llm(self, tmp_path):
         watcher = FakeWatcher(block=None)
-        orch, _, agent = _orch(tmp_path, mail_watch=self._mw(watcher))
-        await orch._on_mail_watch()
+        orch, _, agent = _orch(tmp_path, watches=[self._mw(watcher)])
+        await orch._on_watch(orch._watches[0])
         assert agent.prompts == []
 
 
@@ -188,10 +189,11 @@ class TestStatusProactiveBlock:
     async def test_proactive_and_documents_surfaced(self, tmp_path):
         hb = HeartbeatConfig(cron="0 8 * * *", chat_id=7,
                              prompt_loader=lambda: "- check email")
-        mw = MailWatchConfig(cron="*/3 * * * *", chat_id=7, watcher=FakeWatcher())
+        mw = WatchConfig(name="mail_watch", cron="*/3 * * * *", chat_id=7,
+                         watcher=FakeWatcher(), preamble="[mail watch]\n")
         webhook = SimpleNamespace(port=18790, trigger_names=["alert"])
         orch, platform, _ = _orch(
-            tmp_path, heartbeat=hb, mail_watch=mw, webhook_server=webhook,
+            tmp_path, heartbeat=hb, watches=[mw], webhook_server=webhook,
         )
         await orch._cmd_status(7)
         ((_, text),) = platform.sent
@@ -339,12 +341,12 @@ class TestMailWatchDedicatedAgent:
             mw_agent.stopped = True
         mw_agent.stop = _stop
 
-        mw = MailWatchConfig(
-            cron="*/3 * * * *", chat_id=7, watcher=watcher,
-            agent_factory=lambda chat_id: mw_agent,
+        mw = WatchConfig(
+            name="mail_watch", cron="*/3 * * * *", chat_id=7, watcher=watcher,
+            preamble="[mail watch]\n", agent_factory=lambda chat_id: mw_agent,
         )
-        orch, platform, chat_agent = _orch(tmp_path, mail_watch=mw)
-        await orch._on_mail_watch()
+        orch, platform, chat_agent = _orch(tmp_path, watches=[mw])
+        await orch._on_watch(orch._watches[0])
         assert mw_agent.prompts, "dedicated agent served the mail-watch turn"
         assert chat_agent.prompts == [], "chat agent untouched"
         assert platform.sent == [(7, "Boss needs you!")]
