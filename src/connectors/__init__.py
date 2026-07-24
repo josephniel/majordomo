@@ -12,6 +12,7 @@ from __future__ import annotations
 from .registry import ServiceRegistry, ConnectorEntry  # ConnectorEntry: internal
 
 from .approvals import GatedToolProvider, WriteApprovalGate
+from .budget import BudgetConnector
 from core import (
     AttachmentIngestor,
     Connector,
@@ -30,6 +31,7 @@ __all__ = [
     "AttachmentIngestor",
     "ContextInjector",
     "ServiceRegistry",
+    "BudgetConnector",
     "ClickUpConnector",
     "Connector",
     "Faculty",
