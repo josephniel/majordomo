@@ -5,6 +5,7 @@ JSON on disk — no cryptographer dependency.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -21,6 +22,15 @@ from apscheduler.triggers.date import DateTrigger
 from core import Faculty, ToolContext, ToolResult, tool
 
 log = logging.getLogger(__name__)
+
+
+def _is_async_callable(fn: Any) -> bool:
+    """True for coroutine functions, including bound methods and objects whose
+    __call__ is one (functools.partial is unwrapped by iscoroutinefunction)."""
+    if inspect.iscoroutinefunction(fn):
+        return True
+    call = getattr(fn, "__call__", None)
+    return call is not None and inspect.iscoroutinefunction(call)
 
 
 @dataclass
@@ -106,9 +116,21 @@ class ScheduleEngine:
         """Register a recurring job owned by the RUNTIME, not the user: it is
         never persisted to schedules.json and is invisible to the schedule
         tools (so the model can't list or remove it). Used for the heartbeat.
-        Must be called after start()."""
+        Must be called after start().
+
+        The callback MUST be an async callable. AsyncIOScheduler dispatches a
+        sync function to a thread executor and throws away its return value,
+        so a sync wrapper that returns a coroutine never runs and the job
+        still reports success — a silent no-op that hid two dead watches for
+        days. Reject it at registration instead."""
         if self._scheduler is None:
             raise RuntimeError("add_system_cron called before start()")
+        if not _is_async_callable(callback):
+            raise TypeError(
+                f"system cron {name!r} needs an async callback; got "
+                f"{callback!r} — a sync function's coroutine would be "
+                f"discarded unawaited"
+            )
         self._scheduler.add_job(
             callback,
             trigger=CronTrigger.from_crontab(cron, timezone=self._tz),

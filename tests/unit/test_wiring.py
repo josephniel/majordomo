@@ -1,5 +1,6 @@
 """Cross-module wiring: attachment ingestion, webhook/mail-watch bridges into
 the orchestrator, /status proactive block, and container assembly."""
+import inspect
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -183,6 +184,116 @@ class TestMailWatchBridge:
         orch, _, agent = _orch(tmp_path, watches=[self._mw(watcher)])
         await orch._on_watch(orch._watches[0])
         assert agent.prompts == []
+
+
+class RecordingScheduleConnector:
+    """Captures what _register_proactive_crons actually hands the scheduler.
+    The bridge tests above call _on_watch directly, which is exactly how a
+    broken REGISTRATION stayed invisible — assert on the callback itself.
+
+    Enforces the real engine's async-callback contract via the production
+    predicate: a fake that accepted what AsyncIOScheduler silently drops
+    would reproduce the original blind spot inside the test suite. Awaiting a
+    sync wrapper's coroutine works fine in a test, so this check — not the
+    await below — is what actually reproduces the production failure."""
+
+    def __init__(self):
+        self.crons: dict[str, object] = {}
+
+    def add_system_cron(self, name, cron, callback):
+        from capabilities.schedule import _is_async_callable
+        if not _is_async_callable(callback):
+            raise TypeError(f"system cron {name!r} needs an async callback")
+        self.crons[name] = callback
+
+
+class TestSystemCronRegistration:
+    """A sync callback returning a coroutine is dispatched to a thread by
+    AsyncIOScheduler and its coroutine dropped unawaited — the job reports
+    success while the watcher never polls (mail + splitwise watches were dead
+    for two days). Registered callbacks must be async."""
+
+    def _orch_with_watches(self, tmp_path, watcher):
+        w = WatchConfig(name="mail_watch", cron="*/3 * * * *", chat_id=7,
+                        watcher=watcher, preamble="[mail watch]\n")
+        hb = HeartbeatConfig(cron="0 8 * * *", chat_id=7,
+                             prompt_loader=lambda: "- check email")
+        orch, platform, agent = _orch(tmp_path, heartbeat=hb, watches=[w])
+        sched = RecordingScheduleConnector()
+        orch._schedule_connector = sched
+        orch._register_proactive_crons()
+        return orch, sched, platform, agent
+
+    async def test_registered_watch_callback_actually_polls_when_fired(
+        self, tmp_path,
+    ):
+        """The end-to-end contract: await what was registered and the turn
+        must reach the platform. This fails outright on a sync wrapper."""
+        watcher = FakeWatcher()
+        _, sched, platform, _ = self._orch_with_watches(tmp_path, watcher)
+
+        await sched.crons["mail_watch"]()
+
+        assert platform.sent == [(7, "ok")]
+        assert watcher.commits == 1
+
+    def test_every_registered_cron_is_a_coroutine_function(self, tmp_path):
+        _, sched, _, _ = self._orch_with_watches(tmp_path, FakeWatcher())
+        assert set(sched.crons) == {"heartbeat", "mail_watch"}
+        for name, cb in sched.crons.items():
+            assert inspect.iscoroutinefunction(cb), f"{name} cron is not async"
+
+    def test_each_watch_gets_its_own_binding(self, tmp_path):
+        """Late-binding guard: two watches must not both fire the last one."""
+        a, b = FakeWatcher(), FakeWatcher()
+        watches = [
+            WatchConfig(name="mail_watch", cron="*/3 * * * *", chat_id=7,
+                        watcher=a, preamble="[mail]\n"),
+            WatchConfig(name="splitwise_watch", cron="*/10 * * * *", chat_id=7,
+                        watcher=b, preamble="[splitwise]\n"),
+        ]
+        orch, _, _ = _orch(tmp_path, watches=watches)
+        sched = RecordingScheduleConnector()
+        orch._schedule_connector = sched
+        orch._register_proactive_crons()
+        assert set(sched.crons) == {"mail_watch", "splitwise_watch"}
+
+
+class TestAddSystemCronRejectsSyncCallbacks:
+    def _engine(self, tmp_path):
+        from capabilities.schedule import ScheduleEngine
+
+        async def _fire(task):
+            return None
+
+        engine = ScheduleEngine(store_file=tmp_path / "schedules.json")
+        engine.start(_fire)
+        return engine
+
+    async def test_sync_callback_raises(self, tmp_path):
+        engine = self._engine(tmp_path)
+        try:
+            def sync_fire():
+                return None
+            with pytest.raises(TypeError, match="needs an async callback"):
+                engine.add_system_cron("bad", "*/3 * * * *", sync_fire)
+        finally:
+            engine.shutdown()
+
+    async def test_async_callback_and_async_call_object_accepted(self, tmp_path):
+        engine = self._engine(tmp_path)
+        try:
+            async def async_fire():
+                return None
+
+            class AsyncCallable:
+                async def __call__(self):
+                    return None
+
+            engine.add_system_cron("good", "*/3 * * * *", async_fire)
+            engine.add_system_cron("obj", "*/5 * * * *", AsyncCallable())
+        finally:
+            engine.shutdown()
 
 
 class TestStatusProactiveBlock:
