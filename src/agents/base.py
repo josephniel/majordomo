@@ -34,13 +34,29 @@ __all__ = [
 ]
 
 
+# Framework-level turn-grounding guidance, injected into every vendor's
+# system prompt. Directly targets the cross-vendor cold-handoff failure where
+# a brief reply ("Maya credit card") answering an open question got rebound to
+# an earlier, similar-shaped transaction after a mid-conversation failover.
+_TURN_GROUNDING_GUIDANCE = """\
+== Answering your own questions ==
+
+When your previous message asked the user something and their next message is
+a short reply, that reply is the ANSWER to the question you just asked —
+interpret it in that context. Do not reinterpret a brief reply (a card name, an
+account, "yes"/"no", "the second one") as being about an earlier or unrelated
+transaction or topic, even if it superficially fits one. If you genuinely can't
+tell which of several open items a reply refers to, quote back the specific
+question you asked instead of guessing."""
+
+
 class ContextBuilder:
     """Builds the shared system prompt string used across all vendors.
 
-    Order: persona body → platform context → connector parts → profiles
-    section. Memory providers inject their `What you know` section through
-    `provider.system_prompt_section()`, which auto-runs because they're in
-    the providers list.
+    Order: persona body → turn-grounding guidance → platform context →
+    connector parts → profiles section. Memory providers inject their
+    `What you know` section through `provider.system_prompt_section()`, which
+    auto-runs because they're in the providers list.
     """
 
     def __init__(
@@ -57,7 +73,11 @@ class ContextBuilder:
 
     def build(self) -> str:
         enabled = self._config.load_enabled()
-        parts: list[str] = [self._persona.system_prompt, self._platform_context]
+        parts: list[str] = [
+            self._persona.system_prompt,
+            _TURN_GROUNDING_GUIDANCE,
+            self._platform_context,
+        ]
         for c in self._connectors:
             part = c.system_prompt_section()
             if part:

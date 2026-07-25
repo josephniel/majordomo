@@ -51,6 +51,18 @@ COMPACTION_FAILURE_BACKOFF_SECONDS = 600
 # Cap on the size of the missed-turns digest prepended after failover.
 DIGEST_CHAR_LIMIT = 3_000
 
+# A short reply that answers a just-asked question rather than starting a new
+# topic ("Maya credit card", "yes", "the second one"). Used to (a) anchor the
+# reply to the open question, (b) skip auto-RAG that would drag in unrelated
+# context, and (c) keep the answer on the vendor that asked. Deliberately
+# conservative — only genuinely brief messages qualify.
+SHORT_ANSWER_MAX_WORDS = 8
+SHORT_ANSWER_MAX_CHARS = 80
+
+# How many recent rows to peek at (before mirroring the new turn) to spot an
+# open question and derive a cold-session seed watermark.
+PRIOR_PEEK_ROWS = 12
+
 # Fetch cap when reading rows for compaction. Well above anything a healthy
 # chat accumulates before the char threshold fires; if we ever hit it, we
 # log and compact only what we fetched (never more — cutoff is explicit).
@@ -189,14 +201,31 @@ class CascadingAgent(Agent):
     ) -> str:
         started_at = time.monotonic()
 
+        # Peek at recent history BEFORE mirroring this turn: if our last
+        # message asked a question and this reply is short, it's the ANSWER to
+        # that question. That fact drives three defenses against the
+        # cross-vendor cold-handoff misattribution (a brief reply getting
+        # rebound to an earlier, similar-shaped item after a failover):
+        # anchoring the reply (Fix 1b), skipping auto-RAG (Fix 3), and keeping
+        # the answer on the vendor that asked (Fix 4).
+        prior_rows = await self._recent_safe(PRIOR_PEEK_ROWS)
+        open_q = self._prior_open_assistant(prior_rows)
+        answering_open_q = open_q is not None and self._is_short_answer(text, attachments)
+
         # Auto-RAG: fetch relevant long-term memories for THIS message before
-        # anything is mirrored (recall runs on the raw user text).
+        # anything is mirrored (recall runs on the raw user text). Skipped for
+        # a bare answer to an open question — recall on a one-liner like "Maya
+        # credit card" pulls loosely-related memories that can re-anchor the
+        # reply to the wrong transaction (Fix 3); the open question already
+        # carries the context that matters.
         memory_block = ""
-        if self._memory_recaller is not None:
+        if self._memory_recaller is not None and not answering_open_q:
             try:
                 memory_block = await self._memory_recaller(text) or ""
             except Exception:
                 log.exception("memory recaller failed (continuing without)")
+        elif answering_open_q:
+            log.debug("auto-RAG skipped: short reply answering an open question")
 
         # Mirror the raw user turn before delegating, so fallback agents
         # reading from ConversationHistory see it. If the mirror is DOWN
@@ -252,6 +281,26 @@ class CascadingAgent(Agent):
             log.warning("all vendors cooling down; trying full chain anyway")
             candidates = list(self._chain)
 
+        # Fix 4 — sticky vendor: an answer to an open question is best resolved
+        # by the vendor that asked it (it holds that turn in-session / built it
+        # from the same mirror view). Bias it to the front when it's available;
+        # if it's down, the chain falls through as usual and the anchor +
+        # cold-session digest below carry the context to whoever serves.
+        if answering_open_q:
+            sticky = (open_q.get("metadata") or {}).get("vendor")
+            candidates = self._prefer_vendor(candidates, sticky)
+
+        # Fix 1b — anchor: name the exact open question this reply answers, so
+        # no serving vendor (cold session or not) can rebind it to an earlier
+        # topic. Seed watermark for a server-side vendor with no high-water
+        # mark (Fix 1a — cold session after a restart): give it a bounded
+        # recent tail so the open exchange is present even though its resumed
+        # session predates these turns.
+        anchor = self._active_exchange_anchor(open_q) if answering_open_q else ""
+        cold_tail_after_id = (
+            prior_rows[0]["id"] - 1 if prior_rows else None
+        )
+
         last_exc: Optional[BaseException] = None
         failovers = 0
         for vendor, agent in candidates:
@@ -275,6 +324,7 @@ class CascadingAgent(Agent):
                     self._pending_rotation.discard(vendor)
                 outgoing = await self._compose_outgoing(
                     vendor, agent, text, memory_block, user_row_id,
+                    anchor=anchor, cold_tail_after_id=cold_tail_after_id,
                 )
                 reply = await agent.send(
                     outgoing, on_tool_use=_mirror_tool_use, attachments=attachments,
@@ -386,6 +436,70 @@ class CascadingAgent(Agent):
                 return a
         return None
 
+    async def _recent_safe(self, limit: int) -> list[dict[str, Any]]:
+        """Recent active rows, chronological; [] on any read failure (a mirror
+        blip must never break a turn — the callers all degrade gracefully)."""
+        try:
+            return await self._history.recent(
+                self._persona_id, self._chat_id, limit=limit,
+            )
+        except Exception:
+            log.debug("could not read recent rows for turn grounding", exc_info=True)
+            return []
+
+    @staticmethod
+    def _prior_open_assistant(
+        rows: list[dict[str, Any]],
+    ) -> Optional[dict[str, Any]]:
+        """The most recent non-system row, if it's an assistant turn that asked
+        something (an open question awaiting the user's answer). System rows
+        (mirrored tool calls) are skipped — they sit between the assistant's
+        reply and the next user message. Returns None if the last real turn was
+        the user's own, a summary, or an assistant statement with no question."""
+        for r in reversed(rows):
+            if r.get("role") == "system":
+                continue
+            if r.get("role") == "assistant" and "?" in (r.get("content") or ""):
+                return r
+            return None
+        return None
+
+    @staticmethod
+    def _is_short_answer(text: str, attachments: Optional[list] = None) -> bool:
+        """A brief, topicless reply that answers rather than opens. Messages
+        carrying attachments are new content, never a bare answer."""
+        if attachments:
+            return False
+        t = (text or "").strip()
+        return bool(t) and (
+            len(t) <= SHORT_ANSWER_MAX_CHARS
+            and len(t.split()) <= SHORT_ANSWER_MAX_WORDS
+        )
+
+    @staticmethod
+    def _active_exchange_anchor(open_q: dict[str, Any]) -> str:
+        q = (open_q.get("content") or "").strip()
+        if len(q) > 500:
+            q = q[:500] + "…"
+        return (
+            "[You just asked the user this — their message below is the answer "
+            "to THIS specific question. Do not re-interpret it as being about "
+            "an earlier or unrelated item:\n"
+            f'"{q}"]'
+        )
+
+    @staticmethod
+    def _prefer_vendor(
+        candidates: list[tuple[str, Agent]], vendor: Optional[str],
+    ) -> list[tuple[str, Agent]]:
+        """Move `vendor` to the front if it's among the candidates."""
+        if not vendor:
+            return candidates
+        front = [(n, a) for n, a in candidates if n == vendor]
+        if not front:
+            return candidates
+        return front + [(n, a) for n, a in candidates if n != vendor]
+
     async def _ensure_started(self, vendor: str) -> None:
         if self._started.get(vendor):
             return
@@ -400,17 +514,30 @@ class CascadingAgent(Agent):
         text: str,
         memory_block: str,
         user_row_id: Optional[int],
+        anchor: str = "",
+        cold_tail_after_id: Optional[int] = None,
     ) -> str:
         """Prefix the outgoing text with (a) a missed-turns digest when this
-        vendor keeps server-side history and missed turns served by others,
-        and (b) the auto-recalled memory block."""
-        needs_digest = (
-            agent.USES_SERVER_SIDE_HISTORY
-            and vendor in self._last_seen_row_id
-        )
-        if not needs_digest:
-            return self._prefix_memories(memory_block, text)
-        return await self._compose_with_digest(vendor, text, memory_block, user_row_id)
+        vendor keeps server-side history and either has a high-water mark OR
+        is cold (fresh process, resumed-but-stale session — Fix 1a), and
+        (b) the auto-recalled memory block. `anchor`, when set, names the open
+        question this reply answers and sits immediately above the user text."""
+        body = f"{anchor}\n\n{text}" if anchor else text
+        if agent.USES_SERVER_SIDE_HISTORY:
+            if vendor in self._last_seen_row_id:
+                after_id: Optional[int] = self._last_seen_row_id[vendor]
+            elif cold_tail_after_id is not None:
+                # No watermark yet: its resumed session may be behind the
+                # mirror (turns served by other vendors never reached it).
+                # Seed a bounded recent tail so the current exchange is there.
+                after_id = cold_tail_after_id
+            else:
+                after_id = None
+            if after_id is not None:
+                return await self._compose_with_digest(
+                    vendor, body, memory_block, user_row_id, after_id,
+                )
+        return self._prefix_memories(memory_block, body)
 
     async def _compose_with_digest(
         self,
@@ -418,11 +545,13 @@ class CascadingAgent(Agent):
         text: str,
         memory_block: str,
         user_row_id: Optional[int],
+        after_id: Optional[int] = None,
     ) -> str:
+        start_id = after_id if after_id is not None else self._last_seen_row_id[vendor]
         try:
             rows = await self._history.rows_between(
                 self._persona_id, self._chat_id,
-                after_id=self._last_seen_row_id[vendor],
+                after_id=start_id,
                 limit=100,
             )
         except Exception:
