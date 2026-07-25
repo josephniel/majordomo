@@ -93,9 +93,15 @@ class ProactiveMixin:
                 log.exception("could not register heartbeat cron")
         for w in self._watches:
             try:
+                # `async def`, not a sync wrapper returning the coroutine:
+                # APScheduler dispatches non-coroutine callables to a thread
+                # executor, so a sync wrapper's coroutine was DISCARDED
+                # unawaited — the job logged "executed successfully" while
+                # check() never ran (mail + splitwise watches silently dead).
+                # add_system_cron now rejects sync callbacks outright.
                 # Late binding trap: capture w per iteration.
-                def _fire(w=w):
-                    return self._on_watch(w)
+                async def _fire(w=w):
+                    await self._on_watch(w)
                 self._schedule_connector.add_system_cron(w.name, w.cron, _fire)
             except Exception:
                 log.exception("could not register %s cron", w.name)
