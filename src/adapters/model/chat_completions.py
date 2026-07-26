@@ -932,12 +932,14 @@ class OllamaAgent(ChatCompletionsAgent):
     # 12B local model is below Llama-3.3-70B's, so the hosted vendors are
     # worth keeping in the chain behind it.
     #
-    # IMPORTANT: run a build with num_ctx raised (see
-    # deploy/ollama/Modelfile.gemma4-majordomo) and point OLLAMA_MODEL at it.
-    # Stock Ollama caps num_ctx at 4096 no matter what the model supports, and
-    # a normal turn here is ~4.1k tokens — it overflows and Ollama drops the
-    # OLDEST tokens, i.e. the system prompt. The model keeps answering, just
-    # with no persona and no grounding, which reads as "the bot got dumb".
+    # IMPORTANT: raise num_ctx on the SERVER before using this in anger.
+    # Stock Ollama caps it at 4096 no matter what the model supports, and its
+    # /v1 layer ignores per-request `options`, so this class cannot fix it
+    # from here. A normal turn overflows 4096, and Ollama then drops the
+    # OLDEST tokens — i.e. the system prompt. The model keeps answering, just
+    # with no persona and no grounding, which reads as "the bot got dumb"
+    # rather than as an error. See docs/DEPLOYING.md, "Running against a
+    # local model", for the two ways to raise it.
     DEFAULT_MODEL = "gemma4:12b"
     DEFAULT_BASE_URL = "http://localhost:11434/v1"
     API_KEY_ENV = ""          # keyless
@@ -979,10 +981,10 @@ class OllamaAgent(ChatCompletionsAgent):
     # model alone, which is the safe default. Ollama ignores per-request
     # `options` but its /v1 layer does honor reasoning_effort.
     EXTRA_COMPLETION_KWARGS: dict[str, Any] = {}
-    # NOT a context limit any more (see deploy/ollama/Modelfile.gemma4-majordomo
-    # — num_ctx is raised to gemma4's full 262144). This is now purely a LATENCY
-    # budget: prefill measured 133 tok/s on an M4, so every ~133 prompt tokens
-    # costs a second of dead time before the first output token appears.
+    # NOT a context limit — that is raised on the Ollama server (see
+    # docs/DEPLOYING.md). This is purely a LATENCY budget: local prefill runs
+    # on the order of 100 tok/s, so every ~100 prompt tokens costs a second of
+    # dead time before the first output token appears.
     MAX_HISTORY_CHARS = 12_000  # ≈ 3k tokens ≈ 23s of prefill
     # A local 12B at ~20-40 tok/s needs minutes for a long answer, and a cold
     # first call also pays model load. The hosted-vendor 30s cap would time

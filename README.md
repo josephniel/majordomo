@@ -30,15 +30,23 @@ runtime.
   create event, run code, save a self-written skill) posts an inline
   Approve/Deny keyboard in Telegram; 120s timeout = deny; every decision
   lands in a durable audit table.
-- **Memory** — a two-tier Postgres second brain (atomic facts + curated
-  narratives) with hybrid recall: FTS + trigram + pgvector arms fused by
-  weighted Reciprocal Rank Fusion, then reranked by a local cross-encoder for
-  a calibrated relevance score. Plus idle-time reflection that extracts facts
-  from conversation, and auto-RAG injection per turn. Retrieval quality is
-  measured, not asserted — `./manage eval-recall` reports recall@k, MRR, and
-  false-injection rate, and CI holds the floor (currently 100% recall@4,
-  0.975 MRR, 0% false-inject). All embedding and reranking runs locally; no
-  vector ever leaves the host.
+- **Memory** — a two-tier second brain (atomic facts + curated narratives)
+  behind a swappable `MemoryStore` port, with hybrid recall: FTS + trigram +
+  pgvector arms fused by weighted Reciprocal Rank Fusion, then reranked by a
+  local cross-encoder for a calibrated relevance score. Idle-time reflection
+  extracts facts from conversation and auto-RAG injects them per turn.
+  Retrieval quality is measured, not asserted — `./manage eval-recall`
+  reports recall@k, MRR, and false-injection rate, and CI holds the floor
+  (currently 100% recall@4, 0.975 MRR, 0% false-inject). All embedding and
+  reranking runs locally; no vector ever leaves the host.
+- **Memory that can change its mind** — writes are reconciled against what is
+  already known (add / update / delete / noop), so a fact that CHANGED
+  supersedes the old one instead of sitting next to it contradicting it.
+  Facts carry validity (`valid_from`/`valid_to`), so "I'm on leave until the
+  19th" stops being true on the 19th rather than being recalled forever.
+  Ideation (`memory ideate`) derives what follows from stored facts —
+  labelled, confidence-weighted, linked to its evidence, and never allowed to
+  retract something you actually said.
 - **Documents** — text/PDF attachments are auto-ingested into a pgvector
   chunk store; `doc_search` / `doc_read` give the model RAG over your files.
 - **Skills** — markdown instruction notes (keyword-attached, always-on, or
@@ -95,7 +103,8 @@ any of `GEMINI_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY` /
 `DEEPSEEK_API_KEY`, and/or Claude via an `ANTHROPIC_API_KEY` or a local
 Claude Code subscription login (`CLAUDE_ENABLED=1`, no key needed — this
 reads `~/.claude`, so it only works when the bot runs on the host as your
-user, which is also why the deploy docs use a user-level service).
+user, which is also why [deploying](docs/DEPLOYING.md) uses a user-level
+service).
 
 No API key at all? Run a local model with [Ollama](https://ollama.com)
 (`ollama pull gemma4:12b`) and set `OLLAMA_ENABLED=1`. It's keyless, so —
@@ -125,6 +134,16 @@ cp instances/_template/platform.yaml.example instances/assistant/platform.yaml
 `./manage help` lists everything else: connector auth flows (`add`/`auth`),
 memory/schedule/skills/document introspection, retention (`prune`), the
 vendor canary, and the eval harness.
+
+## Deploying
+
+One long-running process per persona, under any supervisor you like — the
+only hard rule is that exactly **one** instance polls Telegram per bot token,
+or the two fight over `getUpdates` and both fail.
+
+**[docs/DEPLOYING.md](docs/DEPLOYING.md)** has a macOS launchd template, the
+systemd shape, where the logs go, what a schema change needs, and the two
+Ollama server defaults that make a local-model setup look broken.
 
 ## Security model (read this before granting writes)
 
