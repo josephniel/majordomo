@@ -99,7 +99,7 @@ class Delegator(Faculty):
             "Not for quick single-tool lookups; call those directly.",
             {"task": str},
         )
-        async def delegate_task_tool(args: dict[str, Any], ctx: ToolContext):
+        async def delegate_task_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             task = str(args.get("task") or "").strip()
             if not task:
                 return ToolResult.error("delegate_task needs a non-empty `task`")

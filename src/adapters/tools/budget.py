@@ -228,7 +228,7 @@ the ledger books their share as expense and the rest as loans)."""
             "Needed to pick the account_id for record_transaction.",
             {},
         )
-        async def list_accounts_tool(_args: dict[str, Any], _ctx: ToolContext):
+        async def list_accounts_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 accounts = await client.list_accounts()
                 if not accounts:
@@ -246,7 +246,7 @@ the ledger books their share as expense and the rest as loans)."""
             "record_transaction.",
             {},
         )
-        async def list_tags_tool(_args: dict[str, Any], _ctx: ToolContext):
+        async def list_tags_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 tags = await client.list_tags()
                 if not tags:
@@ -269,7 +269,7 @@ the ledger books their share as expense and the rest as loans)."""
                 },
             },
         )
-        async def recent_transactions_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def recent_transactions_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 limit = max(1, min(int(args.get("limit") or 10), 50))
                 account_id = int(args["account_id"]) if args.get("account_id") else None
@@ -307,7 +307,7 @@ the ledger books their share as expense and the rest as loans)."""
                 "required": ["account_id", "tag_id", "amount"],
             },
         )
-        async def record_transaction_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def record_transaction_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 account_id = int(args["account_id"])
                 payload: dict[str, Any] = {
@@ -369,7 +369,7 @@ the ledger books their share as expense and the rest as loans)."""
                 "required": ["account_id", "tag_id", "total_amount", "shares"],
             },
         )
-        async def record_split_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def record_split_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 account_id = int(args["account_id"])
                 shares = [

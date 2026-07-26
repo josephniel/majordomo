@@ -450,7 +450,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             "optional).",
             {"name": str, "cron": str, "prompt": str, "description": str},
         )
-        async def schedule_create_tool(args: dict[str, Any], ctx: ToolContext):
+        async def schedule_create_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             chat_id = ctx.chat_id
             if chat_id is None:
                 return ToolResult.error("no current chat context (cannot create schedule)")
@@ -478,7 +478,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             "self), description (optional). Prefer relative offsets for 'in N ...'.",
             {"name": str, "when": str, "prompt": str, "description": str},
         )
-        async def schedule_once_tool(args: dict[str, Any], ctx: ToolContext):
+        async def schedule_once_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             chat_id = ctx.chat_id
             if chat_id is None:
                 return ToolResult.error("no current chat context (cannot create reminder)")
@@ -501,7 +501,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             "List all scheduled tasks for the current chat.",
             {},
         )
-        async def schedule_list_tool(_args: dict[str, Any], ctx: ToolContext):
+        async def schedule_list_tool(_args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             chat_id = ctx.chat_id
             if chat_id is None:
                 return ToolResult.error("no current chat context")
@@ -519,7 +519,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             "Permanently delete a scheduled task by name.",
             {"name": str},
         )
-        async def schedule_remove_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def schedule_remove_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 runtime.remove(args["name"])
                 return ToolResult.ok(f"removed schedule: {args['name']}")
@@ -531,7 +531,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             "Pause or resume a scheduled task without deleting it.",
             {"name": str, "enabled": bool},
         )
-        async def schedule_set_enabled_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def schedule_set_enabled_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 runtime.set_enabled(args["name"], bool(args["enabled"]))
                 action = "enabled" if args["enabled"] else "disabled"

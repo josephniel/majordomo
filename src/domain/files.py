@@ -54,7 +54,7 @@ class FileCourier(Faculty):
             "tools), caption (optional short text shown with the file).",
             {"path": str, "caption": str},
         )
-        async def chat_send_file_tool(args: dict[str, Any], ctx: ToolContext):
+        async def chat_send_file_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             return await outer._send(args, ctx)
 
         return [chat_send_file_tool]

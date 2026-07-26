@@ -24,7 +24,7 @@ class RecordingConnector(Connector):
         outer = self
 
         @tool(name, description, parameters)
-        async def handler(args: dict[str, Any], _ctx: ToolContext):
+        async def handler(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             outer.calls.append((name, dict(args)))
             return ToolResult.ok(reply)
 

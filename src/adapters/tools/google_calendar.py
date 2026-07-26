@@ -362,7 +362,7 @@ class GoogleCalendarConnector(Connector):
             "primary calendar always has id 'primary'.",
             {},
         )
-        async def list_calendars_tool(_args: dict[str, Any], _ctx: ToolContext):
+        async def list_calendars_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 resp = await client.list_calendars()
                 items = resp.get("items", [])
@@ -396,7 +396,7 @@ class GoogleCalendarConnector(Connector):
                 "query": str,
             },
         )
-        async def list_events_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def list_events_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 resp = await client.list_events(
                     calendar_id=args.get("calendar_id") or "primary",
@@ -422,7 +422,7 @@ class GoogleCalendarConnector(Connector):
             "list_events).",
             {"calendar_id": str, "event_id": str},
         )
-        async def get_event_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def get_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 ev = await client.get_event(
                     calendar_id=args.get("calendar_id") or "primary",
@@ -468,7 +468,7 @@ class GoogleCalendarConnector(Connector):
             {"summary": str, "start": str, "end": str, "description": str,
              "location": str, "attendees": str, "calendar_id": str, "timezone": str},
         )
-        async def create_event_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def create_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 body = _event_body(args)
                 if not body.get("start") or not body.get("end"):
@@ -489,7 +489,7 @@ class GoogleCalendarConnector(Connector):
             {"event_id": str, "calendar_id": str, "summary": str, "start": str,
              "end": str, "description": str, "location": str, "attendees": str, "timezone": str},
         )
-        async def update_event_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def update_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 body = _event_body(args)
                 if not body:
@@ -508,7 +508,7 @@ class GoogleCalendarConnector(Connector):
             "clearly asked to delete/cancel the event.",
             {"event_id": str, "calendar_id": str},
         )
-        async def delete_event_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def delete_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 await client.delete_event(args.get("calendar_id") or "primary", args["event_id"])
                 return ToolResult.ok(f"deleted event {args['event_id']}")

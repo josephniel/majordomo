@@ -483,7 +483,7 @@ class ClickUpConnector(Connector):
             "fetch tasks and filter the result yourself.",
             {"include_closed": bool, "include_subtasks": bool, "page": int},
         )
-        async def search_tasks_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def search_tasks_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 resp = await client.list_tasks(
                     include_closed=bool(args.get("include_closed", False)),
@@ -504,7 +504,7 @@ class ClickUpConnector(Connector):
             "response under the `subtasks` field).",
             {"task_id": str, "include_subtasks": bool},
         )
-        async def get_task_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def get_task_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 resp = await client.get_task(
                     args["task_id"],
@@ -521,7 +521,7 @@ class ClickUpConnector(Connector):
             "List spaces (top-level workspace groupings) in this ClickUp workspace.",
             {},
         )
-        async def list_spaces_tool(_args: dict[str, Any], _ctx: ToolContext):
+        async def list_spaces_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 resp = await client.list_spaces()
                 spaces = resp.get("spaces", [])
@@ -542,7 +542,7 @@ class ClickUpConnector(Connector):
             "include_subtasks (default true), page (default 0).",
             {"include_closed": bool, "include_subtasks": bool, "page": int},
         )
-        async def get_my_tasks_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def get_my_tasks_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 user_resp = await client.get_authorized_user()
                 user_id = user_resp.get("user", {}).get("id")
@@ -567,7 +567,7 @@ class ClickUpConnector(Connector):
             "set_assignees.",
             {},
         )
-        async def list_workspace_members_tool(_args: dict[str, Any], _ctx: ToolContext):
+        async def list_workspace_members_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 members = await client.list_workspace_members()
                 if not members:
@@ -591,7 +591,7 @@ class ClickUpConnector(Connector):
             "and contain Sprint Lists. Get space_id from list_spaces.",
             {"space_id": str},
         )
-        async def list_folders_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def list_folders_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 resp = await client.list_folders(args["space_id"])
                 folders = resp.get("folders", [])
@@ -617,7 +617,7 @@ class ClickUpConnector(Connector):
             "to assign tasks to a sprint.",
             {"folder_id": str},
         )
-        async def list_lists_in_folder_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def list_lists_in_folder_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 resp = await client.list_lists_in_folder(args["folder_id"])
                 lists = resp.get("lists", [])
@@ -643,7 +643,7 @@ class ClickUpConnector(Connector):
             "name; '' to skip).",
             {"task_id": str, "name": str, "description": str, "status": str},
         )
-        async def update_task_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def update_task_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             body: dict[str, Any] = {}
             if args.get("name"):
                 body["name"] = args["name"]
@@ -670,7 +670,7 @@ class ClickUpConnector(Connector):
             "to REMOVE).",
             {"task_id": str, "add": str, "remove": str},
         )
-        async def set_assignees_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def set_assignees_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             add_ids = _parse_id_csv(args.get("add"))
             rem_ids = _parse_id_csv(args.get("remove"))
             if not add_ids and not rem_ids:
@@ -692,7 +692,7 @@ class ClickUpConnector(Connector):
             "list_lists_in_folder.",
             {"task_id": str, "list_id": str},
         )
-        async def add_task_to_list_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def add_task_to_list_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 await client.add_task_to_list(args["task_id"], args["list_id"])
                 return ToolResult.ok(f"added task {args['task_id']} to list {args['list_id']}")
@@ -708,7 +708,7 @@ class ClickUpConnector(Connector):
             "list.",
             {"task_id": str, "list_id": str},
         )
-        async def remove_task_from_list_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def remove_task_from_list_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 await client.remove_task_from_list(args["task_id"], args["list_id"])
                 return ToolResult.ok(f"removed task {args['task_id']} from list {args['list_id']}")

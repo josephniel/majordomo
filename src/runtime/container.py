@@ -1073,7 +1073,7 @@ class PersonaRuntime:
             hist = self.conversation_history
             persona_id = self.persona.id
 
-            async def _audit(chat_id, connector, tool, preview, decision, reason):
+            async def _audit(chat_id, connector, tool, preview, decision, reason) -> None:
                 await hist.log_approval(
                     persona_id=persona_id, chat_id=chat_id, connector=connector,
                     tool=tool, args_preview=preview, decision=decision, reason=reason,

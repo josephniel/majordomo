@@ -102,7 +102,7 @@ script instead of many small runs."""
                 "required": ["language", "code"],
             },
         )
-        async def run_code_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def run_code_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             return await outer._run(args)
 
         return [run_code_tool]

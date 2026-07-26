@@ -122,7 +122,7 @@ def build_memory_tools(
             "required": ["scope", "content"],
         },
     )
-    async def memory_save_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_save_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         try:
             msg, entry = await mem.save_fact(
                 scope=args.get("scope") or "",
@@ -163,7 +163,7 @@ def build_memory_tools(
             "required": ["query"],
         },
     )
-    async def memory_recall_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_recall_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         query = (args.get("query") or "").strip()
         if not query:
             return _err("query is empty")
@@ -213,7 +213,7 @@ def build_memory_tools(
             "required": ["id", "content"],
         },
     )
-    async def memory_update_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_update_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         eid, err = await _resolve(args.get("id"))
         if err:
             return _err(err)
@@ -240,7 +240,7 @@ def build_memory_tools(
             "required": ["id"],
         },
     )
-    async def memory_forget_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_forget_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         eid, err = await _resolve(args.get("id"))
         if err:
             return _err(err)
@@ -274,7 +274,7 @@ def build_memory_tools(
             "required": ["scope"],
         },
     )
-    async def memory_compact_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_compact_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         scope = (args.get("scope") or "").strip().lower()
         if scope not in VALID_SCOPES:
             return _err(f"scope must be one of {'/'.join(VALID_SCOPES)}")
@@ -309,7 +309,7 @@ def build_memory_tools(
             "required": ["from_id", "to_id"],
         },
     )
-    async def memory_link_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_link_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         relation = (args.get("relation") or "relates_to").strip().lower()
         if relation not in LINK_RELATIONS:
             return _err(f"relation must be one of {'/'.join(LINK_RELATIONS)}")
@@ -347,7 +347,7 @@ def build_memory_tools(
             "required": ["from_id", "to_id"],
         },
     )
-    async def memory_unlink_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_unlink_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         # Deliberately NOT _resolve: unlinking is the repair operation for a
         # graph that references a superseded entry, so requiring both ends to
         # be active would lock the model out of exactly the mess it needs to
@@ -380,7 +380,7 @@ def build_memory_tools(
             "required": ["id"],
         },
     )
-    async def memory_pin_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_pin_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         return await _set_pinned(args.get("id"), True, "pinned")
 
     @tool(
@@ -393,7 +393,7 @@ def build_memory_tools(
             "required": ["id"],
         },
     )
-    async def memory_unpin_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_unpin_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         return await _set_pinned(args.get("id"), False, "unpinned")
 
     async def _set_pinned(raw_id: Any, pinned: bool, verb: str) -> ToolResult:
@@ -419,7 +419,7 @@ def build_memory_tools(
             "required": ["id"],
         },
     )
-    async def memory_verify_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_verify_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         eid, err = await _resolve(args.get("id"))
         if err:
             return _err(err)
@@ -475,7 +475,7 @@ def _history_search_tool(
             "required": ["query"],
         },
     )
-    async def history_search_tool(args: dict[str, Any], ctx: ToolContext):
+    async def history_search_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         query = (args.get("query") or "").strip()
         if not query:
             return _err("query is empty")
