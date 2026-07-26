@@ -81,6 +81,11 @@ class PersonaRuntime:
         # any more: which providers exist is data in runtime/providers.py,
         # not a hand-written attribute per provider.
         self._provider_cache: dict[str, ToolProvider] = {}
+        # (role, vendor) pairs already reported as dropped — see
+        # _warn_dropped_vendors. Four roles resolve per persona and most
+        # inherit the chat chain, so without this the same missing key is
+        # reported four times.
+        self._warned_vendors: set[tuple[ModelRole, str]] = set()
 
     # ---- foundation ----
 
@@ -538,6 +543,7 @@ class PersonaRuntime:
         # so they're never silently lost.
         if role_chain.chain:
             order = [n for n in role_chain.chain if n in available]
+            self._warn_dropped_vendors(role, role_chain.chain, available)
             order += [n for n in available if n not in order]  # append leftovers
             if not order:
                 order = list(available)
@@ -581,6 +587,40 @@ class PersonaRuntime:
     def model_roles(self) -> dict[ModelRole, RoleChain]:
         """Every role's resolved vendor chain. See runtime/model_roles.py."""
         return resolve_roles(self.settings)
+
+    def _warn_dropped_vendors(
+        self, role: ModelRole, chain: tuple[str, ...], available: dict[str, Agent]
+    ) -> None:
+        """Say so when a configured chain names a vendor that can't be used.
+
+        Dropping silently is the worst option: `LLM_CHAIN=gemini,claude,groq`
+        with no GEMINI_API_KEY runs as `claude,groq` and looks fine — the
+        only clue is that the resolved chain logged below differs from what
+        was written, which nobody diffs. PRIMARY_LLM already warned; the
+        documented, recommended path did not.
+
+        Deduped per (role, name) because four roles resolve per persona and
+        an unconfigured role inherits the chat chain verbatim.
+        """
+        for name in chain:
+            if name in available or (role, name) in self._warned_vendors:
+                continue
+            self._warned_vendors.add((role, name))
+            spec = VENDORS_BY_NAME.get(name)
+            if spec is None:
+                log.warning(
+                    "persona %r: %s chain names unknown vendor %r — dropped. "
+                    "Known vendors: %s",
+                    self.persona.id, role.value, name,
+                    ", ".join(v.name for v in VENDORS),
+                )
+            else:
+                log.warning(
+                    "persona %r: %s chain names %r but it is not configured — "
+                    "dropped from the chain. Set %s, or remove it from the chain.",
+                    self.persona.id, role.value, name,
+                    spec.requires or f"the credentials for {name}",
+                )
 
     def _options_builder_for(
         self, persona: Persona, context_builder: ContextBuilder, model: Optional[str]
