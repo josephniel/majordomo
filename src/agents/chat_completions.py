@@ -216,6 +216,16 @@ class ChatCompletionsAgent(Agent):
     DEFAULT_MODEL: str = ""
     DEFAULT_BASE_URL: Optional[str] = None
     API_KEY_ENV: str = ""
+    # Env var holding an endpoint override, for backends whose address isn't
+    # fixed (self-hosted). Empty means the endpoint is pinned by the class.
+    BASE_URL_ENV: str = ""
+    # Hosted vendors authenticate with a key and must fail fast without one.
+    # Self-hosted backends (Ollama) accept any credential and set this False.
+    REQUIRES_API_KEY: bool = True
+    # Per-request timeout (seconds). Hosted vendors answer in seconds, so a
+    # tight cap keeps failover snappy; local inference is far slower and
+    # raises this (see OllamaAgent).
+    REQUEST_TIMEOUT: float = 30.0
     # Extra params merged into every chat.completions.create() call. Subclasses
     # use this for vendor-specific knobs (e.g. Gemini's reasoning_effort).
     EXTRA_COMPLETION_KWARGS: dict[str, Any] = {}
@@ -230,6 +240,9 @@ class ChatCompletionsAgent(Agent):
     # short-message chats long before compaction fired (gap A4).
     MAX_HISTORY_CHARS = 24_000  # ≈ 6k tokens
     MAX_HISTORY_FETCH = 200
+    # When the window overflows, trim down to this FRACTION of the budget in
+    # one step instead of evicting a row per turn. See _history_floor.
+    HISTORY_TRIM_TO = 0.5
 
     # Token-constrained vendors (small TPM) set this True to send only the
     # relevant tools per turn (see _select_tools) instead of the full set.
@@ -250,6 +263,8 @@ class ChatCompletionsAgent(Agent):
             Any  # async () -> dict[str, ToolSpec]; see agents/external_mcp.py
         ] = None,
         max_tokens: Optional[int] = None,
+        extra_completion_kwargs: Optional[dict[str, Any]] = None,
+        supports_vision: Optional[bool] = None,
     ) -> None:
         self._composer = context_builder
         self._history = history
@@ -267,8 +282,22 @@ class ChatCompletionsAgent(Agent):
         self._external_tools_provider = external_tools_provider
         self._external_tools_loaded = False
         self._max_tokens = max_tokens or None  # 0/None → vendor default
+        # Sticky lower bound on replayed history — see _history_floor.
+        self._history_floor_id = 0
+        # Vision is a property of the MODEL, not the vendor: a self-hosted
+        # backend serves whatever was pulled, and gemma4's e4b builds have no
+        # vision while its 12b does. Declaring it wrongly means images get
+        # sent to a model that cannot see them.
+        if supports_vision is not None:
+            self.SUPPORTS_VISION = supports_vision
+        # Class defaults, overridable per deployment (self-hosted backends run
+        # whatever model the operator pulled, and the right knobs differ by
+        # model — see OllamaAgent).
+        self._extra_kwargs: dict[str, Any] = {
+            **self.EXTRA_COMPLETION_KWARGS, **(extra_completion_kwargs or {}),
+        }
         self.last_turn_usage: dict[str, Any] = {}
-        if not self._api_key:
+        if not self._api_key and self.REQUIRES_API_KEY:
             raise RuntimeError(
                 f"{self.__class__.__name__}: env var {self.API_KEY_ENV!r} is not set"
             )
@@ -369,7 +398,7 @@ class ChatCompletionsAgent(Agent):
                     messages=[{"role": "user", "content":
                                "Call the ping tool to confirm you can use tools."}],
                     tools=[ping], tool_choice="auto", max_tokens=128,
-                    **self.EXTRA_COMPLETION_KWARGS,
+                    **self._extra_kwargs,
                 )
             except Exception as e:
                 # A malformed-but-recoverable tool call (Groq/Llama
@@ -388,7 +417,9 @@ class ChatCompletionsAgent(Agent):
         if self._client is not None:
             return
         from openai import AsyncOpenAI
-        kwargs: dict[str, Any] = {"api_key": self._api_key}
+        # The SDK rejects an empty api_key outright, so keyless backends
+        # (Ollama) send a placeholder the server ignores.
+        kwargs: dict[str, Any] = {"api_key": self._api_key or "no-key-required"}
         if self._base_url:
             kwargs["base_url"] = self._base_url
         # CRITICAL for latency: CascadingAgent IS the retry/failover layer, so
@@ -398,7 +429,9 @@ class ChatCompletionsAgent(Agent):
         # we ever get to fail over. max_retries=0 makes a busy vendor fail
         # instantly so we advance to the next one immediately. Tight timeout
         # caps a hung request (SDK default is 600s).
-        self._client = AsyncOpenAI(max_retries=0, timeout=30.0, **kwargs)
+        self._client = AsyncOpenAI(
+            max_retries=0, timeout=self.REQUEST_TIMEOUT, **kwargs
+        )
 
     async def stop(self) -> None:
         if self._client is not None:
@@ -435,6 +468,37 @@ class ChatCompletionsAgent(Agent):
         return out
 
     # ---- main turn ----
+
+    async def prewarm(self) -> bool:
+        """Build this turn's prompt prefix and send it with a 1-token cap, so
+        the engine caches it BEFORE a human is waiting on it.
+
+        Local inference pays ~100s to prefill a cold ~13k-token prompt and
+        ~0.6s once it's cached. Nothing makes that first prefill cheap — but
+        it doesn't have to happen while the user watches a typing indicator.
+        Firing it at startup moves the cost off the hot path entirely.
+
+        Only the system prompt + tool schemas are warmed here (the bulk of
+        the prefix); a real turn's history and user text still prefill, but
+        that's the small tail. Best-effort: any failure is swallowed, since
+        this is an optimisation and never correctness.
+        """
+        if self._client is None:
+            await self.start()
+        await self._merge_external_tools()
+        messages = [
+            {"role": "system", "content": self._composer.build()},
+            {"role": "user", "content": "."},
+        ]
+        try:
+            await self._client.chat.completions.create(
+                model=self._model, messages=messages,
+                tools=self._openai_tools, max_tokens=1, **self._extra_kwargs,
+            )
+            return True
+        except Exception as e:
+            log.debug("prewarm skipped (%s)", str(e)[:120])
+            return False
 
     async def send(
         self,
@@ -506,13 +570,70 @@ class ChatCompletionsAgent(Agent):
             self._rebuild_openai_tools()
             log.info("%s: merged %d external MCP tools", self.__class__.__name__, added)
 
+    @staticmethod
+    def _is_replayable(row: dict[str, Any]) -> bool:
+        meta = row.get("metadata") or {}
+        if row["role"] == "summary":
+            return False  # always kept, never counted against the window
+        if row["role"] == "system" and not meta.get("tool_use"):
+            return False
+        return row["role"] in ("user", "assistant", "system")
+
+    def _history_floor(self, rows: list[dict[str, Any]]) -> int:
+        """Oldest mirror row id that may replay — sticky, and only ever moves
+        forward in big steps.
+
+        A plain newest-first budget evicts exactly one old row per turn once
+        the window is full. That changes the FIRST replayed message every
+        turn, and since the KV cache is only reused for a byte-identical
+        prefix, it silently forces a full re-prefill on every single turn —
+        measured here as ~53s average on turns that should have cost ~5s.
+
+        Trimming to HISTORY_TRIM_TO of the budget in one jump means the window
+        then GROWS by appending (prefix stays identical, cache hits) until it
+        overflows again — turning a per-turn cost into a once-every-N-turns
+        cost. The cost isn't free, it's amortised: with TRIM_TO=0.5 roughly
+        half the window refills before the next trim.
+        """
+        replayable = [r for r in rows if self._is_replayable(r)]
+        in_window = [r for r in replayable
+                     if (r.get("id") or 0) >= self._history_floor_id]
+        total = sum(len(r["content"]) for r in in_window)
+        if total <= self.MAX_HISTORY_CHARS:
+            return self._history_floor_id
+
+        target = self.MAX_HISTORY_CHARS * self.HISTORY_TRIM_TO
+        acc = 0
+        kept_any = False
+        new_floor = self._history_floor_id
+        for row in reversed(replayable):          # newest first
+            rid = row.get("id") or 0
+            cost = len(row["content"])
+            if kept_any and acc + cost > target:
+                new_floor = rid + 1               # this row and older drop out
+                break
+            # The newest row ALWAYS rides, even if it alone exceeds the
+            # target — dropping the turn we are answering would be absurd.
+            acc += cost
+            kept_any = True
+            new_floor = rid
+        self._history_floor_id = max(self._history_floor_id, new_floor)
+        return self._history_floor_id
+
     def _assemble_context(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Budget-based replay of the mirror. Newest rows win the budget;
         summary rows always ride along; mirrored tool calls surface as
         inline system notes so this vendor knows what actions were taken
-        (possibly by a different vendor)."""
+        (possibly by a different vendor).
+
+        The window's lower edge is sticky (see _history_floor) so the replayed
+        prefix stays byte-identical between trims — that is what lets a local
+        model reuse its KV cache instead of re-reading the whole prompt."""
         kept: list[dict[str, Any]] = []
         budget = self.MAX_HISTORY_CHARS
+        floor = self._history_floor(rows)
+        rows = [r for r in rows
+                if r["role"] == "summary" or (r.get("id") or 0) >= floor]
         for row in reversed(rows):
             role = row["role"]
             meta = row.get("metadata") or {}
@@ -599,7 +720,7 @@ class ChatCompletionsAgent(Agent):
                 kwargs: dict[str, Any] = {
                     "model": self._model,
                     "messages": messages,
-                    **self.EXTRA_COMPLETION_KWARGS,
+                    **self._extra_kwargs,
                 }
                 if self._max_tokens:
                     kwargs["max_tokens"] = self._max_tokens
@@ -651,7 +772,10 @@ class ChatCompletionsAgent(Agent):
             choice = resp.choices[0] if resp.choices else None
             msg = choice.message if choice else None
             if msg is None:
-                return "(no response)"
+                # Empty string, NOT a placeholder: CascadingAgent decides what
+                # a blank turn means (it fails over). See the note at the
+                # final-answer return below.
+                return ""
 
             tool_calls = getattr(msg, "tool_calls", None) or []
 
@@ -667,8 +791,17 @@ class ChatCompletionsAgent(Agent):
             messages.append(asst_entry)
 
             if not tool_calls:
-                # Final answer.
-                return (msg.content or "").strip() or "(no response)"
+                # Final answer. Return the EMPTY STRING when the model produced
+                # nothing — never a human-readable placeholder.
+                #
+                # This used to return "(no response)", which silently defeated
+                # CascadingAgent's empty-reply failover: the sentinel is not
+                # empty, so a dead turn looked like a successful one and got
+                # relayed to the user verbatim while healthy vendors sat idle.
+                # Reporting emptiness truthfully is what lets the layer that
+                # owns failover actually see it; rendering it for humans is the
+                # display layer's job.
+                return (msg.content or "").strip()
 
             await self._dispatch_calls(
                 [(tc.id, tc.function.name, tc.function.arguments or "{}")
@@ -786,6 +919,77 @@ class GroqAgent(ChatCompletionsAgent):
     MAX_HISTORY_CHARS = 10_000  # ≈ 2.5k tokens — leaves headroom under 12k TPM
 
 
+class OllamaAgent(ChatCompletionsAgent):
+    # Local models served by Ollama's OpenAI-compatible endpoint
+    # (http://localhost:11434/v1). Unlike every other vendor here there is no
+    # account, no key and no quota — the constraint is the host's RAM/GPU, so
+    # `enabled` keys off OLLAMA_ENABLED/OLLAMA_MODEL rather than a key (see
+    # personas/vendors.py). Point OLLAMA_BASE_URL at another machine to use a
+    # box on the LAN; inside docker-compose that's host.docker.internal.
+    #
+    # Default is gemma4:12b — it advertises tools + vision, which is the bar
+    # for being useful as this agent's primary. Tool-calling reliability on a
+    # 12B local model is below Llama-3.3-70B's, so the hosted vendors are
+    # worth keeping in the chain behind it.
+    #
+    # IMPORTANT: run a build with num_ctx raised (see
+    # deploy/ollama/Modelfile.gemma4-majordomo) and point OLLAMA_MODEL at it.
+    # Stock Ollama caps num_ctx at 4096 no matter what the model supports, and
+    # a normal turn here is ~4.1k tokens — it overflows and Ollama drops the
+    # OLDEST tokens, i.e. the system prompt. The model keeps answering, just
+    # with no persona and no grounding, which reads as "the bot got dumb".
+    DEFAULT_MODEL = "gemma4:12b"
+    DEFAULT_BASE_URL = "http://localhost:11434/v1"
+    API_KEY_ENV = ""          # keyless
+    BASE_URL_ENV = "OLLAMA_BASE_URL"
+    REQUIRED_ENV: list[str] = []
+    REQUIRES_API_KEY = False
+    SUPPORTS_VISION = True
+    # DELIBERATELY OFF, unlike every metered vendor — and it makes turns
+    # ~50x faster, not slower.
+    #
+    # Subsetting sends a keyword-chosen tool list per turn. Tool schemas are
+    # rendered into the PROMPT PREFIX, so a list that changes per message
+    # changes the prefix, and llama.cpp can only reuse the KV cache up to the
+    # first differing byte. Measured on the same prompt: identical tool list
+    # → 0.60s prefill; changed tool list → 41.14s. Live turns were landing at
+    # 78-104s for exactly this reason.
+    #
+    # The trade subsetting exists to make (fewer tokens, at the cost of a
+    # varying prefix) is backwards here: local tokens are unmetered, and a
+    # STABLE full tool list is prefilled once and then reused for free. The
+    # extra schema costs one cold turn; the varying list costs every turn.
+    SUBSET_TOOLS = False
+    # Thinking is left at the MODEL'S DEFAULT and is deliberately NOT disabled
+    # here, because the right answer differs per model and getting it wrong
+    # breaks the bot in opposite directions:
+    #
+    #   gemma4:12b  thinking cost ~16x the output tokens for an identical
+    #               answer (98 tok/7.6s vs 6 tok/0.4s), and since thinking is
+    #               billed against max_tokens a capped turn could spend the
+    #               whole budget reasoning and return EMPTY content. It wants
+    #               reasoning_effort=none.
+    #   qwen3.5:9b  the OPPOSITE. With a realistic ~55-tool prompt,
+    #               reasoning_effort=none produced empty content and NO tool
+    #               call; with thinking on it selects the right tool. It needs
+    #               its reasoning to pick from a large tool set.
+    #
+    # So this is per-deployment: set OLLAMA_REASONING_EFFORT (e.g. "none") in
+    # the instance .env for models that don't need to think. Unset = leave the
+    # model alone, which is the safe default. Ollama ignores per-request
+    # `options` but its /v1 layer does honor reasoning_effort.
+    EXTRA_COMPLETION_KWARGS: dict[str, Any] = {}
+    # NOT a context limit any more (see deploy/ollama/Modelfile.gemma4-majordomo
+    # — num_ctx is raised to gemma4's full 262144). This is now purely a LATENCY
+    # budget: prefill measured 133 tok/s on an M4, so every ~133 prompt tokens
+    # costs a second of dead time before the first output token appears.
+    MAX_HISTORY_CHARS = 12_000  # ≈ 3k tokens ≈ 23s of prefill
+    # A local 12B at ~20-40 tok/s needs minutes for a long answer, and a cold
+    # first call also pays model load. The hosted-vendor 30s cap would time
+    # out mid-generation on nearly every turn and fail over pointlessly.
+    REQUEST_TIMEOUT = 300.0
+
+
 class ChatCompletionsSummarizer(Summarizer):
     """`Summarizer` that runs memory/history compaction through any
     OpenAI-compatible vendor (Gemini/OpenAI/DeepSeek). This is what keeps the
@@ -795,11 +999,12 @@ class ChatCompletionsSummarizer(Summarizer):
     """
 
     def __init__(self, model: str, api_key: str, base_url: Optional[str] = None,
-                 extra: Optional[dict] = None) -> None:
+                 extra: Optional[dict] = None, timeout: float = 30.0) -> None:
         self._model = model
         self._api_key = api_key
         self._base_url = base_url
         self._extra = dict(extra or {})
+        self._timeout = timeout
         self._client = None  # lazy AsyncOpenAI
 
     @classmethod
@@ -808,11 +1013,15 @@ class ChatCompletionsSummarizer(Summarizer):
         backend: type,
         model: Optional[str] = None,
         api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        extra: Optional[dict] = None,
     ) -> "ChatCompletionsSummarizer":
         """Build from a ChatCompletionsAgent subclass — single source of
         truth for base_url/extra kwargs per vendor. The composition root
-        resolves model/api_key from settings; no env reads here."""
-        if not api_key:
+        resolves model/api_key/base_url/extra from settings; no env reads here.
+        `base_url` and `extra` override the backend defaults (self-hosted
+        endpoints, whose right knobs depend on the model in use)."""
+        if not api_key and backend.REQUIRES_API_KEY:
             raise RuntimeError(
                 f"{backend.__name__} summarizer: no API key configured "
                 f"(set {backend.API_KEY_ENV})"
@@ -820,8 +1029,9 @@ class ChatCompletionsSummarizer(Summarizer):
         return cls(
             model=model or backend.DEFAULT_MODEL,
             api_key=api_key,
-            base_url=backend.DEFAULT_BASE_URL,
-            extra=backend.EXTRA_COMPLETION_KWARGS,
+            base_url=base_url or backend.DEFAULT_BASE_URL,
+            extra={**backend.EXTRA_COMPLETION_KWARGS, **(extra or {})},
+            timeout=backend.REQUEST_TIMEOUT,
         )
 
     async def summarize(self, prompt: str, *, deep: bool = False) -> str:
@@ -830,8 +1040,9 @@ class ChatCompletionsSummarizer(Summarizer):
             # Same fast-fail rationale as the agent client (see start()):
             # summarization is best-effort/background, so don't let SDK
             # retries stall it either.
-            self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._base_url,
-                                       max_retries=0, timeout=30.0)
+            self._client = AsyncOpenAI(api_key=self._api_key or "no-key-required",
+                                       base_url=self._base_url,
+                                       max_retries=0, timeout=self._timeout)
         resp = await self._client.chat.completions.create(
             model=self._model,
             messages=[{"role": "user", "content": prompt}],

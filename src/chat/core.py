@@ -126,6 +126,12 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             for c in connectors_list
             for t in getattr(c, "SCHEDULE_CLAIM_TOOLS", ())
         }))
+        # Same, for "I've sent it" claims (RecoveryMixin, Layer 3c).
+        self._send_claim_tools: tuple[str, ...] = tuple(sorted({
+            t
+            for c in connectors_list
+            for t in getattr(c, "SEND_CLAIM_TOOLS", ())
+        }))
 
     # ---- lifecycle ----
 
@@ -188,6 +194,12 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             agent = self._agent_factory(chat_id=0)
             if isinstance(agent, CanaryRunner):
                 await agent.run_canary()
+            # Warm the prompt cache while nobody is waiting. On a local
+            # backend a cold prefill is ~100s vs ~0.6s warm, and after a
+            # restart the FIRST user turn would otherwise pay it.
+            warm = getattr(agent, "prewarm", None)
+            if warm is not None:
+                await warm()
             await agent.stop()
         except Exception:
             log.exception("startup tool-calling canary failed")
@@ -355,9 +367,10 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 self._reflection.note_activity(chat_id)
                 self._detect_missed_save(chat_id, reply, agent)
 
-            # Layer 3b — still inside the chat lock, so the corrective turn
-            # can't interleave with the user's next message.
+            # Layers 3b/3c — still inside the chat lock, so the corrective
+            # turn can't interleave with the user's next message.
             await self._recover_missed_schedule(chat_id, reply, agent)
+            await self._recover_missed_send(chat_id, reply, agent)
 
     async def _ingest_attachments(self, chat_id: int, text: str, msg: InboundMessage) -> str:
         return await ingest_attachments(self._connectors, chat_id, text, msg)

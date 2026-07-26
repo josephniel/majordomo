@@ -31,7 +31,14 @@ from .external_mcp import ExternalMCPManager
 from .fallback import CascadingAgent
 from .health import VendorHealthBoard
 from .history import ConversationHistory, EphemeralConversationHistory
-from .chat_completions import DeepSeekAgent, GeminiAgent, GroqAgent, OpenAIAgent, ChatCompletionsSummarizer
+from .chat_completions import (
+    DeepSeekAgent,
+    GeminiAgent,
+    GroqAgent,
+    OllamaAgent,
+    OpenAIAgent,
+    ChatCompletionsSummarizer,
+)
 
 __all__ = [
     "Agent",
@@ -44,6 +51,7 @@ __all__ = [
     "GeminiAgent",
     "GroqAgent",
     "CascadingAgent",
+    "OllamaAgent",
     "OpenAIAgent",
     "ChatCompletionsSummarizer",
     "Summarizer",

@@ -182,6 +182,7 @@ class PersonaRuntime:
         if spec is not None and spec.backend is not None:
             return ChatCompletionsSummarizer.for_backend(
                 spec.backend, model=spec.model(s), api_key=spec.api_key(s),
+                base_url=spec.base_url(s), extra=spec.extra(s),
             )
 
         # Claude path: Haiku routine, Sonnet deep — NOT the persona chat model
@@ -511,6 +512,8 @@ class PersonaRuntime:
           - claude: opt-in via CLAUDE_ENABLED (truthy), an ANTHROPIC_API_KEY, or
             PRIMARY_LLM=claude. (On the host it uses Claude Code subscription
             auth, so no key is required — but it must be explicitly enabled.)
+          - ollama: opt-in via OLLAMA_ENABLED, OLLAMA_MODEL, or
+            PRIMARY_LLM=ollama (keyless local endpoint, so also explicit).
         PRIMARY_LLM picks the leader; the rest follow as fallbacks. With one
         backend, CascadingAgent degenerates to pass-through. If none are
         configured, we raise a clear error rather than silently doing nothing.
@@ -590,13 +593,15 @@ class PersonaRuntime:
             else:
                 available[v.name] = _oai(
                     v.backend, model=v.model(s), api_key=v.api_key(s),
+                    base_url=v.base_url(s), extra_completion_kwargs=v.extra(s),
+                    supports_vision=v.supports_vision(s),
                 )
 
         if not available:
             raise RuntimeError(
                 f"persona {self.persona.id!r}: no LLM backend configured. Set a vendor "
                 f"API key (GROQ_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) and/or "
-                f"CLAUDE_ENABLED=1, plus PRIMARY_LLM, in the instance .env."
+                f"CLAUDE_ENABLED=1 / OLLAMA_ENABLED=1, plus PRIMARY_LLM, in the instance .env."
             )
 
         # Explicit chain order wins when set: LLM_CHAIN="gemini,claude,groq"
@@ -639,6 +644,9 @@ class PersonaRuntime:
             summarizer=self.summarizer,
             health_board=self.health_board,
             memory_recaller=memory_recaller,
+            # Same clock the scheduler runs on, so "in 20 minutes" and the
+            # reminder it creates agree (the host clock is NOT the user's tz).
+            timezone_name=self.settings.schedule_timezone,
         )
 
     @cached_property
@@ -726,6 +734,7 @@ class PersonaRuntime:
             # into cooldown.
             health_board=None,
             memory_recaller=self.context_injector,
+            timezone_name=self.settings.schedule_timezone,
         )
 
     def _heartbeat_agent_factory(self, chat_id: int) -> Agent:

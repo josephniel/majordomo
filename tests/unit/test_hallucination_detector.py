@@ -1,7 +1,7 @@
 """chat.core — Layer 3 memory-claim + Layer 3b schedule-claim regexes."""
 import pytest
 
-from chat.recovery import _CLAIMS_MEMORY_SAVE, _CLAIMS_SCHEDULE_SET
+from chat.recovery import _CLAIMS_MEMORY_SAVE, _CLAIMS_SCHEDULE_SET, _CLAIMS_SENT
 
 
 class TestClaimsMemorySave:
@@ -60,3 +60,41 @@ class TestClaimsScheduleSet:
     ])
     def test_negative_non_claims(self, reply):
         assert not _CLAIMS_SCHEDULE_SET.search(reply)
+
+
+class TestClaimsSent:
+    """Layer 3c. Every positive below is a VERBATIM line from a live thread in
+    which the model reported success with zero tool calls and nothing was ever
+    sent — the failure the user could not detect without checking the other
+    mailbox."""
+
+    @pytest.mark.parametrize("reply", [
+        "Email confirmed: **Test** (lorem ipsum body) has left your personal "
+        "Gmail and delivered to x@y.com just now!",
+        "Email confirmed: Test has been successfully sent from your personal "
+        "Gmail and delivered to a@b.com",
+        "I've sent the email to josephnieltuazon@icloud.com.",
+        "The email was sent to your colleague.",
+        "I just sent it to your yahoo address.",
+        "Sent it to x@y.com a moment ago.",
+        "I have emailed the summary over.",
+        "The message has been delivered.",
+    ])
+    def test_positive_claims(self, reply):
+        assert _CLAIMS_SENT.search(reply)
+
+    @pytest.mark.parametrize("reply", [
+        "Do you want me to send it now?",
+        "Shall I send this email to x@y.com?",
+        "I can send that for you — confirm the address?",
+        "Before composing — confirming details now: Personal Gmail will send "
+        "to x@y.com",
+        "I'll draft the email and wait for your go-ahead.",
+        "You sent me that address earlier.",
+        "I am sending \"Test\" now. Do you want me to proceed?",
+        "There are 3 unread emails in your inbox.",
+    ])
+    def test_negative_non_claims(self, reply):
+        """Offers and questions must not fire, or every 'shall I send this?'
+        costs a corrective turn."""
+        assert not _CLAIMS_SENT.search(reply)

@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from agents import DeepSeekAgent, GeminiAgent, GroqAgent, OpenAIAgent
+from agents import DeepSeekAgent, GeminiAgent, GroqAgent, OllamaAgent, OpenAIAgent
 
 from .settings import RuntimeSettings
 
@@ -31,6 +31,17 @@ class VendorSpec:
     enabled: Callable[[RuntimeSettings], bool]
     api_key: Callable[[RuntimeSettings], str]
     model: Callable[[RuntimeSettings], Optional[str]]
+    # Endpoint override; None means "use the backend's DEFAULT_BASE_URL".
+    # Only self-hosted vendors (ollama) need this to be configurable.
+    base_url: Callable[[RuntimeSettings], Optional[str]] = lambda s: None
+    # Per-deployment completion kwargs merged over the backend's class
+    # defaults. Hosted vendors pin theirs in code (the model is fixed); a
+    # self-hosted vendor runs whatever the operator pulled, and the correct
+    # knobs are model-specific — see OllamaAgent on reasoning_effort.
+    extra: Callable[[RuntimeSettings], dict] = lambda s: {}
+    # None = trust the backend class. Only self-hosted vendors override it,
+    # because the capability belongs to the pulled model, not the vendor.
+    supports_vision: Callable[[RuntimeSettings], Optional[bool]] = lambda s: None
 
 
 def _claude_enabled(s: RuntimeSettings) -> bool:
@@ -38,6 +49,14 @@ def _claude_enabled(s: RuntimeSettings) -> bool:
     # (On the host it can use Claude Code subscription auth, so no key is
     # required — but it must be explicitly enabled.)
     return bool(s.claude_enabled or s.anthropic_api_key or s.primary_llm == "claude")
+
+
+def _ollama_enabled(s: RuntimeSettings) -> bool:
+    # Keyless, so there's no key to imply intent — opt in the same way Claude
+    # does. A running Ollama daemon is NOT treated as consent: the host may be
+    # running it for something else, and an unreachable local endpoint in the
+    # chain costs a timeout on every failover.
+    return bool(s.ollama_enabled or s.ollama_model or s.primary_llm == "ollama")
 
 
 VENDORS: tuple[VendorSpec, ...] = (
@@ -70,6 +89,20 @@ VENDORS: tuple[VendorSpec, ...] = (
         enabled=_claude_enabled,
         api_key=lambda s: s.anthropic_api_key,
         model=lambda s: s.claude_model,
+    ),
+    # Last in registry order deliberately: local inference is free and works
+    # with the network down, which makes it the right final safety net when
+    # every hosted vendor is rate-limited or unreachable. PRIMARY_LLM=ollama
+    # (or LLM_CHAIN) hoists it to the front when it should lead instead.
+    VendorSpec(
+        "ollama", OllamaAgent,
+        enabled=_ollama_enabled,
+        api_key=lambda s: "",  # keyless; OllamaAgent.REQUIRES_API_KEY is False
+        model=lambda s: s.ollama_model,
+        base_url=lambda s: s.ollama_base_url,
+        extra=lambda s: ({"reasoning_effort": s.ollama_reasoning_effort}
+                         if s.ollama_reasoning_effort else {}),
+        supports_vision=lambda s: s.ollama_vision,
     ),
 )
 

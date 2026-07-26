@@ -86,7 +86,9 @@ class FakeAgent(Agent):
         self.name = name
         self.fail = fail
         self.USES_SERVER_SIDE_HISTORY = server_side
-        self.reply = reply or f"reply from {name}"
+        # `is None`, not `or`: reply="" is a MEANINGFUL value (the empty-reply
+        # failover path) and must not fall back to the default text.
+        self.reply = f"reply from {name}" if reply is None else reply
         self.fire_tool = fire_tool
         self.sent: list[str] = []
         self.started = 0

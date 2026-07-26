@@ -54,9 +54,19 @@ class ContextBuilder:
     """Builds the shared system prompt string used across all vendors.
 
     Order: persona body → turn-grounding guidance → platform context →
-    connector parts → profiles section. Memory providers inject their
-    `What you know` section through `provider.system_prompt_section()`, which
-    auto-runs because they're in the providers list.
+    STABLE connector parts → profiles section → VOLATILE connector parts.
+    Memory providers inject their `What you know` section through
+    `provider.system_prompt_section()`, which auto-runs because they're in
+    the providers list.
+
+    The stable/volatile split exists for local inference. Ollama/llama.cpp
+    reuse the KV cache only for the longest byte-identical PREFIX, so a
+    section that changes at runtime (memory, skills) sitting in the MIDDLE
+    invalidated everything after it — one memory write cost a full ~9k-token
+    re-prefill (~100s on an M4 at 117 tok/s, vs 0.69s warm). Emitting those
+    last keeps the expensive, unchanging bulk cacheable. Providers opt in via
+    `ToolProvider.VOLATILE_PROMPT_SECTION`; ordering is otherwise unchanged,
+    and hosted vendors are unaffected either way.
     """
 
     def __init__(
@@ -78,11 +88,19 @@ class ContextBuilder:
             _TURN_GROUNDING_GUIDANCE,
             self._platform_context,
         ]
+        volatile: list[str] = []
         for c in self._connectors:
             part = c.system_prompt_section()
-            if part:
+            if not part:
+                continue
+            # Runtime-mutable sections are deferred to the tail so the prefix
+            # above them stays byte-identical across turns (see class docstring).
+            if getattr(c, "VOLATILE_PROMPT_SECTION", False):
+                volatile.append(part)
+            else:
                 parts.append(part)
         parts.append(self._connectors_section(enabled))
+        parts.extend(volatile)
         return "\n\n".join(p for p in parts if p)
 
     def _connectors_section(self, enabled: list) -> str:

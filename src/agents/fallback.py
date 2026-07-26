@@ -32,7 +32,9 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Optional
+from zoneinfo import ZoneInfo
 
 from core import SessionResettable, ToolCallProbe
 
@@ -87,6 +89,7 @@ class CascadingAgent(Agent):
         summarizer: Summarizer,
         health_board: Optional[VendorHealthBoard] = None,
         memory_recaller: Optional[MemoryRecaller] = None,
+        timezone_name: Optional[str] = None,
     ) -> None:
         if not chain:
             raise ValueError("CascadingAgent requires at least one agent in the chain")
@@ -97,6 +100,7 @@ class CascadingAgent(Agent):
         self._summarizer = summarizer
         self._board = health_board or VendorHealthBoard()
         self._memory_recaller = memory_recaller
+        self._timezone_name = timezone_name
         # Track whether each agent has been started (lazy).
         self._started: dict[str, bool] = {name: False for name, _ in chain}
         # Vendor that served the most recent successful turn (for /status).
@@ -357,6 +361,26 @@ class CascadingAgent(Agent):
                             vendor, str(e).replace("\n", " ")[:200])
                 continue
 
+            # An EMPTY reply is a failure, not a success. It used to fall
+            # through to the success path below: the vendor was marked
+            # healthy and the user got a blank turn ("(no response)") with
+            # healthy vendors sitting unused behind it. Seen in production
+            # from a local model that spent its whole budget on reasoning
+            # tokens and emitted no content.
+            #
+            # Deliberate silence is NEVER the empty string — it's the literal
+            # `<silent>` sentinel (see platforms/telegram.py, chat/proactive.py),
+            # which passes through here untouched. So blank means broken.
+            if not (reply or "").strip():
+                last_exc = RuntimeError(f"{vendor} returned an empty reply")
+                failovers += 1
+                self._board.mark_failed(vendor)
+                log.warning("%s returned an empty reply; advancing chain", vendor)
+                self._spawn_bg(self._log_turn_safe(
+                    vendor, agent, "error", started_at, tool_calls, failovers,
+                ))
+                continue
+
             # ---- success ----
             if vendor != self._active_vendor:
                 log.warning("active vendor: %s → %s", self._active_vendor, vendor)
@@ -419,6 +443,22 @@ class CascadingAgent(Agent):
             self._board.set_canary(name, ok, detail)
             log.info("canary %s: %s (%s)", name, "PASS" if ok else "FAIL", detail)
         return results
+
+    async def prewarm(self) -> None:
+        """Warm each backend's prompt cache off the hot path (see
+        ChatCompletionsAgent.prewarm). Runs at startup alongside the canary,
+        so the first real turn after a restart isn't the one that pays the
+        cold prefill. Vendors that don't implement it are skipped — hosted
+        ones have nothing to gain."""
+        for name, agent in self._chain:
+            warm = getattr(agent, "prewarm", None)
+            if warm is None:
+                continue
+            try:
+                if await warm():
+                    log.info("prewarmed %s prompt cache", name)
+            except Exception:
+                log.debug("prewarm failed for %s (ignored)", name)
 
     # ---- reset hook (called by the orchestrator's /reset) ----
 
@@ -507,6 +547,40 @@ class CascadingAgent(Agent):
         await agent.start()
         self._started[vendor] = True
 
+    def _now_line(self) -> str:
+        """The wall-clock time, stamped on every outgoing turn.
+
+        WITHOUT this the model has no clock at all — it answers "what time is
+        it" from training data and insists its time "doesn't update live",
+        and every relative instruction ("last week", "in 20 minutes",
+        "tomorrow") is guesswork.
+
+        Deliberately placed on the OUTGOING TURN TEXT, not in the system
+        prompt. The system prompt is the cacheable prefix: a clock in there
+        would change on every single turn and invalidate it, re-prefilling
+        the whole prompt each time (measured: ~100s cold vs 0.6s warm — see
+        ContextBuilder). At the tail of the turn text nothing precedes it that
+        the cache cares about, so an always-changing timestamp is free.
+
+        Only the CURRENT turn carries a stamp: the mirror stores the user's
+        raw text, so history doesn't accumulate stale clocks.
+        """
+        tz = None
+        if self._timezone_name:
+            try:
+                tz = ZoneInfo(self._timezone_name)
+            except Exception:
+                # A bad SCHEDULE_TIMEZONE must not break every turn — fall
+                # back to the host clock rather than raise.
+                log.warning("unknown timezone %r; using host local time",
+                            self._timezone_name)
+        now = datetime.now(tz) if tz else datetime.now().astimezone()
+        label = self._timezone_name or str(now.tzinfo)
+        return (
+            f"[Current time: {now.strftime('%A, %d %B %Y, %I:%M %p')} ({label}). "
+            f"Use this for anything relative — 'today', 'last week', 'in 2 hours'.]"
+        )
+
     async def _compose_outgoing(
         self,
         vendor: str,
@@ -523,6 +597,7 @@ class CascadingAgent(Agent):
         (b) the auto-recalled memory block. `anchor`, when set, names the open
         question this reply answers and sits immediately above the user text."""
         body = f"{anchor}\n\n{text}" if anchor else text
+        body = f"{self._now_line()}\n\n{body}"
         if agent.USES_SERVER_SIDE_HISTORY:
             if vendor in self._last_seen_row_id:
                 after_id: Optional[int] = self._last_seen_row_id[vendor]

@@ -451,7 +451,10 @@ class AnthropicAgent(Agent):
                 elif isinstance(msg, ResultMessage):
                     self._session_id = msg.session_id
                     self._capture_usage(msg)
-            return "".join(parts).strip() or "(no response)"
+            # Empty string, not a placeholder — same contract as the
+            # chat-completions agents: a blank turn must stay visibly blank so
+            # CascadingAgent's empty-reply failover can see it.
+            return "".join(parts).strip()
         except asyncio.CancelledError:
             raise
         except Exception as e:

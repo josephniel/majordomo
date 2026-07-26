@@ -9,8 +9,9 @@ hard-won premise: **free-tier LLMs are unreliable tool-callers, so the
 framework — not the model — must guarantee correctness.**
 
 The model chain is configurable and vendor-neutral (Gemini, Claude, Groq,
-OpenAI, DeepSeek — in any failover order). Everything the assistant *does*
-is verified, gated, or recovered by the runtime.
+OpenAI, DeepSeek, or local models via Ollama — in any failover order).
+Everything the assistant *does* is verified, gated, or recovered by the
+runtime.
 
 ## What it does
 
@@ -94,6 +95,13 @@ any of `GEMINI_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY` /
 Claude Code subscription login (`CLAUDE_ENABLED=1`, no key needed — this
 reads `~/.claude`, so it only works when the bot runs on the host as your
 user, which is also why the deploy docs use a user-level service).
+
+No API key at all? Run a local model with [Ollama](https://ollama.com)
+(`ollama pull gemma4:12b`) and set `OLLAMA_ENABLED=1`. It's keyless, so —
+like Claude — it must be opted into explicitly; `OLLAMA_MODEL` (default
+`gemma4:12b`) and `OLLAMA_BASE_URL` (default `http://localhost:11434/v1`)
+tune it. Pick a model with tool support: this framework is tool-heavy, and
+one that can't call functions will do very little.
 
 ```sh
 git clone https://github.com/josephniel/majordomo && cd majordomo

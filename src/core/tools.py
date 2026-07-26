@@ -175,10 +175,36 @@ class ToolProvider:
     # so their tools ride every turn even under subsetting.
     ALWAYS_ATTACH: bool = False
 
+    # ---- prompt-prefix stability (local inference) ----
+    # True when this provider's system_prompt_section() CHANGES AT RUNTIME —
+    # in practice, exactly the providers that also override context_version()
+    # (memory recompacts, skills get edited). ContextBuilder emits these LAST
+    # so everything stable stays in one unbroken prefix.
+    #
+    # Why it matters: llama.cpp/Ollama reuse the KV cache only for the longest
+    # byte-identical PREFIX of the prompt. Anything after the first changed
+    # byte is re-processed. With a volatile section in the middle, one memory
+    # write invalidated the whole ~9k-token system prompt — measured at ~117
+    # tok/s prefill on an M4, that is ~100s of dead time versus 0.69s warm.
+    # Hosted vendors don't care (their prefill is effectively free), so this
+    # costs them nothing.
+    VOLATILE_PROMPT_SECTION: bool = False
+
     # Local tool names whose invocation satisfies an "I've set a reminder /
     # scheduled task" claim — the hallucination detector (chat Layer 3b)
     # substring-matches the turn's tool trace against the union of these.
     SCHEDULE_CLAIM_TOOLS: frozenset[str] = frozenset()
+
+    # Local tool names whose invocation satisfies an "I've sent it" claim
+    # (email, message). Same contract as SCHEDULE_CLAIM_TOOLS, for the
+    # send-hallucination detector (chat Layer 3c).
+    #
+    # This exists because a model claimed "Email confirmed: successfully sent"
+    # on twelve consecutive live turns with ZERO tool calls — nothing was ever
+    # sent, and unlike a missed reminder the user had no way to tell. A false
+    # "sent" is indistinguishable from a real one until someone checks the
+    # other mailbox.
+    SEND_CLAIM_TOOLS: frozenset[str] = frozenset()
 
     def owns_profile(self, profile_name: str) -> bool:
         return (

@@ -43,6 +43,18 @@ class RuntimeSettings:
     gemini_model: Optional[str] = None
     openai_api_key: str = ""
     deepseek_api_key: str = ""
+    # Local models via Ollama — keyless, so it opts in like Claude does
+    # (OLLAMA_ENABLED, an explicit OLLAMA_MODEL, or PRIMARY_LLM=ollama).
+    ollama_enabled: bool = False
+    ollama_model: Optional[str] = None
+    ollama_base_url: Optional[str] = None
+    # Per-model: "none" disables thinking (right for gemma-family, which
+    # wastes ~16x tokens on it); leave UNSET for models that need reasoning to
+    # pick tools (qwen3.5 returns empty content without it).
+    ollama_reasoning_effort: Optional[str] = None
+    # Whether the pulled model can see images. Model-specific: gemma4's e4b
+    # builds cannot, its 12b and qwen3.5 can. Unset = trust the class default.
+    ollama_vision: Optional[bool] = None
 
     # ---- background summarization ----
     compaction_llm: str = ""            # falls back to primary_llm
@@ -90,6 +102,12 @@ class RuntimeSettings:
             gemini_model=env.get("GEMINI_MODEL") or None,
             openai_api_key=env.get("OPENAI_API_KEY") or "",
             deepseek_api_key=env.get("DEEPSEEK_API_KEY") or "",
+            ollama_enabled=_truthy(env.get("OLLAMA_ENABLED")),
+            ollama_model=env.get("OLLAMA_MODEL") or None,
+            ollama_base_url=env.get("OLLAMA_BASE_URL") or None,
+            ollama_reasoning_effort=env.get("OLLAMA_REASONING_EFFORT") or None,
+            ollama_vision=(_truthy(env["OLLAMA_VISION"])
+                           if env.get("OLLAMA_VISION") else None),
             compaction_llm=(env.get("COMPACTION_LLM") or "").strip().lower(),
             compaction_model=env.get("COMPACTION_MODEL") or "claude-haiku-4-5",
             compaction_deep_model=env.get("COMPACTION_DEEP_MODEL") or "claude-sonnet-5",

@@ -206,6 +206,9 @@ class GmailConnector(Connector):
     TRIGGER_KEYWORDS = ("email", "e-mail", "mail", "inbox", "unread", "reply",
                         "send", "message", "draft", "compose", "attachment")
     WRITE_TOOLS = frozenset({"send_email", "mark_as_read"})
+    # Satisfies an "I've sent the email" claim (Layer 3c). Without this a
+    # model can report a successful send having called nothing at all.
+    SEND_CLAIM_TOOLS = frozenset({"send_email"})
 
     TOOL_NAMES = [
         "search_emails",

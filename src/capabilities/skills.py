@@ -101,6 +101,10 @@ class SkillsLibrary(Faculty):
     # Self-written skills mutate the agent's own standing instructions —
     # that's a write to the most privileged surface there is. Gate them.
     WRITE_TOOLS = frozenset({"skill_save", "skill_delete"})
+    # The agent edits its own skill notes at runtime (context_version tracks
+    # mtimes), so this section is volatile — emit it last. See
+    # ToolProvider.VOLATILE_PROMPT_SECTION.
+    VOLATILE_PROMPT_SECTION = True
     STATUS = {
         "skill_read": "Reading a skill note",
         "skill_save": "Saving a skill note",

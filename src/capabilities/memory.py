@@ -65,6 +65,10 @@ class LongTermMemory(Faculty):
     # Cheap and relevant to almost any turn — rides every turn even under
     # tool subsetting.
     ALWAYS_ATTACH = True
+    # "Pinned facts" + "What you know" are rewritten by every save and every
+    # core recompaction (hence context_version below), so this section goes
+    # last in the system prompt to keep the cacheable prefix intact.
+    VOLATILE_PROMPT_SECTION = True
 
     STATUS = {
         "memory_save": "Saving to memory",
