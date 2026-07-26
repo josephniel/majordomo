@@ -13,7 +13,7 @@ LLM_CHAIN overrides it entirely.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from adapters.model import DeepSeekAgent, GeminiAgent, GroqAgent, OllamaAgent, OpenAIAgent
 
@@ -41,7 +41,7 @@ class VendorSpec:
     # defaults. Hosted vendors pin theirs in code (the model is fixed); a
     # self-hosted vendor runs whatever the operator pulled, and the correct
     # knobs are model-specific — see OllamaAgent on reasoning_effort.
-    extra: Callable[[RuntimeSettings], dict] = lambda s: {}
+    extra: Callable[[RuntimeSettings], dict[str, Any]] = lambda s: {}
     # None = trust the backend class. Only self-hosted vendors override it,
     # because the capability belongs to the pulled model, not the vendor.
     supports_vision: Callable[[RuntimeSettings], bool | None] = lambda s: None

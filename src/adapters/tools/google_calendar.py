@@ -48,8 +48,8 @@ class CalendarClient:
     def __init__(self, store: CredentialStore) -> None:
         self._store = store
 
-    async def _request(self, method: str, path: str, params: dict | None = None,
-                       json_body: dict | None = None) -> dict:
+    async def _request(self, method: str, path: str, params: dict[str, Any] | None = None,
+                       json_body: dict[str, Any] | None = None) -> dict[str, Any]:
         token = await self._store.access_token()
         async with httpx.AsyncClient(timeout=self.TIMEOUT) as http:
             r = await http.request(
@@ -64,16 +64,16 @@ class CalendarClient:
                 return {}
             return r.json()
 
-    async def list_calendars(self) -> dict:
+    async def list_calendars(self) -> dict[str, Any]:
         return await self._request("GET", "/users/me/calendarList")
 
-    async def create_event(self, calendar_id: str, body: dict) -> dict:
+    async def create_event(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", f"/calendars/{calendar_id}/events", json_body=body)
 
-    async def update_event(self, calendar_id: str, event_id: str, body: dict) -> dict:
+    async def update_event(self, calendar_id: str, event_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._request("PATCH", f"/calendars/{calendar_id}/events/{event_id}", json_body=body)
 
-    async def delete_event(self, calendar_id: str, event_id: str) -> dict:
+    async def delete_event(self, calendar_id: str, event_id: str) -> dict[str, Any]:
         return await self._request("DELETE", f"/calendars/{calendar_id}/events/{event_id}")
 
     async def list_events(
@@ -83,7 +83,7 @@ class CalendarClient:
         time_min: str | None = None,
         time_max: str | None = None,
         query: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "maxResults": max_results,
             "singleEvents": "true",
@@ -97,13 +97,13 @@ class CalendarClient:
             params["q"] = query
         return await self._request("GET", f"/calendars/{calendar_id}/events", params)
 
-    async def get_event(self, calendar_id: str, event_id: str) -> dict:
+    async def get_event(self, calendar_id: str, event_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/calendars/{calendar_id}/events/{event_id}")
 
 
 # ---- formatting helpers ----
 
-def _event_when(ev: dict) -> str:
+def _event_when(ev: dict[str, Any]) -> str:
     start = ev.get("start") or {}
     end = ev.get("end") or {}
     if "dateTime" in start:
@@ -114,7 +114,7 @@ def _event_when(ev: dict) -> str:
     return ""
 
 
-def _format_event_summary(ev: dict) -> str:
+def _format_event_summary(ev: dict[str, Any]) -> str:
     summary = ev.get("summary", "(no title)")
     when = _event_when(ev)
     eid = ev.get("id", "?")
@@ -127,7 +127,7 @@ def _format_event_summary(ev: dict) -> str:
     return line
 
 
-def _format_event_full(ev: dict) -> str:
+def _format_event_full(ev: dict[str, Any]) -> str:
     summary = ev.get("summary", "(no title)")
     when = _event_when(ev)
     location = ev.get("location", "")
@@ -194,8 +194,8 @@ class GoogleCalendarConnector(Connector):
 
     # ---- Connector contract ----
 
-    def builtin_servers(self) -> dict[str, list]:
-        servers: dict[str, list] = {}
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
+        servers: dict[str, list[ToolSpec]] = {}
         for profile in self._config.load_all():
             if not profile.enabled or not self.owns_profile(profile.name):
                 continue
@@ -354,7 +354,7 @@ class GoogleCalendarConnector(Connector):
 
     # ---- tool builder ----
 
-    def _build_tools_for_profile(self, client: CalendarClient) -> list:
+    def _build_tools_for_profile(self, client: CalendarClient) -> list[Any]:
         @tool(
             "list_calendars",
             "List all calendars the authenticated user has access to. Returns "
@@ -434,14 +434,14 @@ class GoogleCalendarConnector(Connector):
             except Exception as e:
                 return ToolResult.error(f"error: {e}")
 
-        def _when(v: str) -> dict:
+        def _when(v: str) -> dict[str, Any]:
             v = (v or "").strip()
             # Bare date (YYYY-MM-DD) → all-day; otherwise a timed event.
             if len(v) == 10 and v[4] == "-" and v[7] == "-":
                 return {"date": v}
             return {"dateTime": v, "timeZone": self._default_timezone}
 
-        def _event_body(args: dict[str, Any]) -> dict:
+        def _event_body(args: dict[str, Any]) -> dict[str, Any]:
             body: dict[str, Any] = {}
             if args.get("summary"):
                 body["summary"] = args["summary"]

@@ -10,7 +10,7 @@ that every vendor's options builder consumes.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ports.llm import (
     Agent,
@@ -116,7 +116,7 @@ class ContextBuilder:
         parts.extend(volatile)
         return "\n\n".join(p for p in parts if p)
 
-    def _connectors_section(self, enabled: list) -> str:
+    def _connectors_section(self, enabled: list[Any]) -> str:
         if not enabled:
             return "== Connectors ==\n\nNo connectors are enabled right now."
         lines = ["== Connectors ==", ""]

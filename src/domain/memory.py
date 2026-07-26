@@ -226,7 +226,7 @@ Three principles:
         self._memory_core_cache: list[MemoryCoreEntry] = []
         # Pinned facts rendered verbatim in context; refreshed alongside core.
         self._pinned_cache: list[MemoryEntry] = []
-        self._tools_cache: list | None = None
+        self._tools_cache: list[Any] | None = None
         # Bumped whenever the injected "What you know" narrative changes;
         # the orchestrator watches this to refresh stale agents (gap A2).
         self._context_version = 0
@@ -570,7 +570,7 @@ Three principles:
 
     # ---- Connector contract ----
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         if self._tools_cache is None:
             from .memory_tools import build_memory_tools  # deferred: cycle
             self._tools_cache = build_memory_tools(self, history=self._history)

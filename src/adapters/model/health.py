@@ -14,7 +14,7 @@ import json
 import logging
 import os
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -45,7 +45,7 @@ class VendorHealthBoard:
         self._cooldown_until: dict[str, float] = {}
         # vendor -> {"ok": bool, "detail": str} from the last tool-calling
         # canary (Layer 4). In-memory only; surfaced by /status.
-        self._canary: dict[str, dict] = {}
+        self._canary: dict[str, dict[str, Any]] = {}
         self._load()
 
     # ---- queries ----
@@ -94,7 +94,7 @@ class VendorHealthBoard:
         if not ok:
             log.warning("tool-calling canary FAILED for %s: %s", vendor, detail)
 
-    def canary_summary(self) -> dict[str, dict]:
+    def canary_summary(self) -> dict[str, dict[str, Any]]:
         return dict(self._canary)
 
     def _notify(self) -> None:

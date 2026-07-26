@@ -397,7 +397,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
 
     def __init__(self, runtime: ScheduleEngine) -> None:
         self._runtime = runtime
-        self._tools_cache: list | None = None
+        self._tools_cache: list[Any] | None = None
 
     # ---- runtime lifecycle (called by ConversationOrchestrator) ----
 
@@ -418,7 +418,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
 
     # ---- Connector contract ----
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         if self._tools_cache is None:
             self._tools_cache = self._build_tools()
         return list(self._tools_cache)
@@ -436,7 +436,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
     def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
-    def _build_tools(self) -> list:
+    def _build_tools(self) -> list[Any]:
         runtime = self._runtime
 
         @tool(

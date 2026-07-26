@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Any, Union
 
 import yaml
 
@@ -53,17 +53,17 @@ class Persona:
     # Proactive check-in: {cron: "0 8,13,18 * * *", chat_id: <optional int>,
     # prompt: "..."}. chat_id defaults to the platform's first allowed user
     # (their DM). The prompt is re-read from persona.yaml per fire.
-    heartbeat: dict | None = None
+    heartbeat: dict[str, Any] | None = None
     # Inbound webhook triggers: {port: 18790, triggers: {name: {prompt: ...}}}.
     # Requires WEBHOOK_TOKEN in the instance .env. See adapters/trigger/webhook.py.
-    webhooks: dict | None = None
+    webhooks: dict[str, Any] | None = None
     # Push-style mail alerts: {every_minutes: 3, chat_id: <optional>}.
     # Needs the gmail connector enabled. See adapters/trigger/mailwatch.py.
-    mail_watch: dict | None = None
+    mail_watch: dict[str, Any] | None = None
     # Splitwise expense mirroring into the budget ledger: {every_minutes: 10,
     # chat_id: <optional>}. Needs splitwise AND budget connectors enabled.
     # Polling — Splitwise's API has no webhooks. See adapters/trigger/splitwisewatch.py.
-    splitwise_watch: dict | None = None
+    splitwise_watch: dict[str, Any] | None = None
     # Enablement map for BACKGROUND agents (heartbeat, mail-watch) — same
     # grammar as faculties:/connectors:. When unset, the chat map is used
     # downgraded to read-only. Background fires are unattended and pay the
@@ -107,7 +107,7 @@ class Persona:
         )
 
     @staticmethod
-    def _merge_enablement(cfg: dict, config_path: Path) -> dict:
+    def _merge_enablement(cfg: dict[str, Any], config_path: Path) -> dict[str, EnabledValue]:
         """Merge legacy enabled_connectors + faculties: + connectors: into
         one policy map (names are globally unique). Collisions are almost
         certainly migration mistakes — warn loudly, last block wins.
@@ -119,7 +119,7 @@ class Persona:
             ("faculties", dict(cfg.get("faculties") or {})),
             ("connectors", dict(cfg.get("connectors") or {})),
         ]
-        merged: dict = {}
+        merged: dict[str, EnabledValue] = {}
         seen: dict[str, str] = {}
         for block_name, block in blocks:
             for name, value in block.items():
@@ -195,7 +195,7 @@ class Persona:
             return len(v) > 0
         return False
 
-    def allowed_tool_names(self, connector) -> list[str] | None:
+    def allowed_tool_names(self, connector: Any) -> list[str] | None:
         """Resolve which of a connector's tools this persona may use.
 
         Returns None = all tools, a list = only those, [] = disabled.
@@ -230,7 +230,7 @@ class Persona:
         return []  # disabled
 
     @staticmethod
-    def _connector_tool_names(connector) -> set[str]:
+    def _connector_tool_names(connector: Any) -> set[str]:
         names: set[str] = set()
         try:
             for specs in connector.builtin_servers().values():

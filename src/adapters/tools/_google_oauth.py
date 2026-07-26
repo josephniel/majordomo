@@ -22,7 +22,7 @@ import logging
 import socketserver
 import time
 import webbrowser
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -63,7 +63,7 @@ class GoogleOAuthClient:
 
     # ---- token refresh ----
 
-    async def refresh(self, refresh_token: str) -> dict:
+    async def refresh(self, refresh_token: str) -> dict[str, Any]:
         """Exchange refresh_token for a new access_token. Returns gongrzhe-format dict."""
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
@@ -96,7 +96,7 @@ class GoogleOAuthClient:
         self,
         scopes: list[str],
         port: int = DEFAULT_REDIRECT_PORT,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Spawn a local callback server, open a browser to Google's auth URL,
         capture the returned code, exchange for tokens. Returns gongrzhe-format
         credentials dict ready to save.
@@ -197,16 +197,16 @@ class CredentialStore:
     def __init__(self, oauth: GoogleOAuthClient, credentials_path: Path) -> None:
         self._oauth = oauth
         self._path = credentials_path
-        self._cache: dict | None = None
+        self._cache: dict[str, Any] | None = None
 
-    def _load(self) -> dict:
+    def _load(self) -> dict[str, Any]:
         if self._cache is None:
             if not self._path.exists():
                 raise GoogleOAuthError(f"credentials file not found: {self._path}")
             self._cache = json.loads(self._path.read_text(encoding="utf-8"))
         return self._cache
 
-    def _save(self, creds: dict) -> None:
+    def _save(self, creds: dict[str, Any]) -> None:
         self._cache = creds
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(creds, indent=2), encoding="utf-8")

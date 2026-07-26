@@ -270,10 +270,10 @@ class GatedToolProvider:
             return self._gate.wrap_spec(self._inner.name, spec)
         return spec
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         return [self._gated(s) for s in self._inner.builtin_tools()]
 
-    def builtin_servers(self) -> dict[str, list]:
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
         return {
             srv: [self._gated(s) for s in specs]
             for srv, specs in self._inner.builtin_servers().items()

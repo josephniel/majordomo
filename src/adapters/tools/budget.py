@@ -55,8 +55,8 @@ class BudgetClient:
         self,
         method: str,
         path: str,
-        params: dict | None = None,
-        body: dict | None = None,
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
     ) -> Any:
         async with httpx.AsyncClient(
             timeout=self.TIMEOUT, transport=self._transport
@@ -88,7 +88,7 @@ class BudgetClient:
         self,
         account_id: int | None = None,
         page_size: int = 10,
-    ) -> dict:
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {"page": 1, "page_size": page_size}
         if account_id is not None:
             params["account_ids"] = str(account_id)
@@ -96,12 +96,12 @@ class BudgetClient:
 
     # ---- write ----
 
-    async def create_transaction(self, account_id: int, payload: dict) -> dict:
+    async def create_transaction(self, account_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._request(
             "POST", f"/accounts/{account_id}/transactions", body=payload
         )
 
-    async def create_split(self, account_id: int, payload: dict) -> dict:
+    async def create_split(self, account_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._request(
             "POST", f"/accounts/{account_id}/split", body=payload
         )
@@ -113,7 +113,7 @@ def _format_http_error(e: httpx.HTTPStatusError) -> str:
     return f"Budget API error {e.response.status_code}: {(e.response.text or '')[:300]}"
 
 
-def _format_account(a: dict) -> str:
+def _format_account(a: dict[str, Any]) -> str:
     archived = " (archived)" if a.get("archived_at") else ""
     return f"- [{a.get('id', '?')}] {a.get('name', '(unnamed)')} — {a.get('type', '?')}, {a.get('currency', '?')}{archived}"
 
@@ -134,7 +134,7 @@ def _format_tags(tags: list[dict], indent: str = "") -> list[str]:
     return lines
 
 
-def _format_transaction(tx: dict) -> str:
+def _format_transaction(tx: dict[str, Any]) -> str:
     when = str(tx.get("occurred_at", ""))[:16].replace("T", " ")
     desc = tx.get("description") or "(no description)"
     tag = tx.get("tag_name") or tx.get("tag_display_name") or ""
@@ -198,9 +198,9 @@ the ledger books their share as expense and the rest as loans)."""
 
     # ---- Connector contract ----
 
-    def builtin_servers(self) -> dict[str, list]:
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
         """One in-process MCP per enabled budget_<profile> profile."""
-        servers: dict[str, list] = {}
+        servers: dict[str, list[ToolSpec]] = {}
         for profile in self._config.load_all():
             if not profile.enabled or not self.owns_profile(profile.name):
                 continue
@@ -221,7 +221,7 @@ the ledger books their share as expense and the rest as loans)."""
 
     # ---- tools ----
 
-    def _build_tools_for_profile(self, client: BudgetClient) -> list:
+    def _build_tools_for_profile(self, client: BudgetClient) -> list[Any]:
         @tool(
             "list_accounts",
             "List the budget tracker's accounts (id, name, type, currency). "

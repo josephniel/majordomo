@@ -20,7 +20,7 @@ class RecordingConnector(Connector):
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def _recording_tool(self, name: str, description: str, parameters: dict, reply: str):
+    def _recording_tool(self, name: str, description: str, parameters: dict[str, Any], reply: str):
         outer = self
 
         @tool(name, description, parameters)
@@ -44,7 +44,7 @@ class FakeMemory(RecordingConnector):
     def system_prompt_section(self) -> str:
         return self.SYSTEM_PROMPT_SECTION
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         return [
             self._recording_tool(
                 "memory_save",
@@ -78,7 +78,7 @@ class FakeGmail(RecordingConnector):
             "do NOT ask again — call the tool."
         )
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         return [
             self._recording_tool(
                 f"gmail_{box}__search_emails",
@@ -111,7 +111,7 @@ class FakeBulkTools(RecordingConnector):
     def system_prompt_section(self) -> str:
         return ""
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         return [
             self._recording_tool(
                 f"{area}__{verb}_{area}_item",
@@ -133,7 +133,7 @@ class FakeSchedule(RecordingConnector):
         # invent times") — schema realism is the whole point of the fakes.
         return TaskScheduler.SYSTEM_PROMPT_SECTION
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         return [
             self._recording_tool(
                 "schedule_create",

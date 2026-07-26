@@ -22,7 +22,7 @@ import contextlib
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, ClassVar, Optional
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ports import Connector, ConversationRef, ToolContext, ToolSpec, as_tool_result
 
@@ -1019,7 +1019,7 @@ class ChatCompletionsSummarizer(Summarizer):
     """
 
     def __init__(self, model: str, api_key: str, base_url: str | None = None,
-                 extra: dict | None = None, timeout: float = 30.0) -> None:
+                 extra: dict[str, Any] | None = None, timeout: float = 30.0) -> None:
         self._model = model
         self._api_key = api_key
         self._base_url = base_url
@@ -1034,7 +1034,7 @@ class ChatCompletionsSummarizer(Summarizer):
         model: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
-        extra: dict | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> ChatCompletionsSummarizer:
         """Build from a ChatCompletionsAgent subclass — single source of
         truth for base_url/extra kwargs per vendor. The composition root

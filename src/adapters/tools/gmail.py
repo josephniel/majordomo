@@ -61,9 +61,9 @@ class GmailClient:
         self,
         method: str,
         path: str,
-        params: dict | None = None,
-        json: dict | None = None,
-    ) -> dict:
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         token = await self._store.access_token()
         async with httpx.AsyncClient(timeout=self.TIMEOUT) as http:
             r = await http.request(
@@ -78,27 +78,27 @@ class GmailClient:
                 return {}
             return r.json()
 
-    async def search_messages(self, query: str, max_results: int = 25) -> dict:
+    async def search_messages(self, query: str, max_results: int = 25) -> dict[str, Any]:
         return await self._request(
             "GET",
             "/messages",
             {"q": query, "maxResults": max_results},
         )
 
-    async def get_message(self, message_id: str, fmt: str = "full") -> dict:
+    async def get_message(self, message_id: str, fmt: str = "full") -> dict[str, Any]:
         return await self._request(
             "GET",
             f"/messages/{message_id}",
             {"format": fmt},
         )
 
-    async def list_labels(self) -> dict:
+    async def list_labels(self) -> dict[str, Any]:
         return await self._request("GET", "/labels")
 
-    async def list_filters(self) -> dict:
+    async def list_filters(self) -> dict[str, Any]:
         return await self._request("GET", "/settings/filters")
 
-    async def mark_message_read(self, message_id: str) -> dict:
+    async def mark_message_read(self, message_id: str) -> dict[str, Any]:
         # Removing the UNREAD system label is how Gmail "marks as read".
         return await self._request(
             "POST",
@@ -113,7 +113,7 @@ class GmailClient:
         body: str,
         cc: str = "",
         bcc: str = "",
-    ) -> dict:
+    ) -> dict[str, Any]:
         raw = _build_raw_email(to=to, subject=subject, body=body, cc=cc, bcc=bcc)
         return await self._request(
             "POST",
@@ -124,14 +124,14 @@ class GmailClient:
 
 # ---- formatting helpers ----
 
-def _headers_dict(msg: dict) -> dict[str, str]:
+def _headers_dict(msg: dict[str, Any]) -> dict[str, str]:
     return {
         h["name"].lower(): h["value"]
         for h in msg.get("payload", {}).get("headers", [])
     }
 
 
-def _format_message_summary(msg: dict) -> str:
+def _format_message_summary(msg: dict[str, Any]) -> str:
     h = _headers_dict(msg)
     subject = h.get("subject", "(no subject)")
     sender = h.get("from", "(no sender)")
@@ -144,7 +144,7 @@ def _format_message_summary(msg: dict) -> str:
     return line
 
 
-def _decode_part_body(part: dict) -> str:
+def _decode_part_body(part: dict[str, Any]) -> str:
     body = part.get("body") or {}
     data = body.get("data")
     if data:
@@ -164,7 +164,7 @@ def _decode_part_body(part: dict) -> str:
     return "\n\n".join(chunks)
 
 
-def _format_message_full(msg: dict, body_limit: int = 5000) -> str:
+def _format_message_full(msg: dict[str, Any], body_limit: int = 5000) -> str:
     h = _headers_dict(msg)
     body = _decode_part_body(msg.get("payload", {}))
     if len(body) > body_limit:
@@ -264,7 +264,7 @@ class GmailConnector(Connector):
                 log.exception("could not build GmailClient for %s", profile.name)
         return clients
 
-    def builtin_servers(self) -> dict[str, list]:
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
         return {
             name: self._build_tools_for_profile(client)
             for name, client in self.build_clients().items()
@@ -406,7 +406,7 @@ class GmailConnector(Connector):
 
     # ---- tool builder ----
 
-    def _build_tools_for_profile(self, client: GmailClient) -> list:
+    def _build_tools_for_profile(self, client: GmailClient) -> list[Any]:
         @tool(
             "search_emails",
             "Search Gmail using Gmail's search syntax (e.g. 'from:boss@example.com', "

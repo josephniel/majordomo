@@ -54,9 +54,9 @@ class ClickUpClient:
         self,
         method: str,
         path: str,
-        params: dict | None = None,
-        body: dict | None = None,
-    ) -> dict:
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.TIMEOUT) as http:
             response = await http.request(
                 method,
@@ -73,21 +73,21 @@ class ClickUpClient:
                 return {}
             return response.json()
 
-    async def _get(self, path: str, params: dict | None = None) -> dict:
+    async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self._request("GET", path, params=params)
 
-    async def _put(self, path: str, body: dict) -> dict:
+    async def _put(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._request("PUT", path, body=body)
 
-    async def _post(self, path: str, body: dict | None = None) -> dict:
+    async def _post(self, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self._request("POST", path, body=body or {})
 
-    async def _delete(self, path: str) -> dict:
+    async def _delete(self, path: str) -> dict[str, Any]:
         return await self._request("DELETE", path)
 
     # ---- read ----
 
-    async def get_authorized_user(self) -> dict:
+    async def get_authorized_user(self) -> dict[str, Any]:
         return await self._get("/user")
 
     async def list_tasks(
@@ -95,7 +95,7 @@ class ClickUpClient:
         include_closed: bool = False,
         page: int = 0,
         include_subtasks: bool = True,
-    ) -> dict:
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "include_closed": str(bool(include_closed)).lower(),
             "page": page,
@@ -104,13 +104,13 @@ class ClickUpClient:
             params["subtasks"] = "true"
         return await self._get(f"/team/{self._team_id}/task", params)
 
-    async def get_task(self, task_id: str, include_subtasks: bool = True) -> dict:
+    async def get_task(self, task_id: str, include_subtasks: bool = True) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if include_subtasks:
             params["include_subtasks"] = "true"
         return await self._get(f"/task/{task_id}", params)
 
-    async def list_spaces(self) -> dict:
+    async def list_spaces(self) -> dict[str, Any]:
         return await self._get(f"/team/{self._team_id}/space")
 
     async def list_tasks_for_user(
@@ -119,7 +119,7 @@ class ClickUpClient:
         include_closed: bool = False,
         page: int = 0,
         include_subtasks: bool = True,
-    ) -> dict:
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "assignees[]": user_id,
             "include_closed": str(bool(include_closed)).lower(),
@@ -137,25 +137,25 @@ class ClickUpClient:
                 return team.get("members", [])
         return []
 
-    async def list_folders(self, space_id: str) -> dict:
+    async def list_folders(self, space_id: str) -> dict[str, Any]:
         return await self._get(f"/space/{space_id}/folder")
 
-    async def list_lists_in_folder(self, folder_id: str) -> dict:
+    async def list_lists_in_folder(self, folder_id: str) -> dict[str, Any]:
         return await self._get(f"/folder/{folder_id}/list")
 
     # ---- write ----
 
-    async def update_task(self, task_id: str, body: dict) -> dict:
+    async def update_task(self, task_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._put(f"/task/{task_id}", body)
 
-    async def add_task_to_list(self, task_id: str, list_id: str) -> dict:
+    async def add_task_to_list(self, task_id: str, list_id: str) -> dict[str, Any]:
         return await self._post(f"/list/{list_id}/task/{task_id}")
 
-    async def remove_task_from_list(self, task_id: str, list_id: str) -> dict:
+    async def remove_task_from_list(self, task_id: str, list_id: str) -> dict[str, Any]:
         return await self._delete(f"/list/{list_id}/task/{task_id}")
 
 
-def _format_task_line(task: dict, prefix: str = "- ") -> str:
+def _format_task_line(task: dict[str, Any], prefix: str = "- ") -> str:
     name = task.get("name", "(no name)")
     status = (task.get("status") or {}).get("status", "unknown")
     task_id = task.get("id", "?")
@@ -170,7 +170,7 @@ def _format_task_line(task: dict, prefix: str = "- ") -> str:
     return f"{prefix}[{task_id}] {name}{suffix}"
 
 
-def _summarize_tasks_response(resp: dict) -> str:
+def _summarize_tasks_response(resp: dict[str, Any]) -> str:
     """Render tasks with subtasks nested under their parent at any depth.
 
     ClickUp returns subtasks flat in the same list when subtasks=true, with a
@@ -182,7 +182,7 @@ def _summarize_tasks_response(resp: dict) -> str:
     if not tasks:
         return "No tasks found."
 
-    by_id: dict[str, dict] = {}
+    by_id: dict[str, dict[str, Any]] = {}
     children_by_parent: dict[str, list[dict]] = {}
     for t in tasks:
         tid = t.get("id")
@@ -202,7 +202,7 @@ def _summarize_tasks_response(resp: dict) -> str:
     lines: list[str] = []
     visited: set[str] = set()
 
-    def walk(task: dict, depth: int) -> None:
+    def walk(task: dict[str, Any], depth: int) -> None:
         tid = str(task.get("id"))
         if tid in visited:  # cycle guard
             return
@@ -309,9 +309,9 @@ class ClickUpConnector(Connector):
 
     # ---- Connector contract ----
 
-    def builtin_servers(self) -> dict[str, list]:
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
         """One in-process MCP per enabled clickup_<profile> profile."""
-        servers: dict[str, list] = {}
+        servers: dict[str, list[ToolSpec]] = {}
         for profile in self._config.load_all():
             if not profile.enabled or not self.owns_profile(profile.name):
                 continue
@@ -470,7 +470,7 @@ class ClickUpConnector(Connector):
 
     # ---- tool builder ----
 
-    def _build_tools_for_profile(self, client: ClickUpClient) -> list:
+    def _build_tools_for_profile(self, client: ClickUpClient) -> list[Any]:
         # ---- READ TOOLS ----
 
         @tool(

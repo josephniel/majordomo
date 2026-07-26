@@ -163,7 +163,7 @@ class CascadingAgent(Agent):
         return self._board.snapshot()
 
     @property
-    def canary(self) -> dict[str, dict]:
+    def canary(self) -> dict[str, dict[str, Any]]:
         """Vendor -> {ok, detail} from the last tool-calling canary."""
         return self._board.canary_summary()
 
@@ -511,7 +511,7 @@ class CascadingAgent(Agent):
         return None
 
     @staticmethod
-    def _is_short_answer(text: str, attachments: list | None = None) -> bool:
+    def _is_short_answer(text: str, attachments: list[Any] | None = None) -> bool:
         """A brief, topicless reply that answers rather than opens.
 
         Messages carrying attachments are new content, never a bare answer.

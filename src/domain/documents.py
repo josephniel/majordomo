@@ -131,7 +131,7 @@ Prefer doc_search over asking the user to re-send anything."""
 
     # ---- tools ----
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         outer = self
 
         @tool(

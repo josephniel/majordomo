@@ -43,7 +43,7 @@ class FileCourier(Faculty):
     def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         outer = self
 
         @tool(

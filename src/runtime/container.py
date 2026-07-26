@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from dotenv import dotenv_values, load_dotenv
 
@@ -313,7 +313,7 @@ class PersonaRuntime:
             cached = self._provider_cache[name] = spec.build(self)
         return cached
 
-    def _build_enabled(self, names) -> list:
+    def _build_enabled(self, names) -> list[Any]:
         return [
             self.provider(name) for name in names
             if self.persona.is_connector_enabled(name)
@@ -923,7 +923,7 @@ class PersonaRuntime:
             document_store=docs_store,
         )
 
-    def _watch_chat_id(self, cfg: dict, label: str) -> int | None:
+    def _watch_chat_id(self, cfg: dict[str, Any], label: str) -> int | None:
         chat_id = cfg.get("chat_id") or self._default_operator_chat_id()
         if chat_id is None:
             log.warning(
@@ -1104,7 +1104,7 @@ class PersonaRuntime:
             approval_gate=self.approval_gate,
         )
 
-    def trigger_sources(self, schedule_conn) -> list:
+    def trigger_sources(self, schedule_conn) -> list[Any]:
         """Every way this persona can be woken without the user typing.
 
         One list, assembled in one place. Previously these were four
@@ -1117,7 +1117,7 @@ class PersonaRuntime:
         """
         from domain.triggers import RetentionSource, ScheduleSource, WebhookSource
 
-        sources: list = []
+        sources: list[Any] = []
         if schedule_conn is not None:
             sources.append(ScheduleSource(schedule_conn))
         if self.heartbeat_source is not None:

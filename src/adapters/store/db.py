@@ -807,7 +807,7 @@ LIMIT ${len(params)}
         """
         if force:
             where = "embedding IS NULL OR embedding_model IS DISTINCT FROM $1"
-            args: tuple = (self._embed.model_name,)
+            args: tuple[Any, ...] = (self._embed.model_name,)
         else:
             where = "embedding IS NULL"
             args = ()

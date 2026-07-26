@@ -54,7 +54,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from ports import (
@@ -293,7 +293,7 @@ class Reconciler:
 
 
 def candidate_from_extraction(
-    fact: dict, *, provenance: str, volatile: bool = False, confidence: float = 1.0,
+    fact: dict[str, Any], *, provenance: str, volatile: bool = False, confidence: float = 1.0,
 ) -> FactCandidate | None:
     """Validate one extracted JSON object into a candidate, or None.
 

@@ -44,10 +44,10 @@ class SplitwiseClient:
         self,
         method: str,
         path: str,
-        params: dict | None = None,
-        body: dict | None = None,
-        form: dict | None = None,
-    ) -> dict:
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+        form: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """`form` sends application/x-www-form-urlencoded — required by
         Splitwise's create/update endpoints when using the users__N__field
         breakdown pattern. `body` sends JSON. Use one or the other, not both.
@@ -66,7 +66,7 @@ class SplitwiseClient:
                 return {}
             return r.json()
 
-    async def get_current_user(self) -> dict:
+    async def get_current_user(self) -> dict[str, Any]:
         return await self._request("GET", "/get_current_user")
 
     async def current_user_id(self) -> int | None:
@@ -75,27 +75,27 @@ class SplitwiseClient:
             self._user_id_cache = user.get("id")
         return self._user_id_cache
 
-    async def get_groups(self) -> dict:
+    async def get_groups(self) -> dict[str, Any]:
         return await self._request("GET", "/get_groups")
 
-    async def get_friends(self) -> dict:
+    async def get_friends(self) -> dict[str, Any]:
         return await self._request("GET", "/get_friends")
 
-    async def get_expenses(self, **filters: Any) -> dict:
+    async def get_expenses(self, **filters: Any) -> dict[str, Any]:
         # Drop None/empty values so we don't send empty params.
         clean = {k: v for k, v in filters.items() if v not in (None, "", 0) or k == "limit"}
         return await self._request("GET", "/get_expenses", params=clean)
 
-    async def get_expense(self, expense_id: str) -> dict:
+    async def get_expense(self, expense_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/get_expense/{expense_id}")
 
-    async def create_expense(self, form: dict) -> dict:
+    async def create_expense(self, form: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/create_expense", form=form)
 
-    async def update_expense(self, expense_id: str, form: dict) -> dict:
+    async def update_expense(self, expense_id: str, form: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", f"/update_expense/{expense_id}", form=form)
 
-    async def delete_expense(self, expense_id: str) -> dict:
+    async def delete_expense(self, expense_id: str) -> dict[str, Any]:
         return await self._request("POST", f"/delete_expense/{expense_id}")
 
 
@@ -122,7 +122,7 @@ def _nonzero_balances(balances: list[dict]) -> str:
     return ", ".join(items)
 
 
-def _format_group(group: dict, current_user_id: int | None = None) -> str:
+def _format_group(group: dict[str, Any], current_user_id: int | None = None) -> str:
     gid = group.get("id", "?")
     name = group.get("name", "(unnamed)")
     members = group.get("members", []) or []
@@ -138,7 +138,7 @@ def _format_group(group: dict, current_user_id: int | None = None) -> str:
     return line
 
 
-def _format_friend(friend: dict) -> str:
+def _format_friend(friend: dict[str, Any]) -> str:
     fid = friend.get("id", "?")
     first = friend.get("first_name", "") or ""
     last = friend.get("last_name", "") or ""
@@ -153,7 +153,7 @@ def _format_friend(friend: dict) -> str:
     return line
 
 
-def _format_expense(expense: dict, current_user_id: int | None = None) -> str:
+def _format_expense(expense: dict[str, Any], current_user_id: int | None = None) -> str:
     eid = expense.get("id", "?")
     desc = expense.get("description", "(no description)")
     cost = expense.get("cost", "0")
@@ -178,7 +178,7 @@ def _format_expense(expense: dict, current_user_id: int | None = None) -> str:
     return line
 
 
-def _summarize_expenses_response(resp: dict, current_user_id: int | None) -> str:
+def _summarize_expenses_response(resp: dict[str, Any], current_user_id: int | None) -> str:
     expenses = resp.get("expenses", [])
     if not expenses:
         return "No expenses found."
@@ -189,7 +189,7 @@ def _format_http_error(e: httpx.HTTPStatusError) -> str:
     return f"Splitwise API error {e.response.status_code}: {(e.response.text or '')[:300]}"
 
 
-def _to_form(d: dict) -> dict[str, str]:
+def _to_form(d: dict[str, Any]) -> dict[str, str]:
     """Stringify values for application/x-www-form-urlencoded posting,
     skipping None entries.
     """
@@ -218,7 +218,7 @@ def _flatten_users_to_form(users_list: list[dict]) -> dict[str, str]:
     return out
 
 
-def _splitwise_errors(resp: dict) -> str | None:
+def _splitwise_errors(resp: dict[str, Any]) -> str | None:
     """Splitwise returns HTTP 200 even on validation failure, with details in
     `errors` (dict or list). Return a flat error string if there are any.
     """
@@ -300,7 +300,7 @@ class SplitwiseConnector(Connector):
             clients[profile.name] = SplitwiseClient(api_key=api_key)
         return clients
 
-    def builtin_servers(self) -> dict[str, list]:
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
         return {
             name: self._build_tools_for_profile(client)
             for name, client in self.build_clients().items()
@@ -420,7 +420,7 @@ class SplitwiseConnector(Connector):
 
     # ---- tool builder ----
 
-    def _build_tools_for_profile(self, client: SplitwiseClient) -> list:
+    def _build_tools_for_profile(self, client: SplitwiseClient) -> list[Any]:
         @tool(
             "get_current_user",
             "Show the Splitwise user this API key authenticates as. Useful as "

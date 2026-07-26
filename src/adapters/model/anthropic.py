@@ -511,7 +511,7 @@ class AnthropicAgent(Agent):
             self.last_turn_usage = {}
 
     @staticmethod
-    def _attachment_to_content_block(att: Attachment) -> dict | None:
+    def _attachment_to_content_block(att: Attachment) -> dict[str, Any] | None:
         if att.media_type.startswith("image/"):
             return {
                 "type": "image",

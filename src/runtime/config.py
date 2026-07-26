@@ -84,7 +84,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 
@@ -417,7 +417,7 @@ def interpolate(tree: Any, env: Mapping[str, str],
 
     missing: list[str] = []
 
-    def sub(m: re.Match) -> str:
+    def sub(m: re.Match[str]) -> str:
         var = m.group(1)
         val = env.get(var)
         if tracker is not None:
@@ -446,7 +446,10 @@ def load_yaml(path: Path, env: Mapping[str, str],
         raise ConfigError(f"{path}: {e}") from e
     if not isinstance(raw, dict):
         raise ConfigError(f"{path}: expected a mapping at the top level")
-    return interpolate(raw, env, tracker)
+    # interpolate() recurses over Any, so mypy sees Any coming back; the
+    # isinstance check above is what actually establishes the shape, and
+    # interpolation preserves it (mappings stay mappings).
+    return cast("dict[str, Any]", interpolate(raw, env, tracker))
 
 
 class ConfigResolver:

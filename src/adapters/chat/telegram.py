@@ -153,7 +153,7 @@ class TelegramPlatform(ChatPlatform):
         # @-mentions of ourselves in the control room.
         self._username: str | None = None
         self._user_id: int | None = None
-        self._app: Application | None = None
+        self._app: Application[Any, Any, Any, Any, Any, Any] | None = None
         # nonce -> future resolved by the inline-keyboard callback.
         self._pending_approvals: dict[str, asyncio.Future] = {}
         self._on_message: OnMessage | None = None

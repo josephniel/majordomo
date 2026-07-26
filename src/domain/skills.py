@@ -181,7 +181,7 @@ class SkillsLibrary(Faculty):
             lines += ["", f"--- skill: {s.name} (always active) ---", s.body]
         return "\n".join(lines)
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         outer = self
 
         @tool(

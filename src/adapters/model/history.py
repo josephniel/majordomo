@@ -599,7 +599,7 @@ class EphemeralConversationHistory:
             and (include_archived or not r["archived"])
         ]
 
-    async def recent(self, persona_id: str, chat_id: ConversationRef, limit: int = 40) -> list:
+    async def recent(self, persona_id: str, chat_id: ConversationRef, limit: int = 40) -> list[Any]:
         return self._match(persona_id, chat_id)[-limit:]
 
     async def rows_between(
@@ -609,7 +609,7 @@ class EphemeralConversationHistory:
         after_id: int,
         limit: int = 100,
         include_archived: bool = False,
-    ) -> list:
+    ) -> list[Any]:
         rows = self._match(persona_id, chat_id, include_archived)
         return [r for r in rows if r["id"] > after_id][:limit]
 
@@ -628,5 +628,5 @@ class EphemeralConversationHistory:
     async def log_turn(self, *_a, **_kw) -> None:
         return None
 
-    async def turn_stats(self, *_a, **_kw) -> dict:
+    async def turn_stats(self, *_a, **_kw) -> dict[str, Any]:
         return {"today": {}, "last": None}
