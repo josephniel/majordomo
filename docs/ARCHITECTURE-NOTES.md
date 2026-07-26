@@ -110,8 +110,83 @@ runaway bot-to-bot loops.
 
 **Log hygiene.** `python-telegram-bot`'s httpx logging would print the bot
 token inside every polled URL at INFO — the httpx/httpcore loggers are
-therefore capped at WARNING in `kernel/__main__.py`. Keep `logs/` out of any
+therefore capped at WARNING in `runtime/__main__.py`. Keep `logs/` out of any
 VCS/backup that leaves the machine regardless (it's gitignored).
+
+## Memory: reconciliation, validity, ideation
+
+Writing to memory is a MERGE against what is already known, not an insert.
+
+Extraction used to have one verb. Anything that wasn't a near-textual
+duplicate got appended, and the dedup check is a 0.90 cosine threshold —
+which tests "did the model say this again", not "does this contradict
+something". So `"the user lives in Manila"` and `"the user moved to Cebu"`
+(~0.6 similar) both stayed active, both got recalled, and both went into the
+same system prompt, with the older one already compacted into the core
+narrative. Nothing detected it: recall metrics improve when memory holds
+MORE facts and cannot see that two of them disagree.
+
+`domain/reconcile.py` decides ADD / UPDATE / DELETE / NOOP per candidate
+(mem0's shape). Both extraction and ideation go through it, so an inferred
+fact is held to the same checks as an observed one.
+
+**Every way the decision can go wrong falls back to ADD** — an unparseable
+reply, a model error, a verdict with no target, or a verdict naming an id the
+model was never shown. A wrong ADD leaves a visible, repairable
+contradiction; a wrong UPDATE has already overwritten the value it was
+judging. The hallucinated-id guard matters most: a UUID the model invented
+would otherwise destroy an unrelated fact.
+
+Cost control: a candidate with no relevant neighbours is ADDed with **no
+model call at all**, which is the majority path. An empty neighbourhood
+cannot contain a contradiction.
+
+### Bi-temporal validity
+
+`created_at` is when a row was WRITTEN; `valid_from`/`valid_to` are when the
+fact is TRUE. Conflating them is how "the user is on leave 12-19 Aug" is
+still the freshest un-superseded fact on the 25th — nothing contradicted it,
+so recall keeps injecting it and the assistant keeps acting on it.
+
+The gate lives in the single `base` CTE that all three retrieval arms share,
+so it covers every path at once rather than needing the predicate repeated
+(and eventually forgotten) in one of them. `valid_to IS NULL` — "no known
+end" — is the overwhelming majority, and a partial index makes the exception
+cheap.
+
+Expiring is distinct from forgetting. Forgetting says the fact should not
+have been recorded; expiring says it was true and no longer is, which is what
+keeps "what did I have on last August?" answerable and stops compaction
+narrating a cancelled trip as though it happened. Superseding closes the old
+row's window rather than leaving it open forever.
+
+Rows also carry `provenance` (`chat` / `reflection` / `ideation`) and
+`confidence`.
+
+### Ideation
+
+`domain/ideation.py` reads existing memory and proposes facts that FOLLOW
+from it — a deadline landing inside someone's leave — then reconciles each
+one like any other candidate.
+
+This writes beliefs nobody stated, which is the setup where plausible
+fabrication is cheapest to produce and hardest to spot later: an invented
+fact, in the same voice as a real one, recalled next week with no hint that
+nobody said it. So it is contained:
+
+- `provenance='ideation'` and confidence below 1.0, so an inference is
+  findable and ranks under anything asserted.
+- An inference may **not** delete an observed fact. A DELETE verdict from
+  ideation is downgraded to ADD, so the disagreement is recorded and the
+  operator decides.
+- `basis` ids are checked against what the model was actually shown, then
+  linked `depends_on` — a wrong inference is traceable to the fact that
+  misled it.
+- Runs on `ModelRole.IDEATE` (defaults to the CHAT chain, not the cheap one):
+  a weak model's confident non-sequiturs become stored beliefs.
+- Operator-invoked, not on a cron:
+  `./manage cli <persona> -- memory ideate [--dry-run]`. A background process
+  quietly inventing facts about you should be opted into.
 
 ## Memory scoping (single-operator by design)
 
@@ -409,6 +484,25 @@ Rationale: agents run bypassPermissions while reading untrusted content
 can mutate any read_write system. Opt out per persona with
 `write_approval: false`.
 
+A pending approval blocks inside the turn, and the turn holds the per-chat
+lock for the whole 120s. Anything the user typed in that window used to sit
+behind that lock — no reply, no typing indicator — and then run two minutes
+later against a conversation that had moved on; from the user's side the bot
+was simply dead, and "go tap a button on a message that has scrolled away" is
+not something silence conveys. The gate therefore publishes what each
+conversation is blocked on (`pending_for`), and the orchestrator answers such
+a message instead of queueing it. Only a turn parked on a HUMAN
+short-circuits: a slow model call still queues, because it resolves without
+anyone doing anything.
+
+The marker is cleared in a `finally` — a denial, a timeout, a `/cancel`
+(CancelledError) and a delivery exception must all release it, or the chat
+reads as permanently blocked and refuses every message from then on.
+
+Not yet durable: an in-flight approval lives in memory, so restarting while
+one is pending loses it and the operator's tap lands on a nonce nobody is
+waiting for.
+
 ## Skills: instructions-only, self-written under approval
 
 Skills (`domain/skills.py`) are markdown notes under
@@ -425,13 +519,16 @@ rewrite its own system prompt".
 
 - **Heartbeat**: persona.yaml `heartbeat.cron` + `heartbeat.prompt` (styled
   like system_prompt) run as a scheduled agent turn (runtime-owned cron,
-  invisible to schedule tools) on a DEDICATED per-fire agent pinned to
-  HEARTBEAT_MODEL (default Haiku) — background work must not spend chat
-  quota, and the throwaway session never clobbers the chat's. The prompt is
-  re-read from persona.yaml on every fire, so edits apply without a
-  restart. `<silent>` replies send nothing. Empty prompt = paused.
+  invisible to schedule tools) on a DEDICATED per-fire agent — background
+  work must not spend chat quota, and the throwaway session never clobbers
+  the chat's. Which model that is comes from `ModelRole.BACKGROUND`, not from
+  a `HEARTBEAT_MODEL` string: that variable only ever applied on a Claude
+  chain, so on an Ollama-primary bot the "cheap heartbeat" silently ran the
+  chat model. It is still read for back-compat. The prompt is re-read from
+  persona.yaml on every fire, so edits apply without a restart. `<silent>`
+  replies send nothing. Empty prompt = paused.
 - **Delegation**: `delegate_task` spawns a fresh CascadingAgent (same chain,
-  health board, and tools; NullConversationHistory) for self-contained heavy
+  health board, and tools; EphemeralConversationHistory) for self-contained heavy
   work; only the final answer returns to the parent turn. Depth-guarded (no
   nesting), semaphore-capped, timeout-bounded.
 - **Voice**: inbound voice/audio transcribe through an LLM-agnostic
@@ -452,16 +549,50 @@ so credentials/ can never be shipped anywhere, even to the operator.
 
 ## Event-driven proactivity
 
-- **Webhooks** (domain/webhook.py): stdlib HTTP listener (loopback,
-  bearer token, per-trigger cooldown) firing persona-configured prompts as
-  scheduled-style turns. The push-in primitive: CI, the status board, or
-  any curl can wake the bot. NB: HTTPServer's default server_bind calls
-  socket.getfqdn(), which hangs ~30s on macOS — we bind TCPServer-style.
-- **Mail watch** (domain/mailwatch.py): Gmail true push needs cloud
-  Pub/Sub, so instead a 3-minute system cron does a TOKEN-FREE REST
-  prefilter (unread after a persisted watermark, overlap + seen-id dedupe);
-  an LLM turn (with the <silent> option) runs only when new mail actually
-  arrived. Urgent email pings within minutes; quiet hours cost zero tokens.
+Everything that can wake the agent without the user typing is a
+`ports.TriggerSource` emitting a `TriggerEvent`; the sources live in
+`domain/triggers.py`. Before that there were four incompatible shapes —
+`ScheduledTask`, `HeartbeatConfig`, `WatchConfig`, `WebhookTrigger` — each
+with its own chat id, prompt assembly and agent factory, all smuggled into
+one handler by constructing a fake `ScheduledTask` with an empty cron.
+
+Each source owns its whole story: when it fires, whether the fire produced
+work, what prompt that becomes, and what to do once the turn was delivered.
+The orchestrator (`kernel/proactive.py`) only starts them and routes what
+they emit; it does not know heartbeats or webhooks exist.
+
+`emit` returns whether the reply actually reached the user. That return value
+is load-bearing rather than decorative — see the watch below.
+
+- **Schedule** — the user's own reminders and one-shots. The only source that
+  runs on the CONVERSATION agent: the user asked for it in the chat and
+  expects the full toolset. Also lends its APScheduler instance to the
+  cron-driven sources, which is why it starts first.
+- **Webhooks** (`adapters/trigger/webhook.py`): stdlib HTTP listener
+  (loopback, bearer token, per-trigger cooldown) firing persona-configured
+  prompts. The push-in primitive: CI, the status board, or any curl can wake
+  the bot. NB: HTTPServer's default `server_bind` calls `socket.getfqdn()`,
+  which hangs ~30s on macOS — we bind TCPServer-style.
+- **Mail watch** (`adapters/trigger/mailwatch.py`): Gmail true push needs
+  cloud Pub/Sub, so instead a 3-minute cron does a TOKEN-FREE REST prefilter
+  (unread after a persisted watermark, overlap + seen-id dedupe); an LLM turn
+  (with the `<silent>` option) runs only when new mail actually arrived.
+  Urgent email pings within minutes; quiet hours cost zero tokens.
+  The watermark is two-phase: `check()` stages, `commit()` runs only after
+  `emit` reports the turn was DELIVERED. A vendor outage at fire time
+  therefore re-reports next poll instead of dropping the mail forever — and
+  unlike a missed reminder, nobody would ever notice mail that was never
+  mentioned.
+- **Splitwise watch** — same shape, mirroring expenses into the budget ledger.
+- **Retention** — a trigger that never wakes the model. It belongs to the port
+  anyway: it is a runtime-owned cron registered the same way as the others,
+  and giving it a bespoke branch in the orchestrator is exactly the
+  special-casing the port removes.
+
+Registered cron callbacks **must be async**, enforced at registration.
+APScheduler dispatches a sync callable to a thread executor and discards the
+coroutine it returns, so a sync wrapper reports success on every fire while
+never running — which had both watches silently dead for two days.
 
 ## Document RAG
 
