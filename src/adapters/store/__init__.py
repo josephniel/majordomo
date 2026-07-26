@@ -23,12 +23,18 @@ call sites keep working. New code should import them from `ports`.
 """
 from ports import LINK_RELATIONS, VALID_SCOPES, MemoryCoreEntry, MemoryEntry
 
-from .db import MemoryDatabase
+from .db import MemoryDatabase, redact_dsn
 from .docs import DocumentStore
+from .embeddings import Embedder
+from .reranking import RerankConfig, Reranker
 
 __all__ = [
     "DocumentStore",
+    "Embedder",
     "MemoryDatabase",
+    "redact_dsn",
+    "RerankConfig",
+    "Reranker",
     "MemoryEntry",
     "MemoryCoreEntry",
     "VALID_SCOPES",

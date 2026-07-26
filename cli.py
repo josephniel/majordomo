@@ -440,11 +440,10 @@ async def _export_memory(container, out_dir: str) -> int:
 async def _reembed_memory(container) -> None:
     """Re-embed every memory entry with the current local embedding model.
     Idempotent; entries already embedded by the current model are skipped."""
-    from adapters.store.embeddings import MODEL_NAME
-
     db = container.memory_database
     await db.connect()
-    print(f"re-embedding with model: {MODEL_NAME} (first run downloads the model)")
+    print(f"re-embedding with model: {db.embedder.model_name} "
+          f"(first run downloads the model)")
     done = await db.backfill_embeddings(force=True)
     print(f"re-embedded {done} entries")
     await db.close()

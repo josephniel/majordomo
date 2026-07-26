@@ -121,7 +121,11 @@ def _build_documents(rt: "PersonaRuntime") -> ToolProvider:
             f"persona {rt.persona.id!r}: MEMORY_DATABASE_URL is not set "
             f"(needed by the document library)."
         )
-    return DocumentLibrary(store=DocumentStore(dsn), persona_id=rt.persona.id)
+    # Same Embedder object the memory store got: both tables live in one
+    # database and their vector columns must agree on width.
+    return DocumentLibrary(
+        store=DocumentStore(dsn, embedder=rt.embedder), persona_id=rt.persona.id,
+    )
 
 
 def _build_delegate(rt: "PersonaRuntime") -> ToolProvider:

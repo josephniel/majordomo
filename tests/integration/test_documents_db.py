@@ -8,8 +8,8 @@ from tests.conftest import TEST_DSN
 
 
 @pytest.fixture
-async def store(persona_id):
-    s = DocumentStore(TEST_DSN)
+async def store(persona_id, embedder):
+    s = DocumentStore(TEST_DSN, embedder=embedder)
     await s.connect()
     yield s
     async with s._pool.acquire() as conn:

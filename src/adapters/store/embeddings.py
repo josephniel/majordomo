@@ -50,19 +50,26 @@ init_schema migrates the column and clears the stale vectors. Either way,
 restore full semantic recall with:
 
     ./manage cli <persona> -- memory reembed
+
+Who chooses the model
+---------------------
+Whoever constructs the Embedder — in practice the composition root, from
+resolved config. This module used to read EMBEDDING_MODEL from os.environ at
+import time, which never worked: the composition root imports this package
+before it loads the instance config, so the value was frozen from the ambient
+shell and the documented setting was silently inert. Nothing failed — you
+just always got the default. Reading config at import time is reading it
+before it exists.
 """
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "mixedbread-ai/mxbai-embed-large-v1"
-
-MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "").strip() or DEFAULT_MODEL
 
 # Dimensions for the models we've evaluated. Kept as a literal table so that
 # importing this module stays cheap — resolving the dimension through
@@ -93,59 +100,95 @@ def _resolve_dim(model_name: str) -> int:
             log.info("resolved embedding dim for %s via fastembed", model_name)
             return int(spec["dim"])
     raise ValueError(
-        f"EMBEDDING_MODEL={model_name!r} is not a supported fastembed model. "
+        f"embedding model {model_name!r} is not a supported fastembed model. "
         f"Known-good options: {', '.join(sorted(_KNOWN_DIMS))}"
     )
 
 
-# Drives the vector(N) column width in schema.sql and docs.py. Never hardcode
-# the number anywhere else — a mismatch between this and the DDL is a silent
-# insert failure at runtime.
-DIM = _resolve_dim(MODEL_NAME)
+class Embedder:
+    """Turns text into vectors with one specific model.
 
-_model = None
-_lock = threading.Lock()
+    Construct it from config and hand it to whatever stores text. Which model
+    produced a vector is persisted alongside it
+    (`memory_entries.embedding_model`) and determines the width of the vector
+    column, so it is a property of the store, not of the process.
 
-
-def _get_model():
-    global _model
-    if _model is None:
-        with _lock:
-            if _model is None:
-                from fastembed import TextEmbedding  # lazy: heavy import
-                log.info("loading local embedding model %s (first use)", MODEL_NAME)
-                _model = TextEmbedding(model_name=MODEL_NAME)
-    return _model
-
-
-def embed_query(text: str) -> list[float]:
-    """Embed a SEARCH QUERY (short, interrogative). Applies the model's query
-    prefix where it has one."""
-    text = (text or "").strip()
-    if not text:
-        return []
-    vec = next(iter(_get_model().query_embed([text])))
-    return [float(x) for x in vec]
-
-
-def embed_passage(text: str) -> list[float]:
-    """Embed a STORED PASSAGE (a fact, a document chunk)."""
-    text = (text or "").strip()
-    if not text:
-        return []
-    vec = next(iter(_get_model().passage_embed([text])))
-    return [float(x) for x in vec]
-
-
-def embed(text: str) -> list[float]:
-    """Back-compat alias for `embed_passage`.
-
-    Retained because callers that store content (save_entry, chunk ingest)
-    read naturally as plain `embed`. Anything on the SEARCH side must call
-    `embed_query` instead — passing a query through here silently costs
-    retrieval quality rather than failing.
+    ONE PER PROCESS, created by the entry point and passed down. The loaded
+    model is ~640MB resident and lives on the instance, so two Embedders on
+    the same model means two copies of it in RAM. That cost is deliberately
+    attached to constructing a second one rather than hidden behind a
+    module-level cache: sharing is the caller's decision, made visible by
+    passing the same object to the memory store and the document store.
     """
-    return embed_passage(text)
+
+    def __init__(self, model: Optional[str] = None) -> None:
+        self.model_name = (model or "").strip() or DEFAULT_MODEL
+        self._dim: Optional[int] = None
+        self._loaded = None
+        self._lock = threading.Lock()
+
+    def __repr__(self) -> str:
+        return f"Embedder({self.model_name!r})"
+
+    def __eq__(self, other: object) -> bool:
+        # Compared when checking that two stores against one database agree
+        # on their model — see the shared-database guard in runtime/.
+        return isinstance(other, Embedder) and other.model_name == self.model_name
+
+    def __hash__(self) -> int:
+        return hash(self.model_name)
+
+    @property
+    def dim(self) -> int:
+        """Width of the vector(N) column in schema.sql and docs.py. Never
+        hardcode the number anywhere else — a mismatch between this and the
+        DDL is a silent insert failure at runtime.
+
+        Resolved on demand: for a listed model it's a dict lookup, and for an
+        unlisted one it pulls in fastembed, which is exactly the cost the lazy
+        model load below exists to avoid paying up front.
+        """
+        if self._dim is None:
+            self._dim = _resolve_dim(self.model_name)
+        return self._dim
+
+    def _model(self):
+        if self._loaded is None:
+            with self._lock:
+                if self._loaded is None:
+                    from fastembed import TextEmbedding  # lazy: heavy import
+                    log.info(
+                        "loading local embedding model %s (first use)", self.model_name
+                    )
+                    self._loaded = TextEmbedding(model_name=self.model_name)
+        return self._loaded
+
+    def embed_query(self, text: str) -> list[float]:
+        """Embed a SEARCH QUERY (short, interrogative). Applies the model's
+        query prefix where it has one."""
+        text = (text or "").strip()
+        if not text:
+            return []
+        vec = next(iter(self._model().query_embed([text])))
+        return [float(x) for x in vec]
+
+    def embed_passage(self, text: str) -> list[float]:
+        """Embed a STORED PASSAGE (a fact, a document chunk)."""
+        text = (text or "").strip()
+        if not text:
+            return []
+        vec = next(iter(self._model().passage_embed([text])))
+        return [float(x) for x in vec]
+
+    def embed(self, text: str) -> list[float]:
+        """Alias for `embed_passage`.
+
+        Retained because callers that store content (save_entry, chunk
+        ingest) read naturally as plain `embed`. Anything on the SEARCH side
+        must call `embed_query` instead — passing a query through here
+        silently costs retrieval quality rather than failing.
+        """
+        return self.embed_passage(text)
 
 
 def to_pgvector(vec: list[float]) -> Optional[str]:

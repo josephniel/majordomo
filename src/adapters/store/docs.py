@@ -18,13 +18,7 @@ from typing import Any, Optional
 
 import asyncpg
 
-from .embeddings import (
-    DIM as _EMBED_DIM,
-    MODEL_NAME as _EMBED_MODEL,
-    embed_passage as _embed,
-    embed_query as _embed_q,
-    to_pgvector as _to_pgvector,
-)
+from .embeddings import Embedder, to_pgvector as _to_pgvector
 
 log = logging.getLogger(__name__)
 
@@ -146,8 +140,13 @@ def chunk_text(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP)
 class DocumentStore:
     """Async client for the documents + document_chunks tables."""
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, *, embedder: Optional[Embedder] = None) -> None:
         self._dsn = dsn
+        # Injected for the same reason MemoryDatabase takes one: the model
+        # sizes document_chunks.embedding and is stored per chunk. Two stores
+        # sharing a database MUST share a model, which the composition root
+        # enforces by handing both the same object.
+        self._embed = embedder or Embedder()
         self._pool: Optional[asyncpg.Pool] = None
 
     async def connect(self) -> None:
@@ -155,7 +154,7 @@ class DocumentStore:
             return
         self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=4)
         async with self._pool.acquire() as conn:
-            await conn.execute(_SCHEMA.replace("{{EMBED_DIM}}", str(_EMBED_DIM)))
+            await conn.execute(_SCHEMA.replace("{{EMBED_DIM}}", str(self._embed.dim)))
 
     async def close(self) -> None:
         if self._pool is not None:
@@ -178,7 +177,8 @@ class DocumentStore:
         if not chunks:
             raise ValueError("document has no extractable text")
         # Embed off the event loop, one pass (the model batches internally).
-        vectors = await asyncio.to_thread(lambda: [_embed(c) for c in chunks])
+        vectors = await asyncio.to_thread(
+            lambda: [self._embed.embed_passage(c) for c in chunks])
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 doc_id = await conn.fetchval(
@@ -197,7 +197,8 @@ class DocumentStore:
                     VALUES ($1, $2, $3, $4, $5::vector, $6)
                     """,
                     [
-                        (doc_id, persona_id, i, chunk, _to_pgvector(vec), _EMBED_MODEL)
+                        (doc_id, persona_id, i, chunk, _to_pgvector(vec),
+                         self._embed.model_name)
                         for i, (chunk, vec) in enumerate(zip(chunks, vectors))
                     ],
                 )
@@ -282,7 +283,8 @@ class DocumentStore:
         if not query:
             return []
         # Query side: asymmetric encoder (see storage.embeddings).
-        vec_literal = await asyncio.to_thread(lambda: _to_pgvector(_embed_q(query)))
+        vec_literal = await asyncio.to_thread(
+            lambda: _to_pgvector(self._embed.embed_query(query)))
         # Everything variable is a bound parameter — even the (currently
         # constant) embedding model name, so a future model rename can't
         # break or inject the query.
@@ -302,7 +304,7 @@ class DocumentStore:
         """
         args: list[Any] = [persona_id, query, int(limit)]
         if vec_literal:
-            args += [_EMBED_MODEL, vec_literal]
+            args += [self._embed.model_name, vec_literal]
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *args)
         return [dict(r) for r in rows if r["score"] and r["score"] > 0.1]

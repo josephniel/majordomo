@@ -275,5 +275,4 @@ class TestRollupsAndCore:
                 "SELECT DISTINCT embedding_model FROM memory_entries WHERE persona_id = $1",
                 persona_id,
             )
-        from adapters.store.embeddings import MODEL_NAME
-        assert [m["embedding_model"] for m in models] == [MODEL_NAME]
+        assert [m["embedding_model"] for m in models] == [memdb.embedder.model_name]

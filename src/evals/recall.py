@@ -46,7 +46,7 @@ from typing import Any, Optional
 
 import yaml
 
-from adapters.store.db import MemoryDatabase
+from adapters.store.db import MemoryDatabase, redact_dsn
 
 DEFAULT_CASES = Path(__file__).resolve().parents[2] / "evals" / "recall_cases.yaml"
 
@@ -292,7 +292,7 @@ async def _require_schema(db: MemoryDatabase, dsn: str) -> None:
     if rows and rows[0]["t"] is not None:
         return
     raise SystemExit(
-        f"no memory_entries table in {_redact(dsn)}.\n\n"
+        f"no memory_entries table in {redact_dsn(dsn)}.\n\n"
         f"The eval does not create schema by default — a benchmark should not "
         f"be able to migrate a database it doesn't own.\n"
         f"If this is a scratch database you own, re-run with --migrate.\n"
@@ -301,12 +301,6 @@ async def _require_schema(db: MemoryDatabase, dsn: str) -> None:
         f"        psql -U tc -d postgres -c "
         f"'CREATE DATABASE telegram_claude_test OWNER tc;'"
     )
-
-
-def _redact(dsn: str) -> str:
-    """DSN without the password — this string goes into an error the operator
-    may paste somewhere."""
-    return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", dsn)
 
 
 async def evaluate(

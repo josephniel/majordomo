@@ -33,19 +33,21 @@ import asyncpg
 
 from ports import MemoryCoreEntry, MemoryEntry, Neighbor, Scored
 
-from . import reranking as _rerank
-from .embeddings import (
-    DIM as _EMBED_DIM,
-    MODEL_NAME as _EMBED_MODEL,
-    embed_passage as _embed_passage,
-    embed_query as _embed_query,
-    to_pgvector as _to_pgvector,
-)
+from .embeddings import Embedder, to_pgvector as _to_pgvector
+from .reranking import Reranker
 
 log = logging.getLogger(__name__)
 
 
-async def _embed_pg(text: str, *, is_query: bool = False) -> Optional[str]:
+def redact_dsn(dsn: str) -> str:
+    """A DSN without its password, for error messages an operator may paste
+    into a chat or an issue."""
+    return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", dsn)
+
+
+async def _embed_pg(
+    embedder: Embedder, text: str, *, is_query: bool = False
+) -> Optional[str]:
     """Compute a pgvector literal for `text` off the event loop; None on failure.
 
     `is_query` picks the query-side encoder. Retrieval is asymmetric — a short
@@ -54,7 +56,7 @@ async def _embed_pg(text: str, *, is_query: bool = False) -> Optional[str]:
     it just quietly costs recall.
     """
     try:
-        fn = _embed_query if is_query else _embed_passage
+        fn = embedder.embed_query if is_query else embedder.embed_passage
         vec = await asyncio.to_thread(fn, text)
         return _to_pgvector(vec)
     except Exception:
@@ -191,10 +193,30 @@ class MemoryDatabase:
     the composition root has the first.
     """
 
-    def __init__(self, dsn: str, *, migrate: bool = True) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        migrate: bool = True,
+        embedder: Optional[Embedder] = None,
+        reranker: Optional[Reranker] = None,
+    ) -> None:
         self._dsn = dsn
         self._migrate = migrate
+        # Injected, because which model wrote a vector is a property of THIS
+        # database — it sizes the vector column and is stored per row. The
+        # defaults are the documented ones, so a test or a script that
+        # doesn't care can leave them out; the composition root always passes
+        # what the operator configured.
+        self._embed = embedder or Embedder()
+        self._rerank = reranker or Reranker()
         self._pool: Optional[asyncpg.Pool] = None
+
+    @property
+    def embedder(self) -> Embedder:
+        """Which model this store writes vectors with. Read by the
+        shared-database guard in the composition root."""
+        return self._embed
 
     async def connect(self) -> None:
         if self._pool is not None:
@@ -211,7 +233,7 @@ class MemoryDatabase:
         self._pool = await asyncpg.create_pool(
             self._dsn, min_size=1, max_size=4, init=_init_conn,
         )
-        log.info("memory database connected (dsn host=%s)", _redact_dsn(self._dsn))
+        log.info("memory database connected (dsn host=%s)", _dsn_host(self._dsn))
         if self._migrate:
             await self.init_schema()
 
@@ -226,7 +248,7 @@ class MemoryDatabase:
         changing EMBEDDING_MODEL migrates the column instead of failing every
         insert with a dimension mismatch."""
         sql = _SCHEMA_PATH.read_text(encoding="utf-8").replace(
-            "{{EMBED_DIM}}", str(_EMBED_DIM)
+            "{{EMBED_DIM}}", str(self._embed.dim)
         )
         async with self._acquire() as conn:
             await conn.execute(sql)
@@ -247,7 +269,7 @@ class MemoryDatabase:
         valid_from: Optional[datetime] = None,
         valid_to: Optional[datetime] = None,
     ) -> MemoryEntry:
-        emb = await _embed_pg(f"{title}\n{content}" if title else content)
+        emb = await _embed_pg(self._embed, f"{title}\n{content}" if title else content)
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -260,7 +282,7 @@ class MemoryDatabase:
                 RETURNING *
                 """,
                 persona_id, scope, domain_key, title, content, metadata or {},
-                emb, _EMBED_MODEL if emb else "", volatile,
+                emb, self._embed.model_name if emb else "", volatile,
                 provenance, confidence, valid_from, valid_to,
             )
         return _entry(row)
@@ -298,7 +320,7 @@ class MemoryDatabase:
         saves (the model re-learning the same fact) before they accumulate.
         Returns (entry, similarity) or None. Trigram fallback when the
         embedding isn't available."""
-        qpg = await _embed_pg(content)
+        qpg = await _embed_pg(self._embed, content)
         async with self._acquire() as conn:
             if qpg:
                 row = await conn.fetchrow(
@@ -311,7 +333,7 @@ class MemoryDatabase:
                     ORDER BY embedding <=> $4::vector
                     LIMIT 1
                     """,
-                    persona_id, scope, domain_key, qpg, _EMBED_MODEL,
+                    persona_id, scope, domain_key, qpg, self._embed.model_name,
                 )
             else:
                 row = await conn.fetchrow(
@@ -356,6 +378,7 @@ class MemoryDatabase:
                 if old is None:
                     return None
                 emb = await _embed_pg(
+                    self._embed,
                     f"{old['title']}\n{new_content}" if old["title"] else new_content)
                 new = await conn.fetchrow(
                     """
@@ -369,7 +392,7 @@ class MemoryDatabase:
                     """,
                     old["persona_id"], old["scope"], old["domain_key"],
                     old["title"], new_content, dict(old["metadata"] or {}),
-                    emb, _EMBED_MODEL if emb else "", old["pinned"], old["volatile"],
+                    emb, self._embed.model_name if emb else "", old["pinned"], old["volatile"],
                     # Provenance is inherited but validity is NOT: the
                     # replacement starts being true now, whereas the old row
                     # keeps the window it actually covered. Copying valid_from
@@ -604,7 +627,7 @@ class MemoryDatabase:
 
         Returns (entry, score) pairs, best first.
         """
-        qpg = await _embed_pg(query, is_query=True)
+        qpg = await _embed_pg(self._embed, query, is_query=True)
         # OR-semantics token query; tokens are \w+ so to_tsquery is safe.
         tokens = re.findall(r"\w+", query, flags=re.UNICODE)[:12]
         or_query = " | ".join(tokens) if tokens else ""
@@ -669,7 +692,7 @@ class MemoryDatabase:
             _arm(
                 "vec",
                 f"{vec_sim} DESC",
-                f"embedding IS NOT NULL AND embedding_model = '{_EMBED_MODEL}' "
+                f"embedding IS NOT NULL AND embedding_model = '{self._embed.model_name}' "
                 f"AND {vec_sim} > {VEC_MIN_SIMILARITY}",
                 vec_on,
             ),
@@ -688,7 +711,7 @@ class MemoryDatabase:
         # Pull a deeper slice than the caller asked for when a reranker will
         # re-sort it — fusion only has to get the right answer into the pool,
         # the cross-encoder decides the final order.
-        fetch_n = max(limit, _rerank.CANDIDATES) if _rerank.available() else limit
+        fetch_n = max(limit, self._rerank.candidates) if self._rerank.available() else limit
         params.append(fetch_n)
         sql = f"""
 WITH base AS (
@@ -746,7 +769,7 @@ LIMIT ${len(params)}
         texts = [
             (f"{e.title}\n{e.content}" if e.title else e.content) for e, _ in scored
         ]
-        rescored = await asyncio.to_thread(_rerank.rerank, query, texts)
+        rescored = await asyncio.to_thread(self._rerank.rerank, query, texts)
         if rescored is None:
             return scored[:limit]
         pairs = [(entry, score) for (entry, _), score in zip(scored, rescored)]
@@ -760,7 +783,7 @@ LIMIT ${len(params)}
         Returns the count re-embedded."""
         if force:
             where = "embedding IS NULL OR embedding_model IS DISTINCT FROM $1"
-            args: tuple = (_EMBED_MODEL,)
+            args: tuple = (self._embed.model_name,)
         else:
             where = "embedding IS NULL"
             args = ()
@@ -771,7 +794,7 @@ LIMIT ${len(params)}
         done = 0
         for r in rows:
             text = f"{r['title']}\n{r['content']}" if r["title"] else r["content"]
-            pg = await _embed_pg(text)
+            pg = await _embed_pg(self._embed, text)
             if not pg:
                 continue
             async with self._acquire() as conn:
@@ -781,7 +804,7 @@ LIMIT ${len(params)}
                     SET embedding = $1::vector, embedding_model = $2
                     WHERE id = $3
                     """,
-                    pg, _EMBED_MODEL, r["id"],
+                    pg, self._embed.model_name, r["id"],
                 )
             done += 1
         return done
@@ -883,8 +906,9 @@ def _jsonb_decoder(raw: str) -> Any:
     return json.loads(raw)
 
 
-def _redact_dsn(dsn: str) -> str:
-    """Return a host-only fragment for safe logging."""
+def _dsn_host(dsn: str) -> str:
+    """Just the hostname, for a log line that shouldn't carry a whole DSN.
+    Use `redact_dsn` when the operator needs to recognise WHICH database."""
     try:
         return urlparse(dsn).hostname or "?"
     except Exception:

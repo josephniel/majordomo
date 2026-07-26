@@ -23,7 +23,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 from adapters.model import (
     Agent,
@@ -40,7 +40,7 @@ from adapters.model import (
 from adapters.model.anthropic import AnthropicOptionsBuilder, SubscriptionAuthSummarizer
 from adapters.comms import CommsLog
 from kernel.core import ConversationOrchestrator
-from adapters.store import MemoryDatabase
+from adapters.store import Embedder, MemoryDatabase, Reranker, redact_dsn
 from kernel.sessions import SessionStore
 # Concrete provider classes are NOT imported here any more — runtime/
 # providers.py owns construction. What remains is the small set this module
@@ -112,6 +112,21 @@ class PersonaRuntime:
     # ---- per-domain stores / runtimes ----
 
     @cached_property
+    def embedder(self) -> Embedder:
+        """The one embedding model this process uses.
+
+        Built here and handed to every store, so the memory database and the
+        document store cannot disagree about which model wrote their vectors
+        — and so the ~640MB model is resident once, not once per store.
+        """
+        return Embedder(self.settings.embedding_model)
+
+    @cached_property
+    def reranker(self) -> Reranker:
+        """The one cross-encoder this process uses. Read-path only."""
+        return Reranker(self.settings.rerank)
+
+    @cached_property
     def memory_database(self) -> MemoryDatabase:
         dsn = self.settings.memory_database_url
         if not dsn:
@@ -121,7 +136,8 @@ class PersonaRuntime:
                 f"postgres://tc:tc_local_dev@postgres:5432/telegram_claude when "
                 f"running under docker-compose, or postgres://...@localhost:5432/... natively)."
             )
-        return MemoryDatabase(dsn)
+        self._assert_embedding_model_is_host_wide(dsn)
+        return MemoryDatabase(dsn, embedder=self.embedder, reranker=self.reranker)
 
     @cached_property
     def schedule_runtime(self) -> ScheduleEngine:
@@ -326,6 +342,71 @@ class PersonaRuntime:
                 f"Each instance needs instances/<id>/.env alongside platform.yaml."
             )
         load_dotenv(env_path)
+
+    def _assert_embedding_model_is_host_wide(self, dsn: str) -> None:
+        """Refuse to start if a sibling persona points at the same database
+        with a different embedding model.
+
+        This guard exists BECAUSE the embedding model started working. While
+        EMBEDDING_MODEL was silently inert, every persona used the default and
+        the hazard was unreachable; honouring it opens the door.
+
+        The damage is one-way and quiet. Vector width is a property of the
+        TABLE, not the row: `init_schema` migrates memory_entries.embedding to
+        the configured dimension and clears every existing vector to do it. So
+        the second persona to start would wipe the first one's semantic index,
+        which stays broken until someone runs `memory reembed` — and nothing
+        would report it, because recall degrades to FTS and trigram and keeps
+        answering.
+
+        Personas do NOT have to share a database, and two that don't are free
+        to use different models — hence checking the DSN rather than banning
+        per-persona models outright.
+        """
+        mine = self.settings.embedding_model or Embedder().model_name
+        for other_id in Persona.list_personas(self._project_root):
+            if other_id == self.persona.id:
+                continue
+            other = self._sibling_settings(other_id)
+            if other is None or other.memory_database_url != dsn:
+                continue
+            theirs = other.embedding_model or Embedder().model_name
+            if theirs != mine:
+                raise SystemExit(
+                    f"persona {self.persona.id!r} and persona {other_id!r} share the "
+                    f"database {redact_dsn(dsn)} but ask for different embedding "
+                    f"models ({mine!r} vs {theirs!r}).\n"
+                    f"The vector column is sized for one model: starting both would "
+                    f"make each wipe the other's vectors on schema init.\n"
+                    f"Either give them the same embedding model, or give them "
+                    f"separate databases."
+                )
+
+    def _sibling_settings(self, persona_id: str) -> Optional[RuntimeSettings]:
+        """Resolve another persona's settings without disturbing this one.
+
+        dotenv_values parses to a dict instead of mutating os.environ, so the
+        running persona's own config is never polluted. Layered OVER the
+        ambient environment because that is what that persona would see if it
+        were started in this shell.
+        """
+        env_file = self._project_root / "instances" / persona_id / ".env"
+        if not env_file.exists():
+            return None
+        try:
+            values = {k: v for k, v in dotenv_values(env_file).items() if v is not None}
+            return RuntimeSettings.from_env({**os.environ, **values})
+        except Exception:
+            # A sibling with a broken .env is that persona's problem, not a
+            # reason this one can't start.
+            log.debug("could not read settings for sibling persona %r",
+                      persona_id, exc_info=True)
+            return None
+
+    @property
+    def _project_root(self) -> Path:
+        # instances/<id>/ -> the repo root
+        return self.persona.dir.parent.parent
 
     def _validate_required_env(self, *required_lists: list[str]) -> None:
         """Fail fast if any declared REQUIRED_ENV name is unset/empty."""

@@ -14,6 +14,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Mapping, Optional
 
+from adapters.store.reranking import RerankConfig
 from adapters.trigger.retention import RetentionPolicy
 
 
@@ -91,6 +92,14 @@ class RuntimeSettings:
     status_push_url: str = ""
     status_push_token: str = ""
 
+    # ---- local retrieval models ----
+    # Both run on the host; no vector ever leaves it. Empty embedding_model
+    # means the adapter's measured default. These were read from os.environ
+    # at adapter import time, which is BEFORE the instance config is loaded —
+    # so every one of them was silently inert until they moved here.
+    embedding_model: str = ""
+    rerank: RerankConfig = field(default_factory=RerankConfig)
+
     # ---- retention ----
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
 
@@ -132,5 +141,24 @@ class RuntimeSettings:
             code_exec_network=env.get("CODE_EXEC_NETWORK") or None,
             status_push_url=env.get("STATUS_PUSH_URL") or "",
             status_push_token=env.get("STATUS_PUSH_TOKEN") or "",
+            embedding_model=(env.get("EMBEDDING_MODEL") or "").strip(),
+            rerank=_rerank_from(env),
             retention=RetentionPolicy.from_env(env),
         )
+
+
+def _rerank_from(env: Mapping[str, str]) -> RerankConfig:
+    """Parse the reranking knobs here rather than in the adapter, so the
+    adapter takes a value and this module stays the only thing that reads
+    an environment. Falls back to RerankConfig's own defaults field by
+    field — the measured values are documented there, next to the
+    measurements that produced them, and must not be restated here."""
+    d = RerankConfig()
+    return RerankConfig(
+        enabled=(_truthy(env["RERANK_ENABLED"])
+                 if (env.get("RERANK_ENABLED") or "").strip() else d.enabled),
+        model=(env.get("RERANK_MODEL") or "").strip() or d.model,
+        candidates=int(env.get("RERANK_CANDIDATES") or d.candidates),
+        center=float(env.get("RERANK_CENTER") or d.center),
+        temperature=float(env.get("RERANK_TEMPERATURE") or d.temperature),
+    )
