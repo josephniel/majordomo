@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from core import Connector
+from core import Connector, ServiceCatalog
 from core.llm import (
     Agent,
     PersonaLike,
@@ -21,7 +21,6 @@ from core.llm import (
     UsageLimitError,
 )
 from core.messaging import Attachment
-from connectors import ServiceRegistry
 
 __all__ = [
     "Agent",
@@ -71,7 +70,7 @@ class ContextBuilder:
 
     def __init__(
         self,
-        config: ServiceRegistry,
+        config: ServiceCatalog,
         connectors: list[Connector],
         persona: PersonaLike,
         platform_context: str = "",

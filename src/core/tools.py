@@ -17,6 +17,13 @@ from typing import Any, Awaitable, Callable, Optional
 
 from .context import ToolContext
 
+# The signature every in-process tool handler honors: (args, ctx) -> result.
+# Named so the @tool decorator can state what it accepts and returns instead
+# of being untyped at the one place every faculty and connector passes
+# through.
+ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
+
+
 @dataclass
 class ToolResult:
     """Vendor-neutral outcome of one tool invocation.
@@ -119,7 +126,9 @@ class ToolSpec:
         }
 
 
-def tool(name: str, description: str, parameters: dict[str, Any]):
+def tool(
+    name: str, description: str, parameters: dict[str, Any]
+) -> Callable[[ToolHandler], ToolSpec]:
     """Decorator — wraps an async handler as a ToolSpec.
 
         @tool("memory_save", "Save a fact.", {"scope": str, "content": str})
@@ -214,14 +223,14 @@ class ToolProvider:
 
     # ---- agent contributions (in-process MCPs) ----
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         """Single in-process MCP server worth of tools (legacy single-server
         providers like memory and schedule). Override `builtin_servers`
         instead for multi-server contributors.
         """
         return []
 
-    def builtin_servers(self) -> dict[str, list]:
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
         """Multiple in-process MCP servers keyed by server name.
 
         Default: if `builtin_tools()` returns tools, expose them as a

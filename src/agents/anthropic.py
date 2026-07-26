@@ -27,8 +27,7 @@ from claude_agent_sdk import (
     tool as _claude_sdk_tool,
 )
 
-from connectors import ServiceRegistry
-from core import Connector, ToolContext, ToolSpec, mcp_content
+from core import Connector, ServiceCatalog, ToolContext, ToolSpec, mcp_content
 
 from .base import (
     Agent,
@@ -222,7 +221,7 @@ class AnthropicOptionsBuilder:
     def __init__(
         self,
         context_builder: ContextBuilder,
-        config: ServiceRegistry,
+        config: ServiceCatalog,
         connectors: list[Connector],
         persona: PersonaLike,
         model: Optional[str] = None,

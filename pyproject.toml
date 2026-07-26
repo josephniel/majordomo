@@ -12,3 +12,94 @@ dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools]
 packages = []
+
+# ---------------------------------------------------------------------------
+# Architecture enforcement.
+#
+# The dependency rule used to live in a docstring, which is why it had drifted:
+# `agents/` (an adapter) imported `connectors/` (another adapter), and the
+# orchestrator's mixins coupled to host attributes documented only in prose.
+# Prose does not fail a build. These contracts do.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_packages = [
+    "core", "storage", "agents", "connectors", "capabilities",
+    "platforms", "services", "chat", "personas", "comms", "evals",
+]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "core is a leaf: it imports nothing of ours"
+type = "forbidden"
+source_modules = ["core"]
+forbidden_modules = [
+    "storage", "agents", "connectors", "capabilities",
+    "platforms", "services", "chat", "personas", "comms", "evals",
+]
+
+[[tool.importlinter.contracts]]
+name = "core imports no third-party SDK (contracts stay vendor-neutral)"
+type = "forbidden"
+source_modules = ["core"]
+forbidden_modules = [
+    "anthropic", "claude_agent_sdk", "openai", "telegram",
+    "asyncpg", "apscheduler", "fastembed", "httpx",
+]
+
+[[tool.importlinter.contracts]]
+name = "adapters do not import each other"
+type = "independence"
+modules = ["agents", "connectors", "platforms", "storage"]
+
+[[tool.importlinter.contracts]]
+name = "only the composition root touches the environment"
+type = "forbidden"
+source_modules = [
+    "agents", "connectors", "capabilities", "platforms", "services", "chat",
+]
+forbidden_modules = ["dotenv"]
+# chat.__main__ is the PROCESS ENTRY POINT (`python -m chat`), not application
+# code — wiring the composition root is its whole job. It sits inside the chat
+# package only for historical reasons; Phase 6 moves it to runtime/ and this
+# exemption goes away with it.
+ignore_imports = ["chat.__main__ -> personas"]
+
+[[tool.importlinter.contracts]]
+name = "layered: application over adapters over contracts"
+type = "layers"
+layers = [
+    "personas",                                  # composition root
+    "chat",                                      # application
+    "capabilities | services",                   # domain services
+    "agents | connectors | platforms",           # adapters
+    "storage | comms",                           # infrastructure
+    "core",                                      # contracts leaf
+]
+exhaustive = false
+# Same entry-point exemption as above.
+ignore_imports = ["chat.__main__ -> personas"]
+
+# ---------------------------------------------------------------------------
+# Type checking.
+#
+# A RATCHET, not a wall. `--strict` across all of src/ reports ~180 errors
+# today, so demanding it everywhere would mean either a flag day or a
+# permanently red build that everyone learns to ignore.
+#
+# Instead: strict where the CONTRACTS live (core/), lenient elsewhere. That is
+# the layer whose whole job is to be precise, it is the layer every other
+# package imports, and it is small enough to hold the line on. Promote
+# packages into the strict list as they are cleaned up — storage/ next, since
+# Phase 4 rewrites it anyway.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "src"
+namespace_packages = true
+explicit_package_bases = true
+ignore_missing_imports = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["core.*"]
+strict = true

@@ -6,7 +6,31 @@ by implementing the method, no orchestrator edits required.
 """
 from __future__ import annotations
 
-from typing import Optional, Protocol, runtime_checkable
+from typing import Any, Optional, Protocol, runtime_checkable, Sequence
+
+
+@runtime_checkable
+class EnabledService(Protocol):
+    """What a rendered service entry looks like to anything downstream of the
+    registry: a name, a description, and the tools it exposes."""
+
+    name: str
+    description: str
+    allowed_tools: list[str]
+
+
+class ServiceCatalog(Protocol):
+    """Reads which services/profiles are currently enabled.
+
+    Exists so the AGENT adapters don't have to import the CONNECTOR package.
+    All three of them (ContextBuilder, the Anthropic options builder, the
+    external-MCP manager) wanted exactly one method off ServiceRegistry —
+    `load_enabled()` — and importing a sibling adapter to get it made the two
+    packages inseparable. `connectors.ServiceRegistry` satisfies this
+    structurally; no inheritance, no registration.
+    """
+
+    def load_enabled(self) -> Sequence[EnabledService]: ...
 
 
 @runtime_checkable
@@ -48,7 +72,7 @@ class VendorIntrospectable(Protocol):
     def health(self) -> dict[str, float]: ...
 
     @property
-    def canary(self) -> dict: ...
+    def canary(self) -> dict[str, Any]: ...
 
 
 @runtime_checkable
@@ -57,7 +81,7 @@ class ToolTraceReporting(Protocol):
     hallucination detectors (Layers 3/3b) read these."""
 
     last_turn_tool_calls: int
-    last_turn_tool_names: tuple
+    last_turn_tool_names: tuple[str, ...]
 
 
 @runtime_checkable
@@ -73,7 +97,7 @@ class ToolCallProbe(Protocol):
     """An agent that can cheaply prove its vendor still calls tools
     (Layer 4 canary)."""
 
-    async def probe_tool_calling(self) -> tuple: ...
+    async def probe_tool_calling(self) -> tuple[bool, str]: ...
 
 
 @runtime_checkable
@@ -81,4 +105,4 @@ class CanaryRunner(Protocol):
     """A composite agent that runs the tool-calling canary across its
     chain at startup."""
 
-    async def run_canary(self) -> dict: ...
+    async def run_canary(self) -> dict[str, Any]: ...

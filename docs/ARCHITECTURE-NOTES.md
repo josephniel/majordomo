@@ -107,6 +107,42 @@ Two backup stories, deliberately: the JSON files are cheap, per-instance,
 host-local state that is safe to lose (sessions resume fresh, health
 re-learns); Postgres holds everything that must survive.
 
+## Architecture enforcement (CI)
+
+The dependency rule used to live in a docstring, which is exactly why it had
+drifted: `agents/` (an adapter) imported `connectors/` (another adapter) in
+three places, and nothing failed. Prose does not fail a build.
+
+`scripts/check_architecture.py` runs five import-linter contracts in CI:
+
+1. **core is a leaf** — imports nothing of ours.
+2. **core imports no vendor SDK** — no anthropic/openai/telegram/asyncpg/etc.
+   The contracts layer stays vendor-neutral by construction, not by habit.
+3. **adapters do not import each other** — agents / connectors / platforms /
+   storage are mutually independent.
+4. **only the composition root touches the environment** — nothing but
+   `personas/` imports dotenv.
+5. **layers** — personas > chat > capabilities|services > adapters >
+   storage|comms > core.
+
+Contract 3 was broken when it was written. The fix generalizes: all three
+offending imports wanted exactly ONE method off `ServiceRegistry`
+(`load_enabled()`), so `core.ServiceCatalog` now states that as a Protocol
+and the agents depend on the protocol. `ServiceRegistry` satisfies it
+structurally — no inheritance, no registration, no import.
+
+One exemption, recorded rather than hidden: `chat.__main__` imports
+`personas`, because it is the process entry point (`python -m chat`) and
+wiring the composition root is its job. It lives inside `chat/` for
+historical reasons only; Phase 6 moves it to `runtime/` and the exemption
+goes with it.
+
+**Type checking is a ratchet, not a wall.** `mypy --strict` over all of
+`src/` reports ~180 errors, so requiring it everywhere would mean a flag day
+or a permanently red build. CI enforces strict on `core/` only — the layer
+whose job is precision, that everything else imports, and that is small
+enough to hold. Promote packages in as they are cleaned up.
+
 ## Memory retrieval: fusion, embeddings, reranking
 
 Recall is hybrid and **measured**. `./manage eval-recall` seeds a throwaway

@@ -23,8 +23,10 @@ from .llm import (
 from .messaging import Attachment
 from .protocols import (
     AttachmentIngestor,
+    EnabledService,
     CanaryRunner,
     ContextInjector,
+    ServiceCatalog,
     SessionResettable,
     ToolCallProbe,
     ToolTraceReporting,
@@ -48,6 +50,7 @@ __all__ = [
     "CanaryRunner",
     "Connector",
     "ContextInjector",
+    "EnabledService",
     "Faculty",
     "SessionResettable",
     "ToolCallProbe",
@@ -55,6 +58,7 @@ __all__ = [
     "ToolTraceReporting",
     "VendorIntrospectable",
     "PersonaLike",
+    "ServiceCatalog",
     "Summarizer",
     "ToolProvider",
     "ToolResult",

@@ -44,5 +44,11 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Pull code-sandbox image
         run: docker pull -q python:3.13-slim
+      - name: Check architecture (import-linter contracts)
+        run: python scripts/check_architecture.py
+
+      - name: Type check contracts layer
+        run: python -m mypy src/core
+
       - name: Run test suite
         run: python -m pytest tests -q

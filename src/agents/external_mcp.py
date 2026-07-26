@@ -17,8 +17,7 @@ import logging
 from contextlib import AsyncExitStack
 from typing import Any, Callable, Optional
 
-from connectors import ServiceRegistry
-from core import ToolContext, ToolResult, ToolSpec
+from core import ServiceCatalog, ToolContext, ToolResult, ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +40,7 @@ class ExternalMCPManager:
 
     def __init__(
         self,
-        config: ServiceRegistry,
+        config: ServiceCatalog,
         skip_profiles: Optional[Callable[[str], bool]] = None,
         tool_filter: Optional[Callable[[str, str], bool]] = None,
     ) -> None:
