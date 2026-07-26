@@ -87,12 +87,20 @@ class ChatPlatform(ABC):
         env: Mapping[str, str],
         persona_id: str,
         comms_log: Optional[CommsLog] = None,
+        transcriber: Optional[Any] = None,
     ) -> "ChatPlatform":
         """Build a platform instance from its raw config block + env vars.
 
         `raw` is the contents of instances/<persona_id>/platform.yaml minus the
         `type` discriminator — platform-specific shape, parsed by each
         implementation.
+
+        `env` carries the platform's OWN secrets only (a bot token) — the
+        variables it declares in REQUIRED_ENV. Anything that is configuration
+        rather than a credential arrives already resolved: `transcriber` is
+        built by the composition root from the SETTINGS table, because a
+        platform reaching into os.environ for a vendor chain is a second
+        configuration surface that nothing else can see or audit.
         """
 
     def system_prompt_section(self) -> str:

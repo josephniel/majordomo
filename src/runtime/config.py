@@ -83,6 +83,7 @@ from typing import Any, Callable, Mapping, Optional
 
 import yaml
 
+from adapters.chat.transcription import DEFAULT_VENDOR_ORDER as DEFAULT_TRANSCRIPTION_ORDER
 from adapters.store.reranking import RerankConfig
 from adapters.trigger.retention import RetentionPolicy
 
@@ -282,6 +283,21 @@ SETTINGS: tuple[Setting, ...] = (
             "IDEATE_LLM", as_lower, "", Scope.PERSONA),
     Setting("ideate_model", "llm.roles.ideate.model",
             "IDEATE_MODEL", as_str, "", Scope.PERSONA),
+
+    # ---- voice transcription: persona scope ----
+    # Reuses the LLM vendors' API keys (host scope, above) — only the chain
+    # and the model overrides are per assistant.
+    Setting("transcription_chain", "transcription.chain", "TRANSCRIPTION_LLM",
+            as_csv, DEFAULT_TRANSCRIPTION_ORDER, Scope.PERSONA,
+            doc="Whisper vendor order. Unset leaves voice notes politely "
+                "rejected unless one of these vendors has a key."),
+    Setting("transcription_model", "transcription.model", "TRANSCRIPTION_MODEL",
+            as_str, "", Scope.PERSONA,
+            doc="Override the model for every vendor in the chain."),
+    Setting("groq_whisper_model", "transcription.vendors.groq.model",
+            "GROQ_WHISPER_MODEL", as_str, "", Scope.PERSONA),
+    Setting("openai_whisper_model", "transcription.vendors.openai.model",
+            "OPENAI_WHISPER_MODEL", as_str, "", Scope.PERSONA),
 
     # ---- triggers: persona scope ----
     Setting("webhook_token", "triggers.webhooks.token", "WEBHOOK_TOKEN",

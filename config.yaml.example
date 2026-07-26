@@ -1,0 +1,115 @@
+# config.yaml — HOST scope. Copy to ./config.yaml and edit.
+#
+# Everything true of THIS MACHINE rather than of one assistant: the database,
+# the local retrieval models, retention, the sandbox. Written once here
+# instead of copied into every instance — the duplication this replaces had
+# 12 of 15 keys identical across two instances, and the one that had drifted
+# silently dropped a vendor from a failover chain.
+#
+# SAFE TO COMMIT. Secrets are referenced with ${VAR}, never written here;
+# the variable is read from the environment (a persona's .env, or the
+# service manager's). `./manage doctor` reports a literal secret as a finding.
+#
+# Precedence: instances/<id>/config.yaml > this file > environment > default.
+# Every key is optional; delete what you don't need.
+
+# ------------------------------------------------------------------
+database:
+  # Postgres DSN. Personas may share one.
+  # env fallback: MEMORY_DATABASE_URL
+  # url: ${MEMORY_DATABASE_URL}
+
+# ------------------------------------------------------------------
+embedding:
+  # Local embedding model. Sizes the shared vector column, so personas on
+  # one database MUST agree — hence host scope.
+  # env fallback: EMBEDDING_MODEL
+  # model:
+
+# ------------------------------------------------------------------
+rerank:
+  # env fallback: RERANK_ENABLED
+  # enabled: true
+
+  # env fallback: RERANK_MODEL
+  # model: Xenova/ms-marco-MiniLM-L-12-v2
+
+  # env fallback: RERANK_CANDIDATES
+  # candidates: 20
+
+  # env fallback: RERANK_CENTER
+  # center: -8.0
+
+  # env fallback: RERANK_TEMPERATURE
+  # temperature: 2.0
+
+# ------------------------------------------------------------------
+retention:
+  # env fallback: RETENTION_CHAT_DAYS
+  # chat_days: 180
+
+  # env fallback: RETENTION_TURNLOG_DAYS
+  # turn_log_days: 90
+
+  # env fallback: RETENTION_COMMS_DAYS
+  # comms_days: 90
+
+  # env fallback: RETENTION_DOCS_DAYS
+  # documents_days: 0
+
+# ------------------------------------------------------------------
+schedule:
+  # IANA name, e.g. Asia/Manila. Governs every persona's crons.
+  # env fallback: SCHEDULE_TIMEZONE
+  # timezone:
+
+# ------------------------------------------------------------------
+code_exec:
+  # env fallback: CODE_EXEC_IMAGE
+  # image:
+
+  # env fallback: CODE_EXEC_NETWORK
+  # network:
+
+# ------------------------------------------------------------------
+status_push:
+  # env fallback: STATUS_PUSH_URL
+  # url:
+
+  # env fallback: STATUS_PUSH_TOKEN
+  # token: ${STATUS_PUSH_TOKEN}
+
+# ------------------------------------------------------------------
+llm:
+  # ----------------------------------------------------------------
+  vendors:
+    # --------------------------------------------------------------
+    claude:
+      # env fallback: ANTHROPIC_API_KEY
+      # api_key: ${ANTHROPIC_API_KEY}
+
+    # --------------------------------------------------------------
+    groq:
+      # env fallback: GROQ_API_KEY
+      # api_key: ${GROQ_API_KEY}
+
+    # --------------------------------------------------------------
+    gemini:
+      # env fallback: GEMINI_API_KEY
+      # api_key: ${GEMINI_API_KEY}
+
+    # --------------------------------------------------------------
+    openai:
+      # env fallback: OPENAI_API_KEY
+      # api_key: ${OPENAI_API_KEY}
+
+    # --------------------------------------------------------------
+    deepseek:
+      # env fallback: DEEPSEEK_API_KEY
+      # api_key: ${DEEPSEEK_API_KEY}
+
+    # --------------------------------------------------------------
+    ollama:
+      # Where the local daemon listens — a property of the host.
+      # env fallback: OLLAMA_BASE_URL
+      # base_url:

@@ -42,7 +42,7 @@ from .base import (
     OnMessage,
     StatusTracker,
 )
-from .transcription import CascadingTranscriber, build_transcriber_from_env, filename_for_mime
+from .transcription import CascadingTranscriber, filename_for_mime
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +164,7 @@ class TelegramPlatform(ChatPlatform):
         env: Mapping[str, str],
         persona_id: str,
         comms_log: Optional[CommsLog] = None,
+        transcriber: Optional[CascadingTranscriber] = None,
     ) -> "TelegramPlatform":
         """Parse the telegram block of instances/<persona_id>/platform.yaml.
 
@@ -199,10 +200,10 @@ class TelegramPlatform(ChatPlatform):
             persona_id=persona_id,
             control_room_chat_id=cr_chat_id,
             comms_log=comms_log if cr_chat_id is not None else None,
-            # Voice notes transcribe through the LLM-agnostic transcription
-            # chain (TRANSCRIPTION_LLM env; groq/openai presets) when any
-            # vendor key is set; otherwise voice keeps its polite rejection.
-            transcriber=build_transcriber_from_env(env),
+            # Built by the composition root from resolved config; None when
+            # no transcription vendor has a key, in which case voice keeps
+            # its polite rejection.
+            transcriber=transcriber,
         )
 
     def system_prompt_section(self) -> str:

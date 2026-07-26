@@ -7,47 +7,76 @@ import pytest
 from adapters.chat.transcription import (
     AudioTranscriber,
     CascadingTranscriber,
-    build_transcriber_from_env,
+    TranscriptionConfig,
+    build_transcriber,
     filename_for_mime,
 )
+from runtime.settings import RuntimeSettings
 
 
-class TestBuildFromEnv:
+def build(env: dict):
+    """End to end: environment -> resolved settings -> built chain.
+
+    Exercised through RuntimeSettings rather than by handing
+    build_transcriber a TranscriptionConfig directly, because the bug worth
+    guarding is a gap BETWEEN those two — this module used to read
+    os.environ itself, so a setting could be resolved correctly and still
+    never reach the transcriber.
+    """
+    return build_transcriber(RuntimeSettings.from_env(env).transcription())
+
+
+class TestBuildFromConfig:
     def test_no_keys_returns_none(self):
-        assert build_transcriber_from_env({}) is None
+        assert build({}) is None
 
     def test_groq_key_builds_groq_chain(self):
-        t = build_transcriber_from_env({"GROQ_API_KEY": "k"})
-        assert t.vendor_names == ["groq"]
+        assert build({"GROQ_API_KEY": "k"}).vendor_names == ["groq"]
 
     def test_default_order_groq_first(self):
-        t = build_transcriber_from_env({"GROQ_API_KEY": "k", "OPENAI_API_KEY": "k2"})
+        t = build({"GROQ_API_KEY": "k", "OPENAI_API_KEY": "k2"})
         assert t.vendor_names == ["groq", "openai"]
 
     def test_explicit_order_wins(self):
-        t = build_transcriber_from_env({
-            "GROQ_API_KEY": "k", "OPENAI_API_KEY": "k2",
-            "TRANSCRIPTION_LLM": "openai,groq",
-        })
+        t = build({"GROQ_API_KEY": "k", "OPENAI_API_KEY": "k2",
+                   "TRANSCRIPTION_LLM": "openai,groq"})
         assert t.vendor_names == ["openai", "groq"]
 
     def test_unknown_vendor_skipped(self):
-        t = build_transcriber_from_env({
-            "GROQ_API_KEY": "k", "TRANSCRIPTION_LLM": "acmespeech,groq",
-        })
+        t = build({"GROQ_API_KEY": "k", "TRANSCRIPTION_LLM": "acmespeech,groq"})
         assert t.vendor_names == ["groq"]
 
     def test_global_model_override(self):
-        t = build_transcriber_from_env({
-            "GROQ_API_KEY": "k", "TRANSCRIPTION_MODEL": "whisper-next",
-        })
+        t = build({"GROQ_API_KEY": "k", "TRANSCRIPTION_MODEL": "whisper-next"})
         assert t._chain[0].model == "whisper-next"
 
     def test_per_vendor_model_override(self):
-        t = build_transcriber_from_env({
-            "GROQ_API_KEY": "k", "GROQ_WHISPER_MODEL": "whisper-large-v3",
-        })
+        t = build({"GROQ_API_KEY": "k", "GROQ_WHISPER_MODEL": "whisper-large-v3"})
         assert t._chain[0].model == "whisper-large-v3"
+
+    def test_the_global_override_beats_the_per_vendor_one(self):
+        t = build({"GROQ_API_KEY": "k", "GROQ_WHISPER_MODEL": "per-vendor",
+                   "TRANSCRIPTION_MODEL": "global"})
+        assert t._chain[0].model == "global"
+
+    def test_the_vendor_keys_are_the_llm_keys(self):
+        """Transcription reuses the LLM credentials rather than declaring
+        its own, so there is one place a Groq key is configured."""
+        cfg = RuntimeSettings.from_env({"GROQ_API_KEY": "shared"}).transcription()
+        assert cfg.api_keys["groq"] == "shared"
+
+    def test_it_is_configurable_from_yaml_too(self, tmp_path):
+        """The point of the exercise: this used to be reachable only through
+        os.environ, invisible to the config file."""
+        (tmp_path / "instances" / "a").mkdir(parents=True)
+        (tmp_path / "instances" / "a" / "config.yaml").write_text(
+            "transcription:\n  chain: [openai, groq]\n  model: whisper-from-yaml\n"
+        )
+        s = RuntimeSettings.load(tmp_path, tmp_path / "instances" / "a",
+                                 {"GROQ_API_KEY": "k", "OPENAI_API_KEY": "k2"})
+        t = build_transcriber(s.transcription())
+        assert t.vendor_names == ["openai", "groq"]
+        assert t._chain[0].model == "whisper-from-yaml"
 
 
 class TestCascade:

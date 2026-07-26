@@ -24,6 +24,10 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
+from adapters.chat.transcription import (
+    DEFAULT_VENDOR_ORDER as DEFAULT_TRANSCRIPTION_ORDER,
+    TranscriptionConfig,
+)
 from adapters.store.reranking import RerankConfig
 from adapters.trigger.retention import RetentionPolicy
 
@@ -104,8 +108,28 @@ class RuntimeSettings:
     embedding_model: str = ""
     rerank: RerankConfig = field(default_factory=RerankConfig)
 
+    # ---- voice transcription ----
+    # The vendor keys come from the LLM fields above — transcription reuses
+    # them rather than declaring its own.
+    transcription_chain: tuple[str, ...] = DEFAULT_TRANSCRIPTION_ORDER
+    transcription_model: str = ""
+    groq_whisper_model: str = ""
+    openai_whisper_model: str = ""
+
     # ---- retention ----
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
+
+    def transcription(self) -> TranscriptionConfig:
+        """Assemble the transcription adapter's config, resolving the vendor
+        keys from the LLM credentials so they are configured in exactly one
+        place."""
+        return TranscriptionConfig(
+            chain=self.transcription_chain,
+            model=self.transcription_model,
+            models={"groq": self.groq_whisper_model,
+                    "openai": self.openai_whisper_model},
+            api_keys={"groq": self.groq_api_key, "openai": self.openai_api_key},
+        )
 
     # ---- construction ----
     #

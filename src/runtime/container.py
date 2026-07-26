@@ -62,6 +62,7 @@ from domain import (
     TaskScheduler,
 )
 from adapters.chat import get_platform_cls, registered_platform_names, ChatPlatform, PlatformConfig
+from adapters.chat.transcription import build_transcriber
 
 from .persona import Persona
 from .model_roles import RoleChain, resolve_roles
@@ -130,6 +131,17 @@ class PersonaRuntime:
     def reranker(self) -> Reranker:
         """The one cross-encoder this process uses. Read-path only."""
         return Reranker(self.settings.rerank)
+
+    @cached_property
+    def transcriber(self):
+        """Voice-note transcription chain, or None when no vendor has a key.
+
+        Built here rather than inside the chat platform: the platform was
+        calling build_transcriber_from_env(env) and picking its own vendor
+        order out of the raw environment, which made it a configuration
+        surface nothing else could see.
+        """
+        return build_transcriber(self.settings.transcription())
 
     @cached_property
     def memory_database(self) -> MemoryDatabase:
@@ -474,6 +486,7 @@ class PersonaRuntime:
             env=os.environ,
             persona_id=self.persona.id,
             comms_log=comms,
+            transcriber=self.transcriber,
         )
 
     # ---- agent ----
@@ -860,7 +873,7 @@ class PersonaRuntime:
     def retention_job(self):
         """Daily prune of the growth tables. Documents arm is off unless
         RETENTION_DOCS_DAYS is set — see adapters/trigger/retention.py."""
-        from adapters.trigger import RetentionJob, RetentionPolicy
+        from adapters.trigger import RetentionJob
         docs_store = None
         for c in self.active_services:
             if isinstance(c, DocumentLibrary):
@@ -871,7 +884,11 @@ class PersonaRuntime:
             comms = self.comms_log
         return RetentionJob(
             persona_id=self.persona.id,
-            policy=RetentionPolicy.from_env(),
+            # From resolved settings, NOT RetentionPolicy.from_env(): this
+            # read the raw environment directly and so ignored config.yaml
+            # entirely — retention would have silently kept its defaults for
+            # anyone who configured it in the new layout.
+            policy=self.settings.retention,
             history=self.conversation_history,
             comms_log=comms,
             document_store=docs_store,
