@@ -81,6 +81,14 @@ manage — majordomo stack
   Comms (control-room log):
     comms inspect [persona] [limit]  show recent control-room entries (default 20)
 
+  Configuration:
+    doctor [persona]                 audit config: dropped vendors, duplicated
+                                     keys, dead env entries, shadowed vars,
+                                     literal secrets. Offline — safe on a live box.
+    doctor --all                     audit every persona
+    doctor [persona] --resolved      every setting, its value, and its source
+                                     (diff this before/after moving config)
+
   Introspection & maintenance:
     schedules [persona]              list scheduled tasks (+ timezone)
     skills [persona]                 list skill notes
@@ -242,6 +250,15 @@ cmd_comms() {
     exec "$VENV_PY" cli.py --persona "$persona" comms "$action" "${limit_args[@]}"
 }
 
+# ---- configuration audit ----
+
+cmd_doctor() {
+    require_venv
+    # No persona resolution: doctor takes an optional persona, supports
+    # --all, and must run even when nothing is configured yet.
+    PYTHONPATH=src exec "$VENV_PY" -m runtime.doctor "$@"
+}
+
 # ---- raw cli passthrough ----
 
 cmd_cli() {
@@ -264,6 +281,7 @@ main() {
         up)                 cmd_up "$@" ;;
         bot)                cmd_chat "$@" ;;
         list-personas)      cmd_list_personas ;;
+        doctor)             cmd_doctor "$@" ;;
         db-up)              cmd_db_up ;;
         db-down)            cmd_db_down ;;
         db-status)          cmd_db_status ;;
