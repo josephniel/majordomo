@@ -11,7 +11,7 @@ from __future__ import annotations
 # (every connector takes ServiceRegistry via constructor injection).
 from .registry import ServiceRegistry, ConnectorEntry  # ConnectorEntry: internal
 
-from .approvals import GatedToolProvider, WriteApprovalGate
+from .approvals import GatedToolProvider, PendingApproval, WriteApprovalGate
 from .budget import BudgetConnector
 from ports import (
     AttachmentIngestor,
@@ -41,6 +41,7 @@ __all__ = [
     "SplitwiseConnector",
     "Summarizer",
     "GatedToolProvider",
+    "PendingApproval",
     "WriteApprovalGate",
     "YahooConnector",
 ]

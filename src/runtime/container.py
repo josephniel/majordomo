@@ -913,6 +913,7 @@ class PersonaRuntime:
             status_reporter=self.status_reporter,
             trigger_sources=self.trigger_sources(schedule_conn),
             background_agent_factory=self._background_agent_factory,
+            approval_gate=self.approval_gate,
         )
 
     def trigger_sources(self, schedule_conn) -> list:

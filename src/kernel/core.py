@@ -76,6 +76,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         status_reporter=None,  # comms.status_report.StatusReporter | None
         trigger_sources: Optional[list[TriggerSource]] = None,
         background_agent_factory=None,  # (ConversationRef) -> Agent
+        approval_gate=None,  # adapters.tools.WriteApprovalGate | None
     ) -> None:
         self._platform = platform
         # agent_factory(chat_id, session_id) -> Agent
@@ -98,6 +99,9 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         # Falls back to the chat agent when absent, which keeps triggers
         # working (expensively) rather than failing shut.
         self._bg_agent_factory = background_agent_factory
+        # Read-only, and only to tell a WAITING turn from a WORKING one — see
+        # _pending_approval_notice. The orchestrator never approves anything.
+        self._approval_gate = approval_gate
         self._relay: Optional[CommsRelay] = (
             CommsRelay(comms_log, persona_id, self._on_peer_message)
             if comms_log is not None else None
@@ -325,6 +329,18 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         # vendor as before (vision, one-shot reading).
         text = await self._ingest_attachments(chat_id, text, msg)
 
+        # A turn blocked on an approval holds the per-chat lock for the whole
+        # approval timeout (two minutes). Waiting behind a WORKING turn is
+        # fine — it finishes on its own. Waiting behind one that is blocked on
+        # the operator is not: the thing it is waiting for is a tap the user
+        # has not made and cannot see they need to make from here, so their
+        # message would sit unacknowledged until it times out and the bot
+        # would look dead.
+        notice = self._pending_approval_notice(chat_id)
+        if notice is not None:
+            await self._platform.send_text(chat_id, notice, reply_to=msg.message_id)
+            return
+
         # Serialize turns per chat. If a previous turn is in flight, this
         # message waits behind it and runs with the previous reply already
         # in conversation history.
@@ -517,6 +533,32 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         if chat_id not in self._per_chat_locks:
             self._per_chat_locks[chat_id] = asyncio.Lock()
         return self._per_chat_locks[chat_id]
+
+    def _pending_approval_notice(self, chat_id: ConversationRef) -> Optional[str]:
+        """What to say to a message that arrived while this chat is blocked
+        on an operator approval — or None when it isn't.
+
+        Deliberately says the tool name and how to get out. "Please wait" is
+        no better than the silence it replaces; what the user needs is which
+        write is stuck, that the decision is theirs, and that they are not
+        trapped (`/cancel` already unwinds the turn through the approval's
+        CancelledError path).
+
+        Only fires when a turn is genuinely PARKED on a human. A slow model
+        call still queues normally — that resolves without anyone doing
+        anything, and interrupting it would cost the user their turn.
+        """
+        if self._approval_gate is None:
+            return None
+        pending = self._approval_gate.pending_for(chat_id)
+        if pending is None:
+            return None
+        return (
+            f"⏳ I'm still waiting on your approval for **{pending.label}** — "
+            f"tap Approve or Deny on that message and I'll pick this up "
+            f"straight after.\n\n"
+            f"If you'd rather drop it, send /cancel."
+        )
 
     def _persist_session_id(self, chat_id: ConversationRef, agent: Agent) -> None:
         sid = agent.session_id
