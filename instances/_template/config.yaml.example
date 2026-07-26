@@ -1,0 +1,131 @@
+# instances/<id>/config.yaml — PERSONA scope. Copy alongside persona.yaml.
+#
+# How THIS assistant behaves: which vendors it uses and in what order, which
+# model serves which kind of work, its webhook token. Identity — its name,
+# system prompt, and which faculties it may use — lives in persona.yaml,
+# because "what this assistant is" and "which model summarizes for it" change
+# for completely different reasons.
+#
+# Host-scoped settings (the database, the embedding model, retention) CANNOT
+# be set here: personas usually share one database, and the embedding model
+# sizes its vector column, so a per-persona value is a way to silently wipe
+# another assistant's vectors. Put those in the root config.yaml.
+#
+# Every key is optional — a persona with nothing unusual about it needs no
+# config.yaml at all.
+
+# ------------------------------------------------------------------
+llm:
+  # env fallback: PRIMARY_LLM
+  # primary:
+
+  # Failover order, e.g. [gemini, claude, groq]. A vendor with no
+  # credentials is dropped — and now says so.
+  # env fallback: LLM_CHAIN
+  # chain: [gemini, claude, groq]
+
+  # env fallback: LLM_MAX_OUTPUT_TOKENS
+  # max_output_tokens: 4096
+
+  # ----------------------------------------------------------------
+  vendors:
+    # --------------------------------------------------------------
+    claude:
+      # env fallback: CLAUDE_ENABLED
+      # enabled: false
+
+      # env fallback: CLAUDE_MODEL
+      # model: claude-sonnet-5
+
+      # env fallback: CLAUDE_MAX_TURNS
+      # max_turns: 50
+
+      # env fallback: CLAUDE_MAX_OUTPUT_TOKENS
+      # max_output_tokens: 16000
+
+    # --------------------------------------------------------------
+    groq:
+      # env fallback: GROQ_MODEL
+      # model:
+
+    # --------------------------------------------------------------
+    gemini:
+      # env fallback: GEMINI_MODEL
+      # model:
+
+    # --------------------------------------------------------------
+    ollama:
+      # env fallback: OLLAMA_ENABLED
+      # enabled: false
+
+      # env fallback: OLLAMA_MODEL
+      # model:
+
+      # env fallback: OLLAMA_REASONING_EFFORT
+      # reasoning_effort:
+
+      # env fallback: OLLAMA_VISION
+      # vision:
+
+  # ----------------------------------------------------------------
+  roles:
+    # --------------------------------------------------------------
+    background:
+      # env fallback: BACKGROUND_LLM_CHAIN
+      # chain:
+
+      # env fallback: BACKGROUND_MODEL
+      # model:
+
+      # env fallback: HEARTBEAT_MODEL
+      # heartbeat_model: claude-haiku-4-5
+
+    # --------------------------------------------------------------
+    summarize:
+      # env fallback: COMPACTION_LLM
+      # chain:
+
+      # env fallback: COMPACTION_MODEL
+      # model: claude-haiku-4-5
+
+      # env fallback: COMPACTION_DEEP_MODEL
+      # deep_model: claude-sonnet-5
+
+    # --------------------------------------------------------------
+    ideate:
+      # env fallback: IDEATE_LLM
+      # chain:
+
+      # env fallback: IDEATE_MODEL
+      # model:
+
+# ------------------------------------------------------------------
+transcription:
+  # Whisper vendor order. Unset leaves voice notes politely rejected
+  # unless one of these vendors has a key.
+  # env fallback: TRANSCRIPTION_LLM
+  # chain: [groq, openai]
+
+  # Override the model for every vendor in the chain.
+  # env fallback: TRANSCRIPTION_MODEL
+  # model:
+
+  # ----------------------------------------------------------------
+  vendors:
+    # --------------------------------------------------------------
+    groq:
+      # env fallback: GROQ_WHISPER_MODEL
+      # model:
+
+    # --------------------------------------------------------------
+    openai:
+      # env fallback: OPENAI_WHISPER_MODEL
+      # model:
+
+# ------------------------------------------------------------------
+triggers:
+  # ----------------------------------------------------------------
+  webhooks:
+    # Persona-scoped because each webhook server is one persona's.
+    # env fallback: WEBHOOK_TOKEN
+    # token: ${WEBHOOK_TOKEN}

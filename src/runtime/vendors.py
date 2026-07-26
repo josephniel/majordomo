@@ -42,6 +42,10 @@ class VendorSpec:
     # None = trust the backend class. Only self-hosted vendors override it,
     # because the capability belongs to the pulled model, not the vendor.
     supports_vision: Callable[[RuntimeSettings], Optional[bool]] = lambda s: None
+    # Human-readable answer to "why isn't this vendor available?", used when a
+    # chain names it but `enabled` says no. Lives here rather than in the
+    # composition root so the diagnostic can't drift from the predicate above.
+    requires: str = ""
 
 
 def _claude_enabled(s: RuntimeSettings) -> bool:
@@ -65,30 +69,35 @@ VENDORS: tuple[VendorSpec, ...] = (
         enabled=lambda s: bool(s.groq_api_key),
         api_key=lambda s: s.groq_api_key,
         model=lambda s: s.groq_model,
+        requires="GROQ_API_KEY",
     ),
     VendorSpec(
         "gemini", GeminiAgent,
         enabled=lambda s: bool(s.gemini_api_key),
         api_key=lambda s: s.gemini_api_key,
         model=lambda s: s.gemini_model,
+        requires="GEMINI_API_KEY",
     ),
     VendorSpec(
         "openai", OpenAIAgent,
         enabled=lambda s: bool(s.openai_api_key),
         api_key=lambda s: s.openai_api_key,
         model=lambda s: None,
+        requires="OPENAI_API_KEY",
     ),
     VendorSpec(
         "deepseek", DeepSeekAgent,
         enabled=lambda s: bool(s.deepseek_api_key),
         api_key=lambda s: s.deepseek_api_key,
         model=lambda s: None,
+        requires="DEEPSEEK_API_KEY",
     ),
     VendorSpec(
         "claude", None,
         enabled=_claude_enabled,
         api_key=lambda s: s.anthropic_api_key,
         model=lambda s: s.claude_model,
+        requires="CLAUDE_ENABLED=1 (subscription auth) or ANTHROPIC_API_KEY",
     ),
     # Last in registry order deliberately: local inference is free and works
     # with the network down, which makes it the right final safety net when
@@ -103,6 +112,7 @@ VENDORS: tuple[VendorSpec, ...] = (
         extra=lambda s: ({"reasoning_effort": s.ollama_reasoning_effort}
                          if s.ollama_reasoning_effort else {}),
         supports_vision=lambda s: s.ollama_vision,
+        requires="OLLAMA_ENABLED=1 (keyless — a running daemon is not consent)",
     ),
 )
 

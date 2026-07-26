@@ -14,3 +14,10 @@ logs/
 # Personal instance configs stay local — only the template ships.
 instances/*
 !instances/_template/
+
+# The host's own config.yaml. It holds no secrets by construction (they are
+# ${VAR} references, and `./manage doctor` fails on a literal), but it is
+# specific to one machine — a clone wants config.yaml.example, not somebody
+# else's timezone and dashboard URL. Un-ignore it if you want your own
+# deployment reviewable in your own fork.
+/config.yaml

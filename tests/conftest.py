@@ -17,6 +17,7 @@ from adapters.model.base import Agent, UsageLimitError
 from adapters.model.history import ConversationHistory
 from adapters.tools.base import Summarizer
 from adapters.store.db import MemoryDatabase
+from adapters.store.embeddings import Embedder
 
 # A SEPARATE database from the one a running assistant uses. Tests call
 # init_schema(), which applies migrations — including destructive ones like
@@ -31,6 +32,18 @@ TEST_DSN = os.environ.get(
 )
 
 CHAT_ID = 424242
+
+
+@pytest.fixture(scope="session")
+def embedder() -> Embedder:
+    """ONE embedding model for the whole test session.
+
+    The model is ~640MB resident and lives on the Embedder instance, so a
+    per-fixture Embedder would load a fresh copy for every store in every
+    test. Sharing is deliberate and explicit — which is the point of the
+    store taking one rather than reaching for a module-level default.
+    """
+    return Embedder()
 
 
 @pytest.fixture
@@ -52,8 +65,8 @@ async def history(persona_id):
 
 
 @pytest.fixture
-async def memdb(persona_id):
-    db = MemoryDatabase(TEST_DSN)
+async def memdb(persona_id, embedder):
+    db = MemoryDatabase(TEST_DSN, embedder=embedder)
     await db.connect()
     await db.init_schema()
     yield db

@@ -19,29 +19,49 @@ stateless, a retry next voice note costs nothing).
 from __future__ import annotations
 
 import logging
-import os
+from dataclasses import dataclass, field
 from typing import Mapping, Optional
 
 import httpx
 
 log = logging.getLogger(__name__)
 
-_VENDOR_PRESETS: dict[str, dict[str, str]] = {
-    "groq": {
-        "url": "https://api.groq.com/openai/v1/audio/transcriptions",
-        "key_env": "GROQ_API_KEY",
-        "model": "whisper-large-v3-turbo",
-        "model_env": "GROQ_WHISPER_MODEL",
-    },
-    "openai": {
-        "url": "https://api.openai.com/v1/audio/transcriptions",
-        "key_env": "OPENAI_API_KEY",
-        "model": "whisper-1",
-        "model_env": "OPENAI_WHISPER_MODEL",
-    },
+@dataclass(frozen=True)
+class VendorPreset:
+    """A Whisper-compatible endpoint and its default model."""
+
+    url: str
+    model: str
+
+
+VENDOR_PRESETS: dict[str, VendorPreset] = {
+    "groq": VendorPreset(
+        "https://api.groq.com/openai/v1/audio/transcriptions",
+        "whisper-large-v3-turbo",
+    ),
+    "openai": VendorPreset(
+        "https://api.openai.com/v1/audio/transcriptions", "whisper-1",
+    ),
 }
 
-DEFAULT_VENDOR_ORDER = "groq,openai"
+DEFAULT_VENDOR_ORDER: tuple[str, ...] = ("groq", "openai")
+
+
+@dataclass(frozen=True)
+class TranscriptionConfig:
+    """Resolved voice-transcription settings.
+
+    Built by the composition root from the SETTINGS table and passed in —
+    this module used to read os.environ itself, which made it the last
+    configuration surface outside the single declared one. It also reused
+    the LLM vendor keys by naming their environment variables, so the keys
+    arrive as values now instead.
+    """
+
+    chain: tuple[str, ...] = DEFAULT_VENDOR_ORDER
+    model: str = ""                    # global override, all vendors
+    models: Mapping[str, str] = field(default_factory=dict)   # per vendor
+    api_keys: Mapping[str, str] = field(default_factory=dict)  # vendor -> key
 
 # Telegram media mime -> filename Whisper backends accept (they sniff by
 # extension).
@@ -113,31 +133,23 @@ class CascadingTranscriber:
         ) from last_exc
 
 
-def build_transcriber_from_env(
-    env: Mapping[str, str] = os.environ,
+def build_transcriber(
+    config: Optional[TranscriptionConfig] = None,
 ) -> Optional[CascadingTranscriber]:
-    """None when no configured vendor has its key set — the platform then
-    keeps its polite voice-notes-unsupported reply."""
-    order = [
-        v.strip().lower()
-        for v in (env.get("TRANSCRIPTION_LLM") or DEFAULT_VENDOR_ORDER).split(",")
-        if v.strip()
-    ]
+    """None when no configured vendor has a key — the platform then keeps
+    its polite voice-notes-unsupported reply."""
+    config = config or TranscriptionConfig()
     chain: list[AudioTranscriber] = []
-    for vendor in order:
-        preset = _VENDOR_PRESETS.get(vendor)
+    for vendor in config.chain or DEFAULT_VENDOR_ORDER:
+        preset = VENDOR_PRESETS.get(vendor)
         if preset is None:
             log.warning("unknown transcription vendor %r; skipping", vendor)
             continue
-        key = env.get(preset["key_env"])
+        key = config.api_keys.get(vendor)
         if not key:
             continue
-        model = (
-            env.get("TRANSCRIPTION_MODEL")
-            or env.get(preset["model_env"])
-            or preset["model"]
-        )
-        chain.append(AudioTranscriber(vendor, preset["url"], key, model))
+        model = config.model or config.models.get(vendor) or preset.model
+        chain.append(AudioTranscriber(vendor, preset.url, key, model))
     if not chain:
         return None
     t = CascadingTranscriber(chain)

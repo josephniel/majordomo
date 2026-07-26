@@ -87,8 +87,9 @@ src/
   domain/      the agent's own faculties: memory, schedule, skills, code,
                files, documents, delegate
   kernel/      the turn pipeline + command/recovery/proactive/ingestion
-  runtime/     Persona, RuntimeSettings (the only env reader), the
-               composition root, and the entry point (`python -m runtime`)
+  runtime/     config (the declared configuration surface), Persona,
+               RuntimeSettings (the only thing that reads config), doctor,
+               the composition root, entry point (`python -m runtime`)
   evals/       vendor tool-calling replay + recall-quality harnesses
 ```
 
@@ -117,23 +118,55 @@ one that can't call functions will do very little.
 git clone https://github.com/josephniel/majordomo && cd majordomo
 python3.13 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
-# 1. Create your instance from the template
+# 1. The machine's configuration + the secrets every persona shares
+cp config.yaml.example                       config.yaml
+cp instances/_template/_shared.env.example   instances/_shared.env
+# put your database URL and at least one LLM key in _shared.env
+
+# 2. Create an instance
 mkdir -p instances/assistant
-cp instances/_template/.env.example        instances/assistant/.env
+cp instances/_template/.env.example          instances/assistant/.env
+cp instances/_template/config.yaml.example   instances/assistant/config.yaml
 cp instances/_template/platform.yaml.example instances/assistant/platform.yaml
-# fill in TELEGRAM_TOKEN + one LLM key in .env; put YOUR Telegram user id
-# in platform.yaml allowed_user_ids (the bot refuses to run open)
+# .env       — this bot's TELEGRAM_TOKEN
+# config.yaml — which vendors it uses, in what order
+# platform.yaml — YOUR Telegram user id in allowed_user_ids
+#                 (the bot refuses to run open)
 
-# 2. Write a persona.yaml (see instances/_template/ and ARCHITECTURE-NOTES)
+# 3. Write a persona.yaml — its name, prompt, and which faculties it may use
+#    (see instances/_template/ and ARCHITECTURE-NOTES)
 
-# 3. Start Postgres and run
+# 4. Check the wiring before you start anything
+./manage doctor assistant
+
+# 5. Start Postgres and run
 ./manage db-up
 ./manage up assistant
 ```
 
-`./manage help` lists everything else: connector auth flows (`add`/`auth`),
-memory/schedule/skills/document introspection, retention (`prune`), the
-vendor canary, and the eval harness.
+Every template ships fully commented out, so copying them changes nothing
+until you uncomment something.
+
+**Where a setting goes** is decided by SCOPE, not by kind — is it true of the
+machine, or of this assistant?
+
+| | |
+|---|---|
+| `config.yaml` | the machine: database, local retrieval models, retention, timezone |
+| `instances/<id>/config.yaml` | this assistant: vendor chain, per-role models |
+| `instances/<id>/persona.yaml` | identity: name, prompt, faculties |
+| `instances/_shared.env` | secrets every persona uses |
+| `instances/<id>/.env` | secrets unique to one persona |
+
+Everything also still works as a plain environment variable — that layer is a
+supported fallback, not a deprecation, so an `.env` from before the split
+keeps running unchanged. `./manage doctor` lists entries a config file has
+since superseded. See
+[ARCHITECTURE-NOTES](docs/ARCHITECTURE-NOTES.md#configuration-scope-not-kind).
+
+`./manage help` lists everything else: the configuration audit (`doctor`),
+connector auth flows (`add`/`auth`), memory/schedule/skills/document
+introspection, retention (`prune`), the vendor canary, and the eval harness.
 
 ## Deploying
 

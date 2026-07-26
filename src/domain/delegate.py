@@ -30,7 +30,33 @@ log = logging.getLogger(__name__)
 DELEGATE_TIMEOUT_SECONDS = 300.0
 MAX_CONCURRENT_DELEGATES = 2
 
-_delegation_depth: ContextVar[int] = ContextVar("delegation_depth", default=0)
+
+class DelegationDepth:
+    """How many delegations deep the current async task is.
+
+    Deliberately NOT an instance attribute, and the one piece of state here
+    that legitimately isn't: the sub-agent gets its own Delegator, so a
+    per-instance counter would always read zero and nesting would never be
+    caught. It is also not process-global — a ContextVar is scoped to the
+    async task, so two chats delegating at once cannot see each other's
+    depth, which an ordinary module-level int would get wrong.
+
+    Wrapped in a class so the mutation surface is three named methods rather
+    than a bare module variable anyone can `.set()`.
+    """
+
+    def __init__(self, name: str = "delegation_depth") -> None:
+        self._var: ContextVar[int] = ContextVar(name, default=0)
+
+    def current(self) -> int:
+        return self._var.get()
+
+    def enter(self):
+        """Descend one level. Returns a token to pass back to `exit`."""
+        return self._var.set(self._var.get() + 1)
+
+    def exit(self, token) -> None:
+        self._var.reset(token)
 
 
 class Delegator(Faculty):
@@ -43,10 +69,14 @@ class Delegator(Faculty):
         self,
         subagent_factory: Callable[..., Any],  # factory(chat_id) -> Agent
         timeout: float = DELEGATE_TIMEOUT_SECONDS,
+        depth: Optional[DelegationDepth] = None,
     ) -> None:
         self._factory = subagent_factory
         self._timeout = timeout
         self._sem = asyncio.Semaphore(MAX_CONCURRENT_DELEGATES)
+        # Shared with the sub-agent's own Delegator through the async
+        # context, not through this object — see DelegationDepth.
+        self._depth = depth or DelegationDepth()
 
     def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
         return self.STATUS.get(local)
@@ -70,13 +100,13 @@ class Delegator(Faculty):
             task = str(args.get("task") or "").strip()
             if not task:
                 return ToolResult.error("delegate_task needs a non-empty `task`")
-            if _delegation_depth.get() >= 1:
+            if outer._depth.current() >= 1:
                 return ToolResult.error(
                     "delegation cannot nest — you ARE the delegate; "
                     "do the work directly with your own tools"
                 )
             chat_id = ctx.chat_id or 0
-            depth_token = _delegation_depth.set(_delegation_depth.get() + 1)
+            depth_token = outer._depth.enter()
             try:
                 async with outer._sem:
                     agent = outer._factory(chat_id=chat_id)
@@ -100,7 +130,7 @@ class Delegator(Faculty):
                 log.exception("delegated task failed")
                 return ToolResult.error(f"the delegated task failed: {e}")
             finally:
-                _delegation_depth.reset(depth_token)
+                outer._depth.exit(depth_token)
             return ToolResult.ok(reply)
 
         return [delegate_task_tool]

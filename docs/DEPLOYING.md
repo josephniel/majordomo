@@ -77,17 +77,46 @@ A user service with `ExecStart=<project>/manage up <persona>`,
 `Restart=always`, `RestartSec=15` is the equivalent shape. Same rule: one
 unit per bot token.
 
-## Environment
+## Configuration
 
-Every variable is enumerated with defaults in
-`instances/_template/.env.example` — copy it to `instances/<id>/.env`.
+Settings are split by SCOPE — is this true of the machine, or of this
+assistant? Full rationale in
+[ARCHITECTURE-NOTES](ARCHITECTURE-NOTES.md#configuration-scope-not-kind).
+
+| file | holds | template |
+|---|---|---|
+| `config.yaml` | the machine: database, retrieval models, retention, timezone | `config.yaml.example` |
+| `instances/_shared.env` | secrets every persona uses | `instances/_template/_shared.env.example` |
+| `instances/<id>/config.yaml` | this assistant: vendor chain, per-role models | `instances/_template/config.yaml.example` |
+| `instances/<id>/.env` | secrets unique to one persona | `instances/_template/.env.example` |
+
+Both `.example` files are generated from the settings table, so they cannot
+drift from what the code reads. Everything also works as a plain environment
+variable — that is a supported fallback layer, so a service manager can
+supply values directly and a pre-split `.env` keeps working.
+
+Before restarting anything, run:
+
+```sh
+./manage doctor <persona>            # audit one
+./manage doctor --all                # audit every persona
+./manage doctor <persona> --resolved # every setting, its value, its source
+```
+
+It is offline — files only, no database or network — so it is safe on a live
+box, and it is the right tool when something is too misconfigured to start.
+`--resolved` is also the migration check: dump it before and after moving
+values between files and diff. Identical output means the move changed
+nothing.
 
 If `persona.yaml` enables webhooks, the listener binds loopback on port
-18790 by default and refuses to start without `WEBHOOK_TOKEN`.
+18790 by default and refuses to start without a webhook token
+(`triggers.webhooks.token`, or `WEBHOOK_TOKEN`).
 
 ## Running against a local model
 
-Ollama is a supported backend (`OLLAMA_ENABLED=1`), and two of its defaults
+Ollama is a supported backend (`llm.vendors.ollama.enabled: true` in the
+persona's `config.yaml`), and two of its defaults
 will make this agent look broken rather than fail. Both are properties of the
 Ollama server, so majordomo cannot fix either from code.
 
@@ -138,9 +167,11 @@ WARNING in code so the bot token never appears in a polled-URL log line.
 Migrations are idempotent and applied on connect, so a deploy is just a
 restart. Two exceptions worth knowing:
 
-- Changing `EMBEDDING_MODEL` widens the vector column and clears stale
+- Changing `embedding.model` widens the vector column and clears stale
   vectors. Recall degrades to FTS + trigram until you run
-  `./manage cli <persona> -- memory reembed`.
+  `./manage cli <persona> -- memory reembed`. It is host-scoped for exactly
+  this reason: personas sharing a database must agree, and startup refuses
+  the combination that would let one wipe the other's vectors.
 - The recall eval does **not** migrate anything (see
   [ARCHITECTURE-NOTES](ARCHITECTURE-NOTES.md#test-database)) — pass
   `--migrate` only against a scratch database you own.
