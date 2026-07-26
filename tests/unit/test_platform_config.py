@@ -1,7 +1,7 @@
 """platforms.config — platform-keyed platform.yaml parsing."""
 import pytest
 
-from platforms.config import PlatformConfig
+from adapters.chat.config import PlatformConfig
 
 
 def _write(tmp_path, content):

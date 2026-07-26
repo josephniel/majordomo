@@ -1,9 +1,9 @@
 """storage.docs + capabilities.documents — live Postgres, real embeddings."""
 import pytest
 
-from capabilities.documents import DocumentLibrary
-from core import ToolContext
-from storage.docs import DocumentStore
+from domain.documents import DocumentLibrary
+from ports import ToolContext
+from adapters.store.docs import DocumentStore
 from tests.conftest import TEST_DSN
 
 

@@ -1,7 +1,7 @@
 """chat.formatting — markdown stripping, chunking, cancel-intent."""
 import pytest
 
-from chat.formatting import _md_to_plain, chunk_for_platform, is_cancel_intent
+from kernel.formatting import _md_to_plain, chunk_for_platform, is_cancel_intent
 
 
 class TestMdToPlain:

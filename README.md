@@ -9,8 +9,9 @@ hard-won premise: **free-tier LLMs are unreliable tool-callers, so the
 framework — not the model — must guarantee correctness.**
 
 The model chain is configurable and vendor-neutral (Gemini, Claude, Groq,
-OpenAI, DeepSeek — in any failover order). Everything the assistant *does*
-is verified, gated, or recovered by the runtime.
+OpenAI, DeepSeek, or local models via Ollama — in any failover order).
+Everything the assistant *does* is verified, gated, or recovered by the
+runtime.
 
 ## What it does
 
@@ -30,9 +31,14 @@ is verified, gated, or recovered by the runtime.
   Approve/Deny keyboard in Telegram; 120s timeout = deny; every decision
   lands in a durable audit table.
 - **Memory** — a two-tier Postgres second brain (atomic facts + curated
-  narratives) with hybrid FTS/trigram/vector recall (local multilingual
-  embeddings), idle-time reflection that extracts facts from conversation,
-  and auto-RAG injection per turn.
+  narratives) with hybrid recall: FTS + trigram + pgvector arms fused by
+  weighted Reciprocal Rank Fusion, then reranked by a local cross-encoder for
+  a calibrated relevance score. Plus idle-time reflection that extracts facts
+  from conversation, and auto-RAG injection per turn. Retrieval quality is
+  measured, not asserted — `./manage eval-recall` reports recall@k, MRR, and
+  false-injection rate, and CI holds the floor (currently 100% recall@4,
+  0.975 MRR, 0% false-inject). All embedding and reranking runs locally; no
+  vector ever leaves the host.
 - **Documents** — text/PDF attachments are auto-ingested into a pgvector
   chunk store; `doc_search` / `doc_read` give the model RAG over your files.
 - **Skills** — markdown instruction notes (keyword-attached, always-on, or
@@ -58,28 +64,24 @@ is verified, gated, or recovered by the runtime.
 
 ## Architecture
 
-Hexagonal-ish; the dependency rule is: the application layer (`chat/`)
+Hexagonal-ish; the dependency rule is: the application layer (`kernel/`)
 depends on ports and protocols, never on concrete implementations; only the
 composition root touches concretes and the environment.
 
 ```
 src/
-  platforms/     ChatPlatform port + adapters (Telegram; voice transcription)
-  agents/        Agent port + vendor adapters, CascadingAgent failover,
-                 Postgres conversation mirror
-  connectors/    ToolProvider contract → Faculty (the agent's own) and
-                 Connector (external adapters); capability protocols;
-                 the write-approval gate
-  capabilities/  Faculties: memory, schedule, skills, code, files,
-                 documents, delegate
-  services/      Runtime services on their own triggers: webhooks,
-                 mail watch, retention
-  chat/          The turn pipeline + command/recovery/proactive/ingestion
-                 context modules
-  personas/      Persona (identity), RuntimeSettings (the only env reader),
-                 PersonaRuntime (composition root)
-  storage/       Postgres stores (memory, documents) + local embeddings
-  evals/         Vendor tool-calling replay harness
+  ports/       the contracts leaf — Agent, ChatPlatform, ToolProvider,
+               ToolSpec/@tool, ToolContext. Stdlib only; no vendor SDK.
+  adapters/    chat/ (telegram) · model/ (LLM vendors + failover) ·
+               tools/ (gmail, calendar, clickup, ...) · trigger/ (webhooks,
+               watches, retention) · store/ (Postgres, embeddings, rerank) ·
+               comms/ (inter-bot bus)
+  domain/      the agent's own faculties: memory, schedule, skills, code,
+               files, documents, delegate
+  kernel/      the turn pipeline + command/recovery/proactive/ingestion
+  runtime/     Persona, RuntimeSettings (the only env reader), the
+               composition root, and the entry point (`python -m runtime`)
+  evals/       vendor tool-calling replay + recall-quality harnesses
 ```
 
 Design decisions and their reasoning live in
@@ -94,6 +96,13 @@ any of `GEMINI_API_KEY` / `GROQ_API_KEY` / `OPENAI_API_KEY` /
 Claude Code subscription login (`CLAUDE_ENABLED=1`, no key needed — this
 reads `~/.claude`, so it only works when the bot runs on the host as your
 user, which is also why the deploy docs use a user-level service).
+
+No API key at all? Run a local model with [Ollama](https://ollama.com)
+(`ollama pull gemma4:12b`) and set `OLLAMA_ENABLED=1`. It's keyless, so —
+like Claude — it must be opted into explicitly; `OLLAMA_MODEL` (default
+`gemma4:12b`) and `OLLAMA_BASE_URL` (default `http://localhost:11434/v1`)
+tune it. Pick a model with tool support: this framework is tool-heavy, and
+one that can't call functions will do very little.
 
 ```sh
 git clone https://github.com/josephniel/majordomo && cd majordomo

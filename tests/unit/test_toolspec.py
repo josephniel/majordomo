@@ -1,6 +1,6 @@
 """connectors.base — ToolSpec schema normalization + @tool decorator."""
-from connectors.base import Connector, ToolSpec, tool
-from core import ToolContext, ToolResult
+from adapters.tools.base import Connector, ToolSpec, tool
+from ports import ToolContext, ToolResult
 
 
 class TestJsonSchema:

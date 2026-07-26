@@ -2,16 +2,17 @@
 context assembly, attachment handling. No network."""
 import pytest
 
-from agents.base import Attachment
-from agents.chat_completions import (
+from adapters.model.base import Attachment
+from adapters.model.chat_completions import (
     DeepSeekAgent,
+    OllamaAgent,
     OpenAIAgent,
     _extract_text_from_tool_result,
     _fit_tool_name,
     _is_usage_limit,
     _spec_to_openai_function,
 )
-from connectors.base import ToolSpec
+from adapters.tools.base import ToolSpec
 
 
 def make_agent(cls=OpenAIAgent, **kw):
@@ -151,6 +152,93 @@ class TestAssembleContext:
         assert msgs and msgs[0]["content"] == huge
 
 
+class TestHistoryWindowStability:
+    """The replayed prefix must stay byte-identical between trims. A window
+    that evicts one row per turn changes the first cached token every turn,
+    which forces a full re-prefill on a local model (~53s vs ~5s observed)."""
+
+    @staticmethod
+    def _row(i, role, content):
+        return {"id": i, "role": role, "content": content, "metadata": {}}
+
+    def _convo(self, n, size):
+        return [self._row(i, "user" if i % 2 else "assistant", "x" * size)
+                for i in range(1, n + 1)]
+
+    def test_window_does_not_shift_on_every_turn_once_full(self):
+        agent = make_agent()
+        size = agent.MAX_HISTORY_CHARS // 10
+        rows = self._convo(14, size)          # overflows, forcing one trim
+        first = agent._assemble_context(rows)[0]["content"]
+        shifted = 0
+        for i in range(15, 25):               # ten more turns
+            rows.append(self._row(i, "user", "x" * size))
+            head = agent._assemble_context(rows)[0]["content"]
+            if head != first:
+                shifted += 1
+                first = head
+        assert shifted <= 1, (
+            f"window head moved {shifted}x in 10 turns — each move is a full "
+            f"re-prefill; hysteresis should make this rare"
+        )
+
+    def test_trim_eventually_happens_so_the_window_stays_bounded(self):
+        agent = make_agent()
+        size = agent.MAX_HISTORY_CHARS // 10
+        rows = self._convo(60, size)
+        msgs = agent._assemble_context(rows)
+        total = sum(len(m["content"]) for m in msgs)
+        assert total <= agent.MAX_HISTORY_CHARS, "window must stay bounded"
+
+    def test_floor_only_moves_forward(self):
+        agent = make_agent()
+        size = agent.MAX_HISTORY_CHARS // 5
+        rows = self._convo(20, size)
+        agent._assemble_context(rows)
+        high = agent._history_floor_id
+        agent._assemble_context(rows[:5])     # a short/failed fetch
+        assert agent._history_floor_id >= high, "floor must never rewind"
+
+    def test_newest_turn_survives_even_when_it_alone_exceeds_the_budget(self):
+        agent = make_agent()
+        rows = self._convo(6, agent.MAX_HISTORY_CHARS // 4)
+        rows.append(self._row(99, "user", "y" * (agent.MAX_HISTORY_CHARS * 2)))
+        msgs = agent._assemble_context(rows)
+        assert any(m["content"].startswith("yyy") for m in msgs)
+
+
+class TestPrewarm:
+    """Prewarm moves the one-off cold prefill off the hot path. It must send
+    the real prefix (system prompt + tools) but generate nothing."""
+
+    def _agent_with_client(self, captured, fail=False):
+        class _Completions:
+            async def create(self, **kw):
+                captured.update(kw)
+                if fail:
+                    raise RuntimeError("engine busy")
+                return type("R", (), {"choices": [], "usage": None})()
+
+        agent = make_agent()
+        agent._composer = type("C", (), {"build": staticmethod(lambda: "SYSTEM")})()
+        agent._client = type("Client", (), {
+            "chat": type("Chat", (), {"completions": _Completions()})()
+        })()
+        return agent
+
+    async def test_sends_the_system_prefix_but_caps_generation(self):
+        captured = {}
+        agent = self._agent_with_client(captured)
+        assert await agent.prewarm() is True
+        assert captured["max_tokens"] == 1, "must not generate a real reply"
+        assert captured["messages"][0] == {"role": "system", "content": "SYSTEM"}
+
+    async def test_failure_is_swallowed_and_reported(self):
+        """Prewarm is an optimisation — a broken engine must not break boot."""
+        agent = self._agent_with_client({}, fail=True)
+        assert await agent.prewarm() is False
+
+
 class TestApplyAttachments:
     def _img(self):
         return Attachment(media_type="image/jpeg", data=b"\xff\xd8fake")
@@ -214,6 +302,67 @@ class TestConstruction:
         assert make_agent().model_name == OpenAIAgent.DEFAULT_MODEL
         assert make_agent(model="custom-model").model_name == "custom-model"
 
+    def test_keyless_backend_constructs_without_api_key(self):
+        """Ollama serves local models with no credential at all — the
+        key check must not reject it the way it does for hosted vendors."""
+        agent = OllamaAgent(context_builder=None, history=None, persona_id="p",
+                            chat_id=1)
+        assert agent.model_name == "gemma4:12b"
+
+    async def test_keyless_client_gets_placeholder_key_and_long_timeout(
+        self, monkeypatch
+    ):
+        """The OpenAI SDK rejects an empty api_key, and local generation
+        needs far more than the hosted-vendor 30s cap."""
+        captured = {}
+
+        class FakeAsyncOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        import openai
+        monkeypatch.setattr(openai, "AsyncOpenAI", FakeAsyncOpenAI)
+        agent = OllamaAgent(context_builder=None, history=None, persona_id="p",
+                            chat_id=1)
+        await agent.start()
+        assert captured["api_key"]  # non-empty placeholder
+        assert captured["base_url"] == "http://localhost:11434/v1"
+        assert captured["timeout"] == OllamaAgent.REQUEST_TIMEOUT > 30.0
+
+    async def test_empty_model_output_returns_empty_string_not_a_placeholder(self):
+        """Regression: the agent used to substitute a human-readable
+        placeholder for an empty reply. That string is NOT empty, so
+        CascadingAgent's empty-reply failover never fired and a dead turn was
+        relayed to the user as a success while healthy vendors sat idle.
+        The agent must report emptiness truthfully."""
+        class _Msg:
+            content = ""
+            tool_calls = None
+            def model_dump(self, **_kw):
+                return {"role": "assistant", "content": ""}
+
+        class _Resp:
+            choices = [type("C", (), {"message": _Msg()})()]
+            usage = None
+
+        class _Completions:
+            async def create(self, **_kw):
+                return _Resp()
+
+        agent = make_agent()
+        agent._client = type("Client", (), {
+            "chat": type("Chat", (), {"completions": _Completions()})()
+        })()
+        out = await agent._run_tool_loop(
+            [{"role": "user", "content": "hi"}], on_tool_use=None, tools=None,
+        )
+        assert out == "", f"expected empty string, got {out!r}"
+
+    def test_explicit_base_url_overrides_default(self):
+        agent = OllamaAgent(context_builder=None, history=None, persona_id="p",
+                            chat_id=1, base_url="http://box.lan:11434/v1")
+        assert agent._base_url == "http://box.lan:11434/v1"
+
     def test_session_id_is_none(self):
         assert make_agent().session_id is None
 
@@ -252,7 +401,7 @@ class TestSendContract:
             return SimpleNamespace(completions=_Completions())
 
     async def _send(self, history, text, current_row_id=None):
-        from agents.chat_completions import OpenAIAgent
+        from adapters.model.chat_completions import OpenAIAgent
         agent = OpenAIAgent(
             context_builder=self._Composer(), history=history,
             persona_id="p", chat_id=1, connectors=[], persona=None,
@@ -264,7 +413,7 @@ class TestSendContract:
         return client.captured["messages"]
 
     async def test_text_is_the_wire_message_memory_block_included(self):
-        from agents.history import EphemeralConversationHistory
+        from adapters.model.history import EphemeralConversationHistory
         history = EphemeralConversationHistory()
         row_id = await history.append(
             persona_id="p", chat_id=1, role="user", content="raw user text",
@@ -277,7 +426,7 @@ class TestSendContract:
         assert user_msgs == [{"role": "user", "content": composed}]
 
     async def test_history_rows_still_replayed(self):
-        from agents.history import EphemeralConversationHistory
+        from adapters.model.history import EphemeralConversationHistory
         history = EphemeralConversationHistory()
         await history.append(persona_id="p", chat_id=1, role="user", content="earlier q")
         await history.append(persona_id="p", chat_id=1, role="assistant", content="earlier a")
@@ -289,14 +438,14 @@ class TestSendContract:
 
     async def test_direct_caller_without_mirror_still_works(self):
         """Eval-harness style: nobody mirrored anything — text still lands."""
-        from agents.history import EphemeralConversationHistory
+        from adapters.model.history import EphemeralConversationHistory
         messages = await self._send(EphemeralConversationHistory(), "hello")
         assert messages[-1] == {"role": "user", "content": "hello"}
 
     async def test_failover_after_tool_calls_does_not_duplicate(self):
         """Mid-turn failover: mirror ends with tool-call system rows. The
         old last-row heuristic double-appended here."""
-        from agents.history import EphemeralConversationHistory
+        from adapters.model.history import EphemeralConversationHistory
         history = EphemeralConversationHistory()
         row_id = await history.append(persona_id="p", chat_id=1, role="user", content="do it")
         await history.append(persona_id="p", chat_id=1, role="system",
@@ -313,7 +462,7 @@ class TestMaxTokens:
             return "SYSTEM"
 
     async def _captured_kwargs(self, **agent_kw):
-        from agents.history import EphemeralConversationHistory
+        from adapters.model.history import EphemeralConversationHistory
         agent = OpenAIAgent(
             context_builder=self._Composer(),
             history=EphemeralConversationHistory(),
@@ -336,6 +485,6 @@ class TestMaxTokens:
 
 class TestExtractToolResultCanonical:
     def test_tool_result_passthrough(self):
-        from core import ToolResult
+        from ports import ToolResult
         assert _extract_text_from_tool_result(ToolResult.ok("hi")) == "hi"
         assert _extract_text_from_tool_result(ToolResult.ok("")) == "(empty)"

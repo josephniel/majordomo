@@ -13,14 +13,21 @@ from typing import Any, Optional
 
 import pytest
 
-from agents.base import Agent, UsageLimitError
-from agents.history import ConversationHistory
-from connectors.base import Summarizer
-from storage.db import MemoryDatabase
+from adapters.model.base import Agent, UsageLimitError
+from adapters.model.history import ConversationHistory
+from adapters.tools.base import Summarizer
+from adapters.store.db import MemoryDatabase
 
+# A SEPARATE database from the one a running assistant uses. Tests call
+# init_schema(), which applies migrations — including destructive ones like
+# the embedding-dimension rebuild — so pointing them at the live database
+# means a test run can clear a real persona's vectors out from under a live
+# process. Create it once with:
+#     docker exec telegram-bot-postgres \
+#         psql -U tc -d postgres -c 'CREATE DATABASE telegram_claude_test OWNER tc;'
 TEST_DSN = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgres://tc:tc_local_dev@127.0.0.1:5433/telegram_claude",
+    "postgres://tc:tc_local_dev@127.0.0.1:5433/telegram_claude_test",
 )
 
 CHAT_ID = 424242
@@ -86,7 +93,9 @@ class FakeAgent(Agent):
         self.name = name
         self.fail = fail
         self.USES_SERVER_SIDE_HISTORY = server_side
-        self.reply = reply or f"reply from {name}"
+        # `is None`, not `or`: reply="" is a MEANINGFUL value (the empty-reply
+        # failover path) and must not fall back to the default text.
+        self.reply = f"reply from {name}" if reply is None else reply
         self.fire_tool = fire_tool
         self.sent: list[str] = []
         self.started = 0

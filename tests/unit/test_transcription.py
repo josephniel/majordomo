@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from platforms.transcription import (
+from adapters.chat.transcription import (
     AudioTranscriber,
     CascadingTranscriber,
     build_transcriber_from_env,
@@ -136,7 +136,7 @@ class FakeTranscriber:
 
 class TestTelegramVoicePath:
     def _platform(self, transcriber):
-        from platforms.telegram import TelegramPlatform
+        from adapters.chat.telegram import TelegramPlatform
         return TelegramPlatform(
             token="x", allowed_user_ids={7}, persona_id="t",
             transcriber=transcriber,

@@ -30,3 +30,28 @@
 - name: taglish_reminder
   prompt: "Paalala mo ako bukas ng 9am na tawagan si mama."
   expect_tool: schedule_once
+
+# Regression, 2026-07-26. A local model narrated "Searching your Gmail now..."
+# and never called the tool, on 4 of 5 live turns — while scoring 7/7 here,
+# because every case above is single-prompt. The failure needs the user to
+# have ALREADY answered the clarifying question: a weak model re-asks it
+# instead of acting. `history` exists for exactly this.
+- name: acts_after_clarification_answered
+  history:
+    - role: user
+      content: "Can you read and summarize my emails from last week"
+    - role: assistant
+      content: "I can certainly check! Do you want your work mailbox or your personal one?"
+  prompt: "Both, go ahead"
+  expect_tool: search_emails
+
+# Same trap, one step shorter: a bare confirmation must be acted on, not
+# bounced back as another question.
+- name: acts_on_bare_confirmation
+  history:
+    - role: user
+      content: "Do I have anything on my calendar I should know about?"
+    - role: assistant
+      content: "Would you like me to check your calendar for this week?"
+  prompt: "Yes"
+  expect_tool: calendar

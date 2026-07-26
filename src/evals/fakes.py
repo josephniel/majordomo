@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from capabilities.schedule import TaskScheduler
-from core import Connector, ToolContext, ToolResult, tool
+from domain.schedule import TaskScheduler
+from ports import Connector, ToolContext, ToolResult, tool
 
 
 class RecordingConnector(Connector):
@@ -60,6 +60,65 @@ class FakeMemory(RecordingConnector):
                 {"query": str},
                 "(no matching memories)",
             ),
+        ]
+
+
+class FakeGmail(RecordingConnector):
+    """Two mailboxes, like the real deployment — which is what makes the
+    "which mailbox?" clarification loop reproducible."""
+    name = "gmail"
+
+    def system_prompt_section(self) -> str:
+        return (
+            "== Email ==\n\nThe user has TWO mailboxes: work and personal. "
+            "When they ask about email, search with the appropriate tool. If "
+            "they have already told you which mailbox (or said both/either), "
+            "do NOT ask again — call the tool."
+        )
+
+    def builtin_tools(self) -> list:
+        return [
+            self._recording_tool(
+                f"gmail_{box}__search_emails",
+                f"Search the user's {box.upper()} Gmail mailbox. Args: query "
+                f"(Gmail search syntax, e.g. 'after:7d is:unread').",
+                {"query": str},
+                "(no matching emails)",
+            )
+            for box in ("work", "personal")
+        ]
+
+
+class FakeBulkTools(RecordingConnector):
+    """Filler tools that exist purely to make the eval's PROMPT THE SIZE IT IS
+    IN PRODUCTION.
+
+    This is not padding for its own sake. gemma4-e4b scored 7/7 here while
+    failing live, because the eval prompt was ~1.5k tokens and 5 tools while a
+    real turn is ~15.5k tokens and ~60 tools. Tool-selection accuracy degrades
+    with the size of the haystack, so an eval that tests a small one certifies
+    a model that cannot do the job. Mirrors production's provider breadth
+    (calendar, tasks, expenses, documents, code, files, …).
+    """
+    name = "bulk"
+
+    _AREAS = ("calendar", "tasks", "expenses", "documents", "code", "files",
+              "contacts", "notes", "weather", "search", "budget", "splitwise")
+
+    def system_prompt_section(self) -> str:
+        return ""
+
+    def builtin_tools(self) -> list:
+        return [
+            self._recording_tool(
+                f"{area}__{verb}_{area}_item",
+                f"{verb.capitalize()} an item in the user's {area}. Args: "
+                f"target (what to act on), detail (extra context).",
+                {"target": str, "detail": str},
+                f"({area} {verb} done)",
+            )
+            for area in self._AREAS
+            for verb in ("list", "get", "update", "delete")
         ]
 
 

@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from comms.status_report import HEARTBEAT_TTL_SECONDS, StatusReporter
+from adapters.comms.status_report import HEARTBEAT_TTL_SECONDS, StatusReporter
 
 
 @pytest.fixture

@@ -1,8 +1,8 @@
 """Retention pruning + approval audit — live Postgres."""
 import pytest
 
-from services.retention import RetentionJob, RetentionPolicy
-from storage.docs import DocumentStore
+from adapters.trigger.retention import RetentionJob, RetentionPolicy
+from adapters.store.docs import DocumentStore
 from tests.conftest import TEST_DSN
 
 

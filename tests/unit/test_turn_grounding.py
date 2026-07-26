@@ -15,8 +15,8 @@ Four defenses, all keyed off "short reply answering an open question":
 """
 import pytest
 
-from agents.fallback import CascadingAgent
-from agents.history import EphemeralConversationHistory
+from adapters.model.fallback import CascadingAgent
+from adapters.model.history import EphemeralConversationHistory
 
 from tests.conftest import FakeAgent, FakeSummarizer
 

@@ -92,6 +92,8 @@ manage — majordomo stack
     cli [persona] -- <args...>       raw passthrough to python cli.py
     test [pytest-args...]            run the test suite (unit + integration)
     eval [--vendor groq,gemini]      replay tool-calling evals against live vendors
+    eval-recall [-v] [--min-recall]  measure memory recall quality (recall@k, MRR,
+                                     false-inject rate) against the test Postgres
     help                             this message
 
   Examples:
@@ -115,13 +117,13 @@ cmd_up() {
     done
     local persona; persona="$(persona_or_default "${1:-}")"
     echo "[manage] postgres ready; starting persona=$persona"
-    exec "$VENV_PY" -m chat --persona "$persona"
+    exec "$VENV_PY" -m runtime --persona "$persona"
 }
 
 cmd_chat() {
     require_venv
     local persona; persona="$(persona_or_default "${1:-}")"
-    exec "$VENV_PY" -m chat --persona "$persona"
+    exec "$VENV_PY" -m runtime --persona "$persona"
 }
 
 cmd_list_personas() {
@@ -283,6 +285,7 @@ main() {
         cli)                cmd_cli "$@" ;;
         test)               require_venv; exec "$VENV_PY" -m pytest tests "$@" ;;
         eval)               require_venv; exec "$VENV_PY" -m evals "$@" ;;
+        eval-recall)        require_venv; exec "$VENV_PY" -m evals.recall "$@" ;;
         *)
             echo "unknown command: $cmd" >&2
             echo "" >&2

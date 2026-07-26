@@ -1,7 +1,7 @@
 """evals — case loading, judging, and fake-connector recording."""
 import pytest
 
-from core import ToolContext
+from ports import ToolContext
 from evals.fakes import FakeMemory, FakeSchedule
 from evals.runner import EvalCase, judge, load_cases
 

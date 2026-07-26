@@ -4,7 +4,7 @@ Llama-3.3-70B on Groq intermittently emits `<function=name {json}>` as text
 instead of proper tool_calls; Groq 400s with `tool_use_failed`. We parse the
 failed generation and run the tools anyway.
 """
-from agents.chat_completions import (
+from adapters.model.chat_completions import (
     _parse_llama_tool_calls,
     _recover_failed_tool_calls,
 )

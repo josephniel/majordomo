@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from connectors.base import Connector, tool
-from personas.persona import Persona
+from adapters.tools.base import Connector, tool
+from runtime.persona import Persona
 
 
 @tool("read_thing", "reads", {})

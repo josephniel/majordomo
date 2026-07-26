@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
-from agents.fallback import CascadingAgent
-from agents.health import VendorHealthBoard
-from agents.base import UsageLimitError
+from adapters.model.fallback import CascadingAgent
+from adapters.model.health import VendorHealthBoard
+from adapters.model.base import UsageLimitError
 from tests.conftest import CHAT_ID, FakeAgent, FakeSummarizer
 
 pytestmark = pytest.mark.integration
@@ -82,6 +82,42 @@ class TestFailover:
                             [("claude", FakeAgent("claude", fail="broken")),
                              ("gemini", FakeAgent("gemini"))])
         assert await casc.send("x") == "reply from gemini"
+
+    async def test_empty_reply_rotates(self, history, persona_id):
+        """Production regression: a vendor that returns nothing used to count
+        as SUCCESS — user got a blank turn and healthy vendors went unused."""
+        board = VendorHealthBoard()
+        casc = make_cascade(history, persona_id,
+                            [("ollama", FakeAgent("ollama", reply="")),
+                             ("gemini", FakeAgent("gemini"))], board)
+        assert await casc.send("x") == "reply from gemini"
+        assert casc.active_vendor == "gemini"
+        assert not board.available("ollama"), "empty reply must mark the vendor unhealthy"
+
+    async def test_whitespace_only_reply_rotates(self, history, persona_id):
+        casc = make_cascade(history, persona_id,
+                            [("ollama", FakeAgent("ollama", reply="   \n\t ")),
+                             ("gemini", FakeAgent("gemini"))])
+        assert await casc.send("x") == "reply from gemini"
+
+    async def test_silent_sentinel_is_not_treated_as_empty(self, history, persona_id):
+        """Deliberate silence is the literal <silent> string and must pass
+        through untouched — rotating on it would break scheduled/relay turns."""
+        gemini = FakeAgent("gemini")
+        casc = make_cascade(history, persona_id,
+                            [("ollama", FakeAgent("ollama", reply="<silent>")),
+                             ("gemini", gemini)])
+        assert await casc.send("x") == "<silent>"
+        assert gemini.sent == [], "must not fail over on an intentional silence"
+
+    async def test_all_vendors_empty_raises_rather_than_returning_blank(
+        self, history, persona_id
+    ):
+        casc = make_cascade(history, persona_id,
+                            [("a", FakeAgent("a", reply="")),
+                             ("b", FakeAgent("b", reply=""))])
+        with pytest.raises(UsageLimitError):
+            await casc.send("x")
 
     async def test_cooling_vendor_skipped_without_calling_it(self, history, persona_id):
         board = VendorHealthBoard()

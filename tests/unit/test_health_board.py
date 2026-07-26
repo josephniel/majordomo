@@ -2,7 +2,7 @@
 import json
 import time
 
-from agents.health import VendorHealthBoard
+from adapters.model.health import VendorHealthBoard
 
 
 class TestCooldowns:

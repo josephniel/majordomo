@@ -1,8 +1,8 @@
 """capabilities.skills — markdown instruction skills."""
 import pytest
 
-from capabilities.skills import MAX_INJECTED_SKILLS, SkillsLibrary, _parse_skill
-from core import ToolContext
+from domain.skills import MAX_INJECTED_SKILLS, SkillsLibrary, _parse_skill
+from ports import ToolContext
 
 
 def _write_skill(d, name, body, description="", keywords=(), always=False):
@@ -142,7 +142,7 @@ class TestSelfWrittenSkills:
         assert SkillsLibrary.WRITE_TOOLS == {"skill_save", "skill_delete"}
 
     def test_read_only_grant_excludes_saving(self, tmp_path):
-        from personas.persona import Persona
+        from runtime.persona import Persona
         d = tmp_path / "instances" / "p"
         d.mkdir(parents=True)
         (d / "persona.yaml").write_text(

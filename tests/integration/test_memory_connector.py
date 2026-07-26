@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from capabilities.memory import LongTermMemory
-from core import ToolContext
+from domain.memory import LongTermMemory
+from ports import ToolContext
 from tests.conftest import CHAT_ID, FakeSummarizer
 
 pytestmark = pytest.mark.integration
@@ -229,7 +229,7 @@ class TestPinned:
         assert str(entry.id) in section  # individually addressable
 
     async def test_pinned_exempt_from_truncation(self, memory, memdb, persona_id):
-        from capabilities.memory import MEMORY_CONTEXT_CHAR_LIMIT
+        from domain.memory import MEMORY_CONTEXT_CHAR_LIMIT
         # Oversized core narrative that will be truncated...
         await memdb.set_core(persona_id, "user", "", "y" * (MEMORY_CONTEXT_CHAR_LIMIT + 500), 1)
         _, entry = await memory.save_fact("agent", "the assistant must always reply in English")
@@ -301,7 +301,7 @@ class TestSystemPrompt:
         assert "[USER]" in section and "knows all about mangoes" in section
 
     async def test_truncation_at_char_limit(self, memory, memdb, persona_id):
-        from capabilities.memory import MEMORY_CONTEXT_CHAR_LIMIT
+        from domain.memory import MEMORY_CONTEXT_CHAR_LIMIT
         await memdb.set_core(persona_id, "user", "", "x" * (MEMORY_CONTEXT_CHAR_LIMIT + 500), 1)
         await memory.refresh_core_cache()
         section = memory.system_prompt_section()

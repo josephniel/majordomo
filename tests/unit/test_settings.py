@@ -1,5 +1,5 @@
 """personas.settings — the single env->config boundary."""
-from personas.settings import RuntimeSettings
+from runtime.settings import RuntimeSettings
 
 
 class TestRuntimeSettings:

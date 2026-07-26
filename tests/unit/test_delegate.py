@@ -1,9 +1,9 @@
 """capabilities.delegate — sub-agent one-shot delegation."""
 import asyncio
 
-from agents.history import EphemeralConversationHistory
-from capabilities.delegate import Delegator
-from core import ToolContext
+from adapters.model.history import EphemeralConversationHistory
+from domain.delegate import Delegator
+from ports import ToolContext
 
 
 class FakeSubAgent:

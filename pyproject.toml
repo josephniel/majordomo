@@ -12,3 +12,81 @@ dependencies = { file = ["requirements.txt"] }
 
 [tool.setuptools]
 packages = []
+
+# ---------------------------------------------------------------------------
+# Architecture enforcement.
+#
+# The dependency rule used to live in a docstring, which is why it had drifted:
+# `agents/` (an adapter) imported `connectors/` (another adapter), and the
+# orchestrator's mixins coupled to host attributes documented only in prose.
+# Prose does not fail a build. These contracts do.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_packages = ["ports", "kernel", "runtime", "adapters", "domain", "evals"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "ports is a leaf: it imports nothing of ours"
+type = "forbidden"
+source_modules = ["ports"]
+forbidden_modules = ["kernel", "runtime", "adapters", "domain", "evals"]
+
+[[tool.importlinter.contracts]]
+name = "ports imports no third-party SDK (contracts stay vendor-neutral)"
+type = "forbidden"
+source_modules = ["ports"]
+forbidden_modules = [
+    "anthropic", "claude_agent_sdk", "openai", "telegram",
+    "asyncpg", "apscheduler", "fastembed", "httpx",
+]
+
+[[tool.importlinter.contracts]]
+name = "peer adapters do not import each other"
+type = "independence"
+modules = [
+    "adapters.model", "adapters.chat", "adapters.tools", "adapters.trigger",
+]
+
+[[tool.importlinter.contracts]]
+name = "only the composition root touches the environment"
+type = "forbidden"
+source_modules = ["adapters", "domain", "kernel"]
+forbidden_modules = ["dotenv"]
+
+[[tool.importlinter.contracts]]
+name = "layered: runtime > kernel > domain > adapters > infrastructure > ports"
+type = "layers"
+layers = [
+    "runtime",                                                   # composition root + entry point
+    "kernel",                                                    # the turn pipeline
+    "domain",                                                    # faculties / domain services
+    "adapters.model | adapters.chat | adapters.tools | adapters.trigger",
+    "adapters.store | adapters.comms",                           # infrastructure adapters
+    "ports",                                                     # contracts leaf
+]
+exhaustive = false
+
+# ---------------------------------------------------------------------------
+# Type checking.
+#
+# A RATCHET, not a wall. `--strict` across all of src/ reports ~180 errors
+# today, so demanding it everywhere would mean either a flag day or a
+# permanently red build that everyone learns to ignore.
+#
+# Instead: strict where the CONTRACTS live (core/), lenient elsewhere. That is
+# the layer whose whole job is to be precise, it is the layer every other
+# package imports, and it is small enough to hold the line on. Promote
+# packages into the strict list as they are cleaned up — storage/ next, since
+# Phase 4 rewrites it anyway.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+mypy_path = "src"
+namespace_packages = true
+explicit_package_bases = true
+ignore_missing_imports = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["ports.*"]
+strict = true

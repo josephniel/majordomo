@@ -5,12 +5,12 @@ import time
 
 import pytest
 
-from agents.fallback import (
+from adapters.model.fallback import (
     COMPACTION_FAILURE_BACKOFF_SECONDS,
     HISTORY_COMPACTION_CHAR_THRESHOLD,
     CascadingAgent,
 )
-from agents.health import VendorHealthBoard
+from adapters.model.health import VendorHealthBoard
 from tests.conftest import CHAT_ID, FakeAgent, FakeSummarizer
 
 pytestmark = pytest.mark.integration

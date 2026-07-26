@@ -1,5 +1,5 @@
 """capabilities.reflection — defensive JSON fact parsing."""
-from capabilities.reflection import _looks_volatile, _parse_facts
+from domain.reflection import _looks_volatile, _parse_facts
 
 
 class TestParseFacts:

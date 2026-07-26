@@ -25,22 +25,27 @@ from typing import Any, Optional
 
 import yaml
 
-from agents import EphemeralConversationHistory
-from agents.base import ContextBuilder
-from agents.chat_completions import (
+from adapters.model import EphemeralConversationHistory
+from adapters.model.base import ContextBuilder
+from adapters.model.chat_completions import (
     DeepSeekAgent,
     GeminiAgent,
     GroqAgent,
+    OllamaAgent,
     OpenAIAgent,
 )
 
-from .fakes import FakeMemory, FakeSchedule
+from .fakes import FakeBulkTools, FakeGmail, FakeMemory, FakeSchedule
 
 VENDORS = {
     "groq": (GroqAgent, "GROQ_MODEL"),
     "gemini": (GeminiAgent, "GEMINI_MODEL"),
     "openai": (OpenAIAgent, None),
     "deepseek": (DeepSeekAgent, None),
+    # Local, so it costs no quota — worth running whenever the daemon is up.
+    # Small local models are exactly the flaky tool-callers this harness
+    # exists to catch, so evaluate before trusting one as primary.
+    "ollama": (OllamaAgent, "OLLAMA_MODEL"),
 }
 
 EVAL_SYSTEM_PROMPT = (
@@ -57,6 +62,13 @@ class EvalCase:
     expect_tool: Optional[str] = None   # substring of a called tool name
     expect_no_tool: bool = False
     reply_matches: Optional[str] = None  # regex over the reply
+    # Prior turns, oldest first, as (role, content) with role user|assistant.
+    # Seeded into the conversation mirror before `prompt` is sent, so a case
+    # can reproduce a CONTEXT-DEPENDENT failure — the class of bug that
+    # single-prompt cases structurally cannot express. The one that motivated
+    # this: a model that re-asks a clarifying question the user already
+    # answered, instead of calling the tool.
+    history: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -88,12 +100,22 @@ def load_cases(path: Path) -> list[EvalCase]:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or []
     cases = []
     for item in raw:
+        history = tuple(
+            (str(t["role"]), str(t["content"])) for t in (item.get("history") or [])
+        )
+        bad = [r for r, _ in history if r not in ("user", "assistant")]
+        if bad:
+            raise ValueError(
+                f"case {item['name']!r}: history role(s) {bad} must be "
+                f"'user' or 'assistant'"
+            )
         cases.append(EvalCase(
             name=str(item["name"]),
             prompt=str(item["prompt"]),
             expect_tool=item.get("expect_tool"),
             expect_no_tool=bool(item.get("expect_no_tool")),
             reply_matches=item.get("reply_matches"),
+            history=history,
         ))
     return cases
 
@@ -101,7 +123,8 @@ def load_cases(path: Path) -> list[EvalCase]:
 async def run_case(vendor: str, case: EvalCase) -> CaseResult:
     import os
     agent_cls, model_env = VENDORS[vendor]
-    fakes = [FakeMemory(), FakeSchedule()]
+    # Production-sized tool surface, not a toy one — see FakeBulkTools.
+    fakes = [FakeMemory(), FakeSchedule(), FakeGmail(), FakeBulkTools()]
     persona = _EvalPersona()
     history = EphemeralConversationHistory()
     agent = agent_cls(
@@ -115,9 +138,18 @@ async def run_case(vendor: str, case: EvalCase) -> CaseResult:
         persona=persona,
         model=(os.environ.get(model_env) or None) if model_env else None,
         api_key=os.environ.get(agent_cls.API_KEY_ENV),
+        base_url=(os.environ.get(agent_cls.BASE_URL_ENV) or None
+                  if agent_cls.BASE_URL_ENV else None),
     )
     try:
         await agent.start()
+        # Seed prior turns into the mirror so the vendor sees them as context.
+        # Chat-completions vendors rebuild context from this mirror, so this
+        # is exactly how a real multi-turn conversation reaches them.
+        for role, content in case.history:
+            await history.append(
+                persona_id="_eval", chat_id=0, role=role, content=content,
+            )
         reply = None
         for attempt in range(3):
             try:
@@ -150,6 +182,13 @@ async def run_case(vendor: str, case: EvalCase) -> CaseResult:
 
 def judge(case: EvalCase, called: list[str], reply: str) -> tuple[bool, str]:
     """Pure expectation check — unit-testable without vendor calls."""
+    # A blank turn is always a failure, whatever else the case expected —
+    # including `expect_no_tool` cases, which would otherwise PASS on silence.
+    # This is a real production failure mode (a model spending its whole
+    # budget on reasoning tokens and emitting no content), so the harness has
+    # to score it as one.
+    if not (reply or "").strip():
+        return False, "empty reply — model produced no content"
     if case.expect_no_tool and called:
         return False, f"expected no tools, called {called}"
     if case.expect_tool and not any(case.expect_tool in n for n in called):
@@ -210,6 +249,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         key_env = {"groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY",
                    "openai": "OPENAI_API_KEY", "deepseek": "DEEPSEEK_API_KEY"}
         vendors = [v for v, k in key_env.items() if os.environ.get(k)]
+        # Ollama is keyless — it opts in the same way it does for the chain.
+        if os.environ.get("OLLAMA_ENABLED") or os.environ.get("OLLAMA_MODEL"):
+            vendors.append("ollama")
     if not vendors:
         print("no vendors to evaluate (no API keys set)", file=sys.stderr)
         return 2

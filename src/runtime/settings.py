@@ -1,0 +1,136 @@
+"""Typed runtime settings — the single place environment variables become config.
+
+The split: persona.yaml is IDENTITY (who this persona is, what it may do);
+the per-instance .env is TUNING AND SECRETS (keys, models, windows, ports).
+This module parses the entire .env surface once, into one frozen object, so
+that components take plain constructor parameters and only the composition
+root (runtime/container.py) ever consults the environment. The template
+enumerating every variable lives at instances/_template/.env.example — keep
+the two in sync.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from typing import Mapping, Optional
+
+from adapters.trigger.retention import RetentionPolicy
+
+
+def _truthy(v: Optional[str]) -> bool:
+    return (v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _csv(v: Optional[str]) -> tuple[str, ...]:
+    return tuple(x.strip().lower() for x in (v or "").split(",") if x.strip())
+
+
+@dataclass(frozen=True)
+class RuntimeSettings:
+    # ---- storage ----
+    memory_database_url: str = ""
+
+    # ---- LLM chain ----
+    primary_llm: str = ""
+    llm_chain: tuple[str, ...] = ()
+    claude_enabled: bool = False
+    anthropic_api_key: str = ""
+    # Default Claude chat model when the persona doesn't pin one.
+    claude_model: str = "claude-sonnet-5"
+    groq_api_key: str = ""
+    groq_model: Optional[str] = None
+    gemini_api_key: str = ""
+    gemini_model: Optional[str] = None
+    openai_api_key: str = ""
+    deepseek_api_key: str = ""
+    # Local models via Ollama — keyless, so it opts in like Claude does
+    # (OLLAMA_ENABLED, an explicit OLLAMA_MODEL, or PRIMARY_LLM=ollama).
+    ollama_enabled: bool = False
+    ollama_model: Optional[str] = None
+    ollama_base_url: Optional[str] = None
+    # Per-model: "none" disables thinking (right for gemma-family, which
+    # wastes ~16x tokens on it); leave UNSET for models that need reasoning to
+    # pick tools (qwen3.5 returns empty content without it).
+    ollama_reasoning_effort: Optional[str] = None
+    # Whether the pulled model can see images. Model-specific: gemma4's e4b
+    # builds cannot, its 12b and qwen3.5 can. Unset = trust the class default.
+    ollama_vision: Optional[bool] = None
+
+    # ---- model roles (see runtime/model_roles.py) ----
+    # Per-role chains. Empty = inherit the chat chain, failover included.
+    background_llm_chain: str = ""
+    background_model: str = ""
+    ideate_llm: str = ""
+    ideate_model: str = ""
+
+    # ---- background summarization ----
+    compaction_llm: str = ""            # falls back to primary_llm
+    compaction_model: str = "claude-haiku-4-5"
+    compaction_deep_model: str = "claude-sonnet-5"
+
+    # ---- schedules / proactivity ----
+    schedule_timezone: Optional[str] = None
+    webhook_token: str = ""
+    # Heartbeats are background work — keep them on cheap Haiku, decoupled
+    # from the chat chain (same reasoning as COMPACTION_MODEL).
+    heartbeat_model: str = "claude-haiku-4-5"
+
+    # ---- token/cost caps ----
+    # Per-turn output cap for chat-completions vendors; 0 disables the cap.
+    llm_max_output_tokens: int = 4096
+    # Claude SDK: agentic-loop turn cap and per-response output-token cap
+    # (passed to the CLI via CLAUDE_CODE_MAX_OUTPUT_TOKENS); 0 disables.
+    claude_max_turns: int = 50
+    claude_max_output_tokens: int = 16000
+
+    # ---- sandboxed code execution ----
+    code_exec_image: Optional[str] = None
+    code_exec_network: Optional[str] = None
+
+    # ---- status dashboard push ----
+    status_push_url: str = ""
+    status_push_token: str = ""
+
+    # ---- retention ----
+    retention: RetentionPolicy = field(default_factory=RetentionPolicy)
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] = os.environ) -> "RuntimeSettings":
+        return cls(
+            memory_database_url=env.get("MEMORY_DATABASE_URL") or "",
+            primary_llm=(env.get("PRIMARY_LLM") or "").strip().lower(),
+            llm_chain=_csv(env.get("LLM_CHAIN")),
+            claude_enabled=_truthy(env.get("CLAUDE_ENABLED")),
+            anthropic_api_key=env.get("ANTHROPIC_API_KEY") or "",
+            claude_model=env.get("CLAUDE_MODEL") or "claude-sonnet-5",
+            groq_api_key=env.get("GROQ_API_KEY") or "",
+            groq_model=env.get("GROQ_MODEL") or None,
+            gemini_api_key=env.get("GEMINI_API_KEY") or "",
+            gemini_model=env.get("GEMINI_MODEL") or None,
+            openai_api_key=env.get("OPENAI_API_KEY") or "",
+            deepseek_api_key=env.get("DEEPSEEK_API_KEY") or "",
+            ollama_enabled=_truthy(env.get("OLLAMA_ENABLED")),
+            ollama_model=env.get("OLLAMA_MODEL") or None,
+            ollama_base_url=env.get("OLLAMA_BASE_URL") or None,
+            ollama_reasoning_effort=env.get("OLLAMA_REASONING_EFFORT") or None,
+            ollama_vision=(_truthy(env["OLLAMA_VISION"])
+                           if env.get("OLLAMA_VISION") else None),
+            background_llm_chain=(env.get("BACKGROUND_LLM_CHAIN") or "").strip().lower(),
+            background_model=env.get("BACKGROUND_MODEL") or "",
+            ideate_llm=(env.get("IDEATE_LLM") or "").strip().lower(),
+            ideate_model=env.get("IDEATE_MODEL") or "",
+            compaction_llm=(env.get("COMPACTION_LLM") or "").strip().lower(),
+            compaction_model=env.get("COMPACTION_MODEL") or "claude-haiku-4-5",
+            compaction_deep_model=env.get("COMPACTION_DEEP_MODEL") or "claude-sonnet-5",
+            schedule_timezone=env.get("SCHEDULE_TIMEZONE") or None,
+            webhook_token=env.get("WEBHOOK_TOKEN") or "",
+            heartbeat_model=env.get("HEARTBEAT_MODEL") or "claude-haiku-4-5",
+            llm_max_output_tokens=int(env.get("LLM_MAX_OUTPUT_TOKENS") or 4096),
+            claude_max_turns=int(env.get("CLAUDE_MAX_TURNS") or 50),
+            claude_max_output_tokens=int(env.get("CLAUDE_MAX_OUTPUT_TOKENS") or 16000),
+            code_exec_image=env.get("CODE_EXEC_IMAGE") or None,
+            code_exec_network=env.get("CODE_EXEC_NETWORK") or None,
+            status_push_url=env.get("STATUS_PUSH_URL") or "",
+            status_push_token=env.get("STATUS_PUSH_TOKEN") or "",
+            retention=RetentionPolicy.from_env(env),
+        )
