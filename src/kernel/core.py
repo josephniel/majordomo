@@ -26,14 +26,21 @@ from typing import Any, Optional
 from adapters.model import Agent, ConversationHistory
 from adapters.comms import CommsLog, CommsRelay
 from adapters.tools import ServiceRegistry
-from ports import ConversationRef, CanaryRunner, Connector
-from domain import ReflectionEngine, ScheduledTask, TaskScheduler
+from ports import (
+    CanaryRunner,
+    Connector,
+    ConversationRef,
+    TriggerAgent,
+    TriggerEvent,
+    TriggerSource,
+)
+from domain import ReflectionEngine
 from adapters.chat import ChatPlatform, InboundMessage
 
 from .commands import CommandsMixin
 from .formatting import chunk_for_platform, is_cancel_intent
 from .ingestion import ingest_attachments
-from .proactive import HeartbeatConfig, ProactiveMixin, WatchConfig
+from .proactive import ProactiveMixin
 from .recovery import RecoveryMixin
 from .sessions import SessionStore
 
@@ -63,15 +70,13 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         config: ServiceRegistry,
         connectors_list: list[Connector],
         persona_id: str,
-        task_scheduler: Optional[TaskScheduler] = None,
         comms_log: Optional[CommsLog] = None,
         conversation_history: Optional[ConversationHistory] = None,
         reflection: Optional[ReflectionEngine] = None,
         status_reporter=None,  # comms.status_report.StatusReporter | None
-        heartbeat: Optional[HeartbeatConfig] = None,
-        webhook_server=None,  # services.webhook.WebhookServer | None
-        watches: Optional[list[WatchConfig]] = None,
-        retention=None,  # services.retention.RetentionJob | None
+        trigger_sources: Optional[list[TriggerSource]] = None,
+        background_agent_factory=None,  # (ConversationRef) -> Agent
+        approval_gate=None,  # adapters.tools.WriteApprovalGate | None
     ) -> None:
         self._platform = platform
         # agent_factory(chat_id, session_id) -> Agent
@@ -80,15 +85,23 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._config = config
         self._connectors = connectors_list
         self._persona_id = persona_id
-        self._schedule_connector = task_scheduler
         self._comms_log = comms_log
         self._conversation_history = conversation_history
         self._reflection = reflection
         self._status_reporter = status_reporter
-        self._heartbeat = heartbeat
-        self._webhook_server = webhook_server
-        self._watches: list[WatchConfig] = list(watches or [])
-        self._retention = retention
+        # Every way this agent can be woken without the user typing. The
+        # orchestrator knows only the contract — not that heartbeats,
+        # webhooks or mail watches exist.
+        self._trigger_sources: list[TriggerSource] = list(trigger_sources or [])
+        # Resolves TriggerAgent.DEDICATED. Injected rather than derived so
+        # the orchestrator never has to know which model background work runs
+        # on — that is the composition root's call (see ModelRole.BACKGROUND).
+        # Falls back to the chat agent when absent, which keeps triggers
+        # working (expensively) rather than failing shut.
+        self._bg_agent_factory = background_agent_factory
+        # Read-only, and only to tell a WAITING turn from a WORKING one — see
+        # _pending_approval_notice. The orchestrator never approves anything.
+        self._approval_gate = approval_gate
         self._relay: Optional[CommsRelay] = (
             CommsRelay(comms_log, persona_id, self._on_peer_message)
             if comms_log is not None else None
@@ -164,9 +177,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 await self._conversation_history.connect()
             except Exception:
                 log.exception("conversation_history connect failed")
-        if self._schedule_connector is not None:
-            self._schedule_connector.start(self._on_schedule_fire)
-            self._register_proactive_crons()
+        await self._start_trigger_sources()
         if self._status_reporter is not None:
             # Persona liveness on the status dashboard: heartbeat every
             # minute; the board flags us as down when heartbeats stop.
@@ -181,7 +192,6 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 await self._relay.start(self._platform.mention_handle)
             except Exception:
                 log.exception("comms relay start failed")
-        self._start_webhook_server()
         # Layer 4: probe that the chain's vendors actually call tools. Runs
         # once, shortly after boot, off the hot path.
         canary = asyncio.create_task(self._startup_canary())
@@ -207,7 +217,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             log.exception("startup tool-calling canary failed")
 
     async def _on_shutdown(self) -> None:
-        self._stop_webhook_server()
+        await self._stop_trigger_sources()
         if self._status_reporter is not None:
             try:
                 self._status_reporter.stop()
@@ -215,8 +225,6 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 pass
         if self._reflection is not None:
             self._reflection.shutdown()
-        if self._schedule_connector is not None:
-            self._schedule_connector.shutdown()
         if self._relay is not None:
             try:
                 await self._relay.stop()
@@ -321,6 +329,18 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         # vendor as before (vision, one-shot reading).
         text = await self._ingest_attachments(chat_id, text, msg)
 
+        # A turn blocked on an approval holds the per-chat lock for the whole
+        # approval timeout (two minutes). Waiting behind a WORKING turn is
+        # fine — it finishes on its own. Waiting behind one that is blocked on
+        # the operator is not: the thing it is waiting for is a tap the user
+        # has not made and cannot see they need to make from here, so their
+        # message would sit unacknowledged until it times out and the bot
+        # would look dead.
+        notice = self._pending_approval_notice(chat_id)
+        if notice is not None:
+            await self._platform.send_text(chat_id, notice, reply_to=msg.message_id)
+            return
+
         # Serialize turns per chat. If a previous turn is in flight, this
         # message waits behind it and runs with the previous reply already
         # in conversation history.
@@ -377,19 +397,24 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
     async def _ingest_attachments(self, chat_id: ConversationRef, text: str, msg: InboundMessage) -> str:
         return await ingest_attachments(self._connectors, chat_id, text, msg)
 
-    # ---- scheduled task fire ----
+    # ---- trigger fire ----
 
-    async def _on_schedule_fire(self, sched: ScheduledTask, agent_factory=None) -> bool:
-        """Run a scheduled/heartbeat/webhook/mail-watch turn. Returns True
-        when the turn completed and its reply (if any) was delivered —
-        callers that must not lose alerts (mail watch) key off this.
+    async def _run_trigger(self, event: TriggerEvent) -> bool:
+        """Take one unprompted turn on behalf of a trigger source.
 
-        agent_factory, when given, supplies a DEDICATED throwaway agent for
-        this fire (heartbeats run on cheap Haiku this way). Its session id is
-        never persisted — that would clobber the chat's real session — and
-        it's torn down after the turn."""
-        chat_id = sched.chat_id
-        log.info("scheduled task fired: %s for chat %s", sched.name, chat_id)
+        Returns True when the turn completed AND its reply (if any) was
+        delivered. That return value is the whole reason emit is awaited
+        rather than fire-and-forget: a watch source holds its watermark until
+        it sees True, so an outage re-reports the same mail next poll instead
+        of losing it silently.
+
+        TriggerAgent.DEDICATED gets a throwaway agent on the background model
+        role: torn down after the turn, and its session id deliberately NOT
+        persisted, which would clobber the conversation's real session.
+        """
+        chat_id = event.conversation
+        dedicated = event.agent is TriggerAgent.DEDICATED
+        log.info("trigger fired: %s for chat %s", event.source, chat_id)
 
         # Same serialization as user messages — a schedule firing during an
         # in-flight user turn waits its turn rather than racing the agent.
@@ -400,18 +425,19 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             await self._reload_if_config_changed()
             agent: Optional[Agent] = None
             try:
-                if agent_factory is not None:
-                    agent = agent_factory(chat_id)
+                if dedicated and self._bg_agent_factory is not None:
+                    agent = self._bg_agent_factory(chat_id)
                 else:
+                    dedicated = False
                     self._refresh_agent_if_stale(chat_id)
                     agent = self._get_agent(chat_id)
-                reply = await self._execute_agent_turn(chat_id, agent, sched.prompt)
+                reply = await self._execute_agent_turn(chat_id, agent, event.prompt)
             except asyncio.CancelledError:
                 return False
             except Exception:
                 # Covers agent construction too — a broken factory (e.g. no
                 # LLM backend configured) must not die silently in APScheduler.
-                log.exception("scheduled task %r failed", sched.name)
+                log.exception("trigger %r failed", event.source)
                 try:
                     await self._platform.send_text(
                         chat_id,
@@ -422,16 +448,16 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                     log.exception("could not deliver schedule error to chat")
                 return False
             finally:
-                if agent_factory is not None and agent is not None:
+                if dedicated and agent is not None:
                     self._spawn_agent_stop(agent)
 
-            if agent_factory is None:
+            if not dedicated:
                 self._persist_session_id(chat_id, agent)
 
             # Scheduled turns honor the silence sentinel too — a heartbeat
             # (or any schedule) with nothing to report sends nothing.
             if reply.strip().lower() == "<silent>":
-                log.info("scheduled task %r: nothing to report", sched.name)
+                log.info("trigger %r: nothing to report", event.source)
                 return True
 
             # (B2 fix: the early `return` used to sit INSIDE this loop, so
@@ -507,6 +533,32 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         if chat_id not in self._per_chat_locks:
             self._per_chat_locks[chat_id] = asyncio.Lock()
         return self._per_chat_locks[chat_id]
+
+    def _pending_approval_notice(self, chat_id: ConversationRef) -> Optional[str]:
+        """What to say to a message that arrived while this chat is blocked
+        on an operator approval — or None when it isn't.
+
+        Deliberately says the tool name and how to get out. "Please wait" is
+        no better than the silence it replaces; what the user needs is which
+        write is stuck, that the decision is theirs, and that they are not
+        trapped (`/cancel` already unwinds the turn through the approval's
+        CancelledError path).
+
+        Only fires when a turn is genuinely PARKED on a human. A slow model
+        call still queues normally — that resolves without anyone doing
+        anything, and interrupting it would cost the user their turn.
+        """
+        if self._approval_gate is None:
+            return None
+        pending = self._approval_gate.pending_for(chat_id)
+        if pending is None:
+            return None
+        return (
+            f"⏳ I'm still waiting on your approval for **{pending.label}** — "
+            f"tap Approve or Deny on that message and I'll pick this up "
+            f"straight after.\n\n"
+            f"If you'd rather drop it, send /cancel."
+        )
 
     def _persist_session_id(self, chat_id: ConversationRef, agent: Agent) -> None:
         sid = agent.session_id

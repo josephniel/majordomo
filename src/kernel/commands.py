@@ -2,8 +2,8 @@
 
 CommandsMixin is a context module of ConversationOrchestrator. It relies on
 the host providing: _platform, _config, _connectors, _persona_id, _agents,
-_session_ids, _session_store, _schedule_connector, _conversation_history,
-_heartbeat, _watches, _webhook_server, _cancel_chat().
+_session_ids, _session_store, _conversation_history, _trigger_sources,
+_cancel_chat().
 """
 from __future__ import annotations
 
@@ -119,9 +119,15 @@ class CommandsMixin:
             if line:
                 lines.append(line)
 
-        if self._schedule_connector is not None:
+        # The schedule faculty is already in self._connectors; find it there
+        # rather than holding a second reference to it on the orchestrator.
+        # Its count is per-chat, which is why it can't ride status_line().
+        scheduler = next(
+            (c for c in self._connectors if hasattr(c, "schedules_for_chat")), None
+        )
+        if scheduler is not None:
             try:
-                scheds = self._schedule_connector.schedules_for_chat(chat_id)
+                scheds = scheduler.schedules_for_chat(chat_id)
                 on = sum(1 for s in scheds if s.enabled)
                 lines.append(f"Schedules: {len(scheds)} ({on} enabled)")
             except Exception:
@@ -154,15 +160,18 @@ class CommandsMixin:
                 log.debug("status stats unavailable", exc_info=True)
 
         # Proactive subsystems — the operator must be able to see these are
-        # alive without grepping logs.
+        # alive without grepping logs. Each source describes itself, so a new
+        # trigger type shows up here without this command being edited (it
+        # used to enumerate heartbeat/watches/webhooks from three hardcoded
+        # branches, and anything else was simply invisible).
         proactive: list[str] = []
-        if self._heartbeat is not None:
-            proactive.append(f"heartbeat ({self._heartbeat.cron})")
-        for w in self._watches:
-            proactive.append(f"{w.name.replace('_', ' ')} ({w.cron})")
-        if self._webhook_server is not None:
-            names = ", ".join(self._webhook_server.trigger_names)
-            proactive.append(f"webhooks :{self._webhook_server.port} [{names}]")
+        for source in self._trigger_sources:
+            try:
+                desc = source.describe()
+            except Exception:
+                desc = f"{source.name} (unavailable)"
+            if desc:
+                proactive.append(desc)
         lines.append("Proactive: " + (", ".join(proactive) if proactive else "(none)"))
 
         await self._platform.send_text(chat_id, "\n".join(lines), reply_to=reply_to)

@@ -10,8 +10,9 @@ import pytest
 from adapters.model.base import Attachment
 from domain.documents import DocumentLibrary
 from adapters.trigger.webhook import WebhookTrigger
+from ports import ConversationRef, TriggerContext
+from domain.triggers import HeartbeatSource, WatchSource, WebhookSource
 from kernel.core import ConversationOrchestrator
-from kernel.proactive import HeartbeatConfig, WatchConfig
 from kernel.sessions import SessionStore
 from adapters.chat.base import InboundMessage
 
@@ -121,22 +122,49 @@ class TestIngestAttachments:
         assert "[saved: a.txt]" in text
 
 
+class FakeWebhookServer:
+    port = 18790
+    trigger_names = ["alert"]
+
+    def __init__(self):
+        self.fire = None
+        self.stopped = False
+
+    def start(self, loop, fire):
+        self.fire = fire
+
+    def stop(self):
+        self.stopped = True
+
+
 class TestWebhookBridge:
     def _trigger(self):
         return WebhookTrigger(name="alert", prompt="check the board", chat_id=7)
 
+    async def _wired(self, tmp_path, reply):
+        orch, platform, agent = _orch(tmp_path, reply=reply)
+        server = FakeWebhookServer()
+        source = WebhookSource(server)
+        await source.start(TriggerContext(emit=orch._run_trigger))
+        return orch, platform, agent, server
+
     async def test_payload_reaches_agent_and_reply_delivered(self, tmp_path):
-        orch, platform, agent = _orch(tmp_path, reply="Board is down!")
-        await orch._on_webhook_fire(self._trigger(), '{"svc": "status"}')
+        _, platform, agent, server = await self._wired(tmp_path, "Board is down!")
+        await server.fire(self._trigger(), '{"svc": "status"}')
         assert "check the board" in agent.prompts[0]
         assert '{"svc": "status"}' in agent.prompts[0]
         assert platform.sent == [(7, "Board is down!")]
 
     async def test_silent_trigger_sends_nothing(self, tmp_path):
-        orch, platform, agent = _orch(tmp_path, reply="<silent>")
-        await orch._on_webhook_fire(self._trigger(), "")
+        _, platform, agent, server = await self._wired(tmp_path, "<silent>")
+        await server.fire(self._trigger(), "")
         assert len(agent.prompts) == 1
         assert platform.sent == []
+
+    async def test_stop_closes_the_server(self, tmp_path):
+        _, _, _, server = await self._wired(tmp_path, "ok")
+        await WebhookSource(server).stop()
+        assert server.stopped
 
 
 class FakeWatcher:
@@ -152,59 +180,88 @@ class FakeWatcher:
 
 
 class TestMailWatchBridge:
-    def _mw(self, watcher):
-        return WatchConfig(name="mail_watch", cron="*/3 * * * *", chat_id=7,
-                           watcher=watcher, preamble="[mail watch]\n")
+    """The two-phase watermark, which is what stops an outage from silently
+    losing mail: commit() runs only after the turn reached the user."""
+
+    async def _wired(self, tmp_path, watcher, **kw):
+        orch, platform, agent = _orch(tmp_path, **kw)
+        source = WatchSource(name="mail_watch", cron="*/3 * * * *",
+                             conversation=7, watcher=watcher,
+                             preamble="[mail watch]\n")
+        await source.start(TriggerContext(emit=orch._run_trigger,
+                                          add_cron=lambda *a: None))
+        return source, platform, agent
 
     async def test_delivered_alert_commits(self, tmp_path):
         watcher = FakeWatcher()
-        orch, platform, _ = _orch(tmp_path, reply="Boss needs you!",
-                                  watches=[self._mw(watcher)])
-        await orch._on_watch(orch._watches[0])
+        source, platform, _ = await self._wired(tmp_path, watcher,
+                                                reply="Boss needs you!")
+        await source._fire()
         assert platform.sent == [(7, "Boss needs you!")]
         assert watcher.commits == 1
 
     async def test_silent_still_commits(self, tmp_path):
         watcher = FakeWatcher()
-        orch, platform, _ = _orch(tmp_path, reply="<silent>",
-                                  watches=[self._mw(watcher)])
-        await orch._on_watch(orch._watches[0])
+        source, platform, _ = await self._wired(tmp_path, watcher, reply="<silent>")
+        await source._fire()
         assert platform.sent == []
         assert watcher.commits == 1, "quiet triage is still a delivered turn"
 
     async def test_failed_turn_does_not_commit(self, tmp_path):
         watcher = FakeWatcher()
-        orch, _, _ = _orch(tmp_path, error=RuntimeError("all vendors down"),
-                           watches=[self._mw(watcher)])
-        await orch._on_watch(orch._watches[0])
+        source, _, _ = await self._wired(tmp_path, watcher,
+                                         error=RuntimeError("all vendors down"))
+        await source._fire()
         assert watcher.commits == 0, "watermark held back for re-report"
+
+    async def test_a_failing_poll_does_not_commit_or_fire(self, tmp_path):
+        class Broken(FakeWatcher):
+            async def check(self):
+                raise RuntimeError("gmail is down")
+
+        watcher = Broken()
+        source, _, agent = await self._wired(tmp_path, watcher)
+        await source._fire()
+        assert agent.prompts == [] and watcher.commits == 0
 
     async def test_nothing_new_skips_llm(self, tmp_path):
         watcher = FakeWatcher(block=None)
-        orch, _, agent = _orch(tmp_path, watches=[self._mw(watcher)])
-        await orch._on_watch(orch._watches[0])
+        source, _, agent = await self._wired(tmp_path, watcher)
+        await source._fire()
         assert agent.prompts == []
 
 
-class RecordingScheduleConnector:
-    """Captures what _register_proactive_crons actually hands the scheduler.
-    The bridge tests above call _on_watch directly, which is exactly how a
-    broken REGISTRATION stayed invisible — assert on the callback itself.
+class RecordingScheduler:
+    """Captures what the trigger sources actually hand the scheduler.
 
-    Enforces the real engine's async-callback contract via the production
+    Firing a source's `_fire` directly (as the bridge tests above do) is
+    exactly how a broken REGISTRATION stayed invisible for two days — so
+    assert on the registered callback itself.
+
+    Enforces the real engine's async-callback contract via the PRODUCTION
     predicate: a fake that accepted what AsyncIOScheduler silently drops
     would reproduce the original blind spot inside the test suite. Awaiting a
     sync wrapper's coroutine works fine in a test, so this check — not the
-    await below — is what actually reproduces the production failure."""
+    await below — is what reproduces the production failure.
+    """
 
     def __init__(self):
         self.crons: dict[str, object] = {}
+        self.started = False
 
+    # ScheduleSource borrows this; its presence is also what marks this as
+    # the registrar the other sources wait for.
     def add_system_cron(self, name, cron, callback):
         from domain.schedule import _is_async_callable
         if not _is_async_callable(callback):
             raise TypeError(f"system cron {name!r} needs an async callback")
         self.crons[name] = callback
+
+    def start(self, fire):
+        self.started = True
+
+    def shutdown(self):
+        pass
 
 
 class TestSystemCronRegistration:
@@ -213,50 +270,97 @@ class TestSystemCronRegistration:
     success while the watcher never polls (mail + splitwise watches were dead
     for two days). Registered callbacks must be async."""
 
-    def _orch_with_watches(self, tmp_path, watcher):
-        w = WatchConfig(name="mail_watch", cron="*/3 * * * *", chat_id=7,
-                        watcher=watcher, preamble="[mail watch]\n")
-        hb = HeartbeatConfig(cron="0 8 * * *", chat_id=7,
-                             prompt_loader=lambda: "- check email")
-        orch, platform, agent = _orch(tmp_path, heartbeat=hb, watches=[w])
-        sched = RecordingScheduleConnector()
-        orch._schedule_connector = sched
-        orch._register_proactive_crons()
+    async def _started(self, tmp_path, sources, **kw):
+        from domain.triggers import ScheduleSource
+        sched = RecordingScheduler()
+        orch, platform, agent = _orch(
+            tmp_path, trigger_sources=[ScheduleSource(sched), *sources], **kw
+        )
+        await orch._start_trigger_sources()
         return orch, sched, platform, agent
+
+    def _watch(self, watcher, name="mail_watch", cron="*/3 * * * *"):
+        return WatchSource(name=name, cron=cron, conversation=7,
+                           watcher=watcher, preamble="[mail watch]\n")
+
+    def _heartbeat(self):
+        return HeartbeatSource(cron="0 8 * * *", conversation=7,
+                               prompt_loader=lambda: "- check email")
 
     async def test_registered_watch_callback_actually_polls_when_fired(
         self, tmp_path,
     ):
-        """The end-to-end contract: await what was registered and the turn
+        """The end-to-end contract: await what was REGISTERED and the turn
         must reach the platform. This fails outright on a sync wrapper."""
         watcher = FakeWatcher()
-        _, sched, platform, _ = self._orch_with_watches(tmp_path, watcher)
-
+        _, sched, platform, _ = await self._started(
+            tmp_path, [self._watch(watcher), self._heartbeat()]
+        )
         await sched.crons["mail_watch"]()
-
         assert platform.sent == [(7, "ok")]
         assert watcher.commits == 1
 
-    def test_every_registered_cron_is_a_coroutine_function(self, tmp_path):
-        _, sched, _, _ = self._orch_with_watches(tmp_path, FakeWatcher())
+    async def test_every_registered_cron_is_a_coroutine_function(self, tmp_path):
+        _, sched, _, _ = await self._started(
+            tmp_path, [self._watch(FakeWatcher()), self._heartbeat()]
+        )
         assert set(sched.crons) == {"heartbeat", "mail_watch"}
         for name, cb in sched.crons.items():
             assert inspect.iscoroutinefunction(cb), f"{name} cron is not async"
 
-    def test_each_watch_gets_its_own_binding(self, tmp_path):
+    async def test_each_watch_gets_its_own_binding(self, tmp_path):
         """Late-binding guard: two watches must not both fire the last one."""
-        a, b = FakeWatcher(), FakeWatcher()
-        watches = [
-            WatchConfig(name="mail_watch", cron="*/3 * * * *", chat_id=7,
-                        watcher=a, preamble="[mail]\n"),
-            WatchConfig(name="splitwise_watch", cron="*/10 * * * *", chat_id=7,
-                        watcher=b, preamble="[splitwise]\n"),
-        ]
-        orch, _, _ = _orch(tmp_path, watches=watches)
-        sched = RecordingScheduleConnector()
-        orch._schedule_connector = sched
-        orch._register_proactive_crons()
+        a, b = FakeWatcher("- from a"), FakeWatcher("- from b")
+        _, sched, _, agent = await self._started(tmp_path, [
+            self._watch(a, "mail_watch", "*/3 * * * *"),
+            self._watch(b, "splitwise_watch", "*/10 * * * *"),
+        ])
         assert set(sched.crons) == {"mail_watch", "splitwise_watch"}
+        await sched.crons["mail_watch"]()
+        assert "- from a" in agent.prompts[-1]
+        await sched.crons["splitwise_watch"]()
+        assert "- from b" in agent.prompts[-1]
+
+    async def test_the_registrar_starts_before_the_sources_that_borrow_it(
+        self, tmp_path,
+    ):
+        """APScheduler refuses jobs before its loop exists, so a cron source
+        started ahead of the schedule source would silently never register."""
+        from domain.triggers import ScheduleSource
+        sched = RecordingScheduler()
+        watch = self._watch(FakeWatcher())
+        orch, _, _ = _orch(
+            tmp_path,
+            # Deliberately declared BEFORE the registrar.
+            trigger_sources=[watch, ScheduleSource(sched)],
+        )
+        await orch._start_trigger_sources()
+        assert sched.started
+        assert "mail_watch" in sched.crons
+
+    async def test_one_broken_source_does_not_stop_the_others(self, tmp_path):
+        """A misconfigured trigger must cost the operator that trigger, not
+        the bot."""
+        from domain.triggers import ScheduleSource
+
+        class Exploding:
+            name = "exploding"
+
+            async def start(self, ctx):
+                raise RuntimeError("bad config")
+
+            async def stop(self):
+                pass
+
+            def describe(self):
+                return None
+
+        sched = RecordingScheduler()
+        orch, _, _ = _orch(tmp_path, trigger_sources=[
+            ScheduleSource(sched), Exploding(), self._watch(FakeWatcher()),
+        ])
+        await orch._start_trigger_sources()
+        assert "mail_watch" in sched.crons
 
 
 class TestAddSystemCronRejectsSyncCallbacks:
@@ -297,21 +401,41 @@ class TestAddSystemCronRejectsSyncCallbacks:
 
 
 class TestStatusProactiveBlock:
+    """Sources describe themselves, so /status shows a new trigger type
+    without this command being edited."""
+
     async def test_proactive_and_documents_surfaced(self, tmp_path):
-        hb = HeartbeatConfig(cron="0 8 * * *", chat_id=7,
+        hb = HeartbeatSource(cron="0 8 * * *", conversation=7,
                              prompt_loader=lambda: "- check email")
-        mw = WatchConfig(name="mail_watch", cron="*/3 * * * *", chat_id=7,
+        mw = WatchSource(name="mail_watch", cron="*/3 * * * *", conversation=7,
                          watcher=FakeWatcher(), preamble="[mail watch]\n")
-        webhook = SimpleNamespace(port=18790, trigger_names=["alert"])
-        orch, platform, _ = _orch(
-            tmp_path, heartbeat=hb, watches=[mw], webhook_server=webhook,
-        )
+        webhook = WebhookSource(FakeWebhookServer())
+        orch, platform, _ = _orch(tmp_path, trigger_sources=[hb, mw, webhook])
         await orch._cmd_status(7)
         ((_, text),) = platform.sent
         assert "Proactive:" in text
         assert "heartbeat (0 8 * * *)" in text
         assert "mail watch (*/3 * * * *)" in text
         assert "webhooks :18790 [alert]" in text
+
+    async def test_a_source_that_cannot_describe_itself_still_appears(
+        self, tmp_path,
+    ):
+        """/status is what the operator checks when something looks wrong, so
+        a broken source must be visible rather than silently omitted."""
+        class Broken:
+            name = "flaky"
+
+            async def start(self, ctx): pass
+            async def stop(self): pass
+
+            def describe(self):
+                raise RuntimeError("cannot introspect")
+
+        orch, platform, _ = _orch(tmp_path, trigger_sources=[Broken()])
+        await orch._cmd_status(7)
+        ((_, text),) = platform.sent
+        assert "flaky (unavailable)" in text
 
     async def test_no_proactive_config(self, tmp_path):
         orch, platform, _ = _orch(tmp_path)
@@ -441,15 +565,16 @@ class TestFacultyConnectorTiering:
         # makes the fixture a realistic persona.
         (d / "platform.yaml").write_text("telegram:\n  allowed_user_ids:\n    - 7\n")
         runtime = PersonaRuntime(Persona.load("p", tmp_path))
-        hb = runtime.heartbeat_config
-        assert hb.prompt_loader() == "check the first thing"
-        assert hb.agent_factory is not None, "heartbeats get a dedicated agent"
+        hb = runtime.heartbeat_source
+        assert hb._load_prompt() == "check the first thing"
         (d / "persona.yaml").write_text(yaml_text.replace("first thing", "edited thing"))
-        assert hb.prompt_loader() == "check the edited thing"
+        assert hb._load_prompt() == "check the edited thing"
 
 
 class TestMailWatchDedicatedAgent:
-    async def test_factory_agent_serves_the_fire(self, tmp_path):
+    async def test_background_agent_serves_the_fire(self, tmp_path):
+        """Watch fires shed the chat toolset — the activity already arrived
+        as injected context — and must not clobber the chat's session."""
         watcher = FakeWatcher()
         mw_agent = FakeAgent(reply="Boss needs you!")
 
@@ -457,17 +582,19 @@ class TestMailWatchDedicatedAgent:
             mw_agent.stopped = True
         mw_agent.stop = _stop
 
-        mw = WatchConfig(
-            name="mail_watch", cron="*/3 * * * *", chat_id=7, watcher=watcher,
-            preamble="[mail watch]\n", agent_factory=lambda chat_id: mw_agent,
+        orch, platform, chat_agent = _orch(
+            tmp_path, background_agent_factory=lambda chat_id: mw_agent,
         )
-        orch, platform, chat_agent = _orch(tmp_path, watches=[mw])
-        await orch._on_watch(orch._watches[0])
+        source = WatchSource(name="mail_watch", cron="*/3 * * * *",
+                             conversation=7, watcher=watcher,
+                             preamble="[mail watch]\n")
+        await source.start(TriggerContext(emit=orch._run_trigger,
+                                          add_cron=lambda *a: None))
+        await source._fire()
         assert mw_agent.prompts, "dedicated agent served the mail-watch turn"
         assert chat_agent.prompts == [], "chat agent untouched"
         assert platform.sent == [(7, "Boss needs you!")]
         assert watcher.commits == 1
-        # The throwaway agent's session must not become the chat's.
         assert 7 not in orch._session_ids
 
 

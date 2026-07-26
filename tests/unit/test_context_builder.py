@@ -1,5 +1,14 @@
-"""agents.base.ContextBuilder — system-prompt assembly and, critically, the
-stable/volatile ordering that keeps a local model's KV prefix cache alive."""
+"""ContextBuilder — system-prompt assembly and, critically, the
+stable/volatile ordering that keeps a local model's KV prefix cache alive.
+
+Volatility is DERIVED from whether a provider overrides `context_version`,
+so the fakes below override it for real rather than setting a flag. There
+used to be a separate VOLATILE_PROMPT_SECTION boolean and a fake could set
+it without being versioned at all — passing tests for a combination that
+cannot occur in production.
+"""
+from ports import ToolProvider
+
 from adapters.model.base import ContextBuilder
 
 
@@ -18,20 +27,30 @@ class _Registry:
         return self._enabled
 
 
-class _Provider:
-    """Minimal ToolProvider stand-in."""
-    VOLATILE_PROMPT_SECTION = False
+class _Stable(ToolProvider):
+    """A provider whose prompt section never changes."""
 
-    def __init__(self, name, section, volatile=False):
+    def __init__(self, name, section):
         self.name = name
         self._section = section
-        self.VOLATILE_PROMPT_SECTION = volatile
 
     def system_prompt_section(self):
         return self._section
 
-    def owns_profile(self, profile_name):
-        return profile_name == self.name
+
+class _Volatile(_Stable):
+    """A provider that versions its contribution — memory, skills.
+
+    Overriding `context_version` IS the declaration of volatility; there is
+    nothing else to set.
+    """
+
+    def context_version(self) -> int:
+        return 7
+
+
+def _Provider(name, section, volatile=False):
+    return (_Volatile if volatile else _Stable)(name, section)
 
 
 class _Persona:

@@ -10,9 +10,26 @@ shared contracts from here and never from a sibling's internals.
     llm.py       — Agent ABC, Summarizer, UsageLimitError, PersonaLike
     protocols.py — structural capability protocols (AttachmentIngestor, …)
     context.py   — ToolContext (explicit per-invocation scope for handlers)
+    conversation.py — ConversationRef (platform-agnostic chat identity)
+    triggers.py  — TriggerEvent/TriggerSource (waking the agent unprompted)
+    memory.py    — MemoryStore + MemoryEntry (the second brain's contract)
+    documents.py — DocumentStore (RAG corpus contract)
 """
 from .context import ToolContext
 from .conversation import ConversationRef, chat_key
+from .documents import DocumentStore
+from .memory import (
+    LINK_RELATIONS,
+    VALID_SCOPES,
+    FactCandidate,
+    MemoryCoreEntry,
+    MemoryEntry,
+    MemoryStore,
+    MemoryVerdict,
+    Neighbor,
+    Reconciliation,
+    Scored,
+)
 from .llm import (
     Agent,
     ModelRole,
@@ -33,6 +50,14 @@ from .protocols import (
     ToolTraceReporting,
     VendorIntrospectable,
 )
+from .triggers import (
+    AddCron,
+    EmitTrigger,
+    TriggerAgent,
+    TriggerContext,
+    TriggerEvent,
+    TriggerSource,
+)
 from .tools import (
     Connector,
     Faculty,
@@ -40,7 +65,6 @@ from .tools import (
     ToolResult,
     ToolSpec,
     as_tool_result,
-    mcp_content,
     tool,
 )
 
@@ -53,9 +77,20 @@ __all__ = [
     "ContextInjector",
     "ConversationRef",
     "chat_key",
+    "DocumentStore",
     "EnabledService",
+    "FactCandidate",
     "Faculty",
+    "LINK_RELATIONS",
+    "MemoryCoreEntry",
+    "MemoryEntry",
+    "MemoryStore",
+    "MemoryVerdict",
+    "Neighbor",
+    "Reconciliation",
+    "Scored",
     "SessionResettable",
+    "VALID_SCOPES",
     "ToolCallProbe",
     "ToolContext",
     "ToolTraceReporting",
@@ -68,8 +103,13 @@ __all__ = [
     "ToolResult",
     "ToolSpec",
     "ToolUseCallback",
+    "AddCron",
+    "EmitTrigger",
+    "TriggerAgent",
+    "TriggerContext",
+    "TriggerEvent",
+    "TriggerSource",
     "UsageLimitError",
     "as_tool_result",
-    "mcp_content",
     "tool",
 ]

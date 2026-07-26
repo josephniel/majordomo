@@ -14,8 +14,14 @@ import io
 import logging
 from typing import Any, Optional
 
-from ports import ConversationRef, Faculty, ToolContext, ToolResult, tool
-from adapters.store.docs import DocumentStore
+from ports import (
+    ConversationRef,
+    DocumentStore,
+    Faculty,
+    ToolContext,
+    ToolResult,
+    tool,
+)
 
 log = logging.getLogger(__name__)
 

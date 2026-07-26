@@ -1,14 +1,25 @@
-"""chat.core heartbeat — proactive check-in wiring + <silent> scheduled turns."""
+"""Schedule engine internals, and the heartbeat trigger end to end.
+
+Restructured when triggers got a port. The heartbeat used to be testable
+only by constructing a whole orchestrator and calling its `_on_heartbeat`,
+because the deciding logic (empty prompt? loader threw?) lived on the
+orchestrator's mixin. It is now in HeartbeatSource and can be tested against
+a two-line fake emit — so the orchestrator tests below are about the TURN,
+not about heartbeats specifically.
+"""
 import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 
+from ports import ConversationRef, TriggerAgent, TriggerContext, TriggerEvent
 from domain.schedule import ScheduleEngine, ScheduledTask, TaskScheduler
+from domain.triggers import HEARTBEAT_PREAMBLE, HeartbeatSource
 from kernel.core import ConversationOrchestrator
-from kernel.proactive import HeartbeatConfig, _HEARTBEAT_PREAMBLE
 from kernel.sessions import SessionStore
+
+CHAT = ConversationRef("telegram", "77")
 
 
 class FakePlatform:
@@ -36,21 +47,33 @@ class FakeAgent:
         return self._reply
 
 
-def _orch(tmp_path, reply="done!", heartbeat=None):
+def _orch(tmp_path, reply="done!", background_agent_factory=None):
     platform = FakePlatform()
     agent = FakeAgent(reply)
     o = ConversationOrchestrator(
         platform=platform,
         agent_factory=lambda **k: agent,
         session_store=SessionStore(tmp_path / "s.json"),
-        # Scheduled turns hot-reload config like user turns — the fake
-        # needs a real get_mtime.
+        # Trigger turns hot-reload config like user turns — the fake needs a
+        # real get_mtime.
         config=SimpleNamespace(get_mtime=lambda: 0.0),
         connectors_list=[],
         persona_id="t",
-        heartbeat=heartbeat,
+        background_agent_factory=background_agent_factory,
     )
     return o, platform, agent
+
+
+class Emitter:
+    """Stands in for the orchestrator: records events, reports delivery."""
+
+    def __init__(self, delivered=True):
+        self.events: list[TriggerEvent] = []
+        self.delivered = delivered
+
+    async def __call__(self, event: TriggerEvent) -> bool:
+        self.events.append(event)
+        return self.delivered
 
 
 class TestSystemCron:
@@ -142,74 +165,126 @@ class TestScheduleTimezone:
         engine.shutdown()
 
     def test_prompt_section_mentions_timezone(self, tmp_path):
-        from domain.schedule import TaskScheduler
         section = TaskScheduler(runtime=self._engine(tmp_path)).system_prompt_section()
         assert "Asia/Manila" in section
 
 
-class TestHeartbeatFire:
-    def _hb(self, tmp_path, checklist=None, exploding=False):
-        if exploding:
-            def loader():
+class TestHeartbeatSource:
+    """No orchestrator needed any more — the decisions are all in the source."""
+
+    def _source(self, checklist=None, exploding=False):
+        def loader():
+            if exploding:
                 raise RuntimeError("yaml unreadable")
-        else:
-            def loader():
-                return checklist or ""
-        return HeartbeatConfig(cron="0 8 * * *", chat_id=77, prompt_loader=loader)
+            return checklist or ""
+        return HeartbeatSource(cron="0 8 * * *", conversation=CHAT,
+                               prompt_loader=loader)
 
-    async def test_fires_checklist_as_schedule_turn(self, tmp_path):
-        hb = self._hb(tmp_path, "- check email\n- check calendar\n")
-        orch, platform, agent = _orch(tmp_path, reply="You have 2 urgent emails.", heartbeat=hb)
-        await orch._on_heartbeat()
-        assert len(agent.prompts) == 1
-        assert agent.prompts[0].startswith(_HEARTBEAT_PREAMBLE)
-        assert "- check email" in agent.prompts[0]
-        assert platform.sent == [(77, "You have 2 urgent emails.")]
+    async def test_fires_the_checklist_with_its_preamble(self):
+        emit = Emitter()
+        src = self._source("- check email\n- check calendar\n")
+        await src.start(TriggerContext(emit=emit, add_cron=lambda *a: None))
+        await src._fire()
+        (event,) = emit.events
+        assert event.prompt.startswith(HEARTBEAT_PREAMBLE)
+        assert "- check email" in event.prompt
+        assert event.conversation == CHAT
 
-    async def test_unloadable_checklist_skips(self, tmp_path):
-        hb = self._hb(tmp_path, exploding=True)
-        orch, platform, agent = _orch(tmp_path, heartbeat=hb)
-        await orch._on_heartbeat()
-        assert agent.prompts == []
-        assert platform.sent == []
+    async def test_unloadable_checklist_skips(self):
+        emit = Emitter()
+        src = self._source(exploding=True)
+        await src.start(TriggerContext(emit=emit, add_cron=lambda *a: None))
+        await src._fire()
+        assert emit.events == []
 
-    async def test_empty_checklist_skips(self, tmp_path):
-        hb = self._hb(tmp_path, checklist="   \n")
-        orch, platform, agent = _orch(tmp_path, heartbeat=hb)
-        await orch._on_heartbeat()
-        assert agent.prompts == []
+    async def test_empty_checklist_skips(self):
+        """Emptying the prompt is the documented way to pause heartbeats, so
+        it must be a silent skip and not an error."""
+        emit = Emitter()
+        src = self._source(checklist="   \n")
+        await src.start(TriggerContext(emit=emit, add_cron=lambda *a: None))
+        await src._fire()
+        assert emit.events == []
 
-    async def test_quiet_heartbeat_sends_nothing(self, tmp_path):
-        hb = self._hb(tmp_path, "- check email\n")
-        orch, platform, agent = _orch(tmp_path, reply="<silent>", heartbeat=hb)
-        await orch._on_heartbeat()
-        assert len(agent.prompts) == 1, "turn ran"
-        assert platform.sent == [], "nothing delivered"
+    async def test_prompt_is_reloaded_every_fire(self):
+        """Editing the checklist must take effect without a restart."""
+        emit = Emitter()
+        current = ["- first"]
+        src = HeartbeatSource(cron="0 8 * * *", conversation=CHAT,
+                              prompt_loader=lambda: current[0])
+        await src.start(TriggerContext(emit=emit, add_cron=lambda *a: None))
+        await src._fire()
+        current[0] = "- second"
+        await src._fire()
+        assert "- first" in emit.events[0].prompt
+        assert "- second" in emit.events[1].prompt
+
+    async def test_runs_on_a_dedicated_agent(self):
+        """Heartbeats are frequent background work; running them on the chat
+        agent spends chat-vendor quota and overwrites its session."""
+        emit = Emitter()
+        src = self._source("- check email")
+        await src.start(TriggerContext(emit=emit, add_cron=lambda *a: None))
+        await src._fire()
+        assert emit.events[0].agent is TriggerAgent.DEDICATED
+
+    async def test_registers_its_cron(self):
+        registered = []
+        src = self._source("- x")
+        await src.start(TriggerContext(
+            emit=Emitter(),
+            add_cron=lambda name, cron, cb: registered.append((name, cron)),
+        ))
+        assert registered == [("heartbeat", "0 8 * * *")]
+
+    async def test_a_failing_registrar_does_not_raise(self):
+        """The port says start() must not raise: one broken trigger must not
+        stop the bot from booting."""
+        def boom(*a):
+            raise RuntimeError("scheduler is dead")
+        await self._source("- x").start(
+            TriggerContext(emit=Emitter(), add_cron=boom)
+        )  # must not raise
 
 
-class TestScheduledSilence:
-    async def test_regular_schedule_honors_silent(self, tmp_path):
+class TestTriggerTurnSilence:
+    async def test_trigger_honors_silent(self, tmp_path):
         orch, platform, agent = _orch(tmp_path, reply="<silent>")
-        await orch._on_schedule_fire(ScheduledTask(
-            name="digest", cron="0 8 * * *", chat_id=5, prompt="daily digest",
+        assert await orch._run_trigger(TriggerEvent(
+            source="schedule:digest", conversation=CHAT, prompt="daily digest",
+            agent=TriggerAgent.CONVERSATION,
         ))
         assert platform.sent == []
 
-    async def test_regular_schedule_still_delivers_text(self, tmp_path):
+    async def test_trigger_still_delivers_text(self, tmp_path):
         orch, platform, agent = _orch(tmp_path, reply="Here's your digest.")
-        await orch._on_schedule_fire(ScheduledTask(
-            name="digest", cron="0 8 * * *", chat_id=5, prompt="daily digest",
+        assert await orch._run_trigger(TriggerEvent(
+            source="schedule:digest", conversation=CHAT, prompt="daily digest",
+            agent=TriggerAgent.CONVERSATION,
         ))
-        assert platform.sent == [(5, "Here's your digest.")]
+        assert platform.sent == [(CHAT, "Here's your digest.")]
+
+    async def test_delivery_failure_is_reported_to_the_source(self, tmp_path):
+        """The bool is load-bearing: a watch holds its watermark on False, so
+        a failed send re-reports next poll instead of losing the mail."""
+        orch, platform, agent = _orch(tmp_path, reply="You have mail.")
+
+        async def broken(*a, **kw):
+            raise RuntimeError("telegram is down")
+        platform.send_text = broken
+
+        assert await orch._run_trigger(TriggerEvent(
+            source="watch:mail", conversation=CHAT, prompt="new mail",
+        )) is False
 
 
-class TestDedicatedHeartbeatAgent:
-    """Heartbeats run on a dedicated (Haiku) agent when a factory is set —
-    and that agent must never clobber the chat's session or outlive the fire."""
+class TestDedicatedAgent:
+    """A DEDICATED trigger must not clobber the chat's session or outlive
+    the fire."""
 
-    class HbAgent:
+    class BgAgent:
         def __init__(self):
-            self.session_id = "heartbeat-session-must-not-persist"
+            self.session_id = "background-session-must-not-persist"
             self.prompts = []
             self.stops = 0
 
@@ -220,26 +295,38 @@ class TestDedicatedHeartbeatAgent:
         async def stop(self):
             self.stops += 1
 
-    async def test_factory_agent_used_and_torn_down(self, tmp_path):
-        chat_agent_holder = []
-        hb_agent = self.HbAgent()
-
-        def hb_factory(chat_id):
-            return hb_agent
-
-        hb = HeartbeatConfig(
-            cron="0 8 * * *", chat_id=77,
-            prompt_loader=lambda: "check things",
-            agent_factory=hb_factory,
+    async def test_background_agent_used_and_torn_down(self, tmp_path):
+        bg = self.BgAgent()
+        orch, platform, chat_agent = _orch(
+            tmp_path, background_agent_factory=lambda chat_id: bg
         )
-        orch, platform, chat_agent = _orch(tmp_path, heartbeat=hb)
-        chat_agent_holder.append(chat_agent)
-        await orch._on_heartbeat()
-        assert hb_agent.prompts, "dedicated agent served the heartbeat"
+        await orch._run_trigger(TriggerEvent(
+            source="heartbeat", conversation=CHAT, prompt="check things",
+            agent=TriggerAgent.DEDICATED,
+        ))
+        assert bg.prompts, "dedicated agent served the fire"
         assert chat_agent.prompts == [], "chat agent untouched"
-        assert platform.sent == [(77, "2 urgent emails.")]
-        # Session isolation: the throwaway agent's session id must not be
-        # persisted as the chat's.
-        assert 77 not in orch._session_ids
+        assert platform.sent == [(CHAT, "2 urgent emails.")]
+        assert CHAT not in orch._session_ids, "throwaway session not persisted"
         await asyncio.sleep(0.01)
-        assert hb_agent.stops == 1, "torn down after the fire"
+        assert bg.stops == 1, "torn down after the fire"
+
+    async def test_falls_back_to_the_chat_agent_when_unconfigured(self, tmp_path):
+        """Without a background factory a DEDICATED trigger must still run —
+        expensively is better than not at all, and it must not then treat the
+        chat agent as throwaway."""
+        orch, platform, chat_agent = _orch(tmp_path, reply="ok")
+        assert await orch._run_trigger(TriggerEvent(
+            source="heartbeat", conversation=CHAT, prompt="check things",
+            agent=TriggerAgent.DEDICATED,
+        ))
+        assert chat_agent.prompts == ["check things"]
+
+    async def test_conversation_agent_persists_its_session(self, tmp_path):
+        orch, platform, chat_agent = _orch(tmp_path, reply="ok")
+        chat_agent.session_id = "real-chat-session"
+        await orch._run_trigger(TriggerEvent(
+            source="schedule:digest", conversation=CHAT, prompt="digest",
+            agent=TriggerAgent.CONVERSATION,
+        ))
+        assert orch._session_ids.get(CHAT) == "real-chat-session"

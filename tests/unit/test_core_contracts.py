@@ -75,11 +75,19 @@ class TestToolResult:
         assert ports.as_tool_result(42).text == "42"
         assert ports.as_tool_result(None).text == ""
 
-    def test_mcp_content_wire_shape(self):
-        assert ports.mcp_content(ports.ToolResult.ok("hi")) == {
+    def test_mcp_wire_shape_is_not_a_contract(self):
+        """MCP is Anthropic's wire format and now lives at that vendor edge.
+        Asserting its ABSENCE here is the point: a contracts package that
+        exports one vendor's serialization is one that quietly privileges
+        that vendor."""
+        assert not hasattr(ports, "mcp_content")
+
+    def test_mcp_wire_shape_at_the_anthropic_edge(self):
+        from adapters.model.anthropic import _mcp_content
+        assert _mcp_content(ports.ToolResult.ok("hi")) == {
             "content": [{"type": "text", "text": "hi"}]
         }
-        assert ports.mcp_content(ports.ToolResult.error("no")) == {
+        assert _mcp_content(ports.ToolResult.error("no")) == {
             "content": [{"type": "text", "text": "no"}], "isError": True,
         }
 

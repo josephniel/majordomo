@@ -158,6 +158,68 @@ ALTER TABLE memory_entries
 ALTER TABLE memory_entries
     ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
 
+-- ---------------------------------------------------------------------------
+-- Bi-temporal validity, provenance and confidence.
+--
+-- The store already tracked when a row was WRITTEN (created_at) and when it
+-- was replaced (superseded_by). It could not express when the FACT was true.
+-- Those are different clocks and conflating them produces confidently wrong
+-- answers to ordinary questions:
+--
+--   "the user is on leave 12-19 Aug" saved on 1 Aug is still the newest,
+--   most-relevant, non-superseded fact on 25 Aug — nothing has contradicted
+--   it, so recall keeps injecting it and the assistant keeps acting on it.
+--
+--   valid_to lets that fact expire on its own terms without anyone having to
+--   remember to retract it.
+--
+-- valid_from defaults to created_at (write time is the best guess when the
+-- fact doesn't say), and valid_to NULL means "still true / no known end" —
+-- which is the overwhelming majority, so the default costs nothing.
+--
+-- provenance answers "who claimed this?": 'chat' (the user said so),
+-- 'reflection' (extracted from a conversation), 'ideation' (the agent
+-- inferred it from other facts). It was previously buried in metadata->>
+-- 'source', unindexable and easy to forget to set. It matters most for
+-- ideation: an inferred fact is a hypothesis, and the day one turns out to
+-- be wrong the operator needs to find the rest of them.
+--
+-- confidence is 1.0 for anything asserted and lower for anything inferred.
+-- Kept as a plain float rather than a scale with rules, because the only
+-- consumer today is "rank an asserted fact above an inferred one".
+-- ---------------------------------------------------------------------------
+ALTER TABLE memory_entries
+    ADD COLUMN IF NOT EXISTS valid_from TIMESTAMPTZ;
+ALTER TABLE memory_entries
+    ADD COLUMN IF NOT EXISTS valid_to TIMESTAMPTZ;
+ALTER TABLE memory_entries
+    ADD COLUMN IF NOT EXISTS provenance TEXT NOT NULL DEFAULT 'chat';
+ALTER TABLE memory_entries
+    ADD COLUMN IF NOT EXISTS confidence REAL NOT NULL DEFAULT 1.0;
+
+-- Backfill valid_from for rows written before this column existed. Their
+-- write time is the only evidence available, and it is also what the code
+-- falls back to, so making it explicit costs nothing and keeps the column
+-- meaningful in ad-hoc SQL.
+UPDATE memory_entries SET valid_from = created_at WHERE valid_from IS NULL;
+
+-- Carry the old metadata->>'source' onto the column so provenance is right
+-- for existing rows rather than uniformly 'chat'. Runs once — after the
+-- first pass every row has a non-default provenance or genuinely came from
+-- chat, so the WHERE clause stops matching.
+UPDATE memory_entries
+   SET provenance = metadata->>'source'
+ WHERE provenance = 'chat'
+   AND metadata->>'source' IS NOT NULL
+   AND metadata->>'source' <> ''
+   AND metadata->>'source' <> 'chat';
+
+-- Expiry is checked on every recall, so it needs to be cheap. Partial: only
+-- rows that HAVE an end date are interesting, and they are a small minority.
+CREATE INDEX IF NOT EXISTS memory_entries_valid_to_idx
+    ON memory_entries (persona_id, valid_to)
+    WHERE valid_to IS NOT NULL AND superseded_by IS NULL;
+
 -- Embedding-dimension migration. A new EMBEDDING_MODEL with a different
 -- width makes every stored vector both wrong and un-insertable, so widen the
 -- column and clear it. Clearing is safe by design: recall's vector arm only

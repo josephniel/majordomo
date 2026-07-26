@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import replace
+import time
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Optional
 
 from ports import ConversationRef, ToolContext, ToolResult, ToolSpec
@@ -102,12 +103,41 @@ def _refusal(tool_name: str, reason: str) -> ToolResult:
 Auditor = Callable[[int, str, str, str, str, str], Awaitable[None]]
 
 
+@dataclass(frozen=True)
+class PendingApproval:
+    """A write that is waiting on the operator right now.
+
+    Published so the orchestrator can tell a WAITING turn apart from a
+    WORKING one. Without the distinction, a chat blocked on an approval looks
+    identical to a slow model call: the turn holds the per-chat lock for the
+    whole approval timeout, and anything the user types in the meantime sits
+    behind that lock, unacknowledged, for up to two minutes. They tapped
+    nothing, saw nothing, and the bot appeared dead.
+    """
+    connector: str
+    tool: str
+    since: float
+
+    @property
+    def label(self) -> str:
+        return f"{self.connector}/{self.tool}"
+
+
 class WriteApprovalGate:
     """Wraps write-tool handlers with an in-chat operator confirmation."""
 
     def __init__(self) -> None:
         self._confirmer: Optional[Confirmer] = None
         self._auditor: Optional[Auditor] = None
+        # conversation -> the write it is blocked on. Only ever holds
+        # conversations currently inside `_confirmer`, and the entry is
+        # removed in a finally so a denial, timeout, cancellation or crash
+        # can't leave a chat looking permanently blocked.
+        self._pending: dict[ConversationRef, PendingApproval] = {}
+
+    def pending_for(self, chat_id: ConversationRef) -> Optional[PendingApproval]:
+        """The write this conversation is waiting on, if any."""
+        return self._pending.get(chat_id)
 
     def bind(self, confirmer: Confirmer) -> None:
         """Attach the platform's approval UI. Called at composition time,
@@ -178,6 +208,13 @@ class WriteApprovalGate:
             return False, "no chat context to request approval in"
 
         prompt = format_approval_prompt(connector_name, tool_name, args)
+        # Publish before awaiting and clear in `finally`. The finally is what
+        # matters: a denial, a timeout, a /cancel (CancelledError) or an
+        # exception must all release the marker, or the chat reads as
+        # permanently blocked on a write that already resolved.
+        self._pending[chat_id] = PendingApproval(
+            connector=connector_name, tool=tool_name, since=time.monotonic(),
+        )
         try:
             approved = await self._confirmer(chat_id, prompt)
         except Exception:
@@ -187,6 +224,8 @@ class WriteApprovalGate:
                 "approval request could not be delivered",
             )
             return False, "the approval request could not be delivered; denied by default"
+        finally:
+            self._pending.pop(chat_id, None)
         if approved:
             await self._audit(chat_id, connector_name, tool_name, args, "approved", "")
             return True, ""

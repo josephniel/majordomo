@@ -63,15 +63,6 @@ def as_tool_result(raw: Any) -> ToolResult:
     return ToolResult("" if raw is None else str(raw))
 
 
-def mcp_content(raw: Any) -> dict[str, Any]:
-    """MCP wire shape from a handler result — the Anthropic SDK edge."""
-    r = as_tool_result(raw)
-    out: dict[str, Any] = {"content": [{"type": "text", "text": r.text}]}
-    if r.is_error:
-        out["isError"] = True
-    return out
-
-
 # Python type → JSON Schema fragment, for legacy {arg: type} parameter maps.
 _TYPE_TO_JSON: dict[Any, dict[str, str]] = {
     str: {"type": "string"},
@@ -184,21 +175,6 @@ class ToolProvider:
     # so their tools ride every turn even under subsetting.
     ALWAYS_ATTACH: bool = False
 
-    # ---- prompt-prefix stability (local inference) ----
-    # True when this provider's system_prompt_section() CHANGES AT RUNTIME —
-    # in practice, exactly the providers that also override context_version()
-    # (memory recompacts, skills get edited). ContextBuilder emits these LAST
-    # so everything stable stays in one unbroken prefix.
-    #
-    # Why it matters: llama.cpp/Ollama reuse the KV cache only for the longest
-    # byte-identical PREFIX of the prompt. Anything after the first changed
-    # byte is re-processed. With a volatile section in the middle, one memory
-    # write invalidated the whole ~9k-token system prompt — measured at ~117
-    # tok/s prefill on an M4, that is ~100s of dead time versus 0.69s warm.
-    # Hosted vendors don't care (their prefill is effectively free), so this
-    # costs them nothing.
-    VOLATILE_PROMPT_SECTION: bool = False
-
     # Local tool names whose invocation satisfies an "I've set a reminder /
     # scheduled task" claim — the hallucination detector (chat Layer 3b)
     # substring-matches the turn's tool trace against the union of these.
@@ -257,9 +233,31 @@ class ToolProvider:
         system-prompt contribution changes (e.g. memory core recompacted).
         The orchestrator sums versions across providers and rebuilds agents
         whose baked-in system prompt has gone stale — this is what keeps a
-        long-lived server-side session's injected memory fresh. Default:
-        never changes."""
+        long-lived server-side session's injected memory fresh.
+
+        Overriding this is also the declaration that the section is MUTABLE.
+        Callers that care where a section can safely sit in the prompt should
+        ask `has_mutable_prompt_section()` rather than re-deriving it; there
+        used to be a separate VOLATILE_PROMPT_SECTION flag saying the same
+        thing, and two spellings of one fact can disagree.
+
+        Default: never changes.
+        """
         return 0
+
+    @classmethod
+    def has_mutable_prompt_section(cls) -> bool:
+        """True when this provider's `system_prompt_section()` can change
+        between turns — i.e. it overrode `context_version`.
+
+        Derived rather than declared. This is a query about the provider, not
+        a knob on it: a provider whose contribution is versioned is by
+        definition one whose contribution moves, and no provider should have
+        to know why anyone is asking. (One caller does care a great deal —
+        see ContextBuilder — but that is a local-inference concern and has no
+        business in a contract every faculty and connector inherits.)
+        """
+        return cls.context_version is not ToolProvider.context_version
 
     # ---- chat lifecycle hooks ----
 

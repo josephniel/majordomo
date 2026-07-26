@@ -116,6 +116,13 @@ class ConnectorCLI:
             sys.exit(1)
         asyncio.run(_reembed_memory(self._runtime))
 
+    def _cmd_memory_ideate(self, args) -> None:
+        if self._runtime is None:
+            print("error: persona container not available", file=sys.stderr)
+            sys.exit(1)
+        asyncio.run(_ideate_memory(self._runtime, args.scope, args.domain_key,
+                                   args.dry_run))
+
     def _cmd_memory_export(self, args) -> None:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
@@ -264,6 +271,25 @@ class ConnectorCLI:
                  "(run once after an embedding-model change)",
         )
         p_reembed.set_defaults(func=self._cmd_memory_reembed)
+
+        # `ideate` — derive facts that FOLLOW from stored ones.
+        #
+        # Operator-invoked rather than on a cron by default. This writes
+        # beliefs the user never stated, so opting in is the right shape:
+        # a background process quietly inventing facts about you is not
+        # something to enable on someone's behalf.
+        p_ideate = p_memory_sub.add_parser(
+            "ideate",
+            help="derive new facts that follow from what is already known "
+                 "(inferences are labelled provenance=ideation)",
+        )
+        p_ideate.add_argument("--scope", default=None,
+                              help="only reason over this scope")
+        p_ideate.add_argument("--domain-key", default=None,
+                              help="only reason over this domain compartment")
+        p_ideate.add_argument("--dry-run", action="store_true",
+                              help="show what would be inferred; write nothing")
+        p_ideate.set_defaults(func=self._cmd_memory_ideate)
 
         p_export = p_memory_sub.add_parser(
             "export",
@@ -422,6 +448,50 @@ async def _reembed_memory(container) -> None:
     done = await db.backfill_embeddings(force=True)
     print(f"re-embedded {done} entries")
     await db.close()
+
+
+async def _ideate_memory(container, scope, domain_key, dry_run: bool) -> None:
+    """Run one ideation pass and report what it decided.
+
+    --dry-run prints the proposals without applying them. Worth having as the
+    default way to try this: ideation writes inferred beliefs, and the first
+    thing an operator should be able to do is look at what their model
+    actually proposes before letting it near their memory.
+    """
+    from domain.ideation import Ideator
+
+    memory = container.provider("memory")
+    await memory.on_chat_startup()
+    try:
+        ideator = Ideator(memory, container.summarizer)
+        if dry_run:
+            # Decide, print, apply nothing.
+            decisions = []
+            original_apply = ideator._reconciler.apply
+
+            async def _no_write(decision):
+                decisions.append(decision)
+                return None
+
+            ideator._reconciler.apply = _no_write
+            await ideator.run(scope=scope, domain_key=domain_key)
+            ideator._reconciler.apply = original_apply
+        else:
+            decisions = await ideator.run(scope=scope, domain_key=domain_key)
+
+        if not decisions:
+            print("nothing new follows from what is currently known.")
+            return
+        print(f"=== ideation: {len(decisions)} proposal(s)"
+              f"{' (dry run — nothing written)' if dry_run else ''} ===")
+        for d in decisions:
+            print(f"\n[{d.verdict}] {d.candidate.content}")
+            if d.reason:
+                print(f"    why: {d.reason}")
+            if d.target_id:
+                print(f"    target: {d.target_id}")
+    finally:
+        await memory.on_chat_shutdown()
 
 
 async def _inspect_memory(container) -> None:

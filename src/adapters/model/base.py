@@ -63,9 +63,16 @@ class ContextBuilder:
     section that changes at runtime (memory, skills) sitting in the MIDDLE
     invalidated everything after it — one memory write cost a full ~9k-token
     re-prefill (~100s on an M4 at 117 tok/s, vs 0.69s warm). Emitting those
-    last keeps the expensive, unchanging bulk cacheable. Providers opt in via
-    `ToolProvider.VOLATILE_PROMPT_SECTION`; ordering is otherwise unchanged,
-    and hosted vendors are unaffected either way.
+    last keeps the expensive, unchanging bulk cacheable. Ordering is
+    otherwise unchanged, and hosted vendors are unaffected either way.
+
+    Which sections are mutable is DERIVED, via
+    `ToolProvider.has_mutable_prompt_section()`, from whether the provider
+    versions its contribution. Providers used to opt in with a separate
+    VOLATILE_PROMPT_SECTION flag, which meant a KV-cache concern sat in the
+    contract every faculty inherits — and meant a provider could bump
+    `context_version` while forgetting the flag, quietly costing a full
+    re-prefill per write with nothing to point at.
     """
 
     def __init__(
@@ -93,8 +100,13 @@ class ContextBuilder:
             if not part:
                 continue
             # Runtime-mutable sections are deferred to the tail so the prefix
-            # above them stays byte-identical across turns (see class docstring).
-            if getattr(c, "VOLATILE_PROMPT_SECTION", False):
+            # above them stays byte-identical across turns (see class
+            # docstring). getattr-guarded because providers mounted from
+            # external MCP servers are duck-typed and never inherited
+            # ToolProvider; treating those as stable is the safe default
+            # (worst case is a cache miss, not a wrong prompt).
+            probe = getattr(type(c), "has_mutable_prompt_section", None)
+            if probe is not None and probe():
                 volatile.append(part)
             else:
                 parts.append(part)

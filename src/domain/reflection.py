@@ -24,7 +24,9 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Optional
 
-from ports import ConversationRef, Summarizer
+from ports import ConversationRef, MemoryVerdict, Summarizer
+
+from .reconcile import Reconciler, candidate_from_extraction
 
 if TYPE_CHECKING:
     from adapters.model.history import ConversationHistory
@@ -79,6 +81,10 @@ class ReflectionEngine:
         self._summarizer = summarizer
         self._persona_id = persona_id
         self._idle_seconds = idle_seconds
+        # Extraction is a MERGE against existing memory, not an append: a
+        # changed fact must supersede the old one rather than sit beside it
+        # contradicting it. See domain/reconcile.py.
+        self._reconciler = Reconciler(memory, summarizer)
         # chat_id -> pending idle timer
         self._timers: dict[int, asyncio.Task] = {}
         self._run_locks: dict[int, asyncio.Lock] = {}
@@ -139,25 +145,32 @@ class ReflectionEngine:
 
             saved = 0
             saved_entries = []
+            verdicts: dict[str, int] = {}
             for fact in facts:
+                candidate = candidate_from_extraction(
+                    fact,
+                    provenance="reflection",
+                    volatile=_looks_volatile(str(fact.get("content", ""))),
+                )
+                if candidate is None:
+                    log.debug("reflection fact failed validation: %r", fact)
+                    continue
                 try:
-                    content = fact.get("content", "")
-                    msg, entry = await self._memory.save_fact(
-                        scope=fact.get("scope", ""),
-                        content=content,
-                        domain_key=fact.get("domain_key", ""),
-                        title=fact.get("title", ""),
-                        source="reflection",
-                        volatile=_looks_volatile(content),
-                    )
-                    if entry is not None:
-                        saved += 1
-                        saved_entries.append(entry)
-                    else:
-                        log.debug("reflection fact skipped: %s", msg)
+                    decision = await self._reconciler.decide(candidate)
+                    entry = await self._reconciler.apply(decision)
                 except Exception:
-                    log.exception("could not save reflected fact")
+                    log.exception("could not reconcile reflected fact")
+                    continue
+                verdicts[decision.verdict] = verdicts.get(decision.verdict, 0) + 1
+                if decision.verdict is MemoryVerdict.ADD and entry is not None:
+                    saved += 1
+                    saved_entries.append(entry)
 
+            # Only newly-ADDED facts are auto-linked. An UPDATE already
+            # inherits the superseded row's edges (supersede_entry re-points
+            # them), so linking it again to its burst-mates would attach the
+            # corrected fact to whatever else happened to be said at the same
+            # time — which is not a relationship.
             await self._autolink_batch(saved_entries)
 
             # Advance the watermark past everything we read — even if zero
@@ -167,8 +180,9 @@ class ReflectionEngine:
                 self._persona_id, chat_id, last_id,
             )
             log.info(
-                "reflection for chat %s: %d rows read, %d facts extracted, %d saved",
-                chat_id, len(convo), len(facts), saved,
+                "reflection for chat %s: %d rows read, %d extracted, verdicts=%s",
+                chat_id, len(convo), len(facts),
+                {str(k): v for k, v in sorted(verdicts.items())} or "{}",
             )
             return saved
 
