@@ -39,6 +39,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class ConnectorEntry:
     """A flattened connector × profile ready to spawn an MCP server."""
+
     name: str
     enabled: bool
     description: str
@@ -104,14 +105,14 @@ class ServiceRegistry:
         out: dict[str, str] = {}
         for k, v in raw.items():
             s = os.path.expandvars(os.path.expanduser(str(v)))
-            if s.startswith("./") or s.startswith("../"):
+            if s.startswith(("./", "../")):
                 s = str((self.project_root / s).resolve())
             out[k] = s
         return out
 
     def _resolve_path(self, path_str: str) -> Path:
         s = os.path.expandvars(os.path.expanduser(path_str))
-        if s.startswith("./") or s.startswith("../"):
+        if s.startswith(("./", "../")):
             s = str((self.project_root / s).resolve())
         return Path(s)
 

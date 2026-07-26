@@ -33,7 +33,8 @@ class TestBackgroundIsNoLongerClaudeOnly:
         r = roles(llm_chain=("gemini", "claude"),
                   background_llm_chain="ollama", background_model="gemma4:12b")
         bg = r[ModelRole.BACKGROUND]
-        assert bg.chain == ("ollama",) and bg.model == "gemma4:12b"
+        assert bg.chain == ("ollama",)
+        assert bg.model == "gemma4:12b"
         assert r[ModelRole.CHAT].chain == ("gemini", "claude"), "chat unaffected"
 
     def test_legacy_heartbeat_model_still_honoured_on_claude(self):

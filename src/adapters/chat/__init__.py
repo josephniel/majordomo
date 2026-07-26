@@ -25,7 +25,7 @@ _REGISTRY: dict[str, type[ChatPlatform]] = {
 }
 
 
-def get_platform_cls(name: str) -> Optional[type[ChatPlatform]]:
+def get_platform_cls(name: str) -> type[ChatPlatform] | None:
     """Return the ChatPlatform subclass registered under *name*, or None."""
     return _REGISTRY.get(name)
 

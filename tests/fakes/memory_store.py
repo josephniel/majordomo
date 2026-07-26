@@ -25,12 +25,12 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _tokens(text: str) -> set[str]:
@@ -49,7 +49,7 @@ class FakeMemoryStore:
         # Force the next recall_scored's scores, so a test can put a hit
         # above or below the injection floor without reverse-engineering the
         # ranking function.
-        self.next_scores: Optional[list[float]] = None
+        self.next_scores: list[float] | None = None
         self.fail_recall = False
 
     # ---- lifecycle ----
@@ -69,12 +69,12 @@ class FakeMemoryStore:
         content: str,
         domain_key: str = "",
         title: str = "",
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         volatile: bool = False,
         provenance: str = "chat",
         confidence: float = 1.0,
-        valid_from: Optional[datetime] = None,
-        valid_to: Optional[datetime] = None,
+        valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
     ):
         from ports import MemoryEntry
 
@@ -195,8 +195,8 @@ class FakeMemoryStore:
         self,
         persona_id: str,
         query: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 8,
     ):
         if self.fail_recall:
@@ -222,8 +222,8 @@ class FakeMemoryStore:
     async def list_active(
         self,
         persona_id: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 200,
     ):
         out = [
@@ -249,7 +249,7 @@ class FakeMemoryStore:
         return True
 
     async def remove_link(
-        self, from_id: uuid.UUID, to_id: uuid.UUID, relation: Optional[str] = None
+        self, from_id: uuid.UUID, to_id: uuid.UUID, relation: str | None = None
     ) -> bool:
         doomed = {
             e for e in self.links

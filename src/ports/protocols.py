@@ -6,15 +6,19 @@ by implementing the method, no orchestrator edits required.
 """
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol, runtime_checkable, Sequence
+from typing import Any, Protocol, runtime_checkable, TYPE_CHECKING
 
-from .conversation import ConversationRef
+
+if TYPE_CHECKING:
+    from .conversation import ConversationRef
+    from collections.abc import Sequence
 
 
 @runtime_checkable
 class EnabledService(Protocol):
     """What a rendered service entry looks like to anything downstream of the
-    registry: a name, a description, and the tools it exposes."""
+    registry: a name, a description, and the tools it exposes.
+    """
 
     name: str
     description: str
@@ -41,13 +45,14 @@ class AttachmentIngestor(Protocol):
 
     async def ingest_attachment(
         self, chat_id: ConversationRef, filename: str, mime: str, data: bytes,
-    ) -> Optional[str]: ...
+    ) -> str | None: ...
 
 
 @runtime_checkable
 class ContextInjector(Protocol):
     """Contributes a per-turn context block for the user's message (memory
-    recall, keyword-matched skills)."""
+    recall, keyword-matched skills).
+    """
 
     async def inject_context(self, text: str) -> str: ...
 
@@ -80,7 +85,8 @@ class VendorIntrospectable(Protocol):
 @runtime_checkable
 class ToolTraceReporting(Protocol):
     """An agent that records which tools ran during its last turn — the
-    hallucination detectors (Layers 3/3b) read these."""
+    hallucination detectors (Layers 3/3b) read these.
+    """
 
     last_turn_tool_calls: int
     last_turn_tool_names: tuple[str, ...]
@@ -89,7 +95,8 @@ class ToolTraceReporting(Protocol):
 @runtime_checkable
 class SessionResettable(Protocol):
     """A server-side-history agent whose session can be abandoned and
-    reopened fresh (compaction rotation)."""
+    reopened fresh (compaction rotation).
+    """
 
     async def reset_session(self) -> None: ...
 
@@ -97,7 +104,8 @@ class SessionResettable(Protocol):
 @runtime_checkable
 class ToolCallProbe(Protocol):
     """An agent that can cheaply prove its vendor still calls tools
-    (Layer 4 canary)."""
+    (Layer 4 canary).
+    """
 
     async def probe_tool_calling(self) -> tuple[bool, str]: ...
 
@@ -105,6 +113,7 @@ class ToolCallProbe(Protocol):
 @runtime_checkable
 class CanaryRunner(Protocol):
     """A composite agent that runs the tool-calling canary across its
-    chain at startup."""
+    chain at startup.
+    """
 
     async def run_canary(self) -> dict[str, Any]: ...

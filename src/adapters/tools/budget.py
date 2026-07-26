@@ -16,15 +16,17 @@ import getpass
 import json
 import logging
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any, TYPE_CHECKING
 
 import httpx
 
 from ports import Connector, ToolContext, ToolResult, tool
 
-from .registry import ServiceRegistry
+
+if TYPE_CHECKING:
+    from .registry import ServiceRegistry
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +36,8 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 class BudgetClient:
     """Thin async wrapper around the budget tracker's REST API.
 
-    `transport` is injectable for tests (httpx.MockTransport)."""
+    `transport` is injectable for tests (httpx.MockTransport).
+    """
 
     TIMEOUT = 30.0
 
@@ -42,7 +45,7 @@ class BudgetClient:
         self,
         base_url: str,
         api_key: str,
-        transport: Optional[httpx.AsyncBaseTransport] = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -52,8 +55,8 @@ class BudgetClient:
         self,
         method: str,
         path: str,
-        params: Optional[dict] = None,
-        body: Optional[dict] = None,
+        params: dict | None = None,
+        body: dict | None = None,
     ) -> Any:
         async with httpx.AsyncClient(
             timeout=self.TIMEOUT, transport=self._transport
@@ -83,7 +86,7 @@ class BudgetClient:
 
     async def list_transactions(
         self,
-        account_id: Optional[int] = None,
+        account_id: int | None = None,
         page_size: int = 10,
     ) -> dict:
         params: dict[str, Any] = {"page": 1, "page_size": page_size}
@@ -213,7 +216,7 @@ the ledger books their share as expense and the rest as loans)."""
             servers[profile.name] = self._build_tools_for_profile(client)
         return servers
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     # ---- tools ----
@@ -312,7 +315,7 @@ the ledger books their share as expense and the rest as loans)."""
                     "amount": args["amount"],
                     "tag_id": int(args["tag_id"]),
                     "occurred_at": args.get("occurred_at")
-                    or datetime.now(timezone.utc).isoformat(),
+                    or datetime.now(UTC).isoformat(),
                 }
                 if args.get("description"):
                     payload["description"] = str(args["description"])
@@ -378,7 +381,7 @@ the ledger books their share as expense and the rest as loans)."""
                     "shares": shares,
                     "tag_id": int(args["tag_id"]),
                     "occurred_at": args.get("occurred_at")
-                    or datetime.now(timezone.utc).isoformat(),
+                    or datetime.now(UTC).isoformat(),
                 }
                 if args.get("description"):
                     payload["description"] = str(args["description"])

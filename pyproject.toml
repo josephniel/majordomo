@@ -14,6 +14,117 @@ dependencies = { file = ["requirements.txt"] }
 packages = []
 
 # ---------------------------------------------------------------------------
+# Linting.
+#
+# Strict, and enforced at zero — `./manage lint` and CI both fail on a single
+# violation. A lint budget that is "mostly clean" is one nobody reads.
+#
+# LINT ONLY, NO FORMATTER. `ruff format` wants to rewrite ~4000 lines, and a
+# lot of the layout here is load-bearing: the measured comparison tables in
+# embeddings.py and reranking.py, the aligned constant blocks in db.py, the
+# calibration figures in the reranker. Line length is still enforced (E501),
+# so this is not a licence to sprawl — it just means a human decides where
+# the break goes.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py313"
+line-length = 100          # p99 of this codebase is 93; most lines sit under 80
+src = ["src", "."]
+extend-exclude = [".venv", "instances"]
+
+[tool.ruff.lint]
+select = [
+    "F",      # pyflakes — real bugs
+    "E", "W", # pycodestyle
+    "I",      # import sorting
+    "UP",     # pyupgrade — this targets 3.13, so use 3.13
+    "B",      # bugbear — the mutable-default / loop-variable-capture family
+    "ANN",    # REQUIRED TYPE ANNOTATIONS (see mypy section: same goal, two angles)
+    "ASYNC",  # async correctness — this is an async codebase end to end
+    "S",      # bandit; the threat model here is prompt injection with tool access
+    "A",      # shadowing builtins
+    "C4",     # comprehensions
+    "DTZ",    # naive datetimes — there is a whole timezone section in the docs
+    "FA",     # future annotations
+    "G",      # logging-format: no f-strings in log calls (they format eagerly)
+    "LOG",    # logging correctness
+    "ISC",    # implicit string concat
+    "PIE", "PERF", "C90",
+    "PT",     # pytest style
+    "RET", "RSE", "SIM", "SLF", "TID", "TC", "PTH",
+    "PL",     # pylint subset — complexity, magic values, arg counts
+    "RUF",
+    "ARG",    # unused arguments
+    "N",      # pep8 naming
+    "INT", "YTT", "EXE", "T10",
+    "D",      # docstrings — but see the ignore list: STYLE, not presence
+]
+
+ignore = [
+    # ---- docstrings: enforce how they are written, not that they exist ----
+    # The docstrings here are unusually good where they earn their place, and
+    # they explain WHY. Requiring one on all 305 public methods would produce
+    # 305 restatements of the signature, which is how a codebase learns that
+    # docstrings are noise. D2xx/D4xx (formatting, imperative mood) stay on.
+    "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",
+
+    # ---- deliberate style, applied consistently and on purpose ----
+    # Error messages here are long, specific and tell the operator what to do
+    # next; several are the entire value of a guard (see the eval-migration
+    # refusal, or the shared-embedding-model check). EM/TRY003 want them
+    # extracted to bare variables, which would gut them.
+    "EM101", "EM102", "EM103",
+    "TRY003",
+    # Lazy imports are architectural, not accidental: fastembed pulls in
+    # onnxruntime, and `runtime/providers.py` imports concretes inside
+    # functions so the composition root does not import every vendor SDK at
+    # startup. ~51 sites, all intentional.
+    "PLC0415",
+    # Ruff's own formatter is not in use (see above), and these two exist to
+    # avoid fighting it.
+    "COM812", "ISC001",
+    # `Any` is legitimate at the tool boundary: tool arguments arrive as
+    # arbitrary JSON from a model. Narrowed where it can be; mypy --strict
+    # still forbids implicit Any everywhere else.
+    "ANN401",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests get correctness and bugbear rules, not ceremony. Annotating 900 test
+# methods `-> None` proves nothing, `assert` is the point, and a magic number
+# in a fixture is usually clearer than a named constant.
+"tests/**" = [
+    "ANN",     # test signatures
+    "S101",    # assert
+    "S105", "S106",  # "hardcoded password" — fake tokens in fixtures
+    "PLR2004", # magic values in assertions
+    "SLF001",  # tests legitimately reach into privates to check invariants
+    "D",       # test docstrings are prose for humans, not API docs
+    "ARG",     # pytest fixtures are requested by name and often unused
+    "PLR0913", # fixture-heavy signatures
+]
+# The CLI's whole job is to print.
+"cli.py" = ["T201"]
+"scripts/**" = ["T201", "S603", "S607"]
+"src/evals/**" = ["T201"]          # eval harnesses report to stdout
+"src/runtime/doctor.py" = ["T201"] # ditto — it is a report
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "parents"
+
+[tool.ruff.lint.isort]
+known-first-party = ["ports", "adapters", "domain", "kernel", "runtime", "evals"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.ruff.lint.pylint]
+max-args = 8
+
+# ---------------------------------------------------------------------------
 # Architecture enforcement.
 #
 # The dependency rule used to live in a docstring, which is why it had drifted:

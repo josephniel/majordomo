@@ -14,8 +14,10 @@ import json
 import logging
 import os
 import time
-from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -26,12 +28,13 @@ FAILURE_COOLDOWN_SECONDS = 120       # other errors: retry sooner
 
 class VendorHealthBoard:
     """Tracks per-vendor "don't retry until" timestamps. Thread-unsafe by
-    design — everything runs on one asyncio loop."""
+    design — everything runs on one asyncio loop.
+    """
 
     def __init__(
         self,
-        store_file: Optional[Path] = None,
-        on_change: Optional[callable] = None,
+        store_file: Path | None = None,
+        on_change: callable | None = None,
     ) -> None:
         self._store_file = store_file
         # Called with snapshot() after every state change — used to push
@@ -53,7 +56,7 @@ class VendorHealthBoard:
         return max(0.0, self._cooldown_until.get(vendor, 0.0) - time.time())
 
     def snapshot(self) -> dict[str, float]:
-        """vendor -> seconds of cooldown remaining (only vendors cooling down)."""
+        """Vendor -> seconds of cooldown remaining (only vendors cooling down)."""
         now = time.time()
         return {
             v: round(until - now, 1)

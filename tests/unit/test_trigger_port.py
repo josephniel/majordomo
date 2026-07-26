@@ -8,13 +8,6 @@ that misbehave.
 """
 import pytest
 
-from ports import (
-    ConversationRef,
-    TriggerAgent,
-    TriggerContext,
-    TriggerEvent,
-    TriggerSource,
-)
 from domain.triggers import (
     ALL_SOURCE_TYPES,
     HeartbeatSource,
@@ -22,6 +15,13 @@ from domain.triggers import (
     ScheduleSource,
     WatchSource,
     WebhookSource,
+)
+from ports import (
+    ConversationRef,
+    TriggerAgent,
+    TriggerContext,
+    TriggerEvent,
+    TriggerSource,
 )
 
 CHAT = ConversationRef("telegram", "7")

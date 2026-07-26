@@ -30,29 +30,35 @@ def tool_by_name(memory, name):
 class TestSaveFact:
     async def test_valid_save(self, memory):
         msg, entry = await memory.save_fact("user", "The user runs a homelab")
-        assert entry is not None and "saved" in msg
+        assert entry is not None
+        assert "saved" in msg
 
     async def test_invalid_scope_rejected(self, memory):
         msg, entry = await memory.save_fact("bogus", "content")
-        assert entry is None and "invalid scope" in msg
+        assert entry is None
+        assert "invalid scope" in msg
 
     async def test_domain_requires_key(self, memory):
         msg, entry = await memory.save_fact("domain", "content")
-        assert entry is None and "domain_key" in msg
+        assert entry is None
+        assert "domain_key" in msg
 
     async def test_reference_scope_saves(self, memory):
         msg, entry = await memory.save_fact(
             "reference", "The Go SOP lives at https://wiki.example.com/go-sop")
-        assert entry is not None and "saved" in msg
+        assert entry is not None
+        assert "saved" in msg
         assert entry.scope == "reference"
 
     async def test_reference_scope_needs_no_domain_key(self, memory):
         _, entry = await memory.save_fact("reference", "crm-docs repo has the schema")
-        assert entry is not None and entry.domain_key == ""
+        assert entry is not None
+        assert entry.domain_key == ""
 
     async def test_empty_content_rejected(self, memory):
         msg, entry = await memory.save_fact("user", "   ")
-        assert entry is None and "empty" in msg
+        assert entry is None
+        assert "empty" in msg
 
     async def test_near_duplicate_rejected_with_guidance(self, memory):
         await memory.save_fact("user", "The user's dog is named Bantay")
@@ -184,7 +190,8 @@ class TestLinks:
             {"from_id": str(a.id), "to_id": str(b.id), "relation": "relates_to"},
             ToolContext(),
         )
-        assert "linked" in result.text and not result.is_error
+        assert "linked" in result.text
+        assert not result.is_error
 
     async def test_memory_link_invalid_relation(self, memory):
         a, b = await self._two_facts(memory)
@@ -207,7 +214,8 @@ class TestLinks:
         await link.handler({"from_id": str(a.id), "to_id": str(b.id)}, ToolContext())
         recall = tool_by_name(memory, "memory_recall")
         result = await recall.handler({"query": "homelab server"}, ToolContext())
-        assert "Proxmox" in result.text and "related" in result.text.lower()
+        assert "Proxmox" in result.text
+        assert "related" in result.text.lower()
 
     async def test_memory_unlink_tool(self, memory):
         a, b = await self._two_facts(memory)
@@ -215,7 +223,8 @@ class TestLinks:
         unlink = tool_by_name(memory, "memory_unlink")
         await link.handler({"from_id": str(a.id), "to_id": str(b.id)}, ToolContext())
         result = await unlink.handler({"from_id": str(a.id), "to_id": str(b.id)}, ToolContext())
-        assert "unlinked" in result.text and not result.is_error
+        assert "unlinked" in result.text
+        assert not result.is_error
 
 
 class TestPinned:
@@ -223,7 +232,8 @@ class TestPinned:
         _, entry = await memory.save_fact("user", "the user's daughter is named Liwayway")
         pin = tool_by_name(memory, "memory_pin")
         result = await pin.handler({"id": str(entry.id)}, ToolContext())
-        assert "pinned" in result.text and not result.is_error
+        assert "pinned" in result.text
+        assert not result.is_error
         section = memory.system_prompt_section()
         assert "Liwayway" in section
         assert str(entry.id) in section  # individually addressable
@@ -280,7 +290,8 @@ class TestStaleness:
         await self._backdate(memdb, e.id, 60)
         verify = tool_by_name(memory, "memory_verify")
         r = await verify.handler({"id": str(e.id)}, ToolContext())
-        assert "verified" in r.text and not r.is_error
+        assert "verified" in r.text
+        assert not r.is_error
         recall = tool_by_name(memory, "memory_recall")
         result = await recall.handler({"query": "deploy flag prod"}, ToolContext())
         assert "unverified" not in result.text.lower()
@@ -298,7 +309,8 @@ class TestSystemPrompt:
         await memdb.set_core(persona_id, "user", "", "knows all about mangoes", 3)
         await memory.refresh_core_cache()
         section = memory.system_prompt_section()
-        assert "[USER]" in section and "knows all about mangoes" in section
+        assert "[USER]" in section
+        assert "knows all about mangoes" in section
 
     async def test_truncation_at_char_limit(self, memory, memdb, persona_id):
         from domain.memory import MEMORY_CONTEXT_CHAR_LIMIT

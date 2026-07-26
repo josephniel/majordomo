@@ -81,16 +81,19 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, TYPE_CHECKING
 
 import yaml
 
 from adapters.chat.transcription import DEFAULT_VENDOR_ORDER as DEFAULT_TRANSCRIPTION_ORDER
 from adapters.store.reranking import RerankConfig
 from adapters.trigger.retention import RetentionPolicy
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -136,7 +139,7 @@ def as_lower(v: Any) -> str:
     return as_str(v).strip().lower()
 
 
-def as_opt_str(v: Any) -> Optional[str]:
+def as_opt_str(v: Any) -> str | None:
     s = as_str(v).strip()
     return s or None
 
@@ -147,7 +150,7 @@ def as_bool(v: Any) -> bool:
     return as_str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
-def as_opt_bool(v: Any) -> Optional[bool]:
+def as_opt_bool(v: Any) -> bool | None:
     if v is None or (isinstance(v, str) and not v.strip()):
         return None
     return as_bool(v)
@@ -335,12 +338,14 @@ class Resolved:
 
 class ConfigError(Exception):
     """A configuration file is malformed. Distinct from a missing one, which
-    is normal — every layer is optional."""
+    is normal — every layer is optional.
+    """
 
 
 def _dig(tree: Mapping[str, Any], path: str) -> Any:
     """Walk a dotted path. Returns None for a missing key OR an explicit
-    null, which are treated the same: unset, defer to the next layer."""
+    null, which are treated the same: unset, defer to the next layer.
+    """
     node: Any = tree
     for part in path.split("."):
         if not isinstance(node, Mapping) or part not in node:
@@ -384,12 +389,12 @@ class InterpolationTracker:
 
     @property
     def unresolved(self) -> dict[str, str]:
-        """path -> variable name, for the ones nothing supplied."""
+        """Path -> variable name, for the ones nothing supplied."""
         return dict(self._unresolved)
 
 
 def interpolate(tree: Any, env: Mapping[str, str],
-                tracker: Optional[InterpolationTracker] = None,
+                tracker: InterpolationTracker | None = None,
                 _path: str = "") -> Any:
     """Substitute ${VAR} from `env` throughout a parsed YAML tree.
 
@@ -424,9 +429,10 @@ def interpolate(tree: Any, env: Mapping[str, str],
 
 
 def load_yaml(path: Path, env: Mapping[str, str],
-              tracker: Optional[InterpolationTracker] = None) -> dict[str, Any]:
+              tracker: InterpolationTracker | None = None) -> dict[str, Any]:
     """Parse one config file. A missing file is an empty layer, not an error
-    — every layer is optional and the defaults are complete."""
+    — every layer is optional and the defaults are complete.
+    """
     if not path.exists():
         return {}
     try:
@@ -449,11 +455,11 @@ class ConfigResolver:
     def __init__(
         self,
         *,
-        host: Optional[Mapping[str, Any]] = None,
-        persona: Optional[Mapping[str, Any]] = None,
-        env: Optional[Mapping[str, str]] = None,
-        host_tracker: Optional[InterpolationTracker] = None,
-        persona_tracker: Optional[InterpolationTracker] = None,
+        host: Mapping[str, Any] | None = None,
+        persona: Mapping[str, Any] | None = None,
+        env: Mapping[str, str] | None = None,
+        host_tracker: InterpolationTracker | None = None,
+        persona_tracker: InterpolationTracker | None = None,
     ) -> None:
         self.host = dict(host or {})
         self.persona = dict(persona or {})
@@ -465,12 +471,13 @@ class ConfigResolver:
     def load(
         cls,
         project_root: Path,
-        persona_dir: Optional[Path] = None,
-        env: Optional[Mapping[str, str]] = None,
-    ) -> "ConfigResolver":
+        persona_dir: Path | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> ConfigResolver:
         """Read both YAML layers. Each is optional — a deployment with no
         config.yaml anywhere still boots on the environment and the
-        defaults, which is what keeps the migration incremental."""
+        defaults, which is what keeps the migration incremental.
+        """
         env = dict(env if env is not None else os.environ)
         ht, pt = InterpolationTracker(), InterpolationTracker()
         host = load_yaml(project_root / CONFIG_FILENAME, env, ht)
@@ -482,7 +489,8 @@ class ConfigResolver:
 
     def resolve(self, s: Setting) -> Resolved:
         """instances/<id>/config.yaml > config.yaml > environment > default,
-        with HOST settings skipping the persona layer entirely."""
+        with HOST settings skipping the persona layer entirely.
+        """
         if s.scope is Scope.PERSONA:
             v = _dig(self.persona, s.path)
             if v is not None:
@@ -521,7 +529,8 @@ class ConfigResolver:
     def literal_secrets(self) -> list[tuple[Setting, str]]:
         """Secrets written as literals into a YAML file rather than
         referenced with ${VAR}. config.yaml is committed and this repo is
-        public, so this is the check that keeps it safe to commit."""
+        public, so this is the check that keeps it safe to commit.
+        """
         out: list[tuple[Setting, str]] = []
         for s in SETTINGS:
             if not s.secret:

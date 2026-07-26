@@ -21,7 +21,10 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +39,7 @@ class RetentionPolicy:
     documents_days: int = 0  # off
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] = os.environ) -> "RetentionPolicy":
+    def from_env(cls, env: Mapping[str, str] = os.environ) -> RetentionPolicy:
         def _days(var: str, default: int) -> int:
             try:
                 return max(0, int(env.get(var, default)))
@@ -72,7 +75,8 @@ class RetentionJob:
 
     async def run(self) -> dict[str, int]:
         """Prune every configured arm. Per-arm failures are isolated —
-        retention must never take the bot down. Returns table -> deleted."""
+        retention must never take the bot down. Returns table -> deleted.
+        """
         deleted: dict[str, int] = {}
         p = self._policy
         if self._history is not None:

@@ -53,8 +53,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from ports import (
@@ -126,7 +126,7 @@ def _render_existing(neighbours: list[MemoryEntry]) -> str:
     return "\n".join(lines)
 
 
-def _parse_verdict(raw: str) -> tuple[Optional[MemoryVerdict], Optional[UUID], str]:
+def _parse_verdict(raw: str) -> tuple[MemoryVerdict | None, UUID | None, str]:
     """Pull a verdict out of a model's reply.
 
     Defensive in the same way the extraction parser is, and for the same
@@ -155,7 +155,7 @@ def _parse_verdict(raw: str) -> tuple[Optional[MemoryVerdict], Optional[UUID], s
     except ValueError:
         return None, None, f"unknown verdict {obj.get('verdict')!r}"
 
-    target: Optional[UUID] = None
+    target: UUID | None = None
     raw_target = obj.get("target_id")
     if raw_target not in (None, "", "null"):
         try:
@@ -171,7 +171,7 @@ def _parse_verdict(raw: str) -> tuple[Optional[MemoryVerdict], Optional[UUID], s
 class Reconciler:
     """Turns candidate facts into decisions about existing memory."""
 
-    def __init__(self, memory: "LongTermMemory", summarizer: Summarizer) -> None:
+    def __init__(self, memory: LongTermMemory, summarizer: Summarizer) -> None:
         self._memory = memory
         self._summarizer = summarizer
 
@@ -242,7 +242,7 @@ class Reconciler:
 
         return Reconciliation(verdict, candidate, target_id=target, reason=reason)
 
-    async def apply(self, decision: Reconciliation) -> Optional[MemoryEntry]:
+    async def apply(self, decision: Reconciliation) -> MemoryEntry | None:
         """Carry out a decision. Returns the affected entry, if any.
 
         Logged at INFO for anything that changes memory. These run unattended
@@ -286,7 +286,7 @@ class Reconciler:
         return None
 
     async def ingest(self, candidate: FactCandidate) -> Reconciliation:
-        """decide + apply. The entry point extraction and ideation both use."""
+        """Decide + apply. The entry point extraction and ideation both use."""
         decision = await self.decide(candidate)
         await self.apply(decision)
         return decision
@@ -294,7 +294,7 @@ class Reconciler:
 
 def candidate_from_extraction(
     fact: dict, *, provenance: str, volatile: bool = False, confidence: float = 1.0,
-) -> Optional[FactCandidate]:
+) -> FactCandidate | None:
     """Validate one extracted JSON object into a candidate, or None.
 
     The validation is the same shape `save_fact` applies, done here so an
@@ -321,7 +321,7 @@ def candidate_from_extraction(
     )
 
 
-def _parse_valid_to(raw) -> Optional[datetime]:
+def _parse_valid_to(raw) -> datetime | None:
     """An extracted end date, if the model supplied a usable one.
 
     Optional by design. Most facts have no end and asking a small background
@@ -335,4 +335,4 @@ def _parse_valid_to(raw) -> Optional[datetime]:
         dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)

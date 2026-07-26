@@ -1,8 +1,7 @@
 """storage.docs chunking + capabilities.documents extraction (no DB)."""
-import pytest
 
-from domain.documents import extract_text
 from adapters.store.docs import CHUNK_CHARS, CHUNK_OVERLAP, chunk_text
+from domain.documents import extract_text
 
 
 class TestChunking:
@@ -36,7 +35,7 @@ class TestChunking:
 
 class TestExtractText:
     def test_plain_text(self):
-        assert extract_text("text/plain", "hola\namigo".encode()) == "hola\namigo"
+        assert extract_text("text/plain", b"hola\namigo") == "hola\namigo"
 
     def test_markdown_is_text(self):
         assert "# title" in extract_text("text/markdown", b"# title")
@@ -48,8 +47,9 @@ class TestExtractText:
         assert extract_text("application/zip", b"PK\x03\x04") is None
 
     def test_pdf_extracts(self):
-        from pypdf import PdfWriter
         import io
+
+        from pypdf import PdfWriter
         w = PdfWriter()
         w.add_blank_page(width=200, height=200)
         buf = io.BytesIO()

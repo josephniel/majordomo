@@ -16,10 +16,13 @@ reflection); concrete impls live in the agents package.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from enum import StrEnum
-from typing import Any, Awaitable, Callable, Optional, Protocol
+from typing import Any, Protocol, TYPE_CHECKING
 
-from .messaging import Attachment
+
+if TYPE_CHECKING:
+    from .messaging import Attachment
 
 
 class ModelRole(StrEnum):
@@ -30,6 +33,7 @@ class ModelRole(StrEnum):
     work runs on something cheap" hold for every vendor instead of only the
     one whose code path happened to honour an override.
     """
+
     CHAT = "chat"              # the operator is waiting
     BACKGROUND = "background"  # heartbeats, watch fires — nobody is waiting
     SUMMARIZE = "summarize"    # compaction, reflection; fires constantly
@@ -43,7 +47,8 @@ class Summarizer(ABC):
     async def summarize(self, prompt: str, *, deep: bool = False) -> str:
         """Run the prompt through a summarization model. `deep=True` picks a
         more capable model. Returns empty string on failure so callers can
-        treat compaction as best-effort."""
+        treat compaction as best-effort.
+        """
 
 
 class PersonaLike(Protocol):
@@ -56,9 +61,9 @@ class PersonaLike(Protocol):
     """
 
     system_prompt: str
-    model: Optional[str]
+    model: str | None
 
-    def allowed_tool_names(self, connector: Any) -> Optional[list[str]]: ...
+    def allowed_tool_names(self, connector: Any) -> list[str] | None: ...
 
 
 # Callback fired once per agent-emitted tool-use during a turn.
@@ -67,7 +72,8 @@ ToolUseCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 class UsageLimitError(Exception):
     """Vendor signaled it can't service this request now: rate-limit, overload,
-    or quota exhausted. CascadingAgent catches this and rotates."""
+    or quota exhausted. CascadingAgent catches this and rotates.
+    """
 
 
 class Agent(ABC):
@@ -95,7 +101,7 @@ class Agent(ABC):
 
     @property
     @abstractmethod
-    def session_id(self) -> Optional[str]: ...
+    def session_id(self) -> str | None: ...
 
     @abstractmethod
     async def start(self) -> None: ...
@@ -110,13 +116,14 @@ class Agent(ABC):
     async def send(
         self,
         text: str,
-        on_tool_use: Optional[ToolUseCallback] = None,
-        attachments: Optional[list[Attachment]] = None,
-        current_row_id: Optional[int] = None,
+        on_tool_use: ToolUseCallback | None = None,
+        attachments: list[Attachment] | None = None,
+        current_row_id: int | None = None,
     ) -> str:
         """Run one turn. `text` is the current user message, sent verbatim.
         `current_row_id`: when the caller already mirrored this turn into
         ConversationHistory, its row id — mirror-replaying vendors exclude
         that row so the message isn't duplicated. Server-side-history
-        vendors ignore it."""
+        vendors ignore it.
+        """
         ...

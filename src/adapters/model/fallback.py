@@ -32,15 +32,19 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from ports import ConversationRef, SessionResettable, ToolCallProbe
 
 from .base import Agent, Attachment, Summarizer, ToolUseCallback, UsageLimitError
 from .health import VendorHealthBoard
-from .history import ConversationHistory
+import contextlib
+
+if TYPE_CHECKING:
+    from .history import ConversationHistory
 
 log = logging.getLogger(__name__)
 
@@ -87,9 +91,9 @@ class CascadingAgent(Agent):
         persona_id: str,
         chat_id: ConversationRef,
         summarizer: Summarizer,
-        health_board: Optional[VendorHealthBoard] = None,
-        memory_recaller: Optional[MemoryRecaller] = None,
-        timezone_name: Optional[str] = None,
+        health_board: VendorHealthBoard | None = None,
+        memory_recaller: MemoryRecaller | None = None,
+        timezone_name: str | None = None,
     ) -> None:
         if not chain:
             raise ValueError("CascadingAgent requires at least one agent in the chain")
@@ -130,7 +134,7 @@ class CascadingAgent(Agent):
     # ---- Agent contract ----
 
     @property
-    def session_id(self) -> Optional[str]:
+    def session_id(self) -> str | None:
         # The resumable session belongs to the server-side-history vendor
         # (Claude). Report it regardless of which vendor served the last
         # turn, so SessionStore keeps a valid resume id across failovers.
@@ -155,12 +159,12 @@ class CascadingAgent(Agent):
 
     @property
     def health(self) -> dict[str, float]:
-        """vendor -> cooldown seconds remaining (only unhealthy vendors)."""
+        """Vendor -> cooldown seconds remaining (only unhealthy vendors)."""
         return self._board.snapshot()
 
     @property
     def canary(self) -> dict[str, dict]:
-        """vendor -> {ok, detail} from the last tool-calling canary."""
+        """Vendor -> {ok, detail} from the last tool-calling canary."""
         return self._board.canary_summary()
 
     async def start(self) -> None:
@@ -191,17 +195,15 @@ class CascadingAgent(Agent):
         # Forward to whichever agent served last (it's the one mid-turn).
         agent = self._agent_by_name(self._active_vendor)
         if agent is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await agent.interrupt()
-            except Exception:
-                pass
 
     async def send(
         self,
         text: str,
-        on_tool_use: Optional[ToolUseCallback] = None,
-        attachments: Optional[list[Attachment]] = None,
-        current_row_id: Optional[int] = None,  # computed here; param for contract parity
+        on_tool_use: ToolUseCallback | None = None,
+        attachments: list[Attachment] | None = None,
+        current_row_id: int | None = None,  # computed here; param for contract parity
     ) -> str:
         started_at = time.monotonic()
 
@@ -236,7 +238,7 @@ class CascadingAgent(Agent):
         # (Postgres blip), client-side-history vendors must not serve — they
         # assemble their entire context, including THIS message, from the
         # mirror, and would answer blind without any user-facing signal.
-        user_row_id: Optional[int] = None
+        user_row_id: int | None = None
         mirror_ok = True
         try:
             user_row_id = await self._history.append(
@@ -259,10 +261,8 @@ class CascadingAgent(Agent):
             tool_calls += 1
             tool_names.append(tool_name)
             if on_tool_use is not None:
-                try:
+                with contextlib.suppress(Exception):
                     await on_tool_use(tool_name, dict(args))
-                except Exception:
-                    pass
             try:
                 arg_str = json.dumps(args, default=str)
                 if len(arg_str) > 300:
@@ -305,7 +305,7 @@ class CascadingAgent(Agent):
             prior_rows[0]["id"] - 1 if prior_rows else None
         )
 
-        last_exc: Optional[BaseException] = None
+        last_exc: BaseException | None = None
         failovers = 0
         for vendor, agent in candidates:
             if not mirror_ok and not agent.USES_SERVER_SIDE_HISTORY:
@@ -387,7 +387,7 @@ class CascadingAgent(Agent):
             self._active_vendor = vendor
             self._board.mark_healthy(vendor)
 
-            assistant_row_id: Optional[int] = None
+            assistant_row_id: int | None = None
             try:
                 assistant_row_id = await self._history.append(
                     persona_id=self._persona_id,
@@ -430,7 +430,8 @@ class CascadingAgent(Agent):
         to confirm it actually calls tools, recording results on the shared
         health board so /status can surface a silently-regressed vendor.
         Claude/native agents are assumed capable (they're the reliable
-        fallback) and skipped."""
+        fallback) and skipped.
+        """
         results: dict[str, tuple[bool, str]] = {}
         for name, agent in self._chain:
             if not isinstance(agent, ToolCallProbe):
@@ -449,7 +450,8 @@ class CascadingAgent(Agent):
         ChatCompletionsAgent.prewarm). Runs at startup alongside the canary,
         so the first real turn after a restart isn't the one that pays the
         cold prefill. Vendors that don't implement it are skipped — hosted
-        ones have nothing to gain."""
+        ones have nothing to gain.
+        """
         for name, agent in self._chain:
             warm = getattr(agent, "prewarm", None)
             if warm is None:
@@ -464,13 +466,14 @@ class CascadingAgent(Agent):
 
     async def reset_history(self) -> int:
         """Archive the chat's mirror so client-side vendors start clean too
-        (B4). The orchestrator also drops the Claude session id."""
+        (B4). The orchestrator also drops the Claude session id.
+        """
         self._last_seen_row_id.clear()
         return await self._history.reset(self._persona_id, self._chat_id)
 
     # ---- internals ----
 
-    def _agent_by_name(self, name: str) -> Optional[Agent]:
+    def _agent_by_name(self, name: str) -> Agent | None:
         for n, a in self._chain:
             if n == name:
                 return a
@@ -478,7 +481,8 @@ class CascadingAgent(Agent):
 
     async def _recent_safe(self, limit: int) -> list[dict[str, Any]]:
         """Recent active rows, chronological; [] on any read failure (a mirror
-        blip must never break a turn — the callers all degrade gracefully)."""
+        blip must never break a turn — the callers all degrade gracefully).
+        """
         try:
             return await self._history.recent(
                 self._persona_id, self._chat_id, limit=limit,
@@ -490,12 +494,13 @@ class CascadingAgent(Agent):
     @staticmethod
     def _prior_open_assistant(
         rows: list[dict[str, Any]],
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """The most recent non-system row, if it's an assistant turn that asked
         something (an open question awaiting the user's answer). System rows
         (mirrored tool calls) are skipped — they sit between the assistant's
         reply and the next user message. Returns None if the last real turn was
-        the user's own, a summary, or an assistant statement with no question."""
+        the user's own, a summary, or an assistant statement with no question.
+        """
         for r in reversed(rows):
             if r.get("role") == "system":
                 continue
@@ -505,9 +510,10 @@ class CascadingAgent(Agent):
         return None
 
     @staticmethod
-    def _is_short_answer(text: str, attachments: Optional[list] = None) -> bool:
+    def _is_short_answer(text: str, attachments: list | None = None) -> bool:
         """A brief, topicless reply that answers rather than opens. Messages
-        carrying attachments are new content, never a bare answer."""
+        carrying attachments are new content, never a bare answer.
+        """
         if attachments:
             return False
         t = (text or "").strip()
@@ -530,7 +536,7 @@ class CascadingAgent(Agent):
 
     @staticmethod
     def _prefer_vendor(
-        candidates: list[tuple[str, Agent]], vendor: Optional[str],
+        candidates: list[tuple[str, Agent]], vendor: str | None,
     ) -> list[tuple[str, Agent]]:
         """Move `vendor` to the front if it's among the candidates."""
         if not vendor:
@@ -587,20 +593,21 @@ class CascadingAgent(Agent):
         agent: Agent,
         text: str,
         memory_block: str,
-        user_row_id: Optional[int],
+        user_row_id: int | None,
         anchor: str = "",
-        cold_tail_after_id: Optional[int] = None,
+        cold_tail_after_id: int | None = None,
     ) -> str:
         """Prefix the outgoing text with (a) a missed-turns digest when this
         vendor keeps server-side history and either has a high-water mark OR
         is cold (fresh process, resumed-but-stale session — Fix 1a), and
         (b) the auto-recalled memory block. `anchor`, when set, names the open
-        question this reply answers and sits immediately above the user text."""
+        question this reply answers and sits immediately above the user text.
+        """
         body = f"{anchor}\n\n{text}" if anchor else text
         body = f"{self._now_line()}\n\n{body}"
         if agent.USES_SERVER_SIDE_HISTORY:
             if vendor in self._last_seen_row_id:
-                after_id: Optional[int] = self._last_seen_row_id[vendor]
+                after_id: int | None = self._last_seen_row_id[vendor]
             elif cold_tail_after_id is not None:
                 # No watermark yet: its resumed session may be behind the
                 # mirror (turns served by other vendors never reached it).
@@ -619,8 +626,8 @@ class CascadingAgent(Agent):
         vendor: str,
         text: str,
         memory_block: str,
-        user_row_id: Optional[int],
-        after_id: Optional[int] = None,
+        user_row_id: int | None,
+        after_id: int | None = None,
     ) -> str:
         start_id = after_id if after_id is not None else self._last_seen_row_id[vendor]
         try:
@@ -683,7 +690,8 @@ class CascadingAgent(Agent):
 
     def _spawn_bg(self, coro) -> None:
         """Fire-and-forget with a held reference (a bare create_task can be
-        garbage-collected mid-flight)."""
+        garbage-collected mid-flight).
+        """
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
@@ -691,7 +699,7 @@ class CascadingAgent(Agent):
     async def _log_turn_safe(
         self,
         vendor: str,
-        agent: Optional[Agent],
+        agent: Agent | None,
         status: str,
         started_at: float,
         tool_calls: int,

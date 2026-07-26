@@ -9,9 +9,8 @@ import uuid
 
 import pytest
 
-from ports import ToolContext
 from domain.memory import LongTermMemory
-
+from ports import ToolContext
 from tests.fakes.memory_store import FakeMemoryStore
 
 
@@ -46,6 +45,7 @@ class TestToolsGoThroughTheFaculty:
         """Structural check on the split: `build_memory_tools` is handed the
         faculty, so no handler can reach a store object even by accident."""
         import inspect
+
         from domain.memory_tools import build_memory_tools
         params = inspect.signature(build_memory_tools).parameters
         assert set(params) == {"mem", "history"}
@@ -87,7 +87,8 @@ class TestOwnershipIsEnforcedAtEveryIdTakingTool:
     )
     async def test_cannot_touch_another_personas_entry(self, tools, theirs, tool_name):
         res = await call(tools, tool_name, id=str(theirs.id))
-        assert res.is_error and "no memory" in res.text
+        assert res.is_error
+        assert "no memory" in res.text
 
     async def test_cannot_update_another_personas_entry(self, tools, theirs, store):
         res = await call(tools, "memory_update", id=str(theirs.id), content="hijacked")
@@ -99,7 +100,8 @@ class TestOwnershipIsEnforcedAtEveryIdTakingTool:
     )
     async def test_unknown_id_is_a_message_not_a_crash(self, tools, tool_name):
         res = await call(tools, tool_name, id=str(uuid.uuid4()))
-        assert res.is_error and "no memory" in res.text
+        assert res.is_error
+        assert "no memory" in res.text
 
     @pytest.mark.parametrize(
         "tool_name", ["memory_forget", "memory_pin", "memory_update", "memory_verify"]
@@ -108,7 +110,8 @@ class TestOwnershipIsEnforcedAtEveryIdTakingTool:
         """The model invents ids. An unhandled ValueError here surfaces as a
         tool crash rather than something the model can correct."""
         res = await call(tools, tool_name, id="not-a-uuid", content="x")
-        assert res.is_error and "valid UUID" in res.text
+        assert res.is_error
+        assert "valid UUID" in res.text
 
 
 class TestUnlinkIsDeliberatelyLenient:
@@ -130,21 +133,24 @@ class TestUnlinkIsDeliberatelyLenient:
         _, a = await mem.save_fact("user", "the user lives in Manila")
         _, b = await mem.save_fact("user", "the office is in Makati")
         res = await call(tools, "memory_unlink", from_id=str(a.id), to_id=str(b.id))
-        assert res.is_error and "no such link" in res.text
+        assert res.is_error
+        assert "no such link" in res.text
 
 
 class TestLink:
     async def test_self_link_rejected(self, tools, mem):
         _, a = await mem.save_fact("user", "the user lives in Manila")
         res = await call(tools, "memory_link", from_id=str(a.id), to_id=str(a.id))
-        assert res.is_error and "itself" in res.text
+        assert res.is_error
+        assert "itself" in res.text
 
     async def test_unknown_relation_rejected(self, tools, mem):
         _, a = await mem.save_fact("user", "the user lives in Manila")
         _, b = await mem.save_fact("user", "the office is in Makati")
         res = await call(tools, "memory_link", from_id=str(a.id),
                          to_id=str(b.id), relation="haunts")
-        assert res.is_error and "relation must be" in res.text
+        assert res.is_error
+        assert "relation must be" in res.text
 
     async def test_relinking_is_idempotent_and_says_so(self, tools, mem):
         _, a = await mem.save_fact("user", "the user lives in Manila")
@@ -152,7 +158,8 @@ class TestLink:
         assert not (await call(tools, "memory_link",
                                from_id=str(a.id), to_id=str(b.id))).is_error
         again = await call(tools, "memory_link", from_id=str(a.id), to_id=str(b.id))
-        assert not again.is_error and "already linked" in again.text
+        assert not again.is_error
+        assert "already linked" in again.text
 
 
 class TestRecallRendering:
@@ -180,7 +187,8 @@ class TestRecallRendering:
         store.neighbors = boom
 
         res = await call(tools, "memory_recall", query="cat called Biscuit")
-        assert not res.is_error and "Biscuit" in res.text
+        assert not res.is_error
+        assert "Biscuit" in res.text
 
     async def test_empty_query_rejected(self, tools):
         res = await call(tools, "memory_recall", query="   ")
@@ -190,7 +198,8 @@ class TestRecallRendering:
         """An empty result is an answer. Flagging it as an error invites the
         model to retry or apologise."""
         res = await call(tools, "memory_recall", query="something never saved")
-        assert not res.is_error and "no matching" in res.text
+        assert not res.is_error
+        assert "no matching" in res.text
 
 
 class TestSaveTool:
@@ -198,11 +207,13 @@ class TestSaveTool:
         """The fact IS remembered. Reporting a failure invites a retry loop."""
         await call(tools, "memory_save", scope="user", content="prefers dark mode")
         res = await call(tools, "memory_save", scope="user", content="prefers dark mode")
-        assert not res.is_error and "not saved" in res.text
+        assert not res.is_error
+        assert "not saved" in res.text
 
     async def test_domain_without_key_is_an_error(self, tools):
         res = await call(tools, "memory_save", scope="domain", content="inbox is noisy")
-        assert res.is_error and "domain_key" in res.text
+        assert res.is_error
+        assert "domain_key" in res.text
 
 
 class TestHistorySearchIsChatScoped:
@@ -217,7 +228,8 @@ class TestHistorySearchIsChatScoped:
                              summarizer=_Summarizer(), history=_History())
         tools = {t.name: t for t in mem.builtin_tools()}
         res = await tools["history_search"].handler({"query": "x"}, ToolContext())
-        assert res.is_error and "chat context" in res.text
+        assert res.is_error
+        assert "chat context" in res.text
 
     async def test_passes_the_invoking_conversation_through(self, store):
         from ports import ConversationRef

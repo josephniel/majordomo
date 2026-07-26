@@ -20,15 +20,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Optional
+from typing import Any, TYPE_CHECKING
 
 from ports import (
     ConversationRef,
     TriggerAgent,
     TriggerContext,
     TriggerEvent,
-    TriggerSource,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
@@ -201,7 +203,7 @@ class WebhookSource:
         except Exception:
             log.exception("webhook server stop failed")
 
-    def describe(self) -> Optional[str]:
+    def describe(self) -> str | None:
         try:
             names = ", ".join(self._server.trigger_names)
             return f"webhooks :{self._server.port} [{names}]"
@@ -242,7 +244,8 @@ class ScheduleSource:
     def add_cron(self) -> Callable[..., None]:
         """The registrar every cron-driven source borrows. Available only
         after `start()` — APScheduler rejects jobs before the loop exists,
-        which is why the orchestrator starts this source first."""
+        which is why the orchestrator starts this source first.
+        """
         return self._scheduler.add_system_cron
 
     async def start(self, ctx: TriggerContext) -> None:
@@ -255,9 +258,10 @@ class ScheduleSource:
         except Exception:
             log.exception("scheduler shutdown failed")
 
-    def describe(self) -> Optional[str]:
+    def describe(self) -> str | None:
         """Nothing: /status already reports the user's schedules per chat,
-        from the schedule faculty. Repeating "schedule" here would be noise."""
+        from the schedule faculty. Repeating "schedule" here would be noise.
+        """
         return None
 
     async def _fire(self, task: Any) -> None:
@@ -282,7 +286,7 @@ class RetentionSource:
 
     name = "retention"
 
-    def __init__(self, job: Any, cron: Optional[str] = None) -> None:
+    def __init__(self, job: Any, cron: str | None = None) -> None:
         self._job = job
         if cron is None:
             from adapters.trigger.retention import RETENTION_CRON

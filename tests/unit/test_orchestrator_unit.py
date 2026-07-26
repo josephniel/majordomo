@@ -5,9 +5,9 @@ import time
 
 import pytest
 
+from adapters.tools.base import Connector
 from kernel.core import RATE_LIMIT_MAX_TURNS, ConversationOrchestrator
 from kernel.sessions import SessionStore
-from adapters.tools.base import Connector
 
 
 class VersionedConnector(Connector):

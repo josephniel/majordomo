@@ -12,11 +12,12 @@ Two things are being protected here.
    live in the tool closure and could be skipped by any handler that talked
    to the store directly.
 """
+from datetime import UTC
+
 import pytest
 
-from ports import MemoryEntry, MemoryStore
 from domain.memory import LongTermMemory
-
+from ports import MemoryEntry, MemoryStore
 from tests.fakes.memory_store import FakeMemoryStore
 
 
@@ -69,17 +70,20 @@ class TestEntryIsAValue:
         eid, other = uuid.uuid4(), uuid.uuid4()
         live = MemoryEntry(id=eid, persona_id="p", scope="user",
                            domain_key="", title="", content="c")
-        assert live.is_active and not live.is_forgotten
+        assert live.is_active
+        assert not live.is_forgotten
 
         superseded = MemoryEntry(id=eid, persona_id="p", scope="user",
                                  domain_key="", title="", content="c",
                                  superseded_by=other)
-        assert not superseded.is_active and not superseded.is_forgotten
+        assert not superseded.is_active
+        assert not superseded.is_forgotten
 
         tombstone = MemoryEntry(id=eid, persona_id="p", scope="user",
                                 domain_key="", title="", content="c",
                                 superseded_by=eid)
-        assert not tombstone.is_active and tombstone.is_forgotten
+        assert not tombstone.is_active
+        assert tombstone.is_forgotten
 
 
 class TestOwnership:
@@ -89,18 +93,21 @@ class TestOwnership:
         memories by guessing — and recall would never have shown it the id."""
         theirs = await store.save_entry("p2", "user", "their private fact")
         entry, reason = await mem.resolve_active(theirs.id)
-        assert entry is None and "no memory" in reason
+        assert entry is None
+        assert "no memory" in reason
 
     async def test_superseded_entry_is_not_resolvable(self, mem):
         _, e = await mem.save_fact("user", "lives in Manila")
         await mem.update_fact(e.id, "lives in Cebu")
         entry, reason = await mem.resolve_active(e.id)
-        assert entry is None and "superseded" in reason
+        assert entry is None
+        assert "superseded" in reason
 
     async def test_own_active_entry_resolves(self, mem):
         _, e = await mem.save_fact("user", "drinks kapeng barako")
         entry, reason = await mem.resolve_active(e.id)
-        assert entry is not None and reason == ""
+        assert entry is not None
+        assert reason == ""
 
 
 class TestReplacementRecompacts:
@@ -159,7 +166,8 @@ class TestSavePolicy:
     async def test_near_duplicate_is_rejected(self, mem):
         await mem.save_fact("user", "the user prefers dark mode")
         msg, entry = await mem.save_fact("user", "the user prefers dark mode")
-        assert entry is None and msg.startswith("not saved")
+        assert entry is None
+        assert msg.startswith("not saved")
 
     async def test_rejection_points_at_update(self, mem):
         """The model has to be told what to do instead, or it retries."""
@@ -169,15 +177,18 @@ class TestSavePolicy:
 
     async def test_domain_scope_requires_a_key(self, mem):
         msg, entry = await mem.save_fact("domain", "the inbox is noisy")
-        assert entry is None and "domain_key" in msg
+        assert entry is None
+        assert "domain_key" in msg
 
     async def test_invalid_scope_rejected(self, mem):
         msg, entry = await mem.save_fact("nonsense", "x")
-        assert entry is None and "invalid scope" in msg
+        assert entry is None
+        assert "invalid scope" in msg
 
     async def test_empty_content_rejected(self, mem):
         msg, entry = await mem.save_fact("user", "   ")
-        assert entry is None and "empty" in msg
+        assert entry is None
+        assert "empty" in msg
 
 
 class TestRecall:
@@ -211,20 +222,20 @@ class TestBiTemporalValidity:
     recall keeps injecting it and the assistant keeps acting on it."""
 
     async def test_an_expired_fact_stops_being_recalled(self, mem):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         _, e = await mem.save_fact("user", "the user is on leave until August")
         assert await mem.recall("is the user on leave")
 
-        await mem.expire_fact(e.id, datetime.now(timezone.utc) - timedelta(days=1))
+        await mem.expire_fact(e.id, datetime.now(UTC) - timedelta(days=1))
         assert await mem.recall("is the user on leave") == []
 
     async def test_expiring_keeps_the_row_and_its_history(self, mem, store):
         """Distinct from forgetting. The fact WAS true, so "what did I have on
         last August?" must still be answerable, and compaction must not
         narrate a cancelled trip as if it happened."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         _, e = await mem.save_fact("user", "the user is on leave until August")
-        await mem.expire_fact(e.id, datetime.now(timezone.utc) - timedelta(days=1))
+        await mem.expire_fact(e.id, datetime.now(UTC) - timedelta(days=1))
 
         row = store.entries[e.id]
         assert row.valid_to is not None
@@ -239,8 +250,8 @@ class TestBiTemporalValidity:
     async def test_expiry_only_ever_moves_earlier(self, mem, store):
         """A stale re-extraction must not be able to resurrect a fact the
         user already ended."""
-        from datetime import datetime, timedelta, timezone
-        now = datetime.now(timezone.utc)
+        from datetime import datetime, timedelta
+        now = datetime.now(UTC)
         _, e = await mem.save_fact("user", "a temporary arrangement")
         await mem.expire_fact(e.id, now)
         await mem.expire_fact(e.id, now + timedelta(days=30))
@@ -249,10 +260,10 @@ class TestBiTemporalValidity:
     async def test_a_not_yet_valid_fact_is_not_recalled(self, mem):
         """The other end of the window: a fact scheduled to become true is
         not true yet."""
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         await mem.save_fact(
             "user", "the user starts at the new company",
-            valid_from=datetime.now(timezone.utc) + timedelta(days=30),
+            valid_from=datetime.now(UTC) + timedelta(days=30),
         )
         assert await mem.recall("where does the user start") == []
 

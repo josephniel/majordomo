@@ -10,15 +10,16 @@ Raw bytes are not stored; only extracted text (chunked) plus metadata.
 """
 from __future__ import annotations
 
-from ports import ConversationRef, chat_key
-
 import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import asyncpg
 
-from .embeddings import Embedder, to_pgvector as _to_pgvector
+from ports import ConversationRef, chat_key
+
+from .embeddings import Embedder
+from .embeddings import to_pgvector as _to_pgvector
 
 log = logging.getLogger(__name__)
 
@@ -114,7 +115,8 @@ END $$;
 
 def chunk_text(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[str]:
     """Sliding-window chunks; prefers to cut at a newline/space near the end
-    of the window so sentences survive chunk boundaries."""
+    of the window so sentences survive chunk boundaries.
+    """
     text = (text or "").strip()
     if not text:
         return []
@@ -140,14 +142,14 @@ def chunk_text(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP)
 class DocumentStore:
     """Async client for the documents + document_chunks tables."""
 
-    def __init__(self, dsn: str, *, embedder: Optional[Embedder] = None) -> None:
+    def __init__(self, dsn: str, *, embedder: Embedder | None = None) -> None:
         self._dsn = dsn
         # Injected for the same reason MemoryDatabase takes one: the model
         # sizes document_chunks.embedding and is stored per chunk. Two stores
         # sharing a database MUST share a model, which the composition root
         # enforces by handing both the same object.
         self._embed = embedder or Embedder()
-        self._pool: Optional[asyncpg.Pool] = None
+        self._pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
         if self._pool is not None:
@@ -170,7 +172,7 @@ class DocumentStore:
         name: str,
         mime: str,
         text: str,
-        chat_id: Optional[ConversationRef] = None,
+        chat_id: ConversationRef | None = None,
     ) -> tuple[int, int]:
         """Chunk + embed + store. Returns (doc_id, num_chunks)."""
         chunks = chunk_text(text)
@@ -179,35 +181,35 @@ class DocumentStore:
         # Embed off the event loop, one pass (the model batches internally).
         vectors = await asyncio.to_thread(
             lambda: [self._embed.embed_passage(c) for c in chunks])
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                doc_id = await conn.fetchval(
-                    """
+        async with self._pool.acquire() as conn, conn.transaction():
+            doc_id = await conn.fetchval(
+                """
                     INSERT INTO documents (persona_id, name, mime, chat_id, num_chunks, char_count)
                     VALUES ($1, $2, $3, $4, $5, $6)
                     RETURNING id
                     """,
-                    persona_id, name, mime, chat_key(chat_id) if chat_id is not None else None,
-                    len(chunks), len(text),
-                )
-                await conn.executemany(
-                    """
+                persona_id, name, mime, chat_key(chat_id) if chat_id is not None else None,
+                len(chunks), len(text),
+            )
+            await conn.executemany(
+                """
                     INSERT INTO document_chunks
                         (doc_id, persona_id, chunk_index, content, embedding, embedding_model)
                     VALUES ($1, $2, $3, $4, $5::vector, $6)
                     """,
-                    [
-                        (doc_id, persona_id, i, chunk, _to_pgvector(vec),
-                         self._embed.model_name)
-                        for i, (chunk, vec) in enumerate(zip(chunks, vectors))
-                    ],
-                )
+                [
+                    (doc_id, persona_id, i, chunk, _to_pgvector(vec),
+                     self._embed.model_name)
+                    for i, (chunk, vec) in enumerate(zip(chunks, vectors, strict=False))
+                ],
+            )
         log.info("ingested document %r (#%d, %d chunks)", name, doc_id, len(chunks))
         return int(doc_id), len(chunks)
 
     async def prune(self, persona_id: str, older_than_days: int) -> int:
         """Delete documents older than N days (chunks cascade). Disabled by
-        default in the retention policy — these are user-saved files."""
+        default in the retention policy — these are user-saved files.
+        """
         if older_than_days <= 0:
             return 0
         async with self._pool.acquire() as conn:
@@ -248,7 +250,7 @@ class DocumentStore:
         doc_id: int,
         start_chunk: int = 0,
         max_chunks: int = 4,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:
             doc = await conn.fetchrow(
                 "SELECT id, name, num_chunks FROM documents WHERE persona_id = $1 AND id = $2",
@@ -278,7 +280,8 @@ class DocumentStore:
     ) -> list[dict[str, Any]]:
         """Hybrid chunk search: max(trigram similarity, embedding cosine),
         same shape as memory recall. Vector arm only trusts current-model
-        embeddings (graceful degradation after a model migration)."""
+        embeddings (graceful degradation after a model migration).
+        """
         query = (query or "").strip()
         if not query:
             return []

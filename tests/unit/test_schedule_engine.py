@@ -1,12 +1,11 @@
 """capabilities.schedule — ScheduleEngine validation, parsing, persistence."""
+import json
 from datetime import datetime, timedelta
 
 import pytest
 
-import json
-
+from domain.schedule import ScheduledTask, ScheduleEngine
 from ports import ConversationRef
-from domain.schedule import ScheduleEngine, ScheduledTask
 
 
 @pytest.fixture
@@ -17,7 +16,8 @@ def engine(tmp_path):
 class TestAdd:
     def test_add_valid_cron(self, engine):
         e = engine.add("daily_check", "0 8 * * 1-5", chat_id=1, prompt="do it")
-        assert e.cron == "0 8 * * 1-5" and not e.is_one_shot
+        assert e.cron == "0 8 * * 1-5"
+        assert not e.is_one_shot
 
     def test_duplicate_name_rejected(self, engine):
         engine.add("x", "0 8 * * *", chat_id=1, prompt="p")
@@ -35,7 +35,7 @@ class TestAdd:
 
 
 class TestAddOnce:
-    @pytest.mark.parametrize("when,delta", [
+    @pytest.mark.parametrize(("when", "delta"), [
         ("+30s", timedelta(seconds=30)),
         ("+5m", timedelta(minutes=5)),
         ("+2h", timedelta(hours=2)),
@@ -94,7 +94,8 @@ class TestPersistence:
         e2 = ScheduleEngine(store_file=f)
         e2._load()
         got = e2.get("keepme")
-        assert got and got.prompt == "hello"
+        assert got
+        assert got.prompt == "hello"
         # A bare id handed to add() is namespaced on the way in and survives
         # the JSON round-trip as a ref, not as the int it was written with —
         # which is what stops a pre-upgrade reminder from silently vanishing.

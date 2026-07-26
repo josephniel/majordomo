@@ -3,8 +3,6 @@ Telegram inline-keyboard confirm flow."""
 import asyncio
 from types import SimpleNamespace
 
-import pytest
-
 from adapters.tools.approvals import (
     GatedToolProvider,
     WriteApprovalGate,
@@ -66,7 +64,7 @@ class TestGatedView:
         conn = FakeMailConnector()
         gated = GatedToolProvider(conn, WriteApprovalGate())
         assert gated.name == "fakemail"
-        assert gated.WRITE_TOOLS == frozenset({"send_mail"})
+        assert frozenset({"send_mail"}) == gated.WRITE_TOOLS
         assert gated.owns_profile("fakemail_work")
 
     def test_builtin_servers_path_wraps_exactly_once(self):

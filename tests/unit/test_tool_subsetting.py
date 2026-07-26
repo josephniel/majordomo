@@ -77,15 +77,16 @@ class TestSubsetting:
     def test_always_attach_present_for_generic_message(self):
         agent = make_agent()
         conns = selected_connectors(agent, "what should I eat for breakfast?")
-        assert ALWAYS_ON <= conns
+        assert conns >= ALWAYS_ON
         # no keyword-routed tools for an unrelated message
-        assert "gmail" not in conns and "splitwise" not in conns
+        assert "gmail" not in conns
+        assert "splitwise" not in conns
 
     def test_email_message_pulls_gmail(self):
         agent = make_agent()
         conns = selected_connectors(agent, "any new email in my inbox?")
         assert "gmail" in conns
-        assert ALWAYS_ON <= conns
+        assert conns >= ALWAYS_ON
 
     def test_calendar_keywords(self):
         agent = make_agent()

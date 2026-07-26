@@ -38,13 +38,15 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, TYPE_CHECKING
 
 import yaml
 
 from ports import Faculty, ToolContext, ToolResult, tool
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +66,7 @@ class Skill:
     always: bool = False
 
 
-def _parse_skill(path: Path) -> Optional[Skill]:
+def _parse_skill(path: Path) -> Skill | None:
     try:
         text = path.read_text(encoding="utf-8")
     except Exception:
@@ -134,7 +136,8 @@ class SkillsLibrary(Faculty):
     def context_version(self) -> int:
         """Sum of file mtimes: any edit/add/remove moves the number, which
         makes the orchestrator rebuild stale agents (same mechanism memory
-        recompaction uses)."""
+        recompaction uses).
+        """
         if not self._dir.is_dir():
             return 0
         total = 0
@@ -152,20 +155,20 @@ class SkillsLibrary(Faculty):
         lines = [
             "== Skills ==",
             "",
-            "Instruction notes that persist across conversations. Ones "
+            ("Instruction notes that persist across conversations. Ones "
             "relevant to the current message are attached to it "
             "automatically; you can read any other with the skill_read tool "
-            "when its topic comes up.",
+            "when its topic comes up."),
             "",
-            "Learning loop: when the user corrects you for the second time "
+            ("Learning loop: when the user corrects you for the second time "
             "on the same thing, teaches you a procedure, or says "
             "'always'/'never' do something, offer to save it as a skill via "
             "skill_save (if that tool is available to you) so future "
             "conversations get it right. The save asks the user for approval "
-            "— never claim a skill is saved unless the tool call succeeded.",
+            "— never claim a skill is saved unless the tool call succeeded."),
         ]
         if not skills:
-            return "\n".join(lines + ["", "No skills saved yet."])
+            return "\n".join([*lines, "", "No skills saved yet."])
         lines += [
             "",
             "Available skills:",
@@ -281,7 +284,7 @@ class SkillsLibrary(Faculty):
 
         return [skill_read_tool, skill_save_tool, skill_delete_tool]
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     # ---- per-turn injection (rides the CascadingAgent recaller hook) ----
@@ -293,7 +296,8 @@ class SkillsLibrary(Faculty):
     async def auto_inject(self, text: str) -> str:
         """Skills whose keywords appear in the user's message, formatted as a
         context block. `always` skills are excluded — they already live in
-        the system prompt."""
+        the system prompt.
+        """
         haystack = (text or "").lower()
         if not haystack:
             return ""

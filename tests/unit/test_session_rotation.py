@@ -4,11 +4,9 @@ A resumed server-side session replays the whole conversation as input
 tokens every turn. After a compaction folds the mirror, the session is
 reset and reseeded once from the mirror (summary + kept tail).
 """
-import pytest
 
 from adapters.model.fallback import DIGEST_CHAR_LIMIT, CascadingAgent
 from adapters.model.history import EphemeralConversationHistory
-
 from tests.conftest import FakeAgent, FakeSummarizer
 
 

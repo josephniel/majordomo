@@ -8,10 +8,12 @@ _cancel_chat().
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from ports import ConversationRef, VendorIntrospectable
-from adapters.chat import CommandEvent
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from adapters.chat import CommandEvent
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +35,7 @@ class CommandsMixin:
         else:
             log.warning("unknown command: %s", cmd.command)
 
-    async def _cmd_help(self, chat_id: ConversationRef, *, reply_to: Optional[int] = None) -> None:
+    async def _cmd_help(self, chat_id: ConversationRef, *, reply_to: int | None = None) -> None:
         await self._platform.send_text(chat_id, (
             "Commands:\n"
             "/status — vendors, health, memory, schedules, proactive subsystems\n"
@@ -46,7 +48,7 @@ class CommandsMixin:
             "the outside world asks you to Approve first."
         ), reply_to=reply_to)
 
-    async def _cmd_start(self, chat_id: ConversationRef, *, reply_to: Optional[int] = None) -> None:
+    async def _cmd_start(self, chat_id: ConversationRef, *, reply_to: int | None = None) -> None:
         enabled = [i.name for i in self._config.load_enabled()]
         if enabled:
             msg = "Hi. I'm your assistant. Active connectors: " + ", ".join(enabled) + "."
@@ -54,7 +56,7 @@ class CommandsMixin:
             msg = "Hi. I'm your assistant. No connectors are enabled right now."
         await self._platform.send_text(chat_id, msg, reply_to=reply_to)
 
-    async def _cmd_reset(self, chat_id: ConversationRef, *, reply_to: Optional[int] = None) -> None:
+    async def _cmd_reset(self, chat_id: ConversationRef, *, reply_to: int | None = None) -> None:
         await self._cancel_chat(chat_id)
         # Under the chat lock: a message queued behind the cancel must not
         # start a turn on the agent we're about to stop.
@@ -78,15 +80,16 @@ class CommandsMixin:
                     log.exception("could not reset conversation mirror")
         await self._platform.send_text(chat_id, "Conversation reset.", reply_to=reply_to)
 
-    async def _cmd_cancel(self, chat_id: ConversationRef, *, reply_to: Optional[int] = None) -> None:
+    async def _cmd_cancel(self, chat_id: ConversationRef, *, reply_to: int | None = None) -> None:
         if await self._cancel_chat(chat_id):
             await self._platform.send_text(chat_id, "Cancelled.", reply_to=reply_to)
         else:
             await self._platform.send_text(chat_id, "Nothing to cancel right now.", reply_to=reply_to)
 
-    async def _cmd_status(self, chat_id: ConversationRef, *, reply_to: Optional[int] = None) -> None:
+    async def _cmd_status(self, chat_id: ConversationRef, *, reply_to: int | None = None) -> None:
         """Operator introspection: active vendor, chain health, memory,
-        schedules, proactive subsystems, today's usage."""
+        schedules, proactive subsystems, today's usage.
+        """
         lines: list[str] = [f"Persona: {self._persona_id}"]
 
         agent = self._agents.get(chat_id)

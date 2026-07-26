@@ -13,11 +13,9 @@ Four defenses, all keyed off "short reply answering an open question":
   Fix 3   auto-RAG is skipped (a one-liner drags in unrelated context)
   Fix 4   the vendor that asked is preferred when it's still available
 """
-import pytest
 
 from adapters.model.fallback import CascadingAgent
 from adapters.model.history import EphemeralConversationHistory
-
 from tests.conftest import FakeAgent, FakeSummarizer
 
 
@@ -95,7 +93,8 @@ class TestColdHandoffIncident:
         reply = await cascade.send("Maya credit card")
 
         assert reply == gemini.reply
-        assert gemini.sent and claude.sent == []          # Claude never tried
+        assert gemini.sent
+        assert claude.sent == []
 
 
 class TestGatingIsConservative:
@@ -136,7 +135,8 @@ class TestHelpers:
              "metadata": {"tool_use": "budget__list_accounts"}},
         ]
         r = CascadingAgent._prior_open_assistant(rows)
-        assert r is not None and r["content"] == MCDO_Q
+        assert r is not None
+        assert r["content"] == MCDO_Q
 
     def test_prior_open_assistant_none_when_user_spoke_last(self):
         rows = [

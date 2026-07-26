@@ -25,10 +25,12 @@ Secrets (TELEGRAM_TOKEN, etc.) live in the sibling .env file, not here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @dataclass
@@ -39,7 +41,7 @@ class PlatformConfig:
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def load(cls, instance_dir: Path) -> "PlatformConfig":
+    def load(cls, instance_dir: Path) -> PlatformConfig:
         path = instance_dir / "platform.yaml"
         if not path.exists():
             raise FileNotFoundError(

@@ -47,11 +47,14 @@ next poll. Sources that don't care can ignore the bool.
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Awaitable, Callable, Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable, TYPE_CHECKING
 
-from .conversation import ConversationRef
+
+if TYPE_CHECKING:
+    from .conversation import ConversationRef
 
 
 class TriggerAgent(StrEnum):
@@ -128,8 +131,9 @@ class TriggerContext:
     schedule. A source that needs more than this is doing something the
     orchestrator should know about explicitly.
     """
+
     emit: EmitTrigger
-    add_cron: Optional[AddCron] = None
+    add_cron: AddCron | None = None
 
 
 @runtime_checkable
@@ -150,15 +154,17 @@ class TriggerSource(Protocol):
         """Begin producing events. Must not raise: a source that cannot start
         should log and stay dormant, because one misconfigured watch taking
         the whole bot down with it is a much worse failure than that watch
-        being quietly unavailable."""
+        being quietly unavailable.
+        """
         ...
 
     async def stop(self) -> None:
         """Release resources. Must be safe to call when start() failed or was
-        never reached."""
+        never reached.
+        """
         ...
 
-    def describe(self) -> Optional[str]:
+    def describe(self) -> str | None:
         """One line for /status, or None to contribute nothing.
 
         Sources report themselves so the status command doesn't have to know

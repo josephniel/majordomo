@@ -116,7 +116,7 @@ async def test_canary_fails_on_genuine_no_tool_call():
                 async def create(**kwargs):
                     return _Resp(_Msg(content="I won't call the tool.", tool_calls=None))
     agent._client = NoToolClient()
-    ok, detail = await agent.probe_tool_calling()
+    ok, _detail = await agent.probe_tool_calling()
     assert ok is False
 
 

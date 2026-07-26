@@ -23,31 +23,35 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, TYPE_CHECKING
 from urllib.parse import urlparse
-from uuid import UUID
 
 import asyncpg
 
 from ports import MemoryCoreEntry, MemoryEntry, Neighbor, Scored
 
-from .embeddings import Embedder, to_pgvector as _to_pgvector
+from .embeddings import Embedder
+from .embeddings import to_pgvector as _to_pgvector
 from .reranking import Reranker
+
+if TYPE_CHECKING:
+    from uuid import UUID
+    from datetime import datetime
 
 log = logging.getLogger(__name__)
 
 
 def redact_dsn(dsn: str) -> str:
     """A DSN without its password, for error messages an operator may paste
-    into a chat or an issue."""
+    into a chat or an issue.
+    """
     return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", dsn)
 
 
 async def _embed_pg(
     embedder: Embedder, text: str, *, is_query: bool = False
-) -> Optional[str]:
+) -> str | None:
     """Compute a pgvector literal for `text` off the event loop; None on failure.
 
     `is_query` picks the query-side encoder. Retrieval is asymmetric — a short
@@ -155,13 +159,13 @@ def _entry(row: asyncpg.Record) -> MemoryEntry:
         updated_at=row["updated_at"],
         pinned=bool(row["pinned"]) if "pinned" in row else False,
         volatile=bool(row["volatile"]) if "volatile" in row else False,
-        verified_at=row["verified_at"] if "verified_at" in row else None,
+        verified_at=row.get("verified_at", None),
         # `in row` guards throughout: several read paths SELECT a projection
         # rather than *, and a KeyError here would take out recall entirely
         # over a column that has a sensible default.
-        valid_from=row["valid_from"] if "valid_from" in row else None,
-        valid_to=row["valid_to"] if "valid_to" in row else None,
-        provenance=(row["provenance"] if "provenance" in row else None) or "chat",
+        valid_from=row.get("valid_from", None),
+        valid_to=row.get("valid_to", None),
+        provenance=(row.get("provenance", None)) or "chat",
         confidence=(
             float(row["confidence"]) if "confidence" in row
             and row["confidence"] is not None else 1.0
@@ -198,8 +202,8 @@ class MemoryDatabase:
         dsn: str,
         *,
         migrate: bool = True,
-        embedder: Optional[Embedder] = None,
-        reranker: Optional[Reranker] = None,
+        embedder: Embedder | None = None,
+        reranker: Reranker | None = None,
     ) -> None:
         self._dsn = dsn
         self._migrate = migrate
@@ -210,12 +214,13 @@ class MemoryDatabase:
         # what the operator configured.
         self._embed = embedder or Embedder()
         self._rerank = reranker or Reranker()
-        self._pool: Optional[asyncpg.Pool] = None
+        self._pool: asyncpg.Pool | None = None
 
     @property
     def embedder(self) -> Embedder:
         """Which model this store writes vectors with. Read by the
-        shared-database guard in the composition root."""
+        shared-database guard in the composition root.
+        """
         return self._embed
 
     async def connect(self) -> None:
@@ -246,7 +251,8 @@ class MemoryDatabase:
         """Apply the idempotent schema, templated with the current embedding
         width. `{{EMBED_DIM}}` is substituted rather than hardcoded so that
         changing EMBEDDING_MODEL migrates the column instead of failing every
-        insert with a dimension mismatch."""
+        insert with a dimension mismatch.
+        """
         sql = _SCHEMA_PATH.read_text(encoding="utf-8").replace(
             "{{EMBED_DIM}}", str(self._embed.dim)
         )
@@ -262,12 +268,12 @@ class MemoryDatabase:
         content: str,
         domain_key: str = "",
         title: str = "",
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         volatile: bool = False,
         provenance: str = "chat",
         confidence: float = 1.0,
-        valid_from: Optional[datetime] = None,
-        valid_to: Optional[datetime] = None,
+        valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
     ) -> MemoryEntry:
         emb = await _embed_pg(self._embed, f"{title}\n{content}" if title else content)
         async with self._acquire() as conn:
@@ -314,12 +320,13 @@ class MemoryDatabase:
         domain_key: str,
         content: str,
         threshold: float = 0.90,
-    ) -> Optional[tuple[MemoryEntry, float]]:
+    ) -> tuple[MemoryEntry, float] | None:
         """Nearest active entry in the same compartment by embedding cosine
         similarity, if it clears `threshold`. Used to dedup near-identical
         saves (the model re-learning the same fact) before they accumulate.
         Returns (entry, similarity) or None. Trigram fallback when the
-        embedding isn't available."""
+        embedding isn't available.
+        """
         qpg = await _embed_pg(self._embed, content)
         async with self._acquire() as conn:
             if qpg:
@@ -351,7 +358,7 @@ class MemoryDatabase:
             return None
         return _entry(row), float(row["sim"])
 
-    async def get_entry(self, entry_id: UUID) -> Optional[MemoryEntry]:
+    async def get_entry(self, entry_id: UUID) -> MemoryEntry | None:
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM memory_entries WHERE id = $1", entry_id
@@ -362,26 +369,26 @@ class MemoryDatabase:
         self,
         old_id: UUID,
         new_content: str,
-    ) -> Optional[MemoryEntry]:
+    ) -> MemoryEntry | None:
         """Insert a new active entry that replaces `old_id`. Marks the old
         row's `superseded_by` to the new id. Returns the new entry, or None
-        if the old id wasn't found / already superseded."""
-        async with self._acquire() as conn:
-            async with conn.transaction():
-                old = await conn.fetchrow(
-                    """
+        if the old id wasn't found / already superseded.
+        """
+        async with self._acquire() as conn, conn.transaction():
+            old = await conn.fetchrow(
+                """
                     SELECT * FROM memory_entries
                     WHERE id = $1 AND superseded_by IS NULL
                     """,
-                    old_id,
-                )
-                if old is None:
-                    return None
-                emb = await _embed_pg(
-                    self._embed,
-                    f"{old['title']}\n{new_content}" if old["title"] else new_content)
-                new = await conn.fetchrow(
-                    """
+                old_id,
+            )
+            if old is None:
+                return None
+            emb = await _embed_pg(
+                self._embed,
+                f"{old['title']}\n{new_content}" if old["title"] else new_content)
+            new = await conn.fetchrow(
+                """
                     INSERT INTO memory_entries
                         (persona_id, scope, domain_key, title, content, metadata,
                          embedding, embedding_model, pinned, volatile, verified_at,
@@ -390,41 +397,41 @@ class MemoryDatabase:
                             $11, $12, NOW())
                     RETURNING *
                     """,
-                    old["persona_id"], old["scope"], old["domain_key"],
-                    old["title"], new_content, dict(old["metadata"] or {}),
-                    emb, self._embed.model_name if emb else "", old["pinned"], old["volatile"],
-                    # Provenance is inherited but validity is NOT: the
-                    # replacement starts being true now, whereas the old row
-                    # keeps the window it actually covered. Copying valid_from
-                    # forward would claim the corrected value had been true
-                    # all along, which is exactly the history this table is
-                    # supposed to preserve.
-                    old["provenance"], old["confidence"],
-                )
-                # Close the old row's validity window at the moment it was
-                # replaced, so "what did I believe last Tuesday?" answers with
-                # the value that was current then.
-                await conn.execute(
-                    "UPDATE memory_entries SET valid_to = COALESCE(valid_to, NOW()) "
-                    "WHERE id = $1",
-                    old["id"],
-                )
-                await conn.execute(
-                    "UPDATE memory_entries SET superseded_by = $1, updated_at = NOW() WHERE id = $2",
-                    new["id"], old["id"],
-                )
-                # Carry the old entry's graph edges onto its replacement so a
-                # correction doesn't orphan the fact's relationships. The new
-                # row was just inserted and has no edges of its own, so no PK
-                # collision is possible here.
-                await conn.execute(
-                    "UPDATE memory_links SET from_id = $1 WHERE from_id = $2",
-                    new["id"], old["id"],
-                )
-                await conn.execute(
-                    "UPDATE memory_links SET to_id = $1 WHERE to_id = $2",
-                    new["id"], old["id"],
-                )
+                old["persona_id"], old["scope"], old["domain_key"],
+                old["title"], new_content, dict(old["metadata"] or {}),
+                emb, self._embed.model_name if emb else "", old["pinned"], old["volatile"],
+                # Provenance is inherited but validity is NOT: the
+                # replacement starts being true now, whereas the old row
+                # keeps the window it actually covered. Copying valid_from
+                # forward would claim the corrected value had been true
+                # all along, which is exactly the history this table is
+                # supposed to preserve.
+                old["provenance"], old["confidence"],
+            )
+            # Close the old row's validity window at the moment it was
+            # replaced, so "what did I believe last Tuesday?" answers with
+            # the value that was current then.
+            await conn.execute(
+                "UPDATE memory_entries SET valid_to = COALESCE(valid_to, NOW()) "
+                "WHERE id = $1",
+                old["id"],
+            )
+            await conn.execute(
+                "UPDATE memory_entries SET superseded_by = $1, updated_at = NOW() WHERE id = $2",
+                new["id"], old["id"],
+            )
+            # Carry the old entry's graph edges onto its replacement so a
+            # correction doesn't orphan the fact's relationships. The new
+            # row was just inserted and has no edges of its own, so no PK
+            # collision is possible here.
+            await conn.execute(
+                "UPDATE memory_links SET from_id = $1 WHERE from_id = $2",
+                new["id"], old["id"],
+            )
+            await conn.execute(
+                "UPDATE memory_links SET to_id = $1 WHERE to_id = $2",
+                new["id"], old["id"],
+            )
         return _entry(new)
 
     # ---- links (typed edges between entries) ----
@@ -436,7 +443,8 @@ class MemoryDatabase:
         relation: str = "relates_to",
     ) -> bool:
         """Create a directional edge from_id --relation--> to_id. Idempotent:
-        returns True if a new edge was created, False if it already existed."""
+        returns True if a new edge was created, False if it already existed.
+        """
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -453,11 +461,12 @@ class MemoryDatabase:
         self,
         from_id: UUID,
         to_id: UUID,
-        relation: Optional[str] = None,
+        relation: str | None = None,
     ) -> bool:
         """Delete the edge(s) between two entries. With `relation`, only that
         edge; without it, every edge from_id->to_id. Returns True if anything
-        was deleted."""
+        was deleted.
+        """
         async with self._acquire() as conn:
             if relation is not None:
                 result = await conn.execute(
@@ -478,7 +487,8 @@ class MemoryDatabase:
         """Directly-linked ACTIVE entries. Returns (neighbor, relation,
         direction) where direction is 'out' (entry_id --rel--> neighbor) or
         'in' (neighbor --rel--> entry_id). Superseded/forgotten neighbors are
-        excluded so recall never surfaces stale links."""
+        excluded so recall never surfaces stale links.
+        """
         async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -520,7 +530,8 @@ class MemoryDatabase:
 
     async def set_pinned(self, entry_id: UUID, pinned: bool) -> bool:
         """Pin/unpin an active entry. Pinned entries render verbatim in the
-        always-injected context. Returns True if a row was updated."""
+        always-injected context. Returns True if a row was updated.
+        """
         async with self._acquire() as conn:
             result = await conn.execute(
                 """
@@ -533,7 +544,8 @@ class MemoryDatabase:
 
     async def mark_verified(self, entry_id: UUID) -> bool:
         """Record that a fact was just confirmed to still hold. Resets its
-        staleness clock. Returns True if a row was updated."""
+        staleness clock. Returns True if a row was updated.
+        """
         async with self._acquire() as conn:
             result = await conn.execute(
                 "UPDATE memory_entries SET verified_at = NOW() WHERE id = $1 AND superseded_by IS NULL",
@@ -559,8 +571,8 @@ class MemoryDatabase:
     async def list_active(
         self,
         persona_id: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 200,
     ) -> list[MemoryEntry]:
         sql = [
@@ -585,8 +597,8 @@ class MemoryDatabase:
         self,
         persona_id: str,
         query: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 8,
     ) -> list[MemoryEntry]:
         scored = await self.recall_scored(
@@ -598,8 +610,8 @@ class MemoryDatabase:
         self,
         persona_id: str,
         query: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 8,
     ) -> list[Scored]:
         """Hybrid search over active entries, fused with Reciprocal Rank Fusion.
@@ -644,7 +656,7 @@ class MemoryDatabase:
             params.append(domain_key)
             base_filters += f"\n  AND domain_key = ${len(params)}"
 
-        vec_idx: Optional[int] = None
+        vec_idx: int | None = None
         if qpg:
             params.append(qpg)
             vec_idx = len(params)
@@ -664,7 +676,8 @@ class MemoryDatabase:
 
         def _arm(name: str, order_by: str, where: str, enabled: bool) -> str:
             """One ranked candidate arm. Disabled arms still exist as empty
-            relations so the fusion join below stays a single static shape."""
+            relations so the fusion join below stays a single static shape.
+            """
             if not enabled:
                 return (
                     f"{name} AS (SELECT NULL::uuid AS id, NULL::bigint AS rnk "
@@ -772,7 +785,7 @@ LIMIT ${len(params)}
         rescored = await asyncio.to_thread(self._rerank.rerank, query, texts)
         if rescored is None:
             return scored[:limit]
-        pairs = [(entry, score) for (entry, _), score in zip(scored, rescored)]
+        pairs = [(entry, score) for (entry, _), score in zip(scored, rescored, strict=False)]
         pairs.sort(key=lambda p: p[1], reverse=True)
         return pairs[:limit]
 
@@ -780,7 +793,8 @@ LIMIT ${len(params)}
         """Compute + store embeddings for entries missing them (or, with
         force=True, every entry not embedded by the CURRENT model — run this
         once after an embedding-model change: `cli.py memory reembed`).
-        Returns the count re-embedded."""
+        Returns the count re-embedded.
+        """
         if force:
             where = "embedding IS NULL OR embedding_model IS DISTINCT FROM $1"
             args: tuple = (self._embed.model_name,)
@@ -908,7 +922,8 @@ def _jsonb_decoder(raw: str) -> Any:
 
 def _dsn_host(dsn: str) -> str:
     """Just the hostname, for a log line that shouldn't carry a whole DSN.
-    Use `redact_dsn` when the operator needs to recognise WHICH database."""
+    Use `redact_dsn` when the operator needs to recognise WHICH database.
+    """
     try:
         return urlparse(dsn).hostname or "?"
     except Exception:

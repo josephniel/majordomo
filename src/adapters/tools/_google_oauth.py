@@ -21,11 +21,14 @@ import logging
 import socketserver
 import time
 import webbrowser
-from pathlib import Path
-from typing import Optional
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
+import contextlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +114,7 @@ class GoogleOAuthClient:
         captured: dict[str, str] = {}
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):  # noqa: N802
+            def do_GET(self):
                 qs = parse_qs(urlparse(self.path).query)
                 if "code" in qs:
                     captured["code"] = qs["code"][0]
@@ -145,10 +148,8 @@ class GoogleOAuthClient:
 
         try:
             print(f"\nOpen this URL in your browser to authenticate:\n  {auth_url}\n")
-            try:
+            with contextlib.suppress(Exception):
                 webbrowser.open(auth_url)
-            except Exception:
-                pass
             while not captured:
                 server.handle_request()
         finally:
@@ -196,7 +197,7 @@ class CredentialStore:
     def __init__(self, oauth: GoogleOAuthClient, credentials_path: Path) -> None:
         self._oauth = oauth
         self._path = credentials_path
-        self._cache: Optional[dict] = None
+        self._cache: dict | None = None
 
     def _load(self) -> dict:
         if self._cache is None:

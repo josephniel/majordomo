@@ -62,12 +62,12 @@ class TestWebhookServer:
         assert fired == []
 
     async def test_missing_token_rejected(self, server):
-        s, fired = server
+        s, _fired = server
         resp = await _post(s, "/trigger/alert", token=None)
         assert resp.status_code == 401
 
     async def test_unknown_trigger_404(self, server):
-        s, fired = server
+        s, _fired = server
         resp = await _post(s, "/trigger/nope")
         assert resp.status_code == 404
 

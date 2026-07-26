@@ -14,9 +14,9 @@ import logging
 import os
 import secrets
 import time
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, TYPE_CHECKING
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -31,7 +31,6 @@ from telegram.ext import (
 )
 
 from ports import Attachment, ConversationRef
-from adapters.comms import CommsLog
 
 from .base import (
     ChatPlatform,
@@ -43,6 +42,10 @@ from .base import (
     StatusTracker,
 )
 from .transcription import CascadingTranscriber, filename_for_mime
+
+if TYPE_CHECKING:
+    from adapters.comms import CommsLog
+    from collections.abc import Callable, Mapping
 
 log = logging.getLogger(__name__)
 
@@ -103,7 +106,8 @@ PLATFORM_NAME = "telegram"
 
 def _ref(chat_id: int) -> ConversationRef:
     """Telegram chat id -> ConversationRef. The ONLY place refs are minted
-    here; everything above receives them already built."""
+    here; everything above receives them already built.
+    """
     return ConversationRef(PLATFORM_NAME, str(chat_id))
 
 
@@ -133,9 +137,9 @@ class TelegramPlatform(ChatPlatform):
         token: str,
         allowed_user_ids: set[int],
         persona_id: str,
-        control_room_chat_id: Optional[int] = None,
-        comms_log: Optional[CommsLog] = None,
-        transcriber: Optional[CascadingTranscriber] = None,
+        control_room_chat_id: int | None = None,
+        comms_log: CommsLog | None = None,
+        transcriber: CascadingTranscriber | None = None,
     ) -> None:
         self._token = token
         self._allowed_user_ids = allowed_user_ids
@@ -145,15 +149,15 @@ class TelegramPlatform(ChatPlatform):
         self._transcriber = transcriber
         # Filled in during _post_init via bot.get_me() so we can detect
         # @-mentions of ourselves in the control room.
-        self._username: Optional[str] = None
-        self._user_id: Optional[int] = None
-        self._app: Optional[Application] = None
+        self._username: str | None = None
+        self._user_id: int | None = None
+        self._app: Application | None = None
         # nonce -> future resolved by the inline-keyboard callback.
         self._pending_approvals: dict[str, asyncio.Future] = {}
-        self._on_message: Optional[OnMessage] = None
-        self._on_command: Optional[OnCommand] = None
-        self._on_startup: Optional[OnLifecycle] = None
-        self._on_shutdown: Optional[OnLifecycle] = None
+        self._on_message: OnMessage | None = None
+        self._on_command: OnCommand | None = None
+        self._on_startup: OnLifecycle | None = None
+        self._on_shutdown: OnLifecycle | None = None
 
     # ---- ChatPlatform contract ----
 
@@ -163,9 +167,9 @@ class TelegramPlatform(ChatPlatform):
         raw: dict[str, Any],
         env: Mapping[str, str],
         persona_id: str,
-        comms_log: Optional[CommsLog] = None,
-        transcriber: Optional[CascadingTranscriber] = None,
-    ) -> "TelegramPlatform":
+        comms_log: CommsLog | None = None,
+        transcriber: CascadingTranscriber | None = None,
+    ) -> TelegramPlatform:
         """Parse the telegram block of instances/<persona_id>/platform.yaml.
 
         Expected shape:
@@ -180,7 +184,7 @@ class TelegramPlatform(ChatPlatform):
                 "Refusing to run an open bot."
             )
         cr_raw = raw.get("control_room") or None
-        cr_chat_id: Optional[int] = None
+        cr_chat_id: int | None = None
         if cr_raw:
             if "chat_id" not in cr_raw:
                 raise ValueError(
@@ -231,14 +235,14 @@ class TelegramPlatform(ChatPlatform):
         return 4000
 
     @property
-    def mention_handle(self) -> Optional[str]:
+    def mention_handle(self) -> str | None:
         return self._username
 
     async def send_text(
         self,
         chat_id: ConversationRef,
         text: str,
-        reply_to: Optional[int] = None,
+        reply_to: int | None = None,
     ) -> None:
         if self._app is None:
             raise RuntimeError("TelegramPlatform.send_text called before run()")
@@ -281,7 +285,7 @@ class TelegramPlatform(ChatPlatform):
         self,
         chat_id: ConversationRef,
         path: str,
-        caption: Optional[str] = None,
+        caption: str | None = None,
     ) -> bool:
         chat_id = _native(chat_id)
         if self._app is None:
@@ -349,7 +353,7 @@ class TelegramPlatform(ChatPlatform):
         try:
             approved = bool(await asyncio.wait_for(fut, timeout=timeout))
             outcome = "✅ Approved" if approved else "❌ Denied"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             approved = False
             outcome = "⏰ Timed out — denied"
         except asyncio.CancelledError:
@@ -521,7 +525,7 @@ class TelegramPlatform(ChatPlatform):
 
         # Voice/audio transcribe when a transcriber is configured; a None
         # return means the user already got a rejection/error reply.
-        voice_text: Optional[str] = None
+        voice_text: str | None = None
         if msg.voice or msg.audio:
             voice_text = await self._transcribe_voice(msg, context.bot)
             if voice_text is None:
@@ -573,9 +577,10 @@ class TelegramPlatform(ChatPlatform):
             message_id=msg.message_id,
         ))
 
-    async def _transcribe_voice(self, msg, bot) -> Optional[str]:
+    async def _transcribe_voice(self, msg, bot) -> str | None:
         """Download + transcribe a voice/audio message. Returns the text to
-        treat as the user's turn, or None after replying with why not."""
+        treat as the user's turn, or None after replying with why not.
+        """
         media = msg.voice or msg.audio
         if self._transcriber is None:
             await msg.reply_text(
@@ -709,10 +714,8 @@ async def _keep_typing_cm(bot, chat_id: int, interval: float = 4.0):
         yield
     finally:
         task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
 
 # ---- in-progress status message ----
@@ -741,21 +744,19 @@ class _TelegramStatusTracker:
         self._heartbeat_interval = heartbeat_interval
         self._started = time.monotonic()
         self._last_update_at = self._started
-        self._last_text: Optional[str] = None
-        self._message_id: Optional[int] = None
-        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._last_text: str | None = None
+        self._message_id: int | None = None
+        self._heartbeat_task: asyncio.Task | None = None
 
-    async def __aenter__(self) -> "_TelegramStatusTracker":
+    async def __aenter__(self) -> _TelegramStatusTracker:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
         if self._heartbeat_task is not None:
             self._heartbeat_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
         await self._clear_status_message()
 
     async def on_tool_use(self, tool_name: str, args: dict[str, Any]) -> None:

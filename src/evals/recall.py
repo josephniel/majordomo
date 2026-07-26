@@ -36,13 +36,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import re
 import statistics
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
@@ -77,8 +76,8 @@ AUTO_RECALL_LIMIT_PROBE = 4
 class RecallCase:
     query: str
     expect: list[str]
-    scope: Optional[str] = None
-    domain_key: Optional[str] = None
+    scope: str | None = None
+    domain_key: str | None = None
 
 
 @dataclass
@@ -89,7 +88,7 @@ class CaseResult:
     latency_ms: float
 
     @property
-    def first_expected_rank(self) -> Optional[int]:
+    def first_expected_rank(self) -> int | None:
         """1-indexed rank of the first expected key, or None if absent."""
         for i, k in enumerate(self.ranked_keys, start=1):
             if k == self.case.expect[0]:
@@ -116,7 +115,8 @@ class RecallReport:
     def false_inject_rate(self) -> float:
         """Share of no-relevant-fact queries that would still inject
         something. The counterweight to recall@k, which a system that returns
-        everything for every query would score 100% on."""
+        everything for every query would score 100% on.
+        """
         if not self.negatives_run:
             return 0.0
         return len(self.false_injections) / self.negatives_run
@@ -144,7 +144,7 @@ class RecallReport:
         if not self.results:
             return 0.0
         xs = sorted(r.latency_ms for r in self.results)
-        idx = min(len(xs) - 1, int(round((p / 100.0) * (len(xs) - 1))))
+        idx = min(len(xs) - 1, round((p / 100.0) * (len(xs) - 1)))
         return xs[idx]
 
     def render(self, verbose: bool = False) -> str:
@@ -156,10 +156,10 @@ class RecallReport:
             f"  recall@{K_AUTO} (auto-inject window) : {self.recall_at_auto:.1%}",
             f"  recall@{K_EXPLICIT} (explicit window)    : {self.recall_at_explicit:.1%}",
             f"  MRR                          : {self.mrr:.3f}",
-            f"  false-inject rate            : {self.false_inject_rate:.1%}"
-            f"  ({len(self.false_injections)}/{self.negatives_run} off-topic queries)",
-            f"  latency p50 / p95            : "
-            f"{self.latency_percentile(50):.0f}ms / {self.latency_percentile(95):.0f}ms",
+            (f"  false-inject rate            : {self.false_inject_rate:.1%}"
+            f"  ({len(self.false_injections)}/{self.negatives_run} off-topic queries)"),
+            (f"  latency p50 / p95            : "
+            f"{self.latency_percentile(50):.0f}ms / {self.latency_percentile(95):.0f}ms"),
         ]
         if self.false_injections:
             lines.append("")
@@ -174,7 +174,7 @@ class RecallReport:
                 lines.append(
                     f"  [{mark}] {r.case.query!r}\n"
                     f"         want {r.case.expect}  rank={rank}\n"
-                    f"         got  {list(zip(r.ranked_keys[:5], [round(s, 4) for s in r.scores[:5]]))}"
+                    f"         got  {list(zip(r.ranked_keys[:5], [round(s, 4) for s in r.scores[:5]], strict=False))}"
                 )
         elif self.misses:
             lines.append("")
@@ -260,7 +260,7 @@ async def run_negatives(
     persona_id: str,
     negatives: list[str],
     key_by_id: dict[str, str],
-    report: "RecallReport",
+    report: RecallReport,
 ) -> None:
     """Record which off-topic queries would still inject a memory.
 
@@ -355,11 +355,12 @@ async def evaluate(
 def build_parser() -> argparse.ArgumentParser:
     """Split out of main() so the flag defaults are testable without running
     an eval — `--migrate` defaulting to off is a safety property, not a
-    preference, so it deserves an assertion."""
+    preference, so it deserves an assertion.
+    """
     ap = argparse.ArgumentParser(prog="eval-recall", description=__doc__)
     ap.add_argument("--dsn", default=DEFAULT_DSN,
-                    help=f"Postgres DSN to seed against (default: the test "
-                         f"database, NOT a live assistant's)")
+                    help="Postgres DSN to seed against (default: the test "
+                         "database, NOT a live assistant's)")
     ap.add_argument("--migrate", action="store_true",
                     help="create/upgrade the schema on the target first. Off "
                          "by default: a benchmark should not be able to apply "
@@ -373,7 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     report = asyncio.run(

@@ -27,8 +27,9 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 
 from ports import ConversationRef, ToolContext, ToolResult, ToolSpec
 
@@ -74,7 +75,8 @@ def _format_value(value: Any, limit: int = _MAX_VALUE_CHARS) -> str:
 
 def format_approval_prompt(connector_name: str, tool_name: str, args: dict[str, Any]) -> str:
     """Human-first rendering of a pending write: one bullet per argument,
-    routing fields first — never a raw JSON dump."""
+    routing fields first — never a raw JSON dump.
+    """
     lines = [f"🔐 Approval needed — {connector_name}/{tool_name}"]
     fields = [(k, v) for k, v in args.items() if v not in (None, "", [], {})]
     # Routing/persistence fields first, in a stable order.
@@ -114,6 +116,7 @@ class PendingApproval:
     behind that lock, unacknowledged, for up to two minutes. They tapped
     nothing, saw nothing, and the bot appeared dead.
     """
+
     connector: str
     tool: str
     since: float
@@ -127,30 +130,32 @@ class WriteApprovalGate:
     """Wraps write-tool handlers with an in-chat operator confirmation."""
 
     def __init__(self) -> None:
-        self._confirmer: Optional[Confirmer] = None
-        self._auditor: Optional[Auditor] = None
+        self._confirmer: Confirmer | None = None
+        self._auditor: Auditor | None = None
         # conversation -> the write it is blocked on. Only ever holds
         # conversations currently inside `_confirmer`, and the entry is
         # removed in a finally so a denial, timeout, cancellation or crash
         # can't leave a chat looking permanently blocked.
         self._pending: dict[ConversationRef, PendingApproval] = {}
 
-    def pending_for(self, chat_id: ConversationRef) -> Optional[PendingApproval]:
+    def pending_for(self, chat_id: ConversationRef) -> PendingApproval | None:
         """The write this conversation is waiting on, if any."""
         return self._pending.get(chat_id)
 
     def bind(self, confirmer: Confirmer) -> None:
         """Attach the platform's approval UI. Called at composition time,
-        before the platform serves any traffic."""
+        before the platform serves any traffic.
+        """
         self._confirmer = confirmer
 
     def bind_audit(self, auditor: Auditor) -> None:
         """Attach the durable decision recorder (approval_log). Optional —
-        auditing must never block or break the write itself."""
+        auditing must never block or break the write itself.
+        """
         self._auditor = auditor
 
     async def _audit(
-        self, chat_id: Optional[ConversationRef], connector: str, tool: str,
+        self, chat_id: ConversationRef | None, connector: str, tool: str,
         args: dict[str, Any], decision: str, reason: str,
     ) -> None:
         if self._auditor is None:
@@ -166,7 +171,8 @@ class WriteApprovalGate:
     def wrap_spec(self, connector_name: str, spec: ToolSpec) -> ToolSpec:
         """A copy of `spec` whose handler asks for approval first. Used by
         GatedToolProvider for WRITE_TOOLS and by the composition root for
-        external stdio MCP tools (gated wholesale — reads too)."""
+        external stdio MCP tools (gated wholesale — reads too).
+        """
         inner = spec.handler
         tool_name = spec.name
 
@@ -192,7 +198,7 @@ class WriteApprovalGate:
         connector_name: str,
         tool_name: str,
         args: dict[str, Any],
-        chat_id: Optional[ConversationRef],
+        chat_id: ConversationRef | None,
     ) -> tuple[bool, str]:
         if self._confirmer is None:
             # Only reachable outside the bot process (CLI, tests):

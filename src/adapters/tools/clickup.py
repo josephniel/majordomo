@@ -20,16 +20,18 @@ import getpass
 import json
 import logging
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any, TYPE_CHECKING
 
 import httpx
-from ports import ToolContext, ToolResult, tool
 
-from .registry import ServiceRegistry
+from ports import Connector, ToolContext, ToolResult, tool
 
-from ports import Connector
+import contextlib
+
+if TYPE_CHECKING:
+    from .registry import ServiceRegistry
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -52,8 +54,8 @@ class ClickUpClient:
         self,
         method: str,
         path: str,
-        params: Optional[dict] = None,
-        body: Optional[dict] = None,
+        params: dict | None = None,
+        body: dict | None = None,
     ) -> dict:
         async with httpx.AsyncClient(timeout=self.TIMEOUT) as http:
             response = await http.request(
@@ -71,13 +73,13 @@ class ClickUpClient:
                 return {}
             return response.json()
 
-    async def _get(self, path: str, params: Optional[dict] = None) -> dict:
+    async def _get(self, path: str, params: dict | None = None) -> dict:
         return await self._request("GET", path, params=params)
 
     async def _put(self, path: str, body: dict) -> dict:
         return await self._request("PUT", path, body=body)
 
-    async def _post(self, path: str, body: Optional[dict] = None) -> dict:
+    async def _post(self, path: str, body: dict | None = None) -> dict:
         return await self._request("POST", path, body=body or {})
 
     async def _delete(self, path: str) -> dict:
@@ -161,7 +163,7 @@ def _format_task_line(task: dict, prefix: str = "- ") -> str:
     suffix = f" ({status})"
     if due:
         try:
-            due_str = datetime.fromtimestamp(int(due) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            due_str = datetime.fromtimestamp(int(due) / 1000, tz=UTC).strftime("%Y-%m-%d")
             suffix = f" ({status}, due {due_str})"
         except Exception:
             pass
@@ -244,7 +246,7 @@ def _format_http_error(e: httpx.HTTPStatusError) -> str:
     )
 
 
-def _parse_id_csv(s: Optional[str]) -> list[int]:
+def _parse_id_csv(s: str | None) -> list[int]:
     """Parse '123, 456, 789' into [123, 456, 789]. Empty input -> []."""
     if not s:
         return []
@@ -253,10 +255,8 @@ def _parse_id_csv(s: Optional[str]) -> list[int]:
         part = part.strip()
         if not part:
             continue
-        try:
+        with contextlib.suppress(ValueError):
             out.append(int(part))
-        except ValueError:
-            pass
     return out
 
 
@@ -328,7 +328,7 @@ class ClickUpConnector(Connector):
             servers[profile.name] = self._build_tools_for_profile(client)
         return servers
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     # ---- CLI ----
@@ -415,7 +415,7 @@ class ClickUpConnector(Connector):
             )
             sys.exit(1)
 
-        existing_team_id: Optional[str] = None
+        existing_team_id: str | None = None
         secrets_path = self.credentials_dir / slug / "secrets.json"
         if secrets_path.exists():
             try:

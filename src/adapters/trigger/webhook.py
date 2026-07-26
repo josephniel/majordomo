@@ -33,8 +33,6 @@ traffic, and the bot loop is reached via run_coroutine_threadsafe.
 """
 from __future__ import annotations
 
-from ports import ConversationRef
-
 import asyncio
 import hmac
 import json
@@ -42,9 +40,14 @@ import logging
 import socketserver
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from ports import ConversationRef
 
 log = logging.getLogger(__name__)
 
@@ -91,8 +94,8 @@ class WebhookServer:
         self._triggers = dict(triggers)
         self._host = host
         self._port = port
-        self._httpd: Optional[ThreadingHTTPServer] = None
-        self._thread: Optional[threading.Thread] = None
+        self._httpd: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
         self._last_fired: dict[str, float] = {}
         # ThreadingHTTPServer runs handlers on separate threads — the
         # cooldown check-then-set must be atomic or a burst double-fires.
@@ -125,10 +128,10 @@ class WebhookServer:
                 self.end_headers()
                 self.wfile.write(data)
 
-            def do_GET(self):  # noqa: N802
+            def do_GET(self):
                 self._reply(405, {"error": "POST only"})
 
-            def do_POST(self):  # noqa: N802
+            def do_POST(self):
                 auth = self.headers.get("Authorization") or ""
                 expected = f"Bearer {outer._token}"
                 if not hmac.compare_digest(auth, expected):

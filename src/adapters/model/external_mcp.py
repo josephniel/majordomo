@@ -15,15 +15,18 @@ from __future__ import annotations
 
 import logging
 from contextlib import AsyncExitStack
-from typing import Any, Callable, Optional
+from typing import Any, TYPE_CHECKING
 
 from ports import ServiceCatalog, ToolContext, ToolResult, ToolSpec
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
 
 def _result_to_tool_result(res: Any) -> ToolResult:
-    """mcp CallToolResult → the vendor-neutral ToolResult handlers return."""
+    """Mcp CallToolResult → the vendor-neutral ToolResult handlers return."""
     parts = [
         getattr(c, "text", "")
         for c in (getattr(res, "content", None) or [])
@@ -36,16 +39,17 @@ def _result_to_tool_result(res: Any) -> ToolResult:
 class ExternalMCPManager:
     """Connects to the enabled external stdio MCP servers and exposes their
     tools as ToolSpecs keyed by the same `<profile>__<tool>` convention the
-    in-process servers use."""
+    in-process servers use.
+    """
 
     def __init__(
         self,
         config: ServiceCatalog,
-        skip_profiles: Optional[Callable[[str], bool]] = None,
-        tool_filter: Optional[Callable[[str, str], bool]] = None,
+        skip_profiles: Callable[[str], bool] | None = None,
+        tool_filter: Callable[[str, str], bool] | None = None,
     ) -> None:
         """
-        config        — the persona's ServiceRegistry (reads connectors.yaml).
+        Config        — the persona's ServiceRegistry (reads connectors.yaml).
         skip_profiles — profile_name -> True when an in-process server already
                         covers it (mirrors AnthropicOptionsBuilder's dedup).
         tool_filter   — (profile_name, tool_name) -> allowed? Applies the
@@ -54,12 +58,13 @@ class ExternalMCPManager:
         self._config = config
         self._skip_profiles = skip_profiles or (lambda _p: False)
         self._tool_filter = tool_filter or (lambda _p, _t: True)
-        self._stack: Optional[AsyncExitStack] = None
-        self._specs: Optional[dict[str, ToolSpec]] = None
+        self._stack: AsyncExitStack | None = None
+        self._specs: dict[str, ToolSpec] | None = None
 
     async def get_tool_specs(self) -> dict[str, ToolSpec]:
         """Connect (once) and return the merged tool map. Safe to call from
-        multiple agents; subsequent calls return the cached map."""
+        multiple agents; subsequent calls return the cached map.
+        """
         if self._specs is not None:
             return dict(self._specs)
         self._specs = {}

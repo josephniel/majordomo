@@ -6,7 +6,6 @@ import time
 import pytest
 
 from adapters.model.fallback import (
-    COMPACTION_FAILURE_BACKOFF_SECONDS,
     HISTORY_COMPACTION_CHAR_THRESHOLD,
     CascadingAgent,
 )

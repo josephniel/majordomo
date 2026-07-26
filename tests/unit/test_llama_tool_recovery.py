@@ -18,8 +18,8 @@ class TestParseLlamaToolCalls:
     def test_real_failed_generation(self):
         calls = _parse_llama_tool_calls(REAL_FG)
         assert calls == [("memory__memory_save",
-                          '{"scope": "agent", "content": "I am now using LLaMA", '
-                          '"title": "Current AI model"}')]
+                          ('{"scope": "agent", "content": "I am now using LLaMA", '
+                          '"title": "Current AI model"}'))]
 
     def test_multiple_calls_with_surrounding_text(self):
         calls = _parse_llama_tool_calls('ok <function=a {"x": 1}> then <function=b {"y": 2}>!')
@@ -58,7 +58,8 @@ class TestRecoverFailedToolCalls:
             "\"content\": \"x\"}>'}}"
         )
         calls = _recover_failed_tool_calls(exc)
-        assert calls and calls[0][0] == "memory__memory_save"
+        assert calls
+        assert calls[0][0] == "memory__memory_save"
 
     def test_ignores_non_tool_errors(self):
         assert _recover_failed_tool_calls(RuntimeError("429 rate limit")) == []

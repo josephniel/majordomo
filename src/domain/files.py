@@ -15,15 +15,16 @@ pattern as the write-approval gate.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 
 from ports import Faculty, ToolContext, ToolResult, tool
 
 log = logging.getLogger(__name__)
 
 # sender(chat_id, path, caption) -> delivered?
-FileSender = Callable[[int, str, Optional[str]], Awaitable[bool]]
+FileSender = Callable[[int, str, str | None], Awaitable[bool]]
 
 
 class FileCourier(Faculty):
@@ -34,12 +35,12 @@ class FileCourier(Faculty):
 
     def __init__(self, data_dir: Path) -> None:
         self._data_dir = data_dir
-        self._sender: Optional[FileSender] = None
+        self._sender: FileSender | None = None
 
     def bind(self, sender: FileSender) -> None:
         self._sender = sender
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     def builtin_tools(self) -> list:

@@ -17,14 +17,15 @@ import json
 import logging
 import sys
 from email.header import decode_header, make_header
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any, TYPE_CHECKING
 
-from ports import ToolContext, ToolResult, tool
+from ports import Connector, ToolContext, ToolResult, tool
 
-from .registry import ServiceRegistry
+import contextlib
 
-from ports import Connector
+if TYPE_CHECKING:
+    from .registry import ServiceRegistry
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class YahooConnector(Connector):
     # Everything runs via imaplib in a worker thread, so it works on any LLM
     # backend. No external mcp-mail-server / npx dependency.
 
-    ALL_TOOLS = DEFAULT_TOOLS + ["mark_as_read"]
+    ALL_TOOLS = [*DEFAULT_TOOLS, "mark_as_read"]
 
     def builtin_servers(self) -> dict[str, list]:
         servers: dict[str, list] = {}
@@ -336,7 +337,7 @@ class YahooConnector(Connector):
 
     # ---- tool status ----
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         if local == "mark_as_read":
             return "Marking the email as read"
         if "search_by" in local or "search_email" in local:
@@ -361,7 +362,7 @@ def _imap_mark_read(
     mailbox: str,
     uid: str,
 ) -> None:
-    """Connect, login, select mailbox, set the \\Seen flag on a UID, log out."""
+    r"""Connect, login, select mailbox, set the \\Seen flag on a UID, log out."""
     cls = imaplib.IMAP4_SSL if secure else imaplib.IMAP4
     m = cls(host, port)
     try:
@@ -401,10 +402,8 @@ def _open(env: dict, mailbox: str, readonly: bool = True):
 
 
 def _logout(m) -> None:
-    try:
+    with contextlib.suppress(Exception):
         m.logout()
-    except Exception:
-        pass
 
 
 def _imap_search(env: dict, mailbox: str, criteria: list, limit: int, full: bool = False) -> list:
@@ -425,10 +424,8 @@ def _imap_fetch_uids(env: dict, mailbox: str, uids: list, full: bool) -> list:
     try:
         out = []
         for u in uids:
-            try:
+            with contextlib.suppress(Exception):
                 out.append(_fetch_one(m, u, full))
-            except Exception:
-                pass
         return out
     finally:
         _logout(m)
@@ -437,7 +434,7 @@ def _imap_fetch_uids(env: dict, mailbox: str, uids: list, full: bool) -> list:
 def _fetch_one(m, uid, full: bool) -> dict:
     uid_s = uid.decode() if isinstance(uid, (bytes, bytearray)) else str(uid)
     spec = "(RFC822)" if full else "(BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])"
-    typ, data = m.uid("FETCH", uid_s, spec)
+    _typ, data = m.uid("FETCH", uid_s, spec)
     raw = _first_bytes(data)
     d = {"uid": uid_s, "from": "", "to": "", "subject": "", "date": "", "body": ""}
     if raw:
@@ -491,7 +488,7 @@ def _imap_list_mailboxes(env: dict) -> list:
     m = cls(host, port)
     try:
         m.login(user, pw)
-        typ, data = m.list()
+        _typ, data = m.list()
         names = []
         for line in (data or []):
             if not line:

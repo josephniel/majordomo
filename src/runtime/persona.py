@@ -18,10 +18,13 @@ DI factory that turns one Persona into a running ConversationOrchestrator.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from pathlib import Path
-from typing import Optional, Union
+from typing import Union, TYPE_CHECKING
 
 import yaml
+import contextlib
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # enabled_connectors map values:
 #   True            -> connector active, READ-ONLY (all tools minus WRITE_TOOLS)
@@ -42,7 +45,7 @@ class Persona:
     name: str
     system_prompt: str
     enabled_connectors: dict[str, EnabledValue] = field(default_factory=dict)
-    model: Optional[str] = None
+    model: str | None = None
     # Layer 5: write tools require an in-chat operator approval per call.
     # Opting out (write_approval: false) restores unattended writes — only
     # sane for personas whose write surface is already trusted end-to-end.
@@ -50,25 +53,25 @@ class Persona:
     # Proactive check-in: {cron: "0 8,13,18 * * *", chat_id: <optional int>,
     # prompt: "..."}. chat_id defaults to the platform's first allowed user
     # (their DM). The prompt is re-read from persona.yaml per fire.
-    heartbeat: Optional[dict] = None
+    heartbeat: dict | None = None
     # Inbound webhook triggers: {port: 18790, triggers: {name: {prompt: ...}}}.
     # Requires WEBHOOK_TOKEN in the instance .env. See adapters/trigger/webhook.py.
-    webhooks: Optional[dict] = None
+    webhooks: dict | None = None
     # Push-style mail alerts: {every_minutes: 3, chat_id: <optional>}.
     # Needs the gmail connector enabled. See adapters/trigger/mailwatch.py.
-    mail_watch: Optional[dict] = None
+    mail_watch: dict | None = None
     # Splitwise expense mirroring into the budget ledger: {every_minutes: 10,
     # chat_id: <optional>}. Needs splitwise AND budget connectors enabled.
     # Polling — Splitwise's API has no webhooks. See adapters/trigger/splitwisewatch.py.
-    splitwise_watch: Optional[dict] = None
+    splitwise_watch: dict | None = None
     # Enablement map for BACKGROUND agents (heartbeat, mail-watch) — same
     # grammar as faculties:/connectors:. When unset, the chat map is used
     # downgraded to read-only. Background fires are unattended and pay the
     # full tool-schema token cost per fire, so keep this minimal.
-    background_tools: Optional[dict[str, EnabledValue]] = None
+    background_tools: dict[str, EnabledValue] | None = None
 
     @classmethod
-    def load(cls, persona_id: str, project_root: Path) -> "Persona":
+    def load(cls, persona_id: str, project_root: Path) -> Persona:
         persona_dir = project_root / "instances" / persona_id
         config_path = persona_dir / "persona.yaml"
         if not config_path.exists():
@@ -107,7 +110,8 @@ class Persona:
     def _merge_enablement(cfg: dict, config_path: Path) -> dict:
         """Merge legacy enabled_connectors + faculties: + connectors: into
         one policy map (names are globally unique). Collisions are almost
-        certainly migration mistakes — warn loudly, last block wins."""
+        certainly migration mistakes — warn loudly, last block wins.
+        """
         import logging
         blocks = [
             ("enabled_connectors", dict(cfg.get("enabled_connectors")
@@ -163,7 +167,7 @@ class Persona:
 
     # ---- enablement queries ----
 
-    def background_view(self) -> "Persona":
+    def background_view(self) -> Persona:
         """This persona as seen by background agents (heartbeat, mail-watch).
 
         Uses `background_tools:` when set; otherwise downgrades the chat
@@ -191,7 +195,7 @@ class Persona:
             return len(v) > 0
         return False
 
-    def allowed_tool_names(self, connector) -> Optional[list[str]]:
+    def allowed_tool_names(self, connector) -> list[str] | None:
         """Resolve which of a connector's tools this persona may use.
         Returns None = all tools, a list = only those, [] = disabled.
 
@@ -232,9 +236,7 @@ class Persona:
                 names |= {s.name for s in specs}
         except Exception:
             pass
-        try:
+        with contextlib.suppress(Exception):
             names |= {t.name for t in connector.builtin_tools()}
-        except Exception:
-            pass
         return names
 

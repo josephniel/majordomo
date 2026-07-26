@@ -15,15 +15,16 @@ import getpass
 import json
 import logging
 import sys
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any, TYPE_CHECKING
 
 import httpx
-from ports import ToolContext, ToolResult, tool
 
-from .registry import ServiceRegistry
+from ports import Connector, ToolContext, ToolResult, tool
 
-from ports import Connector
+
+if TYPE_CHECKING:
+    from .registry import ServiceRegistry
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -37,15 +38,15 @@ class SplitwiseClient:
 
     def __init__(self, api_key: str) -> None:
         self._api_key = api_key
-        self._user_id_cache: Optional[int] = None
+        self._user_id_cache: int | None = None
 
     async def _request(
         self,
         method: str,
         path: str,
-        params: Optional[dict] = None,
-        body: Optional[dict] = None,
-        form: Optional[dict] = None,
+        params: dict | None = None,
+        body: dict | None = None,
+        form: dict | None = None,
     ) -> dict:
         """`form` sends application/x-www-form-urlencoded — required by
         Splitwise's create/update endpoints when using the users__N__field
@@ -68,7 +69,7 @@ class SplitwiseClient:
     async def get_current_user(self) -> dict:
         return await self._request("GET", "/get_current_user")
 
-    async def current_user_id(self) -> Optional[int]:
+    async def current_user_id(self) -> int | None:
         if self._user_id_cache is None:
             user = (await self.get_current_user()).get("user") or {}
             self._user_id_cache = user.get("id")
@@ -121,7 +122,7 @@ def _nonzero_balances(balances: list[dict]) -> str:
     return ", ".join(items)
 
 
-def _format_group(group: dict, current_user_id: Optional[int] = None) -> str:
+def _format_group(group: dict, current_user_id: int | None = None) -> str:
     gid = group.get("id", "?")
     name = group.get("name", "(unnamed)")
     members = group.get("members", []) or []
@@ -152,7 +153,7 @@ def _format_friend(friend: dict) -> str:
     return line
 
 
-def _format_expense(expense: dict, current_user_id: Optional[int] = None) -> str:
+def _format_expense(expense: dict, current_user_id: int | None = None) -> str:
     eid = expense.get("id", "?")
     desc = expense.get("description", "(no description)")
     cost = expense.get("cost", "0")
@@ -177,7 +178,7 @@ def _format_expense(expense: dict, current_user_id: Optional[int] = None) -> str
     return line
 
 
-def _summarize_expenses_response(resp: dict, current_user_id: Optional[int]) -> str:
+def _summarize_expenses_response(resp: dict, current_user_id: int | None) -> str:
     expenses = resp.get("expenses", [])
     if not expenses:
         return "No expenses found."
@@ -190,7 +191,8 @@ def _format_http_error(e: httpx.HTTPStatusError) -> str:
 
 def _to_form(d: dict) -> dict[str, str]:
     """Stringify values for application/x-www-form-urlencoded posting,
-    skipping None entries."""
+    skipping None entries.
+    """
     out: dict[str, str] = {}
     for k, v in d.items():
         if v is None:
@@ -216,7 +218,7 @@ def _flatten_users_to_form(users_list: list[dict]) -> dict[str, str]:
     return out
 
 
-def _splitwise_errors(resp: dict) -> Optional[str]:
+def _splitwise_errors(resp: dict) -> str | None:
     """Splitwise returns HTTP 200 even on validation failure, with details in
     `errors` (dict or list). Return a flat error string if there are any.
     """
@@ -281,7 +283,8 @@ class SplitwiseConnector(Connector):
 
     def build_clients(self) -> dict[str, SplitwiseClient]:
         """One API client per enabled profile — the narrow surface services
-        (splitwise watch) consume without touching tool machinery."""
+        (splitwise watch) consume without touching tool machinery.
+        """
         clients: dict[str, SplitwiseClient] = {}
         for profile in self._config.load_all():
             if not profile.enabled or not self.owns_profile(profile.name):
@@ -303,7 +306,7 @@ class SplitwiseConnector(Connector):
             for name, client in self.build_clients().items()
         }
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     # ---- CLI ----

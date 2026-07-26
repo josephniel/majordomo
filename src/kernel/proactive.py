@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 
-from ports import TriggerContext, TriggerEvent
+from ports import TriggerContext
 
 log = logging.getLogger(__name__)
 
@@ -60,7 +60,8 @@ class ProactiveMixin:
 
     async def _stop_trigger_sources(self) -> None:
         """Stop every source, in reverse. Each failure is isolated: shutdown
-        is the one path where giving up early strands resources."""
+        is the one path where giving up early strands resources.
+        """
         for source in reversed(list(self._trigger_sources)):
             try:
                 await source.stop()
@@ -69,5 +70,6 @@ class ProactiveMixin:
 
     def _describe_triggers(self) -> list[str]:
         """Source names, for /status and boot logs. Previously unanswerable
-        without knowing the four attribute names by heart."""
+        without knowing the four attribute names by heart.
+        """
         return [s.name for s in self._trigger_sources]

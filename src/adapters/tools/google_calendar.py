@@ -13,19 +13,20 @@ import logging
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, TYPE_CHECKING
 
 import httpx
-from ports import ToolContext, ToolResult, tool
 
-from .registry import ServiceRegistry
+from ports import Connector, ToolContext, ToolResult, tool
 
 from ._google_oauth import (
     CredentialStore,
     GoogleOAuthClient,
     GoogleOAuthError,
 )
-from ports import Connector
+
+if TYPE_CHECKING:
+    from .registry import ServiceRegistry
 
 log = logging.getLogger(__name__)
 
@@ -47,8 +48,8 @@ class CalendarClient:
     def __init__(self, store: CredentialStore) -> None:
         self._store = store
 
-    async def _request(self, method: str, path: str, params: Optional[dict] = None,
-                       json_body: Optional[dict] = None) -> dict:
+    async def _request(self, method: str, path: str, params: dict | None = None,
+                       json_body: dict | None = None) -> dict:
         token = await self._store.access_token()
         async with httpx.AsyncClient(timeout=self.TIMEOUT) as http:
             r = await http.request(
@@ -79,9 +80,9 @@ class CalendarClient:
         self,
         calendar_id: str = "primary",
         max_results: int = 25,
-        time_min: Optional[str] = None,
-        time_max: Optional[str] = None,
-        query: Optional[str] = None,
+        time_min: str | None = None,
+        time_max: str | None = None,
+        query: str | None = None,
     ) -> dict:
         params: dict[str, Any] = {
             "maxResults": max_results,
@@ -217,7 +218,7 @@ class GoogleCalendarConnector(Connector):
             servers[profile.name] = self._build_tools_for_profile(client)
         return servers
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     # ---- CLI ----

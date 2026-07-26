@@ -65,7 +65,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -121,9 +120,9 @@ class Embedder:
     passing the same object to the memory store and the document store.
     """
 
-    def __init__(self, model: Optional[str] = None) -> None:
+    def __init__(self, model: str | None = None) -> None:
         self.model_name = (model or "").strip() or DEFAULT_MODEL
-        self._dim: Optional[int] = None
+        self._dim: int | None = None
         self._loaded = None
         self._lock = threading.Lock()
 
@@ -165,7 +164,8 @@ class Embedder:
 
     def embed_query(self, text: str) -> list[float]:
         """Embed a SEARCH QUERY (short, interrogative). Applies the model's
-        query prefix where it has one."""
+        query prefix where it has one.
+        """
         text = (text or "").strip()
         if not text:
             return []
@@ -191,7 +191,7 @@ class Embedder:
         return self.embed_passage(text)
 
 
-def to_pgvector(vec: list[float]) -> Optional[str]:
+def to_pgvector(vec: list[float]) -> str | None:
     """Format a vector as a pgvector literal ('[f1,f2,...]'), or None if empty."""
     if not vec:
         return None

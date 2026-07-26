@@ -15,33 +15,29 @@ cached_property gives per-container singletons without a separate cache.
 """
 from __future__ import annotations
 
-from ports import ConversationRef, ModelRole
-
 import logging
 import os
 from functools import cached_property
-from pathlib import Path
-from typing import Optional
 
 from dotenv import dotenv_values, load_dotenv
 
+from adapters.chat import ChatPlatform, PlatformConfig, get_platform_cls, registered_platform_names
+from adapters.chat.transcription import build_transcriber
+from adapters.comms import CommsLog
 from adapters.model import (
     Agent,
     AnthropicAgent,
-    ConversationHistory,
-    EphemeralConversationHistory,
     CascadingAgent,
-    ExternalMCPManager,
     ChatCompletionsSummarizer,
-    Summarizer,
     ContextBuilder,
+    ConversationHistory,
+    ExternalMCPManager,
+    Summarizer,
     VendorHealthBoard,
 )
 from adapters.model.anthropic import AnthropicOptionsBuilder, SubscriptionAuthSummarizer
-from adapters.comms import CommsLog
-from kernel.core import ConversationOrchestrator
 from adapters.store import Embedder, MemoryDatabase, Reranker, redact_dsn
-from kernel.sessions import SessionStore
+
 # Concrete provider classes are NOT imported here any more — runtime/
 # providers.py owns construction. What remains is the small set this module
 # genuinely needs: the shared contracts, the approval gate, and the three
@@ -61,15 +57,20 @@ from domain import (
     ScheduleEngine,
     TaskScheduler,
 )
-from adapters.chat import get_platform_cls, registered_platform_names, ChatPlatform, PlatformConfig
-from adapters.chat.transcription import build_transcriber
+from kernel.core import ConversationOrchestrator
+from kernel.sessions import SessionStore
+from ports import ConversationRef, ModelRole
 
-from .persona import Persona
+from .config import SHARED_ENV_FILENAME
 from .model_roles import RoleChain, resolve_roles
+from .persona import Persona
 from .providers import CONNECTOR_NAMES, FACULTY_NAMES, PROVIDERS_BY_NAME
 from .settings import RuntimeSettings
-from .config import SHARED_ENV_FILENAME
 from .vendors import VENDORS, VENDORS_BY_NAME
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -212,7 +213,8 @@ class PersonaRuntime:
         """Push channel to the cross-project status dashboard
         (status.example.com). None when STATUS_PUSH_URL is unset.
         Carries both the persona heartbeat (liveness on the board) and
-        vendor-health changes."""
+        vendor-health changes.
+        """
         push_url = self.settings.status_push_url
         if not push_url:
             return None
@@ -228,7 +230,8 @@ class PersonaRuntime:
         """Per-persona vendor availability, shared by every chat's
         CascadingAgent and persisted across restarts. Health changes also
         push to the status dashboard when configured (the board itself
-        stays local — failover can't depend on the network being healthy)."""
+        stays local — failover can't depend on the network being healthy).
+        """
         reporter = self.status_reporter
         return VendorHealthBoard(
             store_file=self.persona.data_dir / "vendor_health.json",
@@ -238,13 +241,11 @@ class PersonaRuntime:
     @cached_property
     def external_mcp(self) -> ExternalMCPManager:
         """Bridges connectors.yaml's external stdio MCP servers to the
-        non-Claude vendors (the Claude SDK mounts them natively)."""
+        non-Claude vendors (the Claude SDK mounts them natively).
+        """
         def _skip(profile: str) -> bool:
             # Skip profiles already served by an in-process builtin server.
-            for c in self.active_services:
-                if profile in c.builtin_servers():
-                    return True
-            return False
+            return any(profile in c.builtin_servers() for c in self.active_services)
 
         def _allowed(profile: str, tool_name: str) -> bool:
             for c in self.active_services:
@@ -260,9 +261,10 @@ class PersonaRuntime:
         )
 
     @cached_property
-    def reflection_engine(self) -> Optional[ReflectionEngine]:
+    def reflection_engine(self) -> ReflectionEngine | None:
         """Idle-triggered fact extraction. Only exists when the persona has
-        the memory connector enabled — reflection writes through it."""
+        the memory connector enabled — reflection writes through it.
+        """
         if not self.persona.is_connector_enabled("memory"):
             return None
         return ReflectionEngine(
@@ -279,11 +281,12 @@ class PersonaRuntime:
 
 
     @cached_property
-    def approval_gate(self) -> Optional[WriteApprovalGate]:
+    def approval_gate(self) -> WriteApprovalGate | None:
         """Layer 5: per-call operator approval for write tools. None when the
         persona opts out (write_approval: false). The platform confirmer is
         bound in create_conversation(); before that (CLI contexts) the gate
-        allows, since no chat traffic exists yet."""
+        allows, since no chat traffic exists yet.
+        """
         if not self.persona.write_approval:
             return None
         return WriteApprovalGate()
@@ -294,7 +297,8 @@ class PersonaRuntime:
         """The persona's singleton instance of one provider, built on first
         use. Lazy because constructing some of them (memory, documents)
         demands runtime resources a persona that hasn't enabled them
-        shouldn't have to supply."""
+        shouldn't have to supply.
+        """
         cached = self._provider_cache.get(name)
         if cached is None:
             spec = PROVIDERS_BY_NAME.get(name)
@@ -326,14 +330,16 @@ class PersonaRuntime:
     def active_services(self) -> list[ToolProvider]:
         """Every enabled tool provider (connectors first, then faculties —
         preserves the historical system-prompt section order). Raw instances:
-        lifecycle hooks, /status, and identity checks run against these."""
+        lifecycle hooks, /status, and identity checks run against these.
+        """
         return [*self.active_connectors, *self.active_faculties]
 
     @cached_property
     def gated_services(self) -> list[ToolProvider]:
         """The view AGENT BUILDERS consume: WRITE_TOOLS specs wrapped with
         the approval gate (Layer 5). Same objects as active_services when
-        the persona opts out of write approval."""
+        the persona opts out of write approval.
+        """
         gate = self.approval_gate
         if gate is None:
             return self.active_services
@@ -415,7 +421,7 @@ class PersonaRuntime:
                     f"separate databases."
                 )
 
-    def _sibling_settings(self, persona_id: str) -> Optional[RuntimeSettings]:
+    def _sibling_settings(self, persona_id: str) -> RuntimeSettings | None:
         """Resolve another persona's settings without disturbing this one.
 
         dotenv_values parses to a dict instead of mutating os.environ, so the
@@ -464,7 +470,8 @@ class PersonaRuntime:
 
         Uses the same DSN as memory_database (same DB, separate pool so
         memory queries don't share a connection lifecycle with the LISTEN
-        connection)."""
+        connection).
+        """
         dsn = self.settings.memory_database_url
         if not dsn:
             raise SystemExit(
@@ -540,9 +547,9 @@ class PersonaRuntime:
     def create_agent(
         self,
         chat_id: ConversationRef,
-        session_id: Optional[str] = None,
-        history: Optional[ConversationHistory] = None,
-        persona_override: Optional[Persona] = None,
+        session_id: str | None = None,
+        history: ConversationHistory | None = None,
+        persona_override: Persona | None = None,
         role: ModelRole = ModelRole.CHAT,
     ) -> Agent:
         """Build the per-chat fallback chain — LLM-agnostic, no privileged vendor.
@@ -742,7 +749,7 @@ class PersonaRuntime:
                 )
 
     def _options_builder_for(
-        self, persona: Persona, context_builder: ContextBuilder, model: Optional[str]
+        self, persona: Persona, context_builder: ContextBuilder, model: str | None
     ) -> AnthropicOptionsBuilder:
         return AnthropicOptionsBuilder(
             context_builder=context_builder,
@@ -760,7 +767,8 @@ class PersonaRuntime:
         """Per-turn context injection: memory auto-RAG + keyword-matched
         skill notes, composed into the single recaller hook CascadingAgent
         takes. One failing injector never poisons the others. None when no
-        enabled provider injects context."""
+        enabled provider injects context.
+        """
         from adapters.tools import ContextInjector
         injectors = [
             c.inject_context for c in self.active_services
@@ -787,7 +795,8 @@ class PersonaRuntime:
         mail-watch): persona.yaml `background_tools:` when set, else the
         chat enablement downgraded to read-only. Background fires pay the
         full tool-schema cost per fire with no cache reuse, so the surface
-        stays minimal by default."""
+        stays minimal by default.
+        """
         return self.persona.background_view()
 
     @cached_property
@@ -837,7 +846,8 @@ class PersonaRuntime:
         the first allowed user's DM (on Telegram, DM chat_id == user_id).
         The prompt loader re-reads persona.yaml on every fire, so prompt
         edits apply without a restart; fires run on a dedicated background
-        agent."""
+        agent.
+        """
         hb = self.persona.heartbeat
         if not hb or not hb.get("cron"):
             return None
@@ -878,14 +888,15 @@ class PersonaRuntime:
         """
         return ConversationRef.coerce(value, platform=self.platform_config.type)
 
-    def _default_operator_chat_id(self) -> Optional[ConversationRef]:
+    def _default_operator_chat_id(self) -> ConversationRef | None:
         ids = self.platform_config.raw.get("allowed_user_ids") or []
         return self._conversation(ids[0]) if ids else None
 
     @cached_property
     def retention_job(self):
         """Daily prune of the growth tables. Documents arm is off unless
-        RETENTION_DOCS_DAYS is set — see adapters/trigger/retention.py."""
+        RETENTION_DOCS_DAYS is set — see adapters/trigger/retention.py.
+        """
         from adapters.trigger import RetentionJob
         docs_store = None
         for c in self.active_services:
@@ -907,7 +918,7 @@ class PersonaRuntime:
             document_store=docs_store,
         )
 
-    def _watch_chat_id(self, cfg: dict, label: str) -> Optional[int]:
+    def _watch_chat_id(self, cfg: dict, label: str) -> int | None:
         chat_id = cfg.get("chat_id") or self._default_operator_chat_id()
         if chat_id is None:
             log.warning(
@@ -919,7 +930,8 @@ class PersonaRuntime:
     @cached_property
     def mail_watch_source(self):
         """Push-style mail alerts. None unless persona.yaml has mail_watch
-        and the gmail connector is enabled."""
+        and the gmail connector is enabled.
+        """
         cfg = self.persona.mail_watch
         if not cfg or not self.persona.is_connector_enabled("gmail"):
             return None
@@ -945,7 +957,8 @@ class PersonaRuntime:
         """Splitwise expense mirroring (no webhooks upstream — polling).
         None unless persona.yaml has splitwise_watch and both the splitwise
         and budget connectors are enabled (the fire's whole job is writing
-        Splitwise activity into the budget ledger)."""
+        Splitwise activity into the budget ledger).
+        """
         cfg = self.persona.splitwise_watch
         if not cfg or not self.persona.is_connector_enabled("splitwise"):
             return None
@@ -978,12 +991,16 @@ class PersonaRuntime:
     @cached_property
     def webhook_server(self):
         """Event-driven triggers. None unless persona.yaml configures
-        webhooks AND WEBHOOK_TOKEN is set (refuse to run token-less)."""
+        webhooks AND WEBHOOK_TOKEN is set (refuse to run token-less).
+        """
         cfg = self.persona.webhooks
         if not cfg or not cfg.get("triggers"):
             return None
         from adapters.trigger.webhook import (
-            DEFAULT_COOLDOWN_SECONDS, DEFAULT_PORT, WebhookServer, WebhookTrigger,
+            DEFAULT_COOLDOWN_SECONDS,
+            DEFAULT_PORT,
+            WebhookServer,
+            WebhookTrigger,
         )
         token = self.settings.webhook_token
         if not token:
@@ -1028,7 +1045,7 @@ class PersonaRuntime:
         self.load_env()
 
         # `schedule` is conditionally enabled per persona — only pass it if active.
-        schedule_conn: Optional[TaskScheduler] = None
+        schedule_conn: TaskScheduler | None = None
         for c in self.active_services:
             if isinstance(c, TaskScheduler):
                 schedule_conn = c

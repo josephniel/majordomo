@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -46,10 +48,10 @@ New Splitwise activity:
 
 
 def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+    return dt.astimezone(UTC).isoformat(timespec="seconds")
 
 
-def _format_expense(e: dict[str, Any], my_id: Optional[int]) -> str:
+def _format_expense(e: dict[str, Any], my_id: int | None) -> str:
     def name(u: dict[str, Any]) -> str:
         user = u.get("user") or {}
         if my_id is not None and user.get("id") == my_id:
@@ -115,12 +117,13 @@ class SplitwiseWatcher:
 
     # ---- polling ----
 
-    async def check(self) -> Optional[str]:
+    async def check(self) -> str | None:
         """Poll every Splitwise profile. Returns a context block describing
         NEW/EDITED expenses (caller must commit() after delivering), or None
         when there's nothing new. Never raises — a broken profile logs and
-        is skipped; the others still report."""
-        now = datetime.now(timezone.utc)
+        is skipped; the others still report.
+        """
+        now = datetime.now(UTC)
         lines: list[str] = []
         pending: dict[str, dict[str, Any]] = {}
         for name, client in self._splitwise.build_clients().items():
@@ -138,7 +141,8 @@ class SplitwiseWatcher:
 
     def commit(self) -> None:
         """Apply the state staged by the last check(). Call after the turn
-        was delivered (or when check() reported nothing)."""
+        was delivered (or when check() reported nothing).
+        """
         self._state.update(self._pending)
         self._pending = {}
         self._persist()
@@ -182,7 +186,7 @@ class SplitwiseWatcher:
 
         lines: list[str] = []
         if fresh:
-            my_id: Optional[int] = None
+            my_id: int | None = None
             try:
                 my_id = await client.current_user_id()
             except Exception:

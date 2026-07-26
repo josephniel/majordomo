@@ -7,7 +7,6 @@ import pytest
 from adapters.chat.transcription import (
     AudioTranscriber,
     CascadingTranscriber,
-    TranscriptionConfig,
     build_transcriber,
     filename_for_mime,
 )
@@ -115,7 +114,7 @@ class TestCascade:
 
 
 class TestFilenameForMime:
-    @pytest.mark.parametrize("mime,expected", [
+    @pytest.mark.parametrize(("mime", "expected"), [
         ("audio/ogg", "voice.ogg"),
         ("audio/mpeg", "audio.mp3"),
         ("audio/x-m4a", "audio.m4a"),

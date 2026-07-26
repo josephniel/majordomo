@@ -50,10 +50,12 @@ though it type-checks — see `docs/ARCHITECTURE-NOTES.md`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import StrEnum
-from typing import Any, Optional, Protocol, runtime_checkable
-from uuid import UUID
+from typing import Any, Protocol, runtime_checkable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from uuid import UUID
+    from datetime import datetime
 
 # The memory-scope taxonomy (mirrors the type system of a file-based second
 # brain). Single source of truth: the storage schema's CHECK constraints, the
@@ -83,6 +85,7 @@ class MemoryEntry:
                     at the entry's OWN id, tombstoned by a retraction). Both
                     cases mean "not active"; the distinction is provenance.
     """
+
     id: UUID
     persona_id: str
     scope: str
@@ -90,20 +93,20 @@ class MemoryEntry:
     title: str
     content: str
     metadata: dict[str, Any] = field(default_factory=dict)
-    superseded_by: Optional[UUID] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    superseded_by: UUID | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
     pinned: bool = False
     volatile: bool = False
-    verified_at: Optional[datetime] = None
+    verified_at: datetime | None = None
 
     # ---- bi-temporal validity ----
     # created_at is when the fact was WRITTEN; these are when it is TRUE.
     # Conflating them is how "the user is on leave 12-19 Aug" keeps being
     # injected on the 25th: nothing superseded it, so by write-time reasoning
     # it is still the freshest thing known.
-    valid_from: Optional[datetime] = None
-    valid_to: Optional[datetime] = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
     """None means no known end — the common case, and the reason this
     defaults to "always true" rather than requiring a date nobody has."""
 
@@ -129,9 +132,7 @@ class MemoryEntry:
         """
         if self.valid_from is not None and when < self.valid_from:
             return False
-        if self.valid_to is not None and when >= self.valid_to:
-            return False
-        return True
+        return not (self.valid_to is not None and when >= self.valid_to)
 
     @property
     def is_inferred(self) -> bool:
@@ -181,6 +182,7 @@ class FactCandidate:
     (synthesising from existing facts). Both feed the same reconciliation, so
     an inferred fact is held to exactly the same checks as an observed one.
     """
+
     scope: str
     content: str
     domain_key: str = ""
@@ -188,8 +190,8 @@ class FactCandidate:
     volatile: bool = False
     provenance: str = "chat"
     confidence: float = 1.0
-    valid_from: Optional[datetime] = None
-    valid_to: Optional[datetime] = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -202,9 +204,10 @@ class Reconciliation:
     be wrong, the log line saying which candidate superseded what, and on
     what grounds, is the only way to find out where it went wrong.
     """
+
     verdict: MemoryVerdict
     candidate: FactCandidate
-    target_id: Optional[UUID] = None
+    target_id: UUID | None = None
     reason: str = ""
 
 
@@ -215,12 +218,13 @@ class MemoryCoreEntry:
     Distinct from an entry: entries accumulate, core is the compaction of
     them, and it is what gets injected into the system prompt every turn.
     """
+
     persona_id: str
     scope: str
     domain_key: str
     summary: str
     last_source_count: int
-    last_compacted_at: Optional[datetime] = None
+    last_compacted_at: datetime | None = None
 
 
 # (entry, score) ordered best-first, score in [0, 1] and cross-query comparable.
@@ -252,12 +256,12 @@ class MemoryStore(Protocol):
         content: str,
         domain_key: str = "",
         title: str = "",
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
         volatile: bool = False,
         provenance: str = "chat",
         confidence: float = 1.0,
-        valid_from: Optional[datetime] = None,
-        valid_to: Optional[datetime] = None,
+        valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
     ) -> MemoryEntry: ...
 
     async def find_similar(
@@ -267,43 +271,46 @@ class MemoryStore(Protocol):
         domain_key: str,
         content: str,
         threshold: float = 0.90,
-    ) -> Optional[tuple[MemoryEntry, float]]:
+    ) -> tuple[MemoryEntry, float] | None:
         """Nearest active entry in the same compartment, if it clears
         `threshold`. The dedup hook: without it the model re-learns the same
-        fact every time the user mentions it."""
+        fact every time the user mentions it.
+        """
         ...
 
     # ---- replacement & retraction ----
     async def supersede_entry(
         self, old_id: UUID, new_content: str
-    ) -> Optional[MemoryEntry]:
+    ) -> MemoryEntry | None:
         """Replace a fact's content, keeping the old row for provenance and
         carrying its edges onto the replacement. None if `old_id` isn't an
-        active entry."""
+        active entry.
+        """
         ...
 
     async def forget_entry(self, entry_id: UUID, hard: bool = False) -> bool: ...
 
     # ---- recollection ----
-    async def get_entry(self, entry_id: UUID) -> Optional[MemoryEntry]: ...
+    async def get_entry(self, entry_id: UUID) -> MemoryEntry | None: ...
 
     async def recall_scored(
         self,
         persona_id: str,
         query: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 8,
     ) -> list[Scored]:
         """Ranked relevant entries, best-first. See the module docstring for
-        what the scores must mean — the injection policy depends on it."""
+        what the scores must mean — the injection policy depends on it.
+        """
         ...
 
     async def list_active(
         self,
         persona_id: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 200,
     ) -> list[MemoryEntry]: ...
 
@@ -326,7 +333,7 @@ class MemoryStore(Protocol):
     ) -> bool: ...
 
     async def remove_link(
-        self, from_id: UUID, to_id: UUID, relation: Optional[str] = None
+        self, from_id: UUID, to_id: UUID, relation: str | None = None
     ) -> bool: ...
 
     async def neighbors(self, entry_id: UUID) -> list[Neighbor]: ...

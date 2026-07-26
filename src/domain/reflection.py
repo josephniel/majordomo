@@ -22,7 +22,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from ports import ConversationRef, MemoryVerdict, Summarizer
 
@@ -30,6 +30,7 @@ from .reconcile import Reconciler, candidate_from_extraction
 
 if TYPE_CHECKING:
     from adapters.model.history import ConversationHistory
+
     from .memory import LongTermMemory
 
 log = logging.getLogger(__name__)
@@ -70,8 +71,8 @@ class ReflectionEngine:
 
     def __init__(
         self,
-        history: "ConversationHistory",
-        memory: "LongTermMemory",
+        history: ConversationHistory,
+        memory: LongTermMemory,
         summarizer: Summarizer,
         persona_id: str,
         idle_seconds: float = DEFAULT_IDLE_SECONDS,
@@ -116,7 +117,8 @@ class ReflectionEngine:
 
     async def run_reflection(self, chat_id: ConversationRef) -> int:
         """Extract + save facts from turns past the watermark. Returns the
-        number of facts saved. Public so a CLI/test can invoke it directly."""
+        number of facts saved. Public so a CLI/test can invoke it directly.
+        """
         lock = self._run_locks.setdefault(chat_id, asyncio.Lock())
         if lock.locked():
             return 0
@@ -192,7 +194,8 @@ class ReflectionEngine:
         share a compartment (scope + domain_key) with a `relates_to` edge.
         Conservative on purpose: cross-compartment facts from one burst are
         often unrelated (the user mentioned their dog AND a deadline), so we
-        only connect facts already grouped by subject. Best-effort."""
+        only connect facts already grouped by subject. Best-effort.
+        """
         from itertools import combinations
 
         groups: dict[tuple[str, str], list[Any]] = {}

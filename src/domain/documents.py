@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from ports import (
     ConversationRef,
@@ -30,7 +30,7 @@ _TEXT_MIME_PREFIXES = ("text/",)
 _PDF_MIME = "application/pdf"
 
 
-def extract_text(mime: str, data: bytes) -> Optional[str]:
+def extract_text(mime: str, data: bytes) -> str | None:
     """Extracted text for supported types; None for unsupported (images…)."""
     mime = (mime or "").lower()
     if any(mime.startswith(p) for p in _TEXT_MIME_PREFIXES):
@@ -78,7 +78,7 @@ Prefer doc_search over asking the user to re-send anything."""
     def system_prompt_section(self) -> str:
         return self.SYSTEM_PROMPT_SECTION
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     async def on_chat_startup(self) -> None:
@@ -102,10 +102,11 @@ Prefer doc_search over asking the user to re-send anything."""
         filename: str,
         mime: str,
         data: bytes,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Ingest one attachment. Returns a short note for the model
         ('[saved to documents: …]') or None when the type isn't ingestible.
-        Never raises."""
+        Never raises.
+        """
         if len(data) > MAX_INGEST_BYTES:
             return None
         # PDF parsing is CPU-bound (and adversarial PDFs are a known pypdf

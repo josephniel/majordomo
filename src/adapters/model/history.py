@@ -26,14 +26,14 @@ read from it.
 """
 from __future__ import annotations
 
-from ports import ConversationRef, chat_key
-
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import asyncpg
+
+from ports import ConversationRef, chat_key
 
 log = logging.getLogger(__name__)
 
@@ -130,10 +130,11 @@ class ConversationHistory:
         """`legacy_platform` names the platform that wrote any pre-migration
         rows, so their bare `12345` chat ids can be rewritten as
         `telegram:12345` and keep matching. It is only ever consulted by the
-        one-shot migration; new rows already carry a full key."""
+        one-shot migration; new rows already carry a full key.
+        """
         self._legacy_platform = legacy_platform
         self._dsn = dsn
-        self._pool: Optional[asyncpg.Pool] = None
+        self._pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
         if self._pool is not None:
@@ -189,7 +190,7 @@ class ConversationHistory:
         chat_id: ConversationRef,
         role: str,
         content: str,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         async with self._pool.acquire() as conn:
             return await conn.fetchval(
@@ -236,7 +237,8 @@ class ConversationHistory:
         """Rows with id > after_id, chronological. Used for the
         return-to-primary digest (active only) and the reflection pass
         (include_archived=True, so a compaction that ran in between can't
-        hide turns from fact extraction)."""
+        hide turns from fact extraction).
+        """
         archived_clause = "" if include_archived else "AND NOT archived"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -313,7 +315,8 @@ class ConversationHistory:
     ) -> list[dict[str, Any]]:
         """Search the FULL episodic record — including archived (compacted)
         turns — for this chat. Trigram similarity + ILIKE, language-neutral.
-        Returns rows newest-first with ts so the agent can cite when."""
+        Returns rows newest-first with ts so the agent can cite when.
+        """
         pattern = f"%{query}%"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -338,7 +341,8 @@ class ConversationHistory:
     async def reset(self, persona_id: str, chat_id: ConversationRef) -> int:
         """Archive every active row for (persona, chat). The fallback
         vendors' client-side replay starts empty afterwards — this is what
-        makes /reset true on non-Claude paths. Returns rows archived."""
+        makes /reset true on non-Claude paths. Returns rows archived.
+        """
         async with self._pool.acquire() as conn:
             result = await conn.execute(
                 """
@@ -372,28 +376,27 @@ class ConversationHistory:
         Folded rows are archived, not deleted — the raw record stays
         available to `search()`. Returns the count of rows folded in.
         """
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                result = await conn.execute(
-                    """
+        async with self._pool.acquire() as conn, conn.transaction():
+            result = await conn.execute(
+                """
                     UPDATE chat_history
                     SET archived = TRUE
                     WHERE persona_id = $1 AND chat_id = $2
                       AND NOT archived AND id <= $3
                     """,
-                    persona_id, chat_key(chat_id), cutoff_id,
-                )
-                folded = int(result.split()[-1] or 0)
-                if folded == 0:
-                    return 0
-                await conn.execute(
-                    """
+                persona_id, chat_key(chat_id), cutoff_id,
+            )
+            folded = int(result.split()[-1] or 0)
+            if folded == 0:
+                return 0
+            await conn.execute(
+                """
                     INSERT INTO chat_history (persona_id, chat_id, role, content, metadata)
                     VALUES ($1, $2, 'summary', $3, $4::jsonb)
                     """,
-                    persona_id, chat_key(chat_id), summary_text,
-                    {"compacted_count": folded, "compacted_through_id": cutoff_id},
-                )
+                persona_id, chat_key(chat_id), summary_text,
+                {"compacted_count": folded, "compacted_through_id": cutoff_id},
+            )
         return folded
 
     # ---- turn log ----
@@ -407,8 +410,8 @@ class ConversationHistory:
         model: str = "",
         status: str = "ok",
         latency_ms: int = 0,
-        input_tokens: Optional[int] = None,
-        output_tokens: Optional[int] = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
         tool_calls: int = 0,
         failovers: int = 0,
         error: str = "",
@@ -483,7 +486,8 @@ class ConversationHistory:
         reason: str = "",
     ) -> None:
         """One row per write-approval decision — the durable answer to
-        'what did the bot try to write this week?'."""
+        'what did the bot try to write this week?'.
+        """
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
@@ -567,7 +571,7 @@ class EphemeralConversationHistory:
         chat_id: ConversationRef,
         role: str,
         content: str,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         row = {
             "id": self._next_id,

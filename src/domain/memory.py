@@ -38,12 +38,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional
-from uuid import UUID
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from ports import (
-    LINK_RELATIONS,
     VALID_SCOPES,
     Faculty,
     MemoryCoreEntry,
@@ -55,6 +53,7 @@ from ports import (
 )
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime; duck-typed otherwise
+    from uuid import UUID
     from adapters.model.history import ConversationHistory
 
 log = logging.getLogger(__name__)
@@ -138,7 +137,7 @@ def staleness_suffix(entry: MemoryEntry) -> str:
     ref = entry.verified_at or entry.created_at
     if ref is None:
         return ""
-    age_days = (datetime.now(timezone.utc) - ref).days
+    age_days = (datetime.now(UTC) - ref).days
     if age_days >= STALE_AFTER_DAYS:
         return f"  ⚠ unverified for {age_days}d — confirm before trusting"
     return ""
@@ -215,7 +214,7 @@ Three principles:
         db: MemoryStore,
         persona_id: str,
         summarizer: Summarizer,
-        history: Optional["ConversationHistory"] = None,
+        history: ConversationHistory | None = None,
     ) -> None:
         self._db = db
         self._persona_id = persona_id
@@ -226,7 +225,7 @@ Three principles:
         self._memory_core_cache: list[MemoryCoreEntry] = []
         # Pinned facts rendered verbatim in context; refreshed alongside core.
         self._pinned_cache: list[MemoryEntry] = []
-        self._tools_cache: Optional[list] = None
+        self._tools_cache: list | None = None
         # Bumped whenever the injected "What you know" narrative changes;
         # the orchestrator watches this to refresh stale agents (gap A2).
         self._context_version = 0
@@ -249,7 +248,8 @@ Three principles:
     async def refresh_core_cache(self) -> None:
         """Reload the cached core summaries from the DB. Called at chat
         startup and after each memory write so the next agent build sees
-        fresh state. Bumps context_version so long-lived agents rebuild."""
+        fresh state. Bumps context_version so long-lived agents rebuild.
+        """
         try:
             self._memory_core_cache = await self._db.get_core(self._persona_id)
             self._pinned_cache = await self._db.list_pinned(self._persona_id)
@@ -263,7 +263,8 @@ Three principles:
     @property
     def persona_id(self) -> str:
         """Whose memory this is. Read-only — the tool surface needs it to
-        scope a history search, and nothing may reassign it."""
+        scope a history search, and nothing may reassign it.
+        """
         return self._persona_id
 
     def _spawn_bg(self, coro) -> None:
@@ -294,9 +295,9 @@ Three principles:
         source: str = "chat",
         volatile: bool = False,
         confidence: float = 1.0,
-        valid_from: Optional[datetime] = None,
-        valid_to: Optional[datetime] = None,
-    ) -> tuple[str, Optional[MemoryEntry]]:
+        valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
+    ) -> tuple[str, MemoryEntry | None]:
         """Validate → dedup → insert → schedule auto-compaction.
         Returns (human-readable outcome, entry-or-None).
 
@@ -304,7 +305,8 @@ Three principles:
         fact is new — the memory_save tool, where the model just decided to
         save something. For candidates arriving from extraction or ideation,
         where "is this already known, or does it CHANGE something known?" is
-        the whole question, go through `reconcile`."""
+        the whole question, go through `reconcile`.
+        """
         scope = (scope or "").strip().lower()
         if scope not in VALID_SCOPES:
             return (f"invalid scope {scope!r}; must be one of {'/'.join(VALID_SCOPES)}", None)
@@ -326,9 +328,9 @@ Three principles:
         if dup is not None:
             entry, sim = dup
             return (
-                f"not saved: near-duplicate of existing id={entry.id} "
+                (f"not saved: near-duplicate of existing id={entry.id} "
                 f"(similarity {sim:.2f}). If the fact CHANGED, use "
-                f"memory_update on that id instead.",
+                f"memory_update on that id instead."),
                 None,
             )
 
@@ -368,8 +370,8 @@ Three principles:
     async def recall(
         self,
         query: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 8,
     ) -> list[MemoryEntry]:
         """Explicit recollection — what the model asked for, ranked.
@@ -386,34 +388,37 @@ Three principles:
     async def recall_scored(
         self,
         query: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 8,
     ) -> list[Scored]:
         """Ranked recollection with scores — for the eval harness and for
-        callers applying their own selection policy."""
+        callers applying their own selection policy.
+        """
         return await self._db.recall_scored(
             self._persona_id, query, scope=scope, domain_key=domain_key, limit=limit,
         )
 
     async def list_active(
         self,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 200,
     ) -> list[MemoryEntry]:
         """Everything currently held, newest first — the raw material for
-        compaction and ideation, as opposed to a ranked answer to a query."""
+        compaction and ideation, as opposed to a ranked answer to a query.
+        """
         return await self._db.list_active(
             self._persona_id, scope=scope, domain_key=domain_key, limit=limit,
         )
 
-    async def get(self, entry_id: UUID) -> Optional[MemoryEntry]:
+    async def get(self, entry_id: UUID) -> MemoryEntry | None:
         """One entry by id, regardless of persona. Prefer `resolve_active`
-        when acting on an id the MODEL supplied."""
+        when acting on an id the MODEL supplied.
+        """
         return await self._db.get_entry(entry_id)
 
-    async def resolve_active(self, entry_id: UUID) -> tuple[Optional[MemoryEntry], str]:
+    async def resolve_active(self, entry_id: UUID) -> tuple[MemoryEntry | None, str]:
         """Confirm an id names an active entry belonging to THIS persona.
 
         Returns (entry, "") or (None, reason). The ownership check is the
@@ -435,7 +440,7 @@ Three principles:
         """One-hop linked entries — the graph payoff of `link`."""
         return await self._db.neighbors(entry_id)
 
-    async def update_fact(self, entry_id: UUID, content: str) -> Optional[MemoryEntry]:
+    async def update_fact(self, entry_id: UUID, content: str) -> MemoryEntry | None:
         """Replacement: supersede a fact's content, keeping the old row.
 
         Recompacts the compartment in the background. Without that the
@@ -465,7 +470,7 @@ Three principles:
         return True
 
     async def expire_fact(
-        self, entry_id: UUID, at: Optional[datetime] = None
+        self, entry_id: UUID, at: datetime | None = None
     ) -> bool:
         """End a fact's validity without retracting it.
 
@@ -480,7 +485,7 @@ Three principles:
         model is concerned.
         """
         entry = await self._db.get_entry(entry_id)
-        when = at or datetime.now(timezone.utc)
+        when = at or datetime.now(UTC)
         if not await self._db.expire_entry(entry_id, when):
             return False
         if entry is not None:
@@ -489,20 +494,23 @@ Three principles:
 
     async def link(self, from_id: UUID, to_id: UUID, relation: str = "relates_to") -> bool:
         """Create a typed edge. Also used by the reflection engine's
-        auto-linking. Returns whether a NEW edge was created (idempotent)."""
+        auto-linking. Returns whether a NEW edge was created (idempotent).
+        """
         return await self._db.add_link(from_id, to_id, relation)
 
     async def unlink(
-        self, from_id: UUID, to_id: UUID, relation: Optional[str] = None
+        self, from_id: UUID, to_id: UUID, relation: str | None = None
     ) -> bool:
         """Remove one edge, or every edge from_id->to_id when relation is
-        None. Returns whether anything was removed."""
+        None. Returns whether anything was removed.
+        """
         return await self._db.remove_link(from_id, to_id, relation)
 
     async def set_pinned(self, entry_id: UUID, pinned: bool) -> bool:
         """Pin/unpin. Refreshes the cache on success because pinned facts
         render verbatim into the system prompt — a pin that doesn't take
-        effect until the next unrelated write is a pin the user can't see."""
+        effect until the next unrelated write is a pin the user can't see.
+        """
         ok = await self._db.set_pinned(entry_id, pinned)
         if ok:
             await self.refresh_core_cache()
@@ -510,7 +518,8 @@ Three principles:
 
     async def verify(self, entry_id: UUID) -> bool:
         """Record that a volatile fact was re-confirmed, resetting its
-        staleness clock (see `staleness_suffix`)."""
+        staleness clock (see `staleness_suffix`).
+        """
         return await self._db.mark_verified(entry_id)
 
     # ---- auto-RAG (called by CascadingAgent per user turn) ----
@@ -530,7 +539,8 @@ Three principles:
 
     async def auto_recall(self, query: str) -> str:
         """Top relevant facts for this message, formatted for injection.
-        Empty string when nothing clears the relevance bar."""
+        Empty string when nothing clears the relevance bar.
+        """
         query = (query or "").strip()
         if len(query) < 8:  # too short to mean anything ("ok", "thanks")
             return ""
@@ -565,7 +575,7 @@ Three principles:
             out += "\n\n== What you know ==\n\n" + rendered
         return out
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     # ---- prompt rendering ----
@@ -574,7 +584,8 @@ Three principles:
         """Pinned facts, verbatim, each with its id so the agent can act on
         it (update/forget/link). Deliberately NOT subject to the core-narrative
         char budget — these are the facts the operator/agent decided must never
-        blur away."""
+        blur away.
+        """
         lines = []
         for e in self._pinned_cache:
             label = e.scope if not e.domain_key else f"{e.scope}/{e.domain_key}"

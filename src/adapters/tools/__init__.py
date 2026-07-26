@@ -7,12 +7,6 @@ Adding a new connector:
 """
 from __future__ import annotations
 
-# Foundational data layer — must be imported before any connector class
-# (every connector takes ServiceRegistry via constructor injection).
-from .registry import ServiceRegistry, ConnectorEntry  # ConnectorEntry: internal
-
-from .approvals import GatedToolProvider, PendingApproval, WriteApprovalGate
-from .budget import BudgetConnector
 from ports import (
     AttachmentIngestor,
     Connector,
@@ -21,27 +15,34 @@ from ports import (
     Summarizer,
     ToolProvider,
 )
+
+from .approvals import GatedToolProvider, PendingApproval, WriteApprovalGate
+from .budget import BudgetConnector
 from .clickup import ClickUpConnector
 from .gmail import GmailConnector
 from .google_calendar import GoogleCalendarConnector
+
+# Foundational data layer — must be imported before any connector class
+# (every connector takes ServiceRegistry via constructor injection).
+from .registry import ConnectorEntry, ServiceRegistry  # ConnectorEntry: internal
 from .splitwise import SplitwiseConnector
 from .yahoo import YahooConnector
 
 __all__ = [
     "AttachmentIngestor",
-    "ContextInjector",
-    "ServiceRegistry",
     "BudgetConnector",
     "ClickUpConnector",
     "Connector",
+    "ContextInjector",
     "Faculty",
-    "ToolProvider",
+    "GatedToolProvider",
     "GmailConnector",
     "GoogleCalendarConnector",
+    "PendingApproval",
+    "ServiceRegistry",
     "SplitwiseConnector",
     "Summarizer",
-    "GatedToolProvider",
-    "PendingApproval",
+    "ToolProvider",
     "WriteApprovalGate",
     "YahooConnector",
 ]

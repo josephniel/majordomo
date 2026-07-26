@@ -14,10 +14,9 @@ import uuid
 
 import pytest
 
-from ports import FactCandidate, MemoryVerdict
 from domain.memory import LongTermMemory
 from domain.reconcile import Reconciler, candidate_from_extraction
-
+from ports import FactCandidate, MemoryVerdict
 from tests.fakes.memory_store import FakeMemoryStore
 
 
@@ -75,7 +74,7 @@ class TestTheContradictionThisFixes:
         dedup threshold alone would have let both through. If this ever fails,
         dedup got stricter and the test above is measuring the wrong thing."""
         await mem.save_fact("user", "the user lives in Manila")
-        msg, entry = await mem.save_fact("user", "the user moved to Cebu last month")
+        _msg, entry = await mem.save_fact("user", "the user moved to Cebu last month")
         assert entry is not None, "dedup does not catch a changed fact"
 
     async def test_restating_a_known_fact_is_a_noop(self, mem):
@@ -210,14 +209,16 @@ class TestExtractionValidation:
             {"scope": "user", "content": "the user bikes to work", "title": "commute"},
             provenance="reflection",
         )
-        assert c.provenance == "reflection" and c.confidence == 1.0
+        assert c.provenance == "reflection"
+        assert c.confidence == 1.0
 
     def test_scope_and_domain_key_are_normalised(self):
         c = candidate_from_extraction(
             {"scope": "  DOMAIN ", "content": "x", "domain_key": " GMail "},
             provenance="chat",
         )
-        assert c.scope == "domain" and c.domain_key == "gmail"
+        assert c.scope == "domain"
+        assert c.domain_key == "gmail"
 
     def test_an_unparseable_valid_to_means_no_end(self):
         """Most facts have no end date, and a small background model asked
@@ -235,4 +236,5 @@ class TestExtractionValidation:
              "valid_to": "2026-08-19T00:00:00Z"},
             provenance="reflection",
         )
-        assert c.valid_to is not None and c.valid_to.tzinfo is not None
+        assert c.valid_to is not None
+        assert c.valid_to.tzinfo is not None

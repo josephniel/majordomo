@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import re
 
-
 # ---- markdown stripping for plain chat messages ----
 
 _RE_FENCED = re.compile(r"```[\w]*\n?([\s\S]*?)```")
@@ -32,8 +31,7 @@ def _md_to_plain(text: str) -> str:
     text = _RE_BOLD_STAR.sub(r"\1", text)
     text = _RE_BOLD_UNDER.sub(r"\1", text)
     text = _RE_HEADER.sub("", text)
-    text = _RE_LINK.sub(r"\1 (\2)", text)
-    return text
+    return _RE_LINK.sub(r"\1 (\2)", text)
 
 
 def chunk_for_platform(text: str, limit: int) -> list[str]:
@@ -60,7 +58,8 @@ def is_cancel_intent(text: str) -> bool:
     """True only for messages made up purely of cancel-ish words:
     'cancel', 'stop it', 'never mind', 'please cancel that', 'nvm'.
     Anything carrying real content ('cancel my subscription',
-    'stop the music') is NOT cancel intent."""
+    'stop the music') is NOT cancel intent.
+    """
     words = re.sub(r"[^\w\s]", " ", text.strip().lower()).split()
     if not words or len(words) > 4:
         return False

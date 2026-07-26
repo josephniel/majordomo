@@ -32,7 +32,8 @@ class TestTheTemplatesAreCurrent:
         assert r.returncode == 0, r.stdout + r.stderr
 
     def test_both_templates_exist(self):
-        assert HOST.exists() and PERSONA.exists()
+        assert HOST.exists()
+        assert PERSONA.exists()
 
 
 class TestEverySettingIsDocumented:

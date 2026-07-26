@@ -65,7 +65,9 @@ class FakeMemory(RecordingConnector):
 
 class FakeGmail(RecordingConnector):
     """Two mailboxes, like the real deployment — which is what makes the
-    "which mailbox?" clarification loop reproducible."""
+    "which mailbox?" clarification loop reproducible.
+    """
+
     name = "gmail"
 
     def system_prompt_section(self) -> str:
@@ -100,6 +102,7 @@ class FakeBulkTools(RecordingConnector):
     a model that cannot do the job. Mirrors production's provider breadth
     (calendar, tasks, expenses, documents, code, files, …).
     """
+
     name = "bulk"
 
     _AREAS = ("calendar", "tasks", "expenses", "documents", "code", "files",

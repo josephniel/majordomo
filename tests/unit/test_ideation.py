@@ -13,11 +13,10 @@ import json
 
 import pytest
 
-from ports import MemoryVerdict
 from domain.ideation import IDEATION_CONFIDENCE, Ideator
 from domain.memory import LongTermMemory
 from domain.reconcile import Reconciler
-
+from ports import MemoryVerdict
 from tests.fakes.memory_store import FakeMemoryStore
 
 

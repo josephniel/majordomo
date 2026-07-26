@@ -33,7 +33,6 @@ is a migration, not a refactor.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 # Separates the three parts of a key. Chosen because ':' already appears in
 # Matrix room ids ("!abc:server.tld"), so the split is bounded rather than
@@ -48,7 +47,7 @@ class ConversationRef:
 
     platform: str
     chat_key: str
-    thread_key: Optional[str] = None
+    thread_key: str | None = None
 
     def __post_init__(self) -> None:
         if not self.platform:
@@ -77,7 +76,7 @@ class ConversationRef:
         return f"{base}{_THREAD_SEP}{self.thread_key}" if self.thread_key else base
 
     @classmethod
-    def parse(cls, key: str) -> "ConversationRef":
+    def parse(cls, key: str) -> ConversationRef:
         """Inverse of `key`. Raises ValueError on anything unparseable.
 
         Note `split(sep, 1)`: a Matrix chat_key legitimately contains ':', so
@@ -89,13 +88,13 @@ class ConversationRef:
                 f"(expected 'platform{_PLATFORM_SEP}chat_key')"
             )
         platform, rest = key.split(_PLATFORM_SEP, 1)
-        thread: Optional[str] = None
+        thread: str | None = None
         if _THREAD_SEP in rest:
             rest, thread = rest.rsplit(_THREAD_SEP, 1)
         return cls(platform=platform, chat_key=rest, thread_key=thread or None)
 
     @classmethod
-    def coerce(cls, value: "ConversationRef | str | int", *, platform: str) -> "ConversationRef":
+    def coerce(cls, value: ConversationRef | str | int, *, platform: str) -> ConversationRef:
         """Build a ref from config or legacy state.
 
         Accepts a ref (returned unchanged), a full `platform:chat` key, or a
@@ -116,14 +115,14 @@ class ConversationRef:
                 pass  # e.g. a bare Matrix id; fall through to the platform default
         return cls(platform=platform, chat_key=text)
 
-    def with_thread(self, thread_key: Optional[str]) -> "ConversationRef":
+    def with_thread(self, thread_key: str | None) -> ConversationRef:
         return ConversationRef(self.platform, self.chat_key, thread_key)
 
     def __str__(self) -> str:
         return self.key
 
 
-def chat_key(chat_id: "ConversationRef | str | int") -> str:
+def chat_key(chat_id: ConversationRef | str | int) -> str:
     """Conversation identity as persistence stores it.
 
     Lives here rather than in one adapter because several of them need it and

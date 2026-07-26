@@ -12,21 +12,27 @@ import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
-from ports import ConversationRef, chat_key, Faculty, ToolContext, ToolResult, tool
+
+from ports import ConversationRef, Faculty, ToolContext, ToolResult, chat_key, tool
+import contextlib
+
+if TYPE_CHECKING:
+    from pathlib import Path
+    from collections.abc import Awaitable, Callable
 
 log = logging.getLogger(__name__)
 
 
 def _is_async_callable(fn: Any) -> bool:
     """True for coroutine functions, including bound methods and objects whose
-    __call__ is one (functools.partial is unwrapped by iscoroutinefunction)."""
+    __call__ is one (functools.partial is unwrapped by iscoroutinefunction).
+    """
     if inspect.iscoroutinefunction(fn):
         return True
     call = getattr(fn, "__call__", None)
@@ -41,7 +47,7 @@ class ScheduledTask:
     prompt: str
     description: str = ""
     enabled: bool = True
-    run_at: Optional[str] = None  # ISO local datetime → one-shot (fires once)
+    run_at: str | None = None  # ISO local datetime → one-shot (fires once)
 
     @property
     def is_one_shot(self) -> bool:
@@ -56,7 +62,7 @@ class ScheduleEngine:
     def __init__(
         self,
         store_file: Path,
-        timezone: Optional[str] = None,
+        timezone: str | None = None,
         legacy_platform: str = "telegram",
     ) -> None:
         # The platform a bare chat id belongs to. Two uses, same value:
@@ -66,15 +72,15 @@ class ScheduleEngine:
         # downstream has to defend against a stray int.
         self._legacy_platform = legacy_platform
         self.store_file = store_file
-        self._scheduler: Optional[AsyncIOScheduler] = None
-        self._fire_callback: Optional[Callable[[ScheduledTask], Awaitable[None]]] = None
+        self._scheduler: AsyncIOScheduler | None = None
+        self._fire_callback: Callable[[ScheduledTask], Awaitable[None]] | None = None
         self._schedules: dict[str, ScheduledTask] = {}
         # Schedule wall-clock timezone (SCHEDULE_TIMEZONE env, e.g.
         # "Asia/Manila"). Unset = host-local naive datetimes, the original
         # behavior. Set = every cron field, ISO datetime, and "is this
         # past-due?" comparison is interpreted in THIS zone, so the user's
         # "8am" survives a host machine living in another timezone.
-        self._tz: Optional[ZoneInfo] = None
+        self._tz: ZoneInfo | None = None
         if timezone:
             try:
                 self._tz = ZoneInfo(timezone)
@@ -85,17 +91,19 @@ class ScheduleEngine:
                 )
 
     @property
-    def timezone_name(self) -> Optional[str]:
+    def timezone_name(self) -> str | None:
         return str(self._tz) if self._tz is not None else None
 
     def _now(self) -> datetime:
         """Aware 'now' in the schedule timezone, or naive host-local when no
-        timezone is configured — always comparable with _parse_when output."""
+        timezone is configured — always comparable with _parse_when output.
+        """
         return datetime.now(self._tz) if self._tz is not None else datetime.now()
 
     def _localize(self, dt: datetime) -> datetime:
         """Attach the schedule timezone to naive datetimes (absolute ISO
-        input, and run_at values persisted before a timezone was set)."""
+        input, and run_at values persisted before a timezone was set).
+        """
         if self._tz is not None and dt.tzinfo is None:
             return dt.replace(tzinfo=self._tz)
         return dt
@@ -133,7 +141,8 @@ class ScheduleEngine:
         sync function to a thread executor and throws away its return value,
         so a sync wrapper that returns a coroutine never runs and the job
         still reports success — a silent no-op that hid two dead watches for
-        days. Reject it at registration instead."""
+        days. Reject it at registration instead.
+        """
         if self._scheduler is None:
             raise RuntimeError("add_system_cron called before start()")
         if not _is_async_callable(callback):
@@ -156,7 +165,7 @@ class ScheduleEngine:
         wanted = ConversationRef.coerce(chat_id, platform=self._legacy_platform)
         return [s for s in self._schedules.values() if s.chat_id == wanted]
 
-    def get(self, name: str) -> Optional[ScheduledTask]:
+    def get(self, name: str) -> ScheduledTask | None:
         return self._schedules.get(name)
 
     def add(
@@ -198,7 +207,8 @@ class ScheduleEngine:
     ) -> ScheduledTask:
         """Create a ONE-SHOT task that fires once at `when` then auto-removes.
         `when` is either a relative offset (+30s, +5m, +2h, +1d) or an absolute
-        local ISO datetime (YYYY-MM-DDTHH:MM)."""
+        local ISO datetime (YYYY-MM-DDTHH:MM).
+        """
         name = self._validate_name(name)
         if name in self._schedules:
             raise ValueError(f"schedule {name!r} already exists")
@@ -237,10 +247,8 @@ class ScheduleEngine:
         if name not in self._schedules:
             raise KeyError(f"no schedule named {name!r}")
         if self._scheduler is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._scheduler.remove_job(self._job_id(name))
-            except Exception:
-                pass
         del self._schedules[name]
         self._persist()
 
@@ -301,10 +309,8 @@ class ScheduleEngine:
             return
         job_id = self._job_id(entry.name)
         if not entry.enabled:
-            try:
+            with contextlib.suppress(Exception):
                 self._scheduler.remove_job(job_id)
-            except Exception:
-                pass
             return
         if entry.is_one_shot:
             try:
@@ -390,7 +396,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
 
     def __init__(self, runtime: ScheduleEngine) -> None:
         self._runtime = runtime
-        self._tools_cache: Optional[list] = None
+        self._tools_cache: list | None = None
 
     # ---- runtime lifecycle (called by ConversationOrchestrator) ----
 
@@ -426,7 +432,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             )
         return self.SYSTEM_PROMPT_SECTION
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     def _build_tools(self) -> list:

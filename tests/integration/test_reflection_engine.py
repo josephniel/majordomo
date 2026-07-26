@@ -46,7 +46,8 @@ class TestRunReflection:
         saved = await engine.run_reflection(CHAT_ID)
         assert saved == 1
         results = await memdb.recall(persona_id, "Makati moved")
-        assert results and results[0].metadata["source"] == "reflection"
+        assert results
+        assert results[0].metadata["source"] == "reflection"
 
     async def test_watermark_advances_and_prevents_rereading(self, history, memory, persona_id):
         summ = FakeSummarizer(facts_json(
@@ -137,7 +138,8 @@ class TestAutoLink:
         await seed_convo(history, persona_id)
         assert await engine.run_reflection(CHAT_ID) == 2
         rows = await memdb.list_active(persona_id, scope="user")
-        assert rows and await memdb.neighbors(rows[0].id) == []
+        assert rows
+        assert await memdb.neighbors(rows[0].id) == []
 
 
 class TestVolatileDetection:
@@ -148,7 +150,8 @@ class TestVolatileDetection:
         await seed_convo(history, persona_id)
         await engine.run_reflection(CHAT_ID)
         rows = await memdb.list_active(persona_id, scope="agent")
-        assert rows and rows[0].volatile is True
+        assert rows
+        assert rows[0].volatile is True
 
     async def test_plain_fact_not_volatile(self, history, memory, memdb, persona_id):
         summ = FakeSummarizer(facts_json(
@@ -157,7 +160,8 @@ class TestVolatileDetection:
         await seed_convo(history, persona_id)
         await engine.run_reflection(CHAT_ID)
         rows = await memdb.list_active(persona_id, scope="user")
-        assert rows and rows[0].volatile is False
+        assert rows
+        assert rows[0].volatile is False
 
 
 class TestTimers:

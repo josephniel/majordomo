@@ -69,10 +69,10 @@ class TestClaimsSent:
     mailbox."""
 
     @pytest.mark.parametrize("reply", [
-        "Email confirmed: **Test** (lorem ipsum body) has left your personal "
-        "Gmail and delivered to x@y.com just now!",
-        "Email confirmed: Test has been successfully sent from your personal "
-        "Gmail and delivered to a@b.com",
+        ("Email confirmed: **Test** (lorem ipsum body) has left your personal "
+        "Gmail and delivered to x@y.com just now!"),
+        ("Email confirmed: Test has been successfully sent from your personal "
+        "Gmail and delivered to a@b.com"),
         "I've sent the email to josephnieltuazon@icloud.com.",
         "The email was sent to your colleague.",
         "I just sent it to your yahoo address.",
@@ -87,8 +87,8 @@ class TestClaimsSent:
         "Do you want me to send it now?",
         "Shall I send this email to x@y.com?",
         "I can send that for you — confirm the address?",
-        "Before composing — confirming details now: Personal Gmail will send "
-        "to x@y.com",
+        ("Before composing — confirming details now: Personal Gmail will send "
+        "to x@y.com"),
         "I'll draft the email and wait for your go-ahead.",
         "You sent me that address earlier.",
         "I am sending \"Test\" now. Do you want me to proceed?",

@@ -18,6 +18,14 @@ shared contracts from here and never from a sibling's internals.
 from .context import ToolContext
 from .conversation import ConversationRef, chat_key
 from .documents import DocumentStore
+from .llm import (
+    Agent,
+    ModelRole,
+    PersonaLike,
+    Summarizer,
+    ToolUseCallback,
+    UsageLimitError,
+)
 from .memory import (
     LINK_RELATIONS,
     VALID_SCOPES,
@@ -30,33 +38,17 @@ from .memory import (
     Reconciliation,
     Scored,
 )
-from .llm import (
-    Agent,
-    ModelRole,
-    PersonaLike,
-    Summarizer,
-    ToolUseCallback,
-    UsageLimitError,
-)
 from .messaging import Attachment
 from .protocols import (
     AttachmentIngestor,
-    EnabledService,
     CanaryRunner,
     ContextInjector,
+    EnabledService,
     ServiceCatalog,
     SessionResettable,
     ToolCallProbe,
     ToolTraceReporting,
     VendorIntrospectable,
-)
-from .triggers import (
-    AddCron,
-    EmitTrigger,
-    TriggerAgent,
-    TriggerContext,
-    TriggerEvent,
-    TriggerSource,
 )
 from .tools import (
     Connector,
@@ -67,8 +59,19 @@ from .tools import (
     as_tool_result,
     tool,
 )
+from .triggers import (
+    AddCron,
+    EmitTrigger,
+    TriggerAgent,
+    TriggerContext,
+    TriggerEvent,
+    TriggerSource,
+)
 
 __all__ = [
+    "LINK_RELATIONS",
+    "VALID_SCOPES",
+    "AddCron",
     "Agent",
     "Attachment",
     "AttachmentIngestor",
@@ -76,40 +79,37 @@ __all__ = [
     "Connector",
     "ContextInjector",
     "ConversationRef",
-    "chat_key",
     "DocumentStore",
+    "EmitTrigger",
     "EnabledService",
     "FactCandidate",
     "Faculty",
-    "LINK_RELATIONS",
     "MemoryCoreEntry",
     "MemoryEntry",
     "MemoryStore",
     "MemoryVerdict",
+    "ModelRole",
     "Neighbor",
+    "PersonaLike",
     "Reconciliation",
     "Scored",
+    "ServiceCatalog",
     "SessionResettable",
-    "VALID_SCOPES",
+    "Summarizer",
     "ToolCallProbe",
     "ToolContext",
-    "ToolTraceReporting",
-    "VendorIntrospectable",
-    "ModelRole",
-    "PersonaLike",
-    "ServiceCatalog",
-    "Summarizer",
     "ToolProvider",
     "ToolResult",
     "ToolSpec",
+    "ToolTraceReporting",
     "ToolUseCallback",
-    "AddCron",
-    "EmitTrigger",
     "TriggerAgent",
     "TriggerContext",
     "TriggerEvent",
     "TriggerSource",
     "UsageLimitError",
+    "VendorIntrospectable",
     "as_tool_result",
+    "chat_key",
     "tool",
 ]

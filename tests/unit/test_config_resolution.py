@@ -209,7 +209,7 @@ class TestCoercionIsTheSameFromEitherSide:
     value or a setting means different things depending on where it's
     written — which is the class of bug this whole layout exists to stop."""
 
-    @pytest.mark.parametrize("yaml_value,env_value", [
+    @pytest.mark.parametrize(("yaml_value", "env_value"), [
         (True, "1"), (True, "true"), (True, "yes"), (False, "0"), (False, "false"),
     ])
     def test_booleans(self, yaml_value, env_value):

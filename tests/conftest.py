@@ -9,15 +9,15 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
 from adapters.model.base import Agent, UsageLimitError
 from adapters.model.history import ConversationHistory
-from adapters.tools.base import Summarizer
 from adapters.store.db import MemoryDatabase
 from adapters.store.embeddings import Embedder
+from adapters.tools.base import Summarizer
 
 # A SEPARATE database from the one a running assistant uses. Tests call
 # init_schema(), which applies migrations — including destructive ones like
@@ -80,7 +80,7 @@ class FakeSummarizer(Summarizer):
     """Scriptable summarizer: returns queued responses (or a constant),
     records every prompt it was given."""
 
-    def __init__(self, response: str = "fake summary", responses: Optional[list[str]] = None):
+    def __init__(self, response: str = "fake summary", responses: list[str] | None = None):
         self.response = response
         self.responses = list(responses) if responses else None
         self.prompts: list[str] = []
@@ -101,8 +101,8 @@ class FakeAgent(Agent):
     re-evaluated per send. Records everything sent to it.
     """
 
-    def __init__(self, name: str, fail: Optional[str] = None, server_side: bool = False,
-                 reply: Optional[str] = None, fire_tool: bool = False):
+    def __init__(self, name: str, fail: str | None = None, server_side: bool = False,
+                 reply: str | None = None, fire_tool: bool = False):
         self.name = name
         self.fail = fail
         self.USES_SERVER_SIDE_HISTORY = server_side

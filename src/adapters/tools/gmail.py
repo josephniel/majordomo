@@ -20,19 +20,20 @@ import shutil
 import sys
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, TYPE_CHECKING
 
 import httpx
-from ports import ToolContext, ToolResult, tool
 
-from .registry import ServiceRegistry
+from ports import Connector, ToolContext, ToolResult, tool
 
 from ._google_oauth import (
     CredentialStore,
     GoogleOAuthClient,
     GoogleOAuthError,
 )
-from ports import Connector
+
+if TYPE_CHECKING:
+    from .registry import ServiceRegistry
 
 log = logging.getLogger(__name__)
 
@@ -60,8 +61,8 @@ class GmailClient:
         self,
         method: str,
         path: str,
-        params: Optional[dict] = None,
-        json: Optional[dict] = None,
+        params: dict | None = None,
+        json: dict | None = None,
     ) -> dict:
         token = await self._store.access_token()
         async with httpx.AsyncClient(timeout=self.TIMEOUT) as http:
@@ -239,7 +240,8 @@ class GmailConnector(Connector):
 
     def build_clients(self) -> dict[str, GmailClient]:
         """One GmailClient per enabled profile. Shared by the tool servers
-        below and the mail-watch poller (domain/mailwatch.py)."""
+        below and the mail-watch poller (domain/mailwatch.py).
+        """
         clients: dict[str, GmailClient] = {}
         for profile in self._config.load_all():
             if not profile.enabled or not self.owns_profile(profile.name):
@@ -267,7 +269,7 @@ class GmailConnector(Connector):
             for name, client in self.build_clients().items()
         }
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     # ---- CLI ----

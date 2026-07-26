@@ -139,7 +139,7 @@ class TestSelfWrittenSkills:
     so they ride the Layer 5 approval gate like any other mutation."""
 
     def test_save_and_delete_are_write_tools(self):
-        assert SkillsLibrary.WRITE_TOOLS == {"skill_save", "skill_delete"}
+        assert {"skill_save", "skill_delete"} == SkillsLibrary.WRITE_TOOLS
 
     def test_read_only_grant_excludes_saving(self, tmp_path):
         from runtime.persona import Persona

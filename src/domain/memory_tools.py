@@ -25,7 +25,7 @@ handler below is about to make one, it belongs in `memory.py`.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from ports import (
@@ -50,11 +50,12 @@ def _err(msg: str) -> ToolResult:
     return ToolResult.error(f"error: {msg}")
 
 
-def _uuid(raw: Any) -> Optional[UUID]:
+def _uuid(raw: Any) -> UUID | None:
     """Parse a model-supplied id, or None. The model hands us strings and
     occasionally invents plausible ones, so every id is parsed defensively —
     a ValueError escaping here would surface as a tool crash rather than a
-    correctable message."""
+    correctable message.
+    """
     try:
         return UUID(str(raw or "").strip())
     except ValueError:
@@ -66,9 +67,9 @@ def _label(entry: MemoryEntry) -> str:
 
 
 def build_memory_tools(
-    mem: "LongTermMemory",
+    mem: LongTermMemory,
     *,
-    history: Optional["ConversationHistory"] = None,
+    history: ConversationHistory | None = None,
 ) -> list[ToolSpec]:
     """Every memory tool, bound to one faculty instance.
 
@@ -77,7 +78,7 @@ def build_memory_tools(
     it can mutate state through.
     """
 
-    async def _resolve(raw: Any) -> tuple[Optional[UUID], str]:
+    async def _resolve(raw: Any) -> tuple[UUID | None, str]:
         """Model-supplied id → an id that is safe to act on.
 
         Two failure modes, both real: a malformed UUID, and a well-formed one
@@ -448,7 +449,7 @@ def build_memory_tools(
 
 
 def _history_search_tool(
-    mem: "LongTermMemory", history: "ConversationHistory"
+    mem: LongTermMemory, history: ConversationHistory
 ) -> ToolSpec:
     """Search the conversation record rather than the fact archive.
 

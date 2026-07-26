@@ -22,12 +22,12 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
-from adapters.tools import ServiceRegistry, Connector
+from adapters.tools import Connector, ServiceRegistry
 from runtime import Persona, PersonaRuntime
+import contextlib
 
 
 class ConnectorCLI:
@@ -47,7 +47,7 @@ class ConnectorCLI:
         self._connectors = connectors
         self._runtime = runtime
 
-    def run(self, args: Optional[list[str]] = None) -> None:
+    def run(self, args: list[str] | None = None) -> None:
         parser = self._build_parser()
         args = parser.parse_args(args)
         try:
@@ -349,10 +349,8 @@ async def _run_canary(container) -> None:
     results = await run()
     for vendor, (ok, detail) in results.items():
         print(f"  [{'PASS' if ok else 'FAIL'}] {vendor}: {detail}")
-    try:
+    with contextlib.suppress(Exception):
         await agent.stop()
-    except Exception:
-        pass
 
 
 async def _export_memory(container, out_dir: str) -> int:
@@ -364,7 +362,8 @@ async def _export_memory(container, out_dir: str) -> int:
 
     One-way: this is for inspection, backup, and `git diff`, never re-imported
     (importing would reopen the dedup/supersession/embedding write path).
-    Returns the number of facts exported."""
+    Returns the number of facts exported.
+    """
     import json
     from pathlib import Path
 
@@ -439,7 +438,8 @@ async def _export_memory(container, out_dir: str) -> int:
 
 async def _reembed_memory(container) -> None:
     """Re-embed every memory entry with the current local embedding model.
-    Idempotent; entries already embedded by the current model are skipped."""
+    Idempotent; entries already embedded by the current model are skipped.
+    """
     db = container.memory_database
     await db.connect()
     print(f"re-embedding with model: {db.embedder.model_name} "
@@ -470,7 +470,6 @@ async def _ideate_memory(container, scope, domain_key, dry_run: bool) -> None:
 
             async def _no_write(decision):
                 decisions.append(decision)
-                return None
 
             ideator._reconciler.apply = _no_write
             await ideator.run(scope=scope, domain_key=domain_key)
@@ -538,7 +537,7 @@ async def _inspect_memory(container) -> None:
         persona.id,
     )
 
-    print(f"\n-- Active entries by compartment --")
+    print("\n-- Active entries by compartment --")
     if not rows:
         print("(no active entries)")
     else:
@@ -547,10 +546,10 @@ async def _inspect_memory(container) -> None:
             label = f"{r['scope']}/{r['domain_key']}" if r["domain_key"] else r["scope"]
             print(f"  {label}: {r['n']}")
             total += r["n"]
-        print(f"  ----")
+        print("  ----")
         print(f"  total: {total}")
 
-    print(f"\n-- 5 most recent entries --")
+    print("\n-- 5 most recent entries --")
     if not recent:
         print("(none)")
     for r in recent:

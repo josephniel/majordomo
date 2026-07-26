@@ -33,11 +33,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
-from ports import ConversationRef, ToolProvider
 
 if TYPE_CHECKING:  # avoid a cycle: container imports this module
+    from ports import ConversationRef, ToolProvider
+    from collections.abc import Callable
     from .container import PersonaRuntime
 
 
@@ -56,20 +57,21 @@ class ProviderSpec:
     for providers the persona actually enabled — some of them (memory,
     documents) demand runtime resources just to be built.
     """
+
     name: str
     kind: ProviderKind
-    build: Callable[["PersonaRuntime"], ToolProvider]
+    build: Callable[[PersonaRuntime], ToolProvider]
 
     @property
     def is_faculty(self) -> bool:
         return self.kind is ProviderKind.FACULTY
 
 
-def _faculty(name: str, build: Callable[["PersonaRuntime"], ToolProvider]) -> ProviderSpec:
+def _faculty(name: str, build: Callable[[PersonaRuntime], ToolProvider]) -> ProviderSpec:
     return ProviderSpec(name=name, kind=ProviderKind.FACULTY, build=build)
 
 
-def _connector(name: str, build: Callable[["PersonaRuntime"], ToolProvider]) -> ProviderSpec:
+def _connector(name: str, build: Callable[[PersonaRuntime], ToolProvider]) -> ProviderSpec:
     return ProviderSpec(name=name, kind=ProviderKind.CONNECTOR, build=build)
 
 
@@ -78,7 +80,7 @@ def _connector(name: str, build: Callable[["PersonaRuntime"], ToolProvider]) -> 
 # expensive (DocumentLibrary opens a second pool) and a persona that doesn't
 # enable one shouldn't pay to import it.
 
-def _build_memory(rt: "PersonaRuntime") -> ToolProvider:
+def _build_memory(rt: PersonaRuntime) -> ToolProvider:
     from domain import LongTermMemory
     return LongTermMemory(
         db=rt.memory_database,
@@ -88,17 +90,17 @@ def _build_memory(rt: "PersonaRuntime") -> ToolProvider:
     )
 
 
-def _build_schedule(rt: "PersonaRuntime") -> ToolProvider:
+def _build_schedule(rt: PersonaRuntime) -> ToolProvider:
     from domain import TaskScheduler
     return TaskScheduler(runtime=rt.schedule_runtime)
 
 
-def _build_skills(rt: "PersonaRuntime") -> ToolProvider:
+def _build_skills(rt: PersonaRuntime) -> ToolProvider:
     from domain import SkillsLibrary
     return SkillsLibrary(skills_dir=rt.persona.dir / "skills")
 
 
-def _build_code(rt: "PersonaRuntime") -> ToolProvider:
+def _build_code(rt: PersonaRuntime) -> ToolProvider:
     from domain import CodeExecutor
     return CodeExecutor(
         runs_dir=rt.persona.data_dir / "code_runs",
@@ -107,12 +109,12 @@ def _build_code(rt: "PersonaRuntime") -> ToolProvider:
     )
 
 
-def _build_files(rt: "PersonaRuntime") -> ToolProvider:
+def _build_files(rt: PersonaRuntime) -> ToolProvider:
     from domain import FileCourier
     return FileCourier(data_dir=rt.persona.data_dir)
 
 
-def _build_documents(rt: "PersonaRuntime") -> ToolProvider:
+def _build_documents(rt: PersonaRuntime) -> ToolProvider:
     from adapters.store import DocumentStore
     from domain import DocumentLibrary
     dsn = rt.settings.memory_database_url
@@ -128,7 +130,7 @@ def _build_documents(rt: "PersonaRuntime") -> ToolProvider:
     )
 
 
-def _build_delegate(rt: "PersonaRuntime") -> ToolProvider:
+def _build_delegate(rt: PersonaRuntime) -> ToolProvider:
     from adapters.model import EphemeralConversationHistory
     from domain import Delegator
 
@@ -141,34 +143,34 @@ def _build_delegate(rt: "PersonaRuntime") -> ToolProvider:
     return Delegator(subagent_factory=factory)
 
 
-def _build_gmail(rt: "PersonaRuntime") -> ToolProvider:
+def _build_gmail(rt: PersonaRuntime) -> ToolProvider:
     from adapters.tools import GmailConnector
     return GmailConnector(config=rt.config)
 
 
-def _build_google_calendar(rt: "PersonaRuntime") -> ToolProvider:
+def _build_google_calendar(rt: PersonaRuntime) -> ToolProvider:
     from adapters.tools import GoogleCalendarConnector
     return GoogleCalendarConnector(
         config=rt.config, default_timezone=rt.settings.schedule_timezone,
     )
 
 
-def _build_yahoo(rt: "PersonaRuntime") -> ToolProvider:
+def _build_yahoo(rt: PersonaRuntime) -> ToolProvider:
     from adapters.tools import YahooConnector
     return YahooConnector(config=rt.config)
 
 
-def _build_clickup(rt: "PersonaRuntime") -> ToolProvider:
+def _build_clickup(rt: PersonaRuntime) -> ToolProvider:
     from adapters.tools import ClickUpConnector
     return ClickUpConnector(config=rt.config)
 
 
-def _build_splitwise(rt: "PersonaRuntime") -> ToolProvider:
+def _build_splitwise(rt: PersonaRuntime) -> ToolProvider:
     from adapters.tools import SplitwiseConnector
     return SplitwiseConnector(config=rt.config)
 
 
-def _build_budget(rt: "PersonaRuntime") -> ToolProvider:
+def _build_budget(rt: PersonaRuntime) -> ToolProvider:
     from adapters.tools import BudgetConnector
     return BudgetConnector(config=rt.config)
 

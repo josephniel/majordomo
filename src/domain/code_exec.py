@@ -24,10 +24,13 @@ import logging
 import os
 import shutil
 import uuid
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any, TYPE_CHECKING
 
 from ports import Faculty, ToolContext, ToolResult, tool
+import contextlib
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +78,7 @@ script instead of many small runs."""
     def system_prompt_section(self) -> str:
         return self.SYSTEM_PROMPT_SECTION
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     def builtin_tools(self) -> list:
@@ -173,13 +176,11 @@ script instead of many small runs."""
                     await asyncio.wait_for(
                         proc.wait(), timeout=timeout + 10,  # margin for docker startup
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Backstop — the in-container `timeout` normally fires first.
                     await self._force_remove(container)
-                    try:
+                    with contextlib.suppress(ProcessLookupError):
                         proc.kill()
-                    except ProcessLookupError:
-                        pass
                     try:
                         await proc.wait()
                     except Exception:
@@ -227,7 +228,8 @@ script instead of many small runs."""
 
     def _prune_old_runs(self) -> None:
         """Keep the newest KEEP_RUN_DIRS run dirs; artifacts aren't a
-        permanent store (documents are — save anything worth keeping)."""
+        permanent store (documents are — save anything worth keeping).
+        """
         try:
             runs = sorted(
                 (p for p in self._runs_dir.iterdir() if p.is_dir()),
@@ -244,7 +246,8 @@ script instead of many small runs."""
 
 def _read_head(path: Path) -> str:
     """First MAX_OUTPUT_CHARS of an output file, with a truncation marker —
-    without ever loading a runaway log fully into memory."""
+    without ever loading a runaway log fully into memory.
+    """
     try:
         size = path.stat().st_size
         with path.open("rb") as fh:

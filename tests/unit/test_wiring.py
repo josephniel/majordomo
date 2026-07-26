@@ -2,19 +2,18 @@
 the orchestrator, /status proactive block, and container assembly."""
 import inspect
 from contextlib import asynccontextmanager
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from adapters.chat.base import InboundMessage
 from adapters.model.base import Attachment
-from domain.documents import DocumentLibrary
 from adapters.trigger.webhook import WebhookTrigger
-from ports import ConversationRef, TriggerContext
+from domain.documents import DocumentLibrary
 from domain.triggers import HeartbeatSource, WatchSource, WebhookSource
 from kernel.core import ConversationOrchestrator
 from kernel.sessions import SessionStore
-from adapters.chat.base import InboundMessage
+from ports import TriggerContext
 
 
 class FakePlatform:
@@ -222,7 +221,8 @@ class TestMailWatchBridge:
         watcher = Broken()
         source, _, agent = await self._wired(tmp_path, watcher)
         await source._fire()
-        assert agent.prompts == [] and watcher.commits == 0
+        assert agent.prompts == []
+        assert watcher.commits == 0
 
     async def test_nothing_new_skips_llm(self, tmp_path):
         watcher = FakeWatcher(block=None)

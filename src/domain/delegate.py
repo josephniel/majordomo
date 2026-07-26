@@ -21,9 +21,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextvars import ContextVar
-from typing import Any, Callable, Optional
+from typing import Any, TYPE_CHECKING
 
 from ports import Faculty, ToolContext, ToolResult, tool
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +72,7 @@ class Delegator(Faculty):
         self,
         subagent_factory: Callable[..., Any],  # factory(chat_id) -> Agent
         timeout: float = DELEGATE_TIMEOUT_SECONDS,
-        depth: Optional[DelegationDepth] = None,
+        depth: DelegationDepth | None = None,
     ) -> None:
         self._factory = subagent_factory
         self._timeout = timeout
@@ -78,7 +81,7 @@ class Delegator(Faculty):
         # context, not through this object — see DelegationDepth.
         self._depth = depth or DelegationDepth()
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     def builtin_tools(self) -> list:
@@ -120,7 +123,7 @@ class Delegator(Faculty):
                             await agent.stop()
                         except Exception:
                             log.exception("delegate sub-agent stop failed")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 log.warning("delegated task timed out after %.0fs", outer._timeout)
                 return ToolResult.error(
                     f"the delegated task timed out after {int(outer._timeout)}s; "

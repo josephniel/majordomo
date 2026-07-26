@@ -17,8 +17,10 @@ from __future__ import annotations
 import json
 import logging
 import time
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -77,12 +79,13 @@ class MailWatcher:
 
     # ---- polling ----
 
-    async def check(self) -> Optional[str]:
+    async def check(self) -> str | None:
         """Poll every Gmail profile. Returns a context block describing NEW
         messages (caller must commit() after delivering), or None when
         there's nothing new (state advances immediately — nothing to lose).
         Never raises — a broken profile logs and is skipped; the others
-        still report."""
+        still report.
+        """
         now = int(time.time())
         lines: list[str] = []
         pending: dict[str, dict[str, Any]] = {}
@@ -101,7 +104,8 @@ class MailWatcher:
 
     def commit(self) -> None:
         """Apply the state staged by the last check(). Call after the alert
-        turn was delivered (or when check() reported nothing)."""
+        turn was delivered (or when check() reported nothing).
+        """
         self._state.update(self._pending)
         self._pending = {}
         self._persist()

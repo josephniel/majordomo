@@ -10,7 +10,8 @@ class TestSaveAndFindSimilar:
     async def test_save_returns_entry_with_embedding_model(self, memdb, persona_id):
         e = await memdb.save_entry(persona_id=persona_id, scope="user",
                                    content="The user prefers concise replies")
-        assert e.id and e.scope == "user"
+        assert e.id
+        assert e.scope == "user"
 
     async def test_near_duplicate_detected(self, memdb, persona_id):
         await memdb.save_entry(persona_id=persona_id, scope="user",
@@ -18,7 +19,7 @@ class TestSaveAndFindSimilar:
         dup = await memdb.find_similar(persona_id, "user", "",
                                        "The user prefers concise bullet point replies in chats")
         assert dup is not None
-        entry, sim = dup
+        _entry, sim = dup
         assert sim > 0.9
 
     async def test_unrelated_content_not_similar(self, memdb, persona_id):
@@ -65,7 +66,8 @@ class TestRecall:
     async def test_scope_filter(self, memdb, persona_id):
         await self._seed(memdb, persona_id)
         results = await memdb.recall(persona_id, "work email address", scope="domain")
-        assert results and all(e.scope == "domain" for e in results)
+        assert results
+        assert all(e.scope == "domain" for e in results)
 
     async def test_domain_key_filter(self, memdb, persona_id):
         await self._seed(memdb, persona_id)
@@ -92,7 +94,8 @@ class TestSupersede:
         e2 = await memdb.supersede_entry(e.id, "fact v2")
         old = await memdb.get_entry(e.id)
         assert old.superseded_by == e2.id
-        assert e2.scope == "user" and e2.content == "fact v2"
+        assert e2.scope == "user"
+        assert e2.content == "fact v2"
 
     async def test_superseding_twice_fails_gracefully(self, memdb, persona_id):
         e = await memdb.save_entry(persona_id=persona_id, scope="user", content="v1")
@@ -112,7 +115,8 @@ class TestForget:
         assert await memdb.recall(persona_id, "embarrassing") == []
         # Row still exists for provenance:
         row = await memdb.get_entry(e.id)
-        assert row is not None and row.metadata.get("forgotten") is True
+        assert row is not None
+        assert row.metadata.get("forgotten") is True
 
     async def test_forget_twice_returns_false(self, memdb, persona_id):
         e = await memdb.save_entry(persona_id=persona_id, scope="user", content="x")
@@ -258,7 +262,8 @@ class TestRollupsAndCore:
         await memdb.set_core(persona_id, "user", "", "narrative v1", 5)
         await memdb.set_core(persona_id, "user", "", "narrative v2", 8)
         [core] = await memdb.get_core(persona_id)
-        assert core.summary == "narrative v2" and core.last_source_count == 8
+        assert core.summary == "narrative v2"
+        assert core.last_source_count == 8
 
     async def test_backfill_force_reembeds(self, memdb, persona_id):
         await memdb.save_entry(persona_id=persona_id, scope="user", content="embed me")

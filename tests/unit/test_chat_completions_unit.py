@@ -110,7 +110,8 @@ class TestAssembleContext:
             self._row(4, "user", "new question"),
         ]
         msgs = agent._assemble_context(rows)
-        assert msgs[0]["role"] == "system" and "the summary" in msgs[0]["content"]
+        assert msgs[0]["role"] == "system"
+        assert "the summary" in msgs[0]["content"]
         assert [m["content"] for m in msgs[1:]] == ["old question", "old answer", "new question"]
 
     def test_tool_rows_become_action_notes(self):
@@ -129,7 +130,8 @@ class TestAssembleContext:
         rows = [self._row(1, "system", "random system row"),
                 self._row(2, "user", "hi")]
         msgs = agent._assemble_context(rows)
-        assert len(msgs) == 1 and msgs[0]["content"] == "hi"
+        assert len(msgs) == 1
+        assert msgs[0]["content"] == "hi"
 
     def test_budget_drops_oldest_but_keeps_summaries(self):
         agent = make_agent()
@@ -149,7 +151,8 @@ class TestAssembleContext:
         agent = make_agent()
         huge = "x" * (agent.MAX_HISTORY_CHARS * 2)
         msgs = agent._assemble_context([self._row(1, "user", huge)])
-        assert msgs and msgs[0]["content"] == huge
+        assert msgs
+        assert msgs[0]["content"] == huge
 
 
 class TestHistoryWindowStability:
@@ -433,7 +436,8 @@ class TestSendContract:
         row_id = await history.append(persona_id="p", chat_id=1, role="user", content="now")
         messages = await self._send(history, "now", current_row_id=row_id)
         contents = [m["content"] for m in messages]
-        assert "earlier q" in contents and "earlier a" in contents
+        assert "earlier q" in contents
+        assert "earlier a" in contents
         assert contents.count("now") == 1
 
     async def test_direct_caller_without_mirror_still_works(self):

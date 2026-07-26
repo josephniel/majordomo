@@ -13,11 +13,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from ports import ConversationRef, TriggerAgent, TriggerContext, TriggerEvent
-from domain.schedule import ScheduleEngine, ScheduledTask, TaskScheduler
+from domain.schedule import ScheduleEngine, TaskScheduler
 from domain.triggers import HEARTBEAT_PREAMBLE, HeartbeatSource
 from kernel.core import ConversationOrchestrator
 from kernel.sessions import SessionStore
+from ports import ConversationRef, TriggerAgent, TriggerContext, TriggerEvent
 
 CHAT = ConversationRef("telegram", "77")
 
@@ -249,7 +249,7 @@ class TestHeartbeatSource:
 
 class TestTriggerTurnSilence:
     async def test_trigger_honors_silent(self, tmp_path):
-        orch, platform, agent = _orch(tmp_path, reply="<silent>")
+        orch, platform, _agent = _orch(tmp_path, reply="<silent>")
         assert await orch._run_trigger(TriggerEvent(
             source="schedule:digest", conversation=CHAT, prompt="daily digest",
             agent=TriggerAgent.CONVERSATION,
@@ -257,7 +257,7 @@ class TestTriggerTurnSilence:
         assert platform.sent == []
 
     async def test_trigger_still_delivers_text(self, tmp_path):
-        orch, platform, agent = _orch(tmp_path, reply="Here's your digest.")
+        orch, platform, _agent = _orch(tmp_path, reply="Here's your digest.")
         assert await orch._run_trigger(TriggerEvent(
             source="schedule:digest", conversation=CHAT, prompt="daily digest",
             agent=TriggerAgent.CONVERSATION,
@@ -267,7 +267,7 @@ class TestTriggerTurnSilence:
     async def test_delivery_failure_is_reported_to_the_source(self, tmp_path):
         """The bool is load-bearing: a watch holds its watermark on False, so
         a failed send re-reports next poll instead of losing the mail."""
-        orch, platform, agent = _orch(tmp_path, reply="You have mail.")
+        orch, platform, _agent = _orch(tmp_path, reply="You have mail.")
 
         async def broken(*a, **kw):
             raise RuntimeError("telegram is down")
@@ -315,7 +315,7 @@ class TestDedicatedAgent:
         """Without a background factory a DEDICATED trigger must still run —
         expensively is better than not at all, and it must not then treat the
         chat agent as throwaway."""
-        orch, platform, chat_agent = _orch(tmp_path, reply="ok")
+        orch, _platform, chat_agent = _orch(tmp_path, reply="ok")
         assert await orch._run_trigger(TriggerEvent(
             source="heartbeat", conversation=CHAT, prompt="check things",
             agent=TriggerAgent.DEDICATED,
@@ -323,7 +323,7 @@ class TestDedicatedAgent:
         assert chat_agent.prompts == ["check things"]
 
     async def test_conversation_agent_persists_its_session(self, tmp_path):
-        orch, platform, chat_agent = _orch(tmp_path, reply="ok")
+        orch, _platform, chat_agent = _orch(tmp_path, reply="ok")
         chat_agent.session_id = "real-chat-session"
         await orch._run_trigger(TriggerEvent(
             source="schedule:digest", conversation=CHAT, prompt="digest",

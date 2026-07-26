@@ -10,9 +10,6 @@ that every vendor's options builder consumes.
 """
 from __future__ import annotations
 
-from typing import Optional
-
-from ports import Connector, ServiceCatalog
 from ports.llm import (
     Agent,
     PersonaLike,
@@ -21,6 +18,10 @@ from ports.llm import (
     UsageLimitError,
 )
 from ports.messaging import Attachment
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ports import Connector, ServiceCatalog
 
 __all__ = [
     "Agent",
@@ -130,7 +131,7 @@ class ContextBuilder:
             lines.append(f"    tools: {tools_csv}")
         return "\n".join(lines)
 
-    def _allowed_for_profile(self, profile_name: str) -> Optional[list[str]]:
+    def _allowed_for_profile(self, profile_name: str) -> list[str] | None:
         for c in self._connectors:
             if c.owns_profile(profile_name):
                 return self._persona.allowed_tool_names(c)

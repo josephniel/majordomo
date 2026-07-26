@@ -7,9 +7,8 @@ used to be a separate VOLATILE_PROMPT_SECTION boolean and a fake could set
 it without being versioned at all — passing tests for a combination that
 cannot occur in production.
 """
-from ports import ToolProvider
-
 from adapters.model.base import ContextBuilder
+from ports import ToolProvider
 
 
 class _Enabled:

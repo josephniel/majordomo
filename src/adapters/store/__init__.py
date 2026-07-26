@@ -29,14 +29,14 @@ from .embeddings import Embedder
 from .reranking import RerankConfig, Reranker
 
 __all__ = [
+    "LINK_RELATIONS",
+    "VALID_SCOPES",
     "DocumentStore",
     "Embedder",
+    "MemoryCoreEntry",
     "MemoryDatabase",
-    "redact_dsn",
+    "MemoryEntry",
     "RerankConfig",
     "Reranker",
-    "MemoryEntry",
-    "MemoryCoreEntry",
-    "VALID_SCOPES",
-    "LINK_RELATIONS",
+    "redact_dsn",
 ]

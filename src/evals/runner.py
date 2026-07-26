@@ -21,7 +21,6 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
 
 import yaml
 
@@ -36,6 +35,7 @@ from adapters.model.chat_completions import (
 )
 
 from .fakes import FakeBulkTools, FakeGmail, FakeMemory, FakeSchedule
+import contextlib
 
 VENDORS = {
     "groq": (GroqAgent, "GROQ_MODEL"),
@@ -59,9 +59,9 @@ EVAL_SYSTEM_PROMPT = (
 class EvalCase:
     name: str
     prompt: str
-    expect_tool: Optional[str] = None   # substring of a called tool name
+    expect_tool: str | None = None   # substring of a called tool name
     expect_no_tool: bool = False
-    reply_matches: Optional[str] = None  # regex over the reply
+    reply_matches: str | None = None  # regex over the reply
     # Prior turns, oldest first, as (role, content) with role user|assistant.
     # Seeded into the conversation mirror before `prompt` is sent, so a case
     # can reproduce a CONTEXT-DEPENDENT failure — the class of bug that
@@ -167,13 +167,11 @@ async def run_case(vendor: str, case: EvalCase) -> CaseResult:
                     print(f"       {vendor}: TPM limited; waiting 20s…")
                     await asyncio.sleep(20)
                     continue
-                short = msg.split("Please retry")[0][:200]
+                short = msg.split("Please retry", maxsplit=1)[0][:200]
                 return CaseResult(vendor, case, False, f"vendor error: {short}")
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await agent.stop()
-        except Exception:
-            pass
 
     called = [name for f in fakes for name, _ in f.calls]
     passed, detail = judge(case, called, reply)
@@ -214,7 +212,7 @@ async def run_evals(vendors: list[str], cases: list[EvalCase]) -> list[CaseResul
     return results
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     import os
     parser = argparse.ArgumentParser(description="Vendor tool-calling evals.")
     parser.add_argument("--persona", default=None,

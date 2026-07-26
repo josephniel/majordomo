@@ -1,7 +1,7 @@
 """capabilities.code_exec — validation paths (no Docker needed)."""
 import pytest
 
-from domain.code_exec import CodeExecutor, _read_head, MAX_OUTPUT_CHARS
+from domain.code_exec import MAX_OUTPUT_CHARS, CodeExecutor, _read_head
 from ports import ToolContext
 
 
@@ -43,7 +43,7 @@ class TestValidation:
 
 class TestPolicy:
     def test_run_code_is_gated(self):
-        assert CodeExecutor.WRITE_TOOLS == {"run_code"}
+        assert {"run_code"} == CodeExecutor.WRITE_TOOLS
 
     def test_output_read_is_capped(self, tmp_path):
         big = tmp_path / "out.log"

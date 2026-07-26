@@ -27,12 +27,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
 
 
 log = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ class StatusReporter:
         self,
         url: str,
         instance: str,
-        token: Optional[str] = None,
+        token: str | None = None,
         project: str = PROJECT_NAME,
     ) -> None:
         self._url = url
@@ -59,13 +59,14 @@ class StatusReporter:
         self._token = token
         self._project = project
         self._tasks: set[asyncio.Task] = set()
-        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._heartbeat_task: asyncio.Task | None = None
 
     # ---- heartbeat (persona liveness on the dashboard) ----
 
     def start_heartbeat(self) -> None:
         """Begin the periodic liveness push. Call from an async context
-        (the orchestrator's startup hook)."""
+        (the orchestrator's startup hook).
+        """
         if self._heartbeat_task is not None and not self._heartbeat_task.done():
             return
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
@@ -95,7 +96,8 @@ class StatusReporter:
     def push_health(self, vendors: dict[str, float]) -> None:
         """Schedule a push of vendor-health state. Sync + non-blocking so it
         can be called from the health board's change hook. No-op outside an
-        event loop."""
+        event loop.
+        """
         payload = {
             "project": self._project,
             "instance": self._instance,

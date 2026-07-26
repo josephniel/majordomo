@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from typing import Any, AsyncIterator, Optional
+from typing import Any, TYPE_CHECKING
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -24,12 +24,14 @@ from claude_agent_sdk import (
     TextBlock,
     ToolUseBlock,
     create_sdk_mcp_server,
+)
+from claude_agent_sdk import (
     tool as _claude_sdk_tool,
 )
 
 from ports import (
-    ConversationRef,
     Connector,
+    ConversationRef,
     ServiceCatalog,
     ToolContext,
     ToolSpec,
@@ -39,12 +41,16 @@ from ports import (
 from .base import (
     Agent,
     Attachment,
+    ContextBuilder,
     PersonaLike,
     Summarizer,
-    ContextBuilder,
     ToolUseCallback,
     UsageLimitError,
 )
+import contextlib
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 log = logging.getLogger(__name__)
 
@@ -106,7 +112,7 @@ DEFAULT_COMPACTION_FALLBACK_MODEL = "claude-sonnet-5"
 async def summarize_with_subscription_auth(
     prompt: str,
     primary_model: str = DEFAULT_COMPACTION_MODEL,
-    fallback_model: Optional[str] = DEFAULT_COMPACTION_FALLBACK_MODEL,
+    fallback_model: str | None = DEFAULT_COMPACTION_FALLBACK_MODEL,
 ) -> str:
     """One-off completion for compaction / summarization tasks.
 
@@ -248,10 +254,10 @@ class AnthropicOptionsBuilder:
         config: ServiceCatalog,
         connectors: list[Connector],
         persona: PersonaLike,
-        model: Optional[str] = None,
-        max_turns: Optional[int] = None,
-        max_output_tokens: Optional[int] = None,
-        default_model: Optional[str] = None,
+        model: str | None = None,
+        max_turns: int | None = None,
+        max_output_tokens: int | None = None,
+        default_model: str | None = None,
     ) -> None:
         self._composer = context_builder
         self._config = config
@@ -270,8 +276,8 @@ class AnthropicOptionsBuilder:
 
     def build(
         self,
-        resume_session_id: Optional[str] = None,
-        chat_id: Optional[ConversationRef] = None,
+        resume_session_id: str | None = None,
+        chat_id: ConversationRef | None = None,
     ) -> ClaudeAgentOptions:
         enabled = self._config.load_enabled()
         ctx = ToolContext(chat_id=chat_id)
@@ -338,7 +344,7 @@ class AnthropicOptionsBuilder:
             env=env,
         )
 
-    def _allowed_for_profile(self, profile_name: str) -> Optional[list[str]]:
+    def _allowed_for_profile(self, profile_name: str) -> list[str] | None:
         for c in self._connectors:
             if c.owns_profile(profile_name):
                 return self._persona.allowed_tool_names(c)
@@ -347,7 +353,7 @@ class AnthropicOptionsBuilder:
     @staticmethod
     def _filter_tool_specs(
         specs: list[ToolSpec],
-        allowed_names: Optional[list[str]],
+        allowed_names: list[str] | None,
     ) -> list[ToolSpec]:
         """Filter ToolSpec list by name. None = all allowed; [] = none."""
         if allowed_names is None:
@@ -366,19 +372,19 @@ class AnthropicAgent(Agent):
     def __init__(
         self,
         options_builder: AnthropicOptionsBuilder,
-        session_id: Optional[str] = None,
-        chat_id: Optional[ConversationRef] = None,
+        session_id: str | None = None,
+        chat_id: ConversationRef | None = None,
     ) -> None:
         self._options_builder = options_builder
-        self._session_id: Optional[str] = session_id
+        self._session_id: str | None = session_id
         # The chat this agent serves — bound into every mounted tool's
         # ToolContext so handlers know their scope without ambient state.
         self._chat_id = chat_id
-        self._client: Optional[ClaudeSDKClient] = None
+        self._client: ClaudeSDKClient | None = None
         self.last_turn_usage: dict[str, Any] = {}
 
     @property
-    def session_id(self) -> Optional[str]:
+    def session_id(self) -> str | None:
         return self._session_id
 
     @property
@@ -407,12 +413,13 @@ class AnthropicAgent(Agent):
         """Abandon the resumed session and open a fresh one. The caller
         (CascadingAgent rotation) reseeds context from the mirror; without
         this, a resumed session replays the entire conversation as input
-        tokens on every turn, forever."""
+        tokens on every turn, forever.
+        """
         await self._discard_client()
         self._session_id = None
         await self._open(None)
 
-    async def _open(self, session_id: Optional[str]) -> None:
+    async def _open(self, session_id: str | None) -> None:
         opts = self._options_builder.build(session_id, chat_id=self._chat_id)
         self._client = ClaudeSDKClient(options=opts)
         await self._client.__aenter__()
@@ -437,17 +444,15 @@ class AnthropicAgent(Agent):
     async def interrupt(self) -> None:
         if self._client is None:
             return
-        try:
+        with contextlib.suppress(Exception):
             await self._client.interrupt()
-        except Exception:
-            pass
 
     async def send(
         self,
         text: str,
-        on_tool_use: Optional[ToolUseCallback] = None,
-        attachments: Optional[list[Attachment]] = None,
-        current_row_id: Optional[int] = None,  # server-side history: unused
+        on_tool_use: ToolUseCallback | None = None,
+        attachments: list[Attachment] | None = None,
+        current_row_id: int | None = None,  # server-side history: unused
     ) -> str:
         if self._client is None:
             await self.start()
@@ -467,10 +472,8 @@ class AnthropicAgent(Agent):
                         if isinstance(block, TextBlock):
                             parts.append(block.text)
                         elif isinstance(block, ToolUseBlock) and on_tool_use is not None:
-                            try:
+                            with contextlib.suppress(Exception):
                                 await on_tool_use(block.name, dict(block.input or {}))
-                            except Exception:
-                                pass
                 elif isinstance(msg, ResultMessage):
                     self._session_id = msg.session_id
                     self._capture_usage(msg)
@@ -489,7 +492,8 @@ class AnthropicAgent(Agent):
 
     def _capture_usage(self, msg: ResultMessage) -> None:
         """Pull token usage off the ResultMessage (previously discarded).
-        Shape varies slightly across SDK versions — read defensively."""
+        Shape varies slightly across SDK versions — read defensively.
+        """
         try:
             usage = getattr(msg, "usage", None) or {}
             if not isinstance(usage, dict):
@@ -505,7 +509,7 @@ class AnthropicAgent(Agent):
             self.last_turn_usage = {}
 
     @staticmethod
-    def _attachment_to_content_block(att: Attachment) -> Optional[dict]:
+    def _attachment_to_content_block(att: Attachment) -> dict | None:
         if att.media_type.startswith("image/"):
             return {
                 "type": "image",

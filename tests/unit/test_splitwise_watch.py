@@ -1,5 +1,4 @@
 """services.splitwisewatch — polling watcher (Splitwise has no webhooks)."""
-import pytest
 
 from adapters.trigger.splitwisewatch import MAX_NEW_PER_PROFILE, SplitwiseWatcher
 
@@ -58,9 +57,11 @@ class TestCheck:
         w = make_watcher(tmp_path, {"splitwise": FakeClient([_expense()])})
         block = await w.check()
         assert block is not None
-        assert "Army Navy" in block and "1385.0 PHP" in block
+        assert "Army Navy" in block
+        assert "1385.0 PHP" in block
         assert "paid by You" in block
-        assert "You 600.0" in block and "Paul 785.0" in block
+        assert "You 600.0" in block
+        assert "Paul 785.0" in block
 
     async def test_nothing_new_returns_none_and_commits(self, tmp_path):
         w = make_watcher(tmp_path, {"splitwise": FakeClient([])})
@@ -106,7 +107,7 @@ class TestCheck:
         client = FakeClient(many)
         w = make_watcher(tmp_path, {"splitwise": client})
         block = await w.check()
-        assert f"and 3 more" in block
+        assert "and 3 more" in block
         w.commit()
         # Everything (including the summarized tail) is seen now.
         assert await w.check() is None
@@ -117,7 +118,8 @@ class TestCheck:
         good = FakeClient([_expense()])
         w = make_watcher(tmp_path, {"broken": bad, "ok": good})
         block = await w.check()
-        assert block is not None and "Army Navy" in block
+        assert block is not None
+        assert "Army Navy" in block
 
     async def test_fresh_poll_logs_observability_line(self, tmp_path, caplog):
         import logging

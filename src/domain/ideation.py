@@ -49,9 +49,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
-from ports import FactCandidate, MemoryVerdict, Reconciliation, Summarizer
+from ports import MemoryVerdict, Reconciliation, Summarizer
 
 from .reconcile import Reconciler, candidate_from_extraction
 
@@ -114,7 +114,8 @@ Output ONLY the JSON array. No prose, no code fences.
 
 def _parse_proposals(raw: str) -> list[dict[str, Any]]:
     """Extract the JSON array from a model reply. Same defensiveness as the
-    extraction and verdict parsers: fences and preamble are routine."""
+    extraction and verdict parsers: fences and preamble are routine.
+    """
     text = (raw or "").strip()
     if not text:
         return []
@@ -135,9 +136,9 @@ class Ideator:
 
     def __init__(
         self,
-        memory: "LongTermMemory",
+        memory: LongTermMemory,
         summarizer: Summarizer,
-        reconciler: Optional[Reconciler] = None,
+        reconciler: Reconciler | None = None,
     ) -> None:
         self._memory = memory
         self._summarizer = summarizer
@@ -148,7 +149,7 @@ class Ideator:
         self._reconciler = reconciler or Reconciler(memory, summarizer)
 
     async def run(
-        self, scope: Optional[str] = None, domain_key: Optional[str] = None,
+        self, scope: str | None = None, domain_key: str | None = None,
     ) -> list[Reconciliation]:
         """One ideation pass. Returns the decision for each proposal.
 

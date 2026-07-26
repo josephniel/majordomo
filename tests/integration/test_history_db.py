@@ -54,7 +54,7 @@ class TestCompaction:
         ids = await seed(history, persona_id, 8)
         cutoff = ids[4]
         # A row that arrives AFTER the summarizer decided its window:
-        late_id = await history.append(persona_id=persona_id, chat_id=CHAT_ID,
+        await history.append(persona_id=persona_id, chat_id=CHAT_ID,
                                        role="user", content="late arrival")
         folded = await history.compact(persona_id, CHAT_ID, "the summary", cutoff_id=cutoff)
         assert folded == 5
@@ -86,7 +86,7 @@ class TestCompaction:
     async def test_double_compaction_folds_previous_summary(self, history, persona_id):
         ids = await seed(history, persona_id, 4)
         await history.compact(persona_id, CHAT_ID, "first summary", cutoff_id=ids[-1])
-        ids2 = await seed(history, persona_id, 2, prefix="later")
+        await seed(history, persona_id, 2, prefix="later")
         last = await history.last_row_id(persona_id, CHAT_ID)
         await history.compact(persona_id, CHAT_ID, "second summary", cutoff_id=last)
         rows = await history.recent(persona_id, CHAT_ID)
@@ -118,7 +118,8 @@ class TestSearch:
         await history.append(persona_id=persona_id, chat_id=CHAT_ID, role="user",
                              content="remind me about the Acme quarterly report")
         hits = await history.search(persona_id, CHAT_ID, "Acme")
-        assert hits and "Acme" in hits[0]["content"]
+        assert hits
+        assert "Acme" in hits[0]["content"]
 
     async def test_fuzzy_trigram_match(self, history, persona_id):
         await history.append(persona_id=persona_id, chat_id=CHAT_ID, role="user",
@@ -185,4 +186,5 @@ class TestTurnLog:
 
     async def test_empty_stats(self, history, persona_id):
         stats = await history.turn_stats(persona_id, CHAT_ID)
-        assert stats["today"]["turns"] == 0 and stats["last"] is None
+        assert stats["today"]["turns"] == 0
+        assert stats["last"] is None
