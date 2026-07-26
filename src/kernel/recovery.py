@@ -151,10 +151,11 @@ class RecoveryMixin:
     # ---- Layer 3: hallucinated memory save ----
 
     def _detect_missed_save(self, chat_id: ConversationRef, reply: str, agent: Agent) -> None:
-        """If the model's reply CLAIMS it saved something to memory but it
-        never actually called a tool this turn, run reflection immediately
-        instead of waiting for the idle timer — turning a hallucinated save
-        into a self-healing extraction. Cheap: reflection dedups, so a false
+        """Turn a hallucinated memory save into a self-healing extraction.
+
+        If the model's reply CLAIMS it saved something but it never actually
+        called a tool this turn, run reflection immediately instead of waiting
+        for the idle timer. Cheap: reflection dedups, so a false
         positive just costs one summarizer call.
         """
         if not isinstance(agent, ToolTraceReporting) or agent.last_turn_tool_calls > 0:
@@ -172,7 +173,7 @@ class RecoveryMixin:
     # ---- Layer 3c: hallucinated send ----
 
     def _detect_missed_send(self, reply: str, agent: Agent) -> bool:
-        """True when the reply claims an email/message was sent but no sending tool ran this turn.
+        """Detect a reply claiming an email/message was sent when no sending tool ran.
 
         Mirrors _detect_missed_schedule.
         """
@@ -239,10 +240,10 @@ class RecoveryMixin:
     # ---- Layer 3b: hallucinated schedule ----
 
     def _detect_missed_schedule(self, reply: str, agent: Agent) -> bool:
-        """True when the reply claims a reminder/schedule was created but no
-        schedule-creating tool ran this turn. Requires a ToolTraceReporting
-        agent (CascadingAgent is one); agents without the trace are skipped —
-        we can't tell claim from fact blind.
+        """Detect a reply claiming a reminder when no scheduling tool ran.
+
+        Requires a ToolTraceReporting agent (CascadingAgent is one); agents
+        without the trace are skipped — we can't tell claim from fact blind.
         """
         if not self._schedule_claim_tools:
             return False  # no enabled provider can satisfy the claim anyway
@@ -259,10 +260,12 @@ class RecoveryMixin:
     async def _recover_missed_schedule(
         self, chat_id: ConversationRef, reply: str, agent: Agent,
     ) -> None:
-        """One-shot recovery for a hallucinated schedule: re-prompt the agent
-        to actually make the tool call it claimed. If even the retry produces
-        no scheduling call, tell the user plainly that nothing was scheduled —
-        a false 'reminder set' is the one failure mode this bot must never
+        """One-shot recovery for a hallucinated schedule.
+
+        Re-prompts the agent to actually make the tool call it claimed. If even
+        the retry produces no scheduling call, tell the user plainly that
+        nothing was scheduled — a false 'reminder set' is the one failure mode
+        this bot must never
         leave standing. Never raises: the user's turn already succeeded.
 
         "Does this persona even have a scheduler?" is answered by

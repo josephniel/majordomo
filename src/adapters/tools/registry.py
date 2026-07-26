@@ -73,7 +73,7 @@ class ServiceRegistry:
 
     @staticmethod
     def slugify_profile(profile_id: str) -> str:
-        """foo.bar@baz.com -> foo_bar_at_baz_com"""
+        """Slugify a profile id: foo.bar@baz.com -> foo_bar_at_baz_com."""
         s = profile_id.lower().strip()
         s = s.replace("@", "_at_")
         s = re.sub(r"[^a-z0-9_]", "_", s)

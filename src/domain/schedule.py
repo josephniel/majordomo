@@ -30,8 +30,10 @@ log = logging.getLogger(__name__)
 
 
 def _is_async_callable(fn: Any) -> bool:
-    """True for coroutine functions, including bound methods and objects whose
-    __call__ is one (functools.partial is unwrapped by iscoroutinefunction).
+    """Report whether this is a coroutine function.
+
+    Includes bound methods and objects whose __call__ is one (functools.partial
+    is unwrapped by iscoroutinefunction).
     """
     if inspect.iscoroutinefunction(fn):
         return True
@@ -95,14 +97,17 @@ class ScheduleEngine:
         return str(self._tz) if self._tz is not None else None
 
     def _now(self) -> datetime:
-        """Aware 'now' in the schedule timezone, or naive host-local when no
-        timezone is configured — always comparable with _parse_when output.
+        """Aware 'now' in the schedule timezone; naive host-local when unset.
+
+        Always comparable with _parse_when output.
         """
         return datetime.now(self._tz) if self._tz is not None else datetime.now()
 
     def _localize(self, dt: datetime) -> datetime:
-        """Attach the schedule timezone to naive datetimes (absolute ISO
-        input, and run_at values persisted before a timezone was set).
+        """Attach the schedule timezone to naive datetimes.
+
+        Absolute ISO input, and run_at values persisted before a timezone was
+        set.
         """
         if self._tz is not None and dt.tzinfo is None:
             return dt.replace(tzinfo=self._tz)
@@ -132,9 +137,11 @@ class ScheduleEngine:
     def add_system_cron(
         self, name: str, cron: str, callback: Callable[[], Awaitable[None]]
     ) -> None:
-        """Register a recurring job owned by the RUNTIME, not the user: it is
-        never persisted to schedules.json and is invisible to the schedule
-        tools (so the model can't list or remove it). Used for the heartbeat.
+        """Register a recurring job owned by the RUNTIME, not the user.
+
+        It is never persisted to schedules.json and is invisible to the
+        schedule tools (so the model can't list or remove it). Used for the
+        heartbeat.
         Must be called after start().
 
         The callback MUST be an async callable. AsyncIOScheduler dispatches a

@@ -32,7 +32,7 @@ _PDF_MIME = "application/pdf"
 
 
 def extract_text(mime: str, data: bytes) -> str | None:
-    """Extracted text for supported types; None for unsupported (images…)."""
+    """Extract text for supported types; None for unsupported (images…)."""
     mime = (mime or "").lower()
     if any(mime.startswith(p) for p in _TEXT_MIME_PREFIXES):
         return data.decode("utf-8", errors="replace")

@@ -74,8 +74,9 @@ def _format_value(value: Any, limit: int = _MAX_VALUE_CHARS) -> str:
 
 
 def format_approval_prompt(connector_name: str, tool_name: str, args: dict[str, Any]) -> str:
-    """Human-first rendering of a pending write: one bullet per argument,
-    routing fields first — never a raw JSON dump.
+    """Render a pending write for a human: one bullet per argument.
+
+    Routing fields first — never a raw JSON dump.
     """
     lines = [f"🔐 Approval needed — {connector_name}/{tool_name}"]
     fields = [(k, v) for k, v in args.items() if v not in (None, "", [], {})]
@@ -139,7 +140,7 @@ class WriteApprovalGate:
         self._pending: dict[ConversationRef, PendingApproval] = {}
 
     def pending_for(self, chat_id: ConversationRef) -> PendingApproval | None:
-        """The write this conversation is waiting on, if any."""
+        """Return the write this conversation is waiting on, if any."""
         return self._pending.get(chat_id)
 
     def bind(self, confirmer: Confirmer) -> None:
@@ -171,7 +172,7 @@ class WriteApprovalGate:
     # ---- spec wrapping ----
 
     def wrap_spec(self, connector_name: str, spec: ToolSpec) -> ToolSpec:
-        """A copy of `spec` whose handler asks for approval first.
+        """Copy `spec`, wrapping its handler so it asks for approval first.
 
         Used by GatedToolProvider for WRITE_TOOLS and by the composition root for external stdio MCP
         tools (gated wholesale — reads too).
@@ -248,8 +249,7 @@ class WriteApprovalGate:
 
 
 class GatedToolProvider:
-    """Read-through view of a ToolProvider whose WRITE_TOOLS specs are
-    wrapped with the approval gate.
+    """Read-through view of a ToolProvider whose WRITE_TOOLS specs are gated.
 
     Composition instead of instance mutation: the wrapped provider is never
     modified, so lifecycle hooks, /status lines, and isinstance checks keep

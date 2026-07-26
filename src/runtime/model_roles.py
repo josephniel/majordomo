@@ -56,8 +56,9 @@ class RoleChain:
     model: str | None = None
 
     def with_fallback(self, chat: RoleChain) -> RoleChain:
-        """Roles left unconfigured inherit the chat chain — including its
-        failover — rather than silently collapsing to one vendor.
+        """Roles left unconfigured inherit the chat chain.
+
+        Including its failover — rather than silently collapsing to one vendor.
         """
         if self.chain:
             return self

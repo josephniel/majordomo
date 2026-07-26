@@ -176,7 +176,7 @@ class Reconciler:
         self._summarizer = summarizer
 
     async def decide(self, candidate: FactCandidate) -> Reconciliation:
-        """What should happen to this candidate. Never raises.
+        """Decide what should happen to this candidate. Never raises.
 
         A failure anywhere — retrieval down, model down, garbage reply —
         resolves to ADD. That is the non-destructive direction: the worst
@@ -322,7 +322,7 @@ def candidate_from_extraction(
 
 
 def _parse_valid_to(raw) -> datetime | None:
-    """An extracted end date, if the model supplied a usable one.
+    """Extract an end date, if the model supplied a usable one.
 
     Optional by design. Most facts have no end and asking a small background
     model to invent one produces confident nonsense, so an unparseable value

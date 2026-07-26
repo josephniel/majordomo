@@ -93,7 +93,7 @@ class ReflectionEngine:
     # ---- orchestrator hooks ----
 
     def note_activity(self, chat_id: ConversationRef) -> None:
-        """Called after every completed turn. (Re)arms the idle timer."""
+        """Re-arm the idle timer — called after every completed turn."""
         old = self._timers.pop(chat_id, None)
         if old is not None and not old.done():
             old.cancel()
@@ -191,8 +191,10 @@ class ReflectionEngine:
 
 
     async def _autolink_batch(self, entries: list[Any]) -> None:
-        """Link facts extracted from the SAME conversation burst that also
-        share a compartment (scope + domain_key) with a `relates_to` edge.
+        """Add a `relates_to` edge between facts from one burst and compartment.
+
+        Facts extracted from the SAME conversation burst that also share a
+        compartment (scope + domain_key) get linked.
         Conservative on purpose: cross-compartment facts from one burst are
         often unrelated (the user mentioned their dog AND a deadline), so we
         only connect facts already grouped by subject. Best-effort.

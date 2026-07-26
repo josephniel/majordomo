@@ -134,7 +134,7 @@ def audit(
 
 
 def _persona_env(root: Path, persona_dir: Path | None) -> dict[str, str]:
-    """The .env layers as the runtime loads them.
+    """Load the .env layers exactly as the runtime does.
 
     MUST mirror PersonaRuntime.load_env, including the precedence: the
     persona's own file first, then the shared one, because load_dotenv never
@@ -233,7 +233,7 @@ def _check_dead_env(report: Report, resolver: ConfigResolver) -> None:
 
 def _check_shadowed(report: Report, shell: Mapping[str, str],
                     dotenv: Mapping[str, str]) -> None:
-    """A variable set in BOTH the shell and the .env resolves to the shell's.
+    """Flag variables set in BOTH the shell and the .env — the shell's value wins.
 
     load_dotenv never overrides an existing variable, so editing the .env
     changes nothing and the file is actively misleading. This is a fourth,
@@ -328,7 +328,7 @@ def _check_shared_database(report: Report, root: Path, persona_id: str | None,
 
 def _check_duplication(report: Report, root: Path,
                        shell: Mapping[str, str]) -> None:
-    """Settings written identically in every persona's .env.
+    """Find settings written identically in every persona's .env.
 
     Not broken — but every copy is a chance to drift, and the drift is
     invisible. This check is here because 12 of 15 keys were duplicated and

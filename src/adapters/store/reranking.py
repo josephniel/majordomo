@@ -50,8 +50,9 @@ DEFAULT_MODEL = "Xenova/ms-marco-MiniLM-L-12-v2"
 
 @dataclass(frozen=True)
 class RerankConfig:
-    """Every reranking knob in one value, so `configure` is atomic — a
-    partial update can't leave the calibration and the model disagreeing.
+    """Every reranking knob in one value, so `configure` is atomic.
+
+    A partial update can't leave the calibration and the model disagreeing.
     """
 
     enabled: bool = True
@@ -164,8 +165,9 @@ class Reranker:
         return [self._calibrate(float(s)) for s in raw]
 
     def _calibrate(self, logit: float) -> float:
-        """Squash a cross-encoder logit to 0..1 around the measured decision
-        boundary (see RerankConfig.center). Overflow-safe at the tails.
+        """Squash a cross-encoder logit to 0..1 around the decision boundary.
+
+        See RerankConfig.center. Overflow-safe at the tails.
         """
         z = (logit - self.config.center) / (self.config.temperature or 1.0)
         if z < -60:

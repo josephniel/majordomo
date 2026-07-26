@@ -134,9 +134,10 @@ class SkillsLibrary(Faculty):
     # ---- Connector contract ----
 
     def context_version(self) -> int:
-        """Sum of file mtimes: any edit/add/remove moves the number, which
-        makes the orchestrator rebuild stale agents (same mechanism memory
-        recompaction uses).
+        """Sum of file mtimes: any edit/add/remove moves the number.
+
+        That makes the orchestrator rebuild stale agents (the same mechanism
+        memory recompaction uses).
         """
         if not self._dir.is_dir():
             return 0

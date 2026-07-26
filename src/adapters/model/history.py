@@ -127,9 +127,10 @@ class ConversationHistory:
     _CHAT_ID_TABLES = ("chat_history", "turn_log", "approval_log", "reflection_state")
 
     def __init__(self, dsn: str, legacy_platform: str = "telegram") -> None:
-        """`legacy_platform` names the platform that wrote any pre-migration
-        rows, so their bare `12345` chat ids can be rewritten as
-        `telegram:12345` and keep matching. It is only ever consulted by the
+        """`legacy_platform` names the platform that wrote pre-migration rows.
+
+        Their bare `12345` chat ids can then be rewritten as `telegram:12345`
+        and keep matching. It is only ever consulted by the
         one-shot migration; new rows already carry a full key.
         """
         self._legacy_platform = legacy_platform
@@ -443,9 +444,11 @@ class ConversationHistory:
         archived_days: int = 0,
         turn_log_days: int = 0,
     ) -> dict[str, int]:
-        """Delete old rows: ARCHIVED chat_history older than archived_days,
-        turn_log older than turn_log_days. 0 disables that arm. Active
-        (non-archived) conversation rows are never touched — compaction is
+        """Delete old rows, by table and age.
+
+        ARCHIVED chat_history older than archived_days, turn_log older than
+        turn_log_days; 0 disables that arm. Active (non-archived) conversation
+        rows are never touched — compaction is
         what retires those, and it archives rather than deletes.
 
         Note archived rows back history_search (episodic memory), so
@@ -488,8 +491,9 @@ class ConversationHistory:
         decision: str,  # approved | denied | error | no_chat
         reason: str = "",
     ) -> None:
-        """One row per write-approval decision — the durable answer to
-        'what did the bot try to write this week?'.
+        """One row per write-approval decision.
+
+        The durable answer to 'what did the bot try to write this week?'.
         """
         async with self._pool.acquire() as conn:
             await conn.execute(
@@ -519,7 +523,7 @@ class ConversationHistory:
         persona_id: str,
         chat_id: ConversationRef,
     ) -> dict[str, Any]:
-        """Aggregates for /status: today's turns/tokens + last turn info."""
+        """Summarize today's turns/tokens plus last-turn info, for /status."""
         async with self._pool.acquire() as conn:
             agg = await conn.fetchrow(
                 """

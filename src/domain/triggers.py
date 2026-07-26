@@ -260,8 +260,10 @@ class ScheduleSource:
             log.exception("scheduler shutdown failed")
 
     def describe(self) -> str | None:
-        """Nothing: /status already reports the user's schedules per chat,
-        from the schedule faculty. Repeating "schedule" here would be noise.
+        """Nothing — /status already reports the user's schedules per chat.
+
+        That comes from the schedule faculty; repeating "schedule" here would
+        be noise.
         """
         return None
 

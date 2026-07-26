@@ -426,9 +426,10 @@ class CascadingAgent(Agent):
     # ---- Layer 4: tool-calling canary ----
 
     async def run_canary(self) -> dict[str, tuple[bool, str]]:
-        """Probe each vendor that supports probing (chat-completions backends)
-        to confirm it actually calls tools, recording results on the shared
-        health board so /status can surface a silently-regressed vendor.
+        """Probe each vendor that supports it, to confirm it still calls tools.
+
+        Chat-completions backends only. Records results on the shared health
+        board so /status can surface a silently-regressed vendor.
         Claude/native agents are assumed capable (they're the reliable
         fallback) and skipped.
         """
@@ -481,8 +482,10 @@ class CascadingAgent(Agent):
         return None
 
     async def _recent_safe(self, limit: int) -> list[dict[str, Any]]:
-        """Recent active rows, chronological; [] on any read failure (a mirror
-        blip must never break a turn — the callers all degrade gracefully).
+        """Recent active rows, chronological; [] on any read failure.
+
+        A mirror blip must never break a turn — the callers all degrade
+        gracefully.
         """
         try:
             return await self._history.recent(
@@ -496,9 +499,11 @@ class CascadingAgent(Agent):
     def _prior_open_assistant(
         rows: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
-        """The most recent non-system row, if it's an assistant turn that asked
-        something (an open question awaiting the user's answer). System rows
-        (mirrored tool calls) are skipped — they sit between the assistant's
+        """Find the open question the last assistant turn left hanging.
+
+        The most recent non-system row, if it's an assistant turn that asked
+        something. System rows (mirrored tool calls) are skipped — they sit
+        between the assistant's
         reply and the next user message. Returns None if the last real turn was
         the user's own, a summary, or an assistant statement with no question.
         """
@@ -512,7 +517,7 @@ class CascadingAgent(Agent):
 
     @staticmethod
     def _is_short_answer(text: str, attachments: list[Any] | None = None) -> bool:
-        """A brief, topicless reply that answers rather than opens.
+        """Report whether this is a brief, topicless reply that answers rather than opens.
 
         Messages carrying attachments are new content, never a bare answer.
         """
@@ -556,7 +561,7 @@ class CascadingAgent(Agent):
         self._started[vendor] = True
 
     def _now_line(self) -> str:
-        """The wall-clock time, stamped on every outgoing turn.
+        """Render the wall-clock time that gets stamped on every outgoing turn.
 
         WITHOUT this the model has no clock at all — it answers "what time is
         it" from training data and insists its time "doesn't update live",
@@ -599,9 +604,11 @@ class CascadingAgent(Agent):
         anchor: str = "",
         cold_tail_after_id: int | None = None,
     ) -> str:
-        """Prefix the outgoing text with (a) a missed-turns digest when this
-        vendor keeps server-side history and either has a high-water mark OR
-        is cold (fresh process, resumed-but-stale session — Fix 1a), and
+        """Prefix the outgoing text with a missed-turns digest and recalled memory.
+
+        (a) The digest goes on when this vendor keeps server-side history and
+        either has a high-water mark OR is cold (fresh process,
+        resumed-but-stale session — Fix 1a), and
         (b) the auto-recalled memory block. `anchor`, when set, names the open
         question this reply answers and sits immediately above the user text.
         """
@@ -691,8 +698,9 @@ class CascadingAgent(Agent):
         )
 
     def _spawn_bg(self, coro) -> None:
-        """Fire-and-forget with a held reference (a bare create_task can be
-        garbage-collected mid-flight).
+        """Fire-and-forget with a held reference.
+
+        A bare create_task can be garbage-collected mid-flight.
         """
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)

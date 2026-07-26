@@ -256,10 +256,11 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         text: str,
         original_message_id: int | None,
     ) -> None:
-        """Bridge a peer instance's message (delivered via the comms log
-        relay) into the normal message flow. The text already arrives
-        prefixed with the originating sender's [@username]: by the source
-        instance's platform, so the agent sees the same shape it would for a
+        """Bridge a peer instance's message into the normal message flow.
+
+        Delivered via the comms log relay. The text already arrives prefixed
+        with the originating sender's [@username]: by the source instance's
+        platform, so the agent sees the same shape it would for a
         real platform update.
         """
         msg = InboundMessage(
@@ -283,7 +284,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         attachments=None,
         typing: bool = True,
     ) -> str:
-        """THE single place an agent turn runs.
+        """Run an agent turn — THE single place that happens.
 
         Registers the task in _pending_turns so /cancel reaches user, scheduled, AND recovery turns.
         Caller holds the chat lock and owns exception handling.
@@ -494,10 +495,11 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         return sum(c.context_version() for c in self._connectors)
 
     def _refresh_agent_if_stale(self, chat_id: ConversationRef) -> None:
-        """Drop this chat's agent if a connector's system-prompt contribution
-        changed since it was built (e.g. memory core recompacted). The Claude
-        session id survives — the rebuilt agent resumes it, so only the baked
-        system prompt refreshes, not the conversation (gap A2).
+        """Drop this chat's agent when a connector's prompt contribution moved.
+
+        E.g. the memory core recompacted. The Claude session id survives — the
+        rebuilt agent resumes it, so only the baked system prompt refreshes,
+        not the conversation (gap A2).
         """
         agent = self._agents.get(chat_id)
         if agent is None:
@@ -541,8 +543,9 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         return self._per_chat_locks[chat_id]
 
     def _pending_approval_notice(self, chat_id: ConversationRef) -> str | None:
-        """What to say to a message that arrived while this chat is blocked
-        on an operator approval — or None when it isn't.
+        """Say what to a message that landed while an approval is blocking.
+
+        None when this chat isn't blocked.
 
         Deliberately says the tool name and how to get out. "Please wait" is
         no better than the silence it replaces; what the user needs is which

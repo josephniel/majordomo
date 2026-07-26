@@ -165,7 +165,7 @@ def as_float(v: Any) -> float:
 
 
 def as_csv(v: Any) -> tuple[str, ...]:
-    """A vendor chain. YAML writes a list; env writes "a,b,c"."""
+    """Parse a vendor chain. YAML writes a list; env writes "a,b,c"."""
     if isinstance(v, (list, tuple)):
         return tuple(str(x).strip().lower() for x in v if str(x).strip())
     return tuple(x.strip().lower() for x in as_str(v).split(",") if x.strip())
@@ -382,7 +382,7 @@ class InterpolationTracker:
         return path in self._interpolated
 
     def consumed(self, var: str) -> bool:
-        """True if a config file read this variable through ${VAR}.
+        """Report whether a config file read this variable through ${VAR}.
 
         Such a variable is the OPPOSITE of dead — it is where the value
         comes from. Without this distinction the audit tells an operator to
@@ -497,8 +497,9 @@ class ConfigResolver:
                    host_tracker=ht, persona_tracker=pt)
 
     def resolve(self, s: Setting) -> Resolved:
-        """instances/<id>/config.yaml > config.yaml > environment > default,
-        with HOST settings skipping the persona layer entirely.
+        """instances/<id>/config.yaml > config.yaml > environment > default.
+
+        HOST settings skip the persona layer entirely.
         """
         if s.scope is Scope.PERSONA:
             v = _dig(self.persona, s.path)
@@ -555,9 +556,10 @@ class ConfigResolver:
         return out
 
     def dead_env_entries(self) -> list[Setting]:
-        """Env variables that are set but can no longer have any effect,
-        because a YAML layer supplies the same setting. Harmless, and
-        completely misleading to read.
+        """Env variables that are set but can no longer have any effect.
+
+        A YAML layer supplies the same setting. Harmless, and completely
+        misleading to read.
 
         A variable a config file READS via ${VAR} is not dead — it is the
         value. Reporting those was worse than reporting nothing: the fix it
@@ -575,7 +577,7 @@ class ConfigResolver:
         return out
 
     def consumes_variable(self, var: str) -> bool:
-        """Did either config file interpolate this variable?"""
+        """Report whether either config file interpolated this variable."""
         return (self._host_tracker.consumed(var)
                 or self._persona_tracker.consumed(var))
 

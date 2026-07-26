@@ -170,8 +170,9 @@ class PersonaRuntime:
 
     @cached_property
     def summarizer(self) -> Summarizer:
-        """Vendor-neutral summarization service for background work —
-        compaction (chat history + second-brain memory) AND reflection.
+        """Vendor-neutral summarization service for background work.
+
+        Compaction (chat history + second-brain memory) AND reflection.
 
         Follows PRIMARY_LLM so the memory subsystem is LLM-agnostic: a
         Gemini/Groq-primary bot summarizes with that vendor (no Claude
@@ -227,10 +228,11 @@ class PersonaRuntime:
 
     @cached_property
     def health_board(self) -> VendorHealthBoard:
-        """Per-persona vendor availability, shared by every chat's
-        CascadingAgent and persisted across restarts. Health changes also
-        push to the status dashboard when configured (the board itself
-        stays local — failover can't depend on the network being healthy).
+        """Per-persona vendor availability, shared by every chat's agent.
+
+        Persisted across restarts. Health changes also push to the status
+        dashboard when configured (the board itself stays local — failover
+        can't depend on the network being healthy).
         """
         reporter = self.status_reporter
         return VendorHealthBoard(
@@ -240,8 +242,9 @@ class PersonaRuntime:
 
     @cached_property
     def external_mcp(self) -> ExternalMCPManager:
-        """Bridges connectors.yaml's external stdio MCP servers to the
-        non-Claude vendors (the Claude SDK mounts them natively).
+        """Bridges connectors.yaml's external stdio MCP servers to non-Claude vendors.
+
+        The Claude SDK mounts them natively.
         """
         def _skip(profile: str) -> bool:
             # Skip profiles already served by an in-process builtin server.
@@ -297,7 +300,7 @@ class PersonaRuntime:
     # ---- tool providers (registry-driven; see runtime/providers.py) ----
 
     def provider(self, name: str) -> ToolProvider:
-        """The persona's singleton instance of one provider, built on first use.
+        """Build (or return) the persona's singleton instance of one provider.
 
         Lazy because constructing some of them (memory, documents) demands runtime resources a
         persona that hasn't enabled them shouldn't have to supply.
@@ -331,17 +334,20 @@ class PersonaRuntime:
 
     @cached_property
     def active_services(self) -> list[ToolProvider]:
-        """Every enabled tool provider (connectors first, then faculties —
-        preserves the historical system-prompt section order). Raw instances:
-        lifecycle hooks, /status, and identity checks run against these.
+        """Every enabled tool provider, connectors first and then faculties.
+
+        That order preserves the historical system-prompt section order. Raw
+        instances: lifecycle hooks, /status, and identity checks run against
+        these.
         """
         return [*self.active_connectors, *self.active_faculties]
 
     @cached_property
     def gated_services(self) -> list[ToolProvider]:
-        """The view AGENT BUILDERS consume: WRITE_TOOLS specs wrapped with
-        the approval gate (Layer 5). Same objects as active_services when
-        the persona opts out of write approval.
+        """The view AGENT BUILDERS consume, with WRITE_TOOLS behind the gate.
+
+        Layer 5. Same objects as active_services when the persona opts out of
+        write approval.
         """
         gate = self.approval_gate
         if gate is None:
@@ -387,8 +393,9 @@ class PersonaRuntime:
             load_dotenv(shared)
 
     def _assert_embedding_model_is_host_wide(self, dsn: str) -> None:
-        """Refuse to start if a sibling persona points at the same database
-        with a different embedding model.
+        """Refuse to start if a sibling persona shares the DB but not the model.
+
+        That is: the same database with a different embedding model.
 
         This guard exists BECAUSE the embedding model started working. While
         EMBEDDING_MODEL was silently inert, every persona used the default and
@@ -768,10 +775,11 @@ class PersonaRuntime:
 
     @cached_property
     def context_injector(self):
-        """Per-turn context injection: memory auto-RAG + keyword-matched
-        skill notes, composed into the single recaller hook CascadingAgent
-        takes. One failing injector never poisons the others. None when no
-        enabled provider injects context.
+        """Per-turn context injection: memory auto-RAG plus skill notes.
+
+        Composed into the single recaller hook CascadingAgent takes. One
+        failing injector never poisons the others. None when no enabled
+        provider injects context.
         """
         from adapters.tools import ContextInjector
         injectors = [
@@ -795,10 +803,11 @@ class PersonaRuntime:
 
     @cached_property
     def background_persona(self) -> Persona:
-        """Reduced-tool persona view for background agents (heartbeat,
-        mail-watch): persona.yaml `background_tools:` when set, else the
-        chat enablement downgraded to read-only. Background fires pay the
-        full tool-schema cost per fire with no cache reuse, so the surface
+        """Reduced-tool persona view for background agents (heartbeat, mail-watch).
+
+        persona.yaml `background_tools:` when set, else the chat enablement
+        downgraded to read-only. Background fires pay the full tool-schema
+        cost per fire with no cache reuse, so the surface
         stays minimal by default.
         """
         return self.persona.background_view()
@@ -815,8 +824,7 @@ class PersonaRuntime:
     def _background_agent_factory(
         self, chat_id: ConversationRef, role: ModelRole = ModelRole.BACKGROUND
     ) -> Agent:
-        """A per-fire agent on the reduced background toolset and the role's
-        own chain.
+        """Build a per-fire agent on the background toolset and the role's chain.
 
         This used to branch on whether Claude was enabled: the Claude path
         honoured a model override but ran a SINGLE vendor with no health

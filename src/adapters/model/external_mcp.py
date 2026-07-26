@@ -37,9 +37,10 @@ def _result_to_tool_result(res: Any) -> ToolResult:
 
 
 class ExternalMCPManager:
-    """Connects to the enabled external stdio MCP servers and exposes their
-    tools as ToolSpecs keyed by the same `<profile>__<tool>` convention the
-    in-process servers use.
+    """Connects to the enabled external stdio MCP servers.
+
+    Exposes their tools as ToolSpecs, keyed by the same `<profile>__<tool>`
+    convention the in-process servers use.
     """
 
     def __init__(

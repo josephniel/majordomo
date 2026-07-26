@@ -181,8 +181,9 @@ async def _sdk_one_shot(prompt: str, model: str) -> str:
 
 
 class SubscriptionAuthSummarizer(Summarizer):
-    """Concrete `Summarizer` that runs through the bundled Claude CLI's
-    subscription auth — no API key needed.
+    """Concrete `Summarizer` running on the bundled Claude CLI's subscription auth.
+
+    No API key needed.
 
     Default models: Haiku-4.5 for normal, Sonnet-4.6 for deep. Both are
     customizable so a persona can override (e.g. point deep at Opus).

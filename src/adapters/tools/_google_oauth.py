@@ -97,9 +97,11 @@ class GoogleOAuthClient:
         scopes: list[str],
         port: int = DEFAULT_REDIRECT_PORT,
     ) -> dict[str, Any]:
-        """Spawn a local callback server, open a browser to Google's auth URL,
-        capture the returned code, exchange for tokens. Returns gongrzhe-format
-        credentials dict ready to save.
+        """Run the interactive OAuth dance and return saveable credentials.
+
+        Spawns a local callback server, opens a browser to Google's auth URL,
+        captures the returned code, exchanges it for tokens. Returns a
+        gongrzhe-format credentials dict ready to save.
         """
         redirect_uri = f"http://localhost:{port}/oauth2callback"
         auth_url = AUTH_URL + "?" + urlencode({
@@ -190,8 +192,9 @@ class GoogleOAuthClient:
 
 
 class CredentialStore:
-    """Reads/writes a gongrzhe-format credentials.json with in-memory caching
-    and on-the-fly token refresh.
+    """Reads/writes a gongrzhe-format credentials.json.
+
+    In-memory caching and on-the-fly token refresh.
     """
 
     def __init__(self, oauth: GoogleOAuthClient, credentials_path: Path) -> None:

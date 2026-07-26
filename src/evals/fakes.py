@@ -64,8 +64,9 @@ class FakeMemory(RecordingConnector):
 
 
 class FakeGmail(RecordingConnector):
-    """Two mailboxes, like the real deployment — which is what makes the
-    "which mailbox?" clarification loop reproducible.
+    """Two mailboxes, like the real deployment.
+
+    Which is what makes the "which mailbox?" clarification loop reproducible.
     """
 
     name = "gmail"
@@ -92,8 +93,7 @@ class FakeGmail(RecordingConnector):
 
 
 class FakeBulkTools(RecordingConnector):
-    """Filler tools that exist purely to make the eval's PROMPT THE SIZE IT IS
-    IN PRODUCTION.
+    """Filler tools that exist purely to size the eval's prompt like production.
 
     This is not padding for its own sake. gemma4-e4b scored 7/7 here while
     failing live, because the eval prompt was ~1.5k tokens and 5 tools while a

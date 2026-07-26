@@ -126,8 +126,10 @@ STALE_AFTER_DAYS = 30
 
 
 def staleness_suffix(entry: MemoryEntry) -> str:
-    """A re-verification note for a volatile fact that hasn't been confirmed
-    within STALE_AFTER_DAYS. Empty for stable or fresh facts.
+    """Build the re-verification note a stale volatile fact should carry.
+
+    Fires for a volatile fact not confirmed within STALE_AFTER_DAYS. Empty for
+    stable or fresh facts.
 
     Module-level so the tool surface can render the same warning without
     reaching into the faculty for it. A volatile fact shown WITHOUT this
@@ -278,8 +280,9 @@ Three principles:
         task.add_done_callback(self._bg_tasks.discard)
 
     async def drain(self) -> None:
-        """Wait for outstanding background work (recompaction after a
-        correction, auto-compaction after a save).
+        """Wait for outstanding background work.
+
+        Recompaction after a correction, auto-compaction after a save.
 
         Exists for tests and for shutdown. Those writes are fire-and-forget
         because a user's turn must not block on a summarizer call, but
@@ -398,8 +401,10 @@ Three principles:
         domain_key: str | None = None,
         limit: int = 8,
     ) -> list[Scored]:
-        """Ranked recollection with scores — for the eval harness and for
-        callers applying their own selection policy.
+        """Ranked recollection with scores.
+
+        For the eval harness, and for callers applying their own selection
+        policy.
         """
         return await self._db.recall_scored(
             self._persona_id, query, scope=scope, domain_key=domain_key, limit=limit,
@@ -411,8 +416,10 @@ Three principles:
         domain_key: str | None = None,
         limit: int = 200,
     ) -> list[MemoryEntry]:
-        """Everything currently held, newest first — the raw material for
-        compaction and ideation, as opposed to a ranked answer to a query.
+        """Everything currently held, newest first.
+
+        The raw material for compaction and ideation, as opposed to a ranked
+        answer to a query.
         """
         return await self._db.list_active(
             self._persona_id, scope=scope, domain_key=domain_key, limit=limit,
@@ -448,7 +455,7 @@ Three principles:
         return await self._db.neighbors(entry_id)
 
     async def update_fact(self, entry_id: UUID, content: str) -> MemoryEntry | None:
-        """Replacement: supersede a fact's content, keeping the old row.
+        """Supersede a fact's content, keeping the old row.
 
         Recompacts the compartment in the background. Without that the
         corrected fact is right in the archive while the OLD one keeps being
@@ -528,8 +535,9 @@ Three principles:
         return ok
 
     async def verify(self, entry_id: UUID) -> bool:
-        """Record that a volatile fact was re-confirmed, resetting its
-        staleness clock (see `staleness_suffix`).
+        """Record that a volatile fact was re-confirmed.
+
+        Resets its staleness clock (see `staleness_suffix`).
         """
         return await self._db.mark_verified(entry_id)
 

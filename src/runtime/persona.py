@@ -108,9 +108,11 @@ class Persona:
 
     @staticmethod
     def _merge_enablement(cfg: dict[str, Any], config_path: Path) -> dict[str, EnabledValue]:
-        """Merge legacy enabled_connectors + faculties: + connectors: into
-        one policy map (names are globally unique). Collisions are almost
-        certainly migration mistakes — warn loudly, last block wins.
+        """Merge the legacy and current enablement blocks into one policy map.
+
+        enabled_connectors + faculties: + connectors:; names are globally
+        unique. Collisions are almost certainly migration mistakes — warn
+        loudly, last block wins.
         """
         import logging
         blocks = [
@@ -168,7 +170,7 @@ class Persona:
     # ---- enablement queries ----
 
     def background_view(self) -> Persona:
-        """This persona as seen by background agents (heartbeat, mail-watch).
+        """Narrow this persona to what background agents see (heartbeat, mail-watch).
 
         Uses `background_tools:` when set; otherwise downgrades the chat
         enablement to read-only ("read_write" -> True; True/lists kept).

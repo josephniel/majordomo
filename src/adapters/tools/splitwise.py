@@ -48,9 +48,10 @@ class SplitwiseClient:
         body: dict[str, Any] | None = None,
         form: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """`form` sends application/x-www-form-urlencoded — required by
-        Splitwise's create/update endpoints when using the users__N__field
-        breakdown pattern. `body` sends JSON. Use one or the other, not both.
+        """`form` posts urlencoded, `body` posts JSON — use one, not both.
+
+        `form` is required by Splitwise's create/update endpoints when using
+        the users__N__field breakdown pattern.
         """
         async with httpx.AsyncClient(timeout=self.TIMEOUT) as client:
             r = await client.request(
@@ -190,9 +191,7 @@ def _format_http_error(e: httpx.HTTPStatusError) -> str:
 
 
 def _to_form(d: dict[str, Any]) -> dict[str, str]:
-    """Stringify values for application/x-www-form-urlencoded posting,
-    skipping None entries.
-    """
+    """Stringify values for urlencoded posting, skipping None entries."""
     out: dict[str, str] = {}
     for k, v in d.items():
         if v is None:
@@ -207,8 +206,10 @@ def _to_form(d: dict[str, Any]) -> dict[str, str]:
 
 
 def _flatten_users_to_form(users_list: list[dict]) -> dict[str, str]:
-    """Convert [{user_id, paid_share, owed_share}, ...] into Splitwise's
-    indexed form-key pattern: users__0__user_id, users__0__paid_share, etc.
+    """Convert share dicts into Splitwise's indexed form-key pattern.
+
+    [{user_id, paid_share, owed_share}, ...] becomes users__0__user_id,
+    users__0__paid_share, and so on.
     """
     out: dict[str, str] = {}
     for i, u in enumerate(users_list):
@@ -219,8 +220,10 @@ def _flatten_users_to_form(users_list: list[dict]) -> dict[str, str]:
 
 
 def _splitwise_errors(resp: dict[str, Any]) -> str | None:
-    """Splitwise returns HTTP 200 even on validation failure, with details in
-    `errors` (dict or list). Return a flat error string if there are any.
+    """Return a flat error string if a 200 response actually carried errors.
+
+    Splitwise returns HTTP 200 even on validation failure, with the details in
+    `errors` (dict or list).
     """
     errors = resp.get("errors")
     if not errors:
@@ -282,8 +285,10 @@ class SplitwiseConnector(Connector):
     # ---- Connector contract ----
 
     def build_clients(self) -> dict[str, SplitwiseClient]:
-        """One API client per enabled profile — the narrow surface services
-        (splitwise watch) consume without touching tool machinery.
+        """One API client per enabled profile.
+
+        The narrow surface services (splitwise watch) consume without touching
+        tool machinery.
         """
         clients: dict[str, SplitwiseClient] = {}
         for profile in self._config.load_all():

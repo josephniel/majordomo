@@ -24,8 +24,9 @@ async def ingest_attachments(
     text: str,
     msg: InboundMessage,
 ) -> str:
-    """Best-effort: save text/PDF attachments to the document library and
-    append the saved-note(s) to the turn text. No library, no ingestible
+    """Save text/PDF attachments to the document library, best-effort.
+
+    Appends the saved-note(s) to the turn text. No library, no ingestible
     attachments, or any failure → text passes through unchanged.
     """
     if not msg.attachments:

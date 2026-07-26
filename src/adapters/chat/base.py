@@ -180,8 +180,10 @@ class ChatPlatform(ABC):
         return False
 
     async def request_approval(self, chat_id: ConversationRef, text: str) -> bool:
-        """Ask the operator to approve a pending write action, blocking until
-        they answer (or a platform-defined timeout). Returns approved?.
+        """Ask the operator to approve a pending write action.
+
+        Blocks until they answer (or a platform-defined timeout). Returns
+        whether it was approved.
 
         Default: DENY. A platform without an approval UI must not silently
         wave writes through — implement this, or set `write_approval: false`
@@ -202,7 +204,7 @@ class ChatPlatform(ABC):
         chat_id: ConversationRef,
         friendly_status: Callable[[str, dict[str, Any]], str],
     ) -> AbstractAsyncContextManager[StatusTracker]:
-        """Yields a StatusTracker that surfaces in-chat tool progress."""
+        """Yield a StatusTracker that surfaces in-chat tool progress."""
 
     @abstractmethod
     def run(

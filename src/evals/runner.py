@@ -1,4 +1,4 @@
-"""Eval harness: does vendor X still call the right tool for prompt Y?
+"""Eval harness — whether vendor X still calls the right tool for prompt Y.
 
 The reliability layers (subsetting, hallucination detectors, recovery) all
 exist because free-tier vendors are flaky tool-callers — and vendor/model

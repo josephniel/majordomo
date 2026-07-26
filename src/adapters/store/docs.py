@@ -114,8 +114,10 @@ END $$;
 
 
 def chunk_text(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    """Sliding-window chunks; prefers to cut at a newline/space near the end
-    of the window so sentences survive chunk boundaries.
+    """Sliding-window chunks.
+
+    Prefers to cut at a newline/space near the end of the window, so sentences
+    survive chunk boundaries.
     """
     text = (text or "").strip()
     if not text:
@@ -279,8 +281,9 @@ class DocumentStore:
         query: str,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
-        """Hybrid chunk search: max(trigram similarity, embedding cosine),
-        same shape as memory recall. Vector arm only trusts current-model
+        """Hybrid chunk search: max(trigram similarity, embedding cosine).
+
+        Same shape as memory recall. The vector arm only trusts current-model
         embeddings (graceful degradation after a model migration).
         """
         query = (query or "").strip()

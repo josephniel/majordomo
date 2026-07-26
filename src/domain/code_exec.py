@@ -227,8 +227,10 @@ script instead of many small runs."""
             log.exception("could not remove container %s", container)
 
     def _prune_old_runs(self) -> None:
-        """Keep the newest KEEP_RUN_DIRS run dirs; artifacts aren't a
-        permanent store (documents are — save anything worth keeping).
+        """Keep the newest KEEP_RUN_DIRS run dirs.
+
+        Artifacts aren't a permanent store (documents are — save anything
+        worth keeping).
         """
         try:
             runs = sorted(
@@ -245,8 +247,9 @@ script instead of many small runs."""
 
 
 def _read_head(path: Path) -> str:
-    """First MAX_OUTPUT_CHARS of an output file, with a truncation marker —
-    without ever loading a runaway log fully into memory.
+    """First MAX_OUTPUT_CHARS of an output file, with a truncation marker.
+
+    Never loads a runaway log fully into memory.
     """
     try:
         size = path.stat().st_size

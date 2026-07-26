@@ -114,8 +114,10 @@ class CommandsMixin:
             await self._platform.send_text(chat_id, "Nothing to cancel right now.", reply_to=reply_to)
 
     async def _cmd_status(self, chat_id: ConversationRef, *, reply_to: int | None = None) -> None:
-        """Operator introspection: active vendor, chain health, memory,
-        schedules, proactive subsystems, today's usage.
+        """Operator introspection, in one screen.
+
+        Active vendor, chain health, memory, schedules, proactive subsystems,
+        today's usage.
         """
         lines: list[str] = [f"Persona: {self._persona_id}"]
 

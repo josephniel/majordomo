@@ -43,8 +43,9 @@ log = logging.getLogger(__name__)
 
 
 def redact_dsn(dsn: str) -> str:
-    """A DSN without its password, for error messages an operator may paste
-    into a chat or an issue.
+    """Strip the password out of a DSN.
+
+    For error messages an operator may paste into a chat or an issue.
     """
     return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", dsn)
 
@@ -323,8 +324,9 @@ class MemoryDatabase:
         content: str,
         threshold: float = 0.90,
     ) -> tuple[MemoryEntry, float] | None:
-        """Nearest active entry in the same compartment by embedding cosine
-        similarity, if it clears `threshold`. Used to dedup near-identical
+        """Nearest active entry in the same compartment, by cosine similarity.
+
+        Returned only if it clears `threshold`. Used to dedup near-identical
         saves (the model re-learning the same fact) before they accumulate.
         Returns (entry, similarity) or None. Trigram fallback when the
         embedding isn't available.
@@ -801,9 +803,10 @@ LIMIT ${len(params)}
         return pairs[:limit]
 
     async def backfill_embeddings(self, force: bool = False) -> int:
-        """Compute + store embeddings for entries missing them (or, with
-        force=True, every entry not embedded by the CURRENT model — run this
-        once after an embedding-model change: `cli.py memory reembed`).
+        """Compute and store embeddings for entries missing them.
+
+        With force=True, for every entry not embedded by the CURRENT model —
+        run this once after an embedding-model change: `cli.py memory reembed`.
         Returns the count re-embedded.
         """
         if force:

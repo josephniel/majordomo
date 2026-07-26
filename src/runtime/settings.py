@@ -125,9 +125,10 @@ class RuntimeSettings:
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
 
     def transcription(self) -> TranscriptionConfig:
-        """Assemble the transcription adapter's config, resolving the vendor
-        keys from the LLM credentials so they are configured in exactly one
-        place.
+        """Assemble the transcription adapter's config.
+
+        Resolves the vendor keys from the LLM credentials, so they are
+        configured in exactly one place.
         """
         return TranscriptionConfig(
             chain=self.transcription_chain,

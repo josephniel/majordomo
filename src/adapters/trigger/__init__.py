@@ -1,5 +1,4 @@
-"""Runtime services — subsystems that give the RUNTIME behavior, not the
-model tools.
+"""Runtime services — subsystems that give the RUNTIME behavior, not model tools.
 
 The distinction from `domain/` (which holds Connector-based faculties
 the model can call): nothing in this package appears in a tool schema. A

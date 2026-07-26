@@ -95,7 +95,7 @@ class AudioTranscriber:
         self._key = api_key
 
     async def transcribe(self, data: bytes, filename: str = "voice.ogg") -> str:
-        """Returns the transcript ('' when the audio had no speech).
+        """Return the transcript ('' when the audio had no speech).
 
         Raises on transport/API errors — the cascade decides what happens next.
         """
@@ -141,8 +141,9 @@ class CascadingTranscriber:
 def build_transcriber(
     config: TranscriptionConfig | None = None,
 ) -> CascadingTranscriber | None:
-    """None when no configured vendor has a key — the platform then keeps
-    its polite voice-notes-unsupported reply.
+    """None when no configured vendor has a key.
+
+    The platform then keeps its polite voice-notes-unsupported reply.
     """
     config = config or TranscriptionConfig()
     chain: list[AudioTranscriber] = []

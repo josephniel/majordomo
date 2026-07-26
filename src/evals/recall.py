@@ -354,9 +354,10 @@ async def evaluate(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Split out of main() so the flag defaults are testable without running
-    an eval — `--migrate` defaulting to off is a safety property, not a
-    preference, so it deserves an assertion.
+    """Split out of main() so the flag defaults are testable without an eval.
+
+    `--migrate` defaulting to off is a safety property, not a preference, so
+    it deserves an assertion.
     """
     ap = argparse.ArgumentParser(prog="eval-recall", description=__doc__)
     ap.add_argument("--dsn", default=DEFAULT_DSN,

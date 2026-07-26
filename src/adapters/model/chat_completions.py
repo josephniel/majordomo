@@ -97,9 +97,10 @@ def _signals_usage_limit(exc: BaseException) -> bool:
 
 
 def _is_usage_limit(exc: BaseException) -> bool:
-    """True if `exc` (or any wrapped cause) is a rate/usage/overload limit that
-    should trigger failover. Walks the __cause__/__context__ chain so a limit
-    error wrapped in a generic exception is still caught.
+    """Report whether `exc` is a rate/usage/overload limit that should fail over.
+
+    Walks the __cause__/__context__ chain, so a limit error wrapped in a
+    generic exception is still caught.
     """
     seen: set[int] = set()
     cur: BaseException | None = exc
@@ -165,9 +166,10 @@ def _extract_failed_generation(exc: BaseException) -> str | None:
 
 
 def _parse_llama_tool_calls(text: str) -> list[tuple[str, str]]:
-    """Parse Llama's malformed tool syntax `<function=NAME {json}>` (one or
-    more) into (name, arguments_json) pairs. Brace-matches so nested JSON is
-    captured correctly.
+    """Parse Llama's malformed tool syntax into (name, arguments_json) pairs.
+
+    Handles one or more `<function=NAME {json}>` blocks, brace-matching so
+    nested JSON is captured correctly.
     """
     out: list[tuple[str, str]] = []
     for m in re.finditer(r"<function=([A-Za-z0-9_\-.]+)", text or ""):
@@ -197,9 +199,10 @@ def _parse_llama_tool_calls(text: str) -> list[tuple[str, str]]:
 
 
 def _recover_failed_tool_calls(exc: BaseException) -> list[tuple[str, str]]:
-    """If `exc` is a Groq/Llama tool_use_failed 400, extract the intended tool
-    calls from its failed generation. Returns [] when not applicable, so the
-    normal error handling proceeds.
+    """Extract the intended tool calls from a Groq/Llama tool_use_failed 400.
+
+    Returns [] when `exc` is anything else, so the normal error handling
+    proceeds.
     """
     marker = "tool_use_failed"
     code = getattr(exc, "code", None)
@@ -212,17 +215,19 @@ def _recover_failed_tool_calls(exc: BaseException) -> list[tuple[str, str]]:
 
 
 def _extract_text_from_tool_result(result: Any) -> str:
-    """Flatten a handler result (ToolResult, or a legacy MCP-shaped dict from
-    external MCP servers) into the single string OpenAI's `tool` message
-    content field wants. (The error flag isn't surfaced separately here —
+    """Flatten a handler result into the string OpenAI's `tool` message wants.
+
+    The result is a ToolResult, or a legacy MCP-shaped dict from an external
+    MCP server. (The error flag isn't surfaced separately here —
     handlers word their error text self-descriptively.)
     """
     return as_tool_result(result).text or "(empty)"
 
 
 class ChatCompletionsAgent(Agent):
-    """Base implementation for any vendor speaking the OpenAI Chat
-    Completions API (OpenAI itself, DeepSeek, etc.).
+    """Base implementation for any vendor speaking the OpenAI Chat Completions API.
+
+    OpenAI itself, DeepSeek, and the rest.
     """
 
     DEFAULT_MODEL: str = ""
@@ -339,8 +344,9 @@ class ChatCompletionsAgent(Agent):
         }
 
     def _connector_base_for(self, prefixed_name: str) -> str:
-        """Map a `<server>__<tool>` key to its connector's base name
-        (gmail, google_calendar, splitwise, memory, schedule, …).
+        """Map a `<server>__<tool>` key to its connector's base name.
+
+        gmail, google_calendar, splitwise, memory, schedule, …
         """
         server = prefixed_name.rsplit("__", 1)[0]
         for c in self._connectors:
@@ -388,7 +394,7 @@ class ChatCompletionsAgent(Agent):
         return self._model
 
     async def probe_tool_calling(self) -> tuple[bool, str]:
-        """Layer-4 canary: does this model actually invoke a tool when asked?
+        """Layer-4 canary — check this model still invokes a tool when asked.
 
         Sends a tiny one-tool request (≈100 tokens, safe under any TPM cap). Returns (ok, detail).
         This is what would have caught gemini-flash silently regressing to hallucinated saves.
@@ -458,9 +464,11 @@ class ChatCompletionsAgent(Agent):
     # ---- tool collection ----
 
     def _collect_tools(self) -> dict[str, ToolSpec]:
-        """Walk connectors, apply the persona's allowed_tool_names filter,
-        return a flat name→ToolSpec map. Names are prefixed with the server
-        so multi-profile connectors (gmail per profile) stay disambiguated.
+        """Walk connectors and return a flat name→ToolSpec map.
+
+        Applies the persona's allowed_tool_names filter. Names are prefixed
+        with the server so multi-profile connectors (gmail per profile) stay
+        disambiguated.
         """
         out: dict[str, ToolSpec] = {}
         for c in self._connectors:
@@ -480,8 +488,10 @@ class ChatCompletionsAgent(Agent):
     # ---- main turn ----
 
     async def prewarm(self) -> bool:
-        """Build this turn's prompt prefix and send it with a 1-token cap, so
-        the engine caches it BEFORE a human is waiting on it.
+        """Warm the engine's cache with this turn's prompt prefix.
+
+        Sends it with a 1-token cap, so the prefix is cached BEFORE a human is
+        waiting on it.
 
         Local inference pays ~100s to prefill a cold ~13k-token prompt and
         ~0.6s once it's cached. Nothing makes that first prefill cheap — but
@@ -517,9 +527,11 @@ class ChatCompletionsAgent(Agent):
         attachments: list[Attachment] | None = None,
         current_row_id: int | None = None,
     ) -> str:
-        """`text` IS the current user message — it goes on the wire verbatim
-        (including any composed context like the auto-RAG memory block). The
-        mirror supplies HISTORY only: when the caller mirrored this turn
+        """Send `text` as the current user message, mirrored history behind it.
+
+        `text` goes on the wire verbatim (including any composed context like
+        the auto-RAG memory block). The mirror supplies HISTORY only: when the
+        caller mirrored this turn
         already (CascadingAgent passes the row id as `current_row_id`), that
         raw row is excluded so the message isn't sent twice. This replaced
         the old last-row-must-be-user heuristic, which double-appended on
@@ -593,8 +605,9 @@ class ChatCompletionsAgent(Agent):
         return row["role"] in ("user", "assistant", "system")
 
     def _history_floor(self, rows: list[dict[str, Any]]) -> int:
-        """Oldest mirror row id that may replay — sticky, and only ever moves
-        forward in big steps.
+        """Oldest mirror row id that may replay.
+
+        Sticky, and only ever moves forward in big steps.
 
         A plain newest-first budget evicts exactly one old row per turn once
         the window is full. That changes the FIRST replayed message every
@@ -690,8 +703,10 @@ class ChatCompletionsAgent(Agent):
         return messages
 
     def _apply_attachments(self, messages: list[dict[str, Any]], attachments: list[Attachment]) -> None:
-        """Augment the latest user message with image parts (if this backend
-        supports vision) and/or a note about what couldn't be processed.
+        """Augment the latest user message with image parts.
+
+        Only when this backend supports vision; adds a note about whatever
+        couldn't be processed.
         """
         idx = next((i for i in range(len(messages) - 1, -1, -1)
                     if messages[i].get("role") == "user"), None)
@@ -1011,9 +1026,10 @@ class OllamaAgent(ChatCompletionsAgent):
 
 
 class ChatCompletionsSummarizer(Summarizer):
-    """`Summarizer` that runs memory/history compaction through any
-    OpenAI-compatible vendor (Gemini/OpenAI/DeepSeek). This is what keeps the
-    memory subsystem LLM-agnostic: a Gemini-primary bot summarizes with Gemini,
+    """`Summarizer` running compaction through any OpenAI-compatible vendor.
+
+    Gemini/OpenAI/DeepSeek. This is what keeps the memory subsystem
+    LLM-agnostic: a Gemini-primary bot summarizes with Gemini,
     not Claude. Reuses the vendor backend's model/base_url/key/extra config so
     there's a single source of truth per vendor.
     """
@@ -1036,9 +1052,11 @@ class ChatCompletionsSummarizer(Summarizer):
         base_url: str | None = None,
         extra: dict[str, Any] | None = None,
     ) -> ChatCompletionsSummarizer:
-        """Build from a ChatCompletionsAgent subclass — single source of
-        truth for base_url/extra kwargs per vendor. The composition root
-        resolves model/api_key/base_url/extra from settings; no env reads here.
+        """Build from a ChatCompletionsAgent subclass.
+
+        That subclass is the single source of truth for base_url/extra kwargs
+        per vendor. The composition root resolves model/api_key/base_url/extra
+        from settings; no env reads here.
         `base_url` and `extra` override the backend defaults (self-hosted
         endpoints, whose right knobs depend on the model in use).
         """
