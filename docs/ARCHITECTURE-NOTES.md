@@ -107,19 +107,82 @@ Two backup stories, deliberately: the JSON files are cheap, per-instance,
 host-local state that is safe to lose (sessions resume fresh, health
 re-learns); Postgres holds everything that must survive.
 
-## Embedding model migration
+## Memory retrieval: fusion, embeddings, reranking
 
-`storage/embeddings.py` pins `sentence-transformers/
-paraphrase-multilingual-MiniLM-L12-v2` (384-dim, English + Tagalog).
+Recall is hybrid and **measured**. `./manage eval-recall` seeds a throwaway
+persona from `evals/recall_cases.yaml` and reports recall@4, recall@8, MRR,
+false-inject rate, and latency; `tests/integration/test_recall_quality.py`
+asserts floors so a regression fails CI. Retrieval regressions are otherwise
+invisible — recall still returns rows, they're just the wrong ones.
+
+The pipeline, and what each stage is for:
+
+1. **Three candidate arms.** FTS (`english` config), trigram, and pgvector
+   cosine, each ranking independently over the same compartment-filtered base.
+2. **Weighted Reciprocal Rank Fusion** (`storage/db.py`). Not `max()` of the
+   three scores — `ts_rank`, trigram similarity, and cosine are on
+   incomparable scales, so a max is really just "whatever the vector arm
+   said". RRF keeps only the ordering, which is the comparable part.
+3. **Cross-encoder rerank** (`storage/reranking.py`) over the top ~20. RRF
+   orders well but its scores compress (rank 1 vs rank 5 differ by ~7%), so
+   they cannot be thresholded. The reranker supplies a calibrated relevance
+   score, which is what makes "only inject memories above X" mean anything.
+4. **Injection policy** (`capabilities.memory.select_for_injection`) — an
+   absolute floor to reject "nothing is relevant", plus a relative floor to
+   suppress the weak tail behind a confident leader. Shared by production and
+   the eval harness, so the reported number describes the real system.
+
+Measured going in and coming out (20 cases + 8 negatives):
+
+| | recall@4 | MRR | false-inject |
+|---|---|---|---|
+| before (max-fusion, MiniLM, `simple` FTS) | 70% | 0.683 | — |
+| after | **100%** | **0.975** | **0%** |
+
+Four findings from that work worth not re-learning:
+
+- **`to_tsvector('simple', ...)` did no stopword removal**, so an OR-of-tokens
+  query matched every fact containing "is" or "my". The FTS arm was noise at
+  full strength; at equal RRF weight it dragged recall@4 from 100% to 85%.
+  Now `english` (stopwords + stemming).
+- **The old embedding model was a *sentence-similarity* model doing
+  *retrieval*.** Different training objective: it scored the user's email
+  address (0.61) above their employer (0.37) for "where does the user work".
+  Retrieval models also want asymmetric encoding — `embed_query` vs
+  `embed_passage` — which the old single `embed()` threw away.
+- **`VEC_MIN_SIMILARITY` is a property of the model, not a constant.** mxbai
+  scores *unrelated* text at 0.32-0.40, so the inherited 0.25 gate admitted
+  everything and was inert. At 0.50 the false-inject rate goes 12.5% -> 0%.
+  Re-derive it on every model change.
+- **Some things neither model can do.** Gibberish and a hard-but-real query
+  are indistinguishable to both the embedder (0.4029 vs 0.4034) and the
+  reranker (-10.47 vs -10.43). Precision on that boundary comes from the
+  relative floor and a real corpus, not from a cleverer threshold.
+
+### Changing the embedding model
+
+`EMBEDDING_MODEL` (default `mixedbread-ai/mxbai-embed-large-v1`, 1024-dim).
 Vectors are tagged with the model that produced them
-(`memory_entries.embedding_model`); recall's vector arm only trusts
-current-model vectors, so a model change degrades gracefully (FTS/trigram
-still match) until you run:
+(`memory_entries.embedding_model`) and recall's vector arm only trusts
+current-model vectors, so a change degrades to FTS/trigram rather than
+returning nonsense. If the DIMENSION changed, `init_schema` migrates the
+column and clears the stale vectors automatically (both `memory_entries` and
+`document_chunks`). Then:
 
     ./manage cli <persona> -- memory reembed
 
-Run that once after deploying this change — existing entries were embedded
-with the old English-only model.
+Re-run `./manage eval-recall` afterwards and re-tune `VEC_MIN_SIMILARITY` and
+the RRF weights — they are calibrated per model.
+
+### Test database
+
+Tests and evals default to a SEPARATE database (`telegram_claude_test`).
+They call `init_schema`, which applies destructive migrations, so pointing
+them at a live assistant's database lets a test run clear a real persona's
+vectors out from under a running process. Create it once:
+
+    docker exec telegram-bot-postgres \
+        psql -U tc -d postgres -c 'CREATE DATABASE telegram_claude_test OWNER tc;'
 
 ## External status dashboard (optional)
 

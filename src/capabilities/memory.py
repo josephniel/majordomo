@@ -41,7 +41,51 @@ log = logging.getLogger(__name__)
 
 # Auto-recall: inject at most this many facts, only above this match score.
 AUTO_RECALL_LIMIT = 4
-AUTO_RECALL_MIN_SCORE = 0.35
+
+# Injection thresholds, calibrated against evals/recall_cases.yaml. Both are
+# needed because neither alone is sufficient:
+#
+#   ABSOLUTE floor — rejects the "nothing here is relevant" case. Off-topic
+#   queries ("what is the capital of France") bottom out around 0.17 on the
+#   reranker's calibrated scale; the hardest REAL query in the corpus scores
+#   0.23. That leaves a narrow but real gap, so the floor sits between them
+#   and is deliberately biased toward recall: injecting a marginal fact costs
+#   a few tokens, failing to inject a relevant one makes the assistant look
+#   like it has amnesia.
+#
+#   RELATIVE floor — suppresses the weak tail behind a confident leader. When
+#   the top hit scores 0.99, the 0.25 in fourth place is noise riding along;
+#   when the top hit scores 0.30, a 0.25 sibling is genuinely comparable. An
+#   absolute threshold cannot express that, because the reranker's absolute
+#   scale shifts per query.
+AUTO_RECALL_MIN_SCORE = 0.20
+AUTO_RECALL_RELATIVE_FLOOR = 0.35
+
+
+def select_for_injection(
+    scored: list[tuple[Any, float]],
+    *,
+    min_score: float = AUTO_RECALL_MIN_SCORE,
+    relative_floor: float = AUTO_RECALL_RELATIVE_FLOOR,
+    limit: int = AUTO_RECALL_LIMIT,
+) -> list[tuple[Any, float]]:
+    """Decide which recalled entries are worth spending context on.
+
+    Pure and shared: `auto_recall` uses it in production and the recall eval
+    harness uses it to measure false-injection rate, so the number reported by
+    `./manage eval-recall` is the number the assistant actually behaves with.
+    Duplicating this policy in the harness would make the eval measure a
+    system that doesn't exist.
+
+    `scored` must be ordered best-first (recall_scored guarantees it).
+    """
+    if not scored:
+        return []
+    top = scored[0][1]
+    if top < min_score:
+        return []
+    cutoff = max(min_score, top * relative_floor)
+    return [(e, s) for e, s in scored[:limit] if s >= cutoff]
 
 # Near-duplicate threshold for save-time dedup (embedding cosine sim).
 DEDUP_SIMILARITY_THRESHOLD = 0.90
@@ -280,9 +324,7 @@ Three principles:
             log.debug("auto_recall failed", exc_info=True)
             return ""
         lines = []
-        for entry, score in scored:
-            if score < AUTO_RECALL_MIN_SCORE:
-                continue
+        for entry, _score in select_for_injection(scored):
             label = entry.scope if not entry.domain_key else f"{entry.scope}/{entry.domain_key}"
             lines.append(f"- ({label}) {entry.content}{self._staleness_suffix(entry)}")
         return "\n".join(lines)

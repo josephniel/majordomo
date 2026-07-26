@@ -16,7 +16,13 @@ from typing import Any, Optional
 
 import asyncpg
 
-from .embeddings import MODEL_NAME as _EMBED_MODEL, embed as _embed, to_pgvector as _to_pgvector
+from .embeddings import (
+    DIM as _EMBED_DIM,
+    MODEL_NAME as _EMBED_MODEL,
+    embed_passage as _embed,
+    embed_query as _embed_q,
+    to_pgvector as _to_pgvector,
+)
 
 log = logging.getLogger(__name__)
 
@@ -46,13 +52,43 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     persona_id      TEXT NOT NULL,
     chunk_index     INT NOT NULL,
     content         TEXT NOT NULL,
-    embedding       vector(384),
+    embedding       vector({{EMBED_DIM}}),
     embedding_model TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS document_chunks_doc_idx
     ON document_chunks (doc_id, chunk_index);
 CREATE INDEX IF NOT EXISTS document_chunks_trgm_idx
     ON document_chunks USING gin (content gin_trgm_ops);
+
+-- Same dimension migration as memory_entries (see schema.sql for the
+-- rationale). Chunks are re-derivable by re-uploading the document, so a
+-- cleared vector column degrades doc_search to trigram until then.
+DO $$
+DECLARE current_dim int;
+BEGIN
+    SELECT atttypmod INTO current_dim
+      FROM pg_attribute
+     WHERE attrelid = 'document_chunks'::regclass
+       AND attname = 'embedding'
+       AND NOT attisdropped;
+
+    IF current_dim IS NOT NULL AND current_dim > 0 AND current_dim <> {{EMBED_DIM}} THEN
+        RAISE NOTICE 'document_chunks.embedding: % -> {{EMBED_DIM}} dims; clearing stale vectors', current_dim;
+        DROP INDEX IF EXISTS document_chunks_embedding_hnsw_idx;
+        ALTER TABLE document_chunks
+            ALTER COLUMN embedding TYPE vector({{EMBED_DIM}}) USING NULL;
+        UPDATE document_chunks SET embedding_model = '' WHERE embedding_model <> '';
+    END IF;
+END $$;
+
+-- ANN index for doc_search's vector arm; guarded like memory_entries'.
+DO $$
+BEGIN
+    CREATE INDEX IF NOT EXISTS document_chunks_embedding_hnsw_idx
+        ON document_chunks USING hnsw (embedding vector_cosine_ops);
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'skipping HNSW index on document_chunks.embedding: %', SQLERRM;
+END $$;
 """
 
 
@@ -93,7 +129,7 @@ class DocumentStore:
             return
         self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=4)
         async with self._pool.acquire() as conn:
-            await conn.execute(_SCHEMA)
+            await conn.execute(_SCHEMA.replace("{{EMBED_DIM}}", str(_EMBED_DIM)))
 
     async def close(self) -> None:
         if self._pool is not None:
@@ -218,7 +254,8 @@ class DocumentStore:
         query = (query or "").strip()
         if not query:
             return []
-        vec_literal = await asyncio.to_thread(lambda: _to_pgvector(_embed(query)))
+        # Query side: asymmetric encoder (see storage.embeddings).
+        vec_literal = await asyncio.to_thread(lambda: _to_pgvector(_embed_q(query)))
         # Everything variable is a bound parameter — even the (currently
         # constant) embedding model name, so a future model rename can't
         # break or inject the query.

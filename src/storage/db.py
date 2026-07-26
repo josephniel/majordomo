@@ -21,21 +21,102 @@ from uuid import UUID
 
 import asyncpg
 
-from .embeddings import MODEL_NAME as _EMBED_MODEL, embed as _embed, to_pgvector as _to_pgvector
+from . import reranking as _rerank
+from .embeddings import (
+    DIM as _EMBED_DIM,
+    MODEL_NAME as _EMBED_MODEL,
+    embed_passage as _embed_passage,
+    embed_query as _embed_query,
+    to_pgvector as _to_pgvector,
+)
 
 log = logging.getLogger(__name__)
 
 
-async def _embed_pg(text: str) -> Optional[str]:
-    """Compute a pgvector literal for `text` off the event loop; None on failure."""
+async def _embed_pg(text: str, *, is_query: bool = False) -> Optional[str]:
+    """Compute a pgvector literal for `text` off the event loop; None on failure.
+
+    `is_query` picks the query-side encoder. Retrieval is asymmetric — a short
+    question and the long fact that answers it are encoded differently — so
+    the search path must pass is_query=True. Getting this wrong doesn't raise;
+    it just quietly costs recall.
+    """
     try:
-        vec = await asyncio.to_thread(_embed, text)
+        fn = _embed_query if is_query else _embed_passage
+        vec = await asyncio.to_thread(fn, text)
         return _to_pgvector(vec)
     except Exception:
         log.debug("embedding failed; continuing without a vector", exc_info=True)
         return None
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+
+# ---- hybrid-recall fusion constants ----
+#
+# Reciprocal Rank Fusion. Each retrieval arm (FTS, trigram, vector) ranks the
+# candidates independently; a row's score is the sum of 1/(K + rank) over the
+# arms that found it.
+#
+# Why RRF and not "take the best of the three scores": ts_rank, trigram
+# similarity, and cosine similarity are not on a common scale — ts_rank is
+# typically 0.05-0.3 while cosine runs 0.3-0.9 — so a max() over them is
+# really just "whatever the vector arm said", and any threshold tuned against
+# it means something different depending on which arm won. RRF discards the
+# magnitudes and keeps only the ordering, which is the part that's comparable.
+RRF_K = 60                  # standard damping constant; larger = flatter
+RRF_CANDIDATES = 50         # per-arm candidate depth before fusion
+
+# Per-arm weights, tuned by sweeping `./manage eval-recall`.
+#
+# The vector arm leads because it is the only one that handles paraphrase,
+# which is most of what a person actually asks. The keyword arms are kept at
+# real (not token) weight because they rescue exactly the queries embeddings
+# are worst at: bare identifiers and slugs ("BPI", "PHP") where there is no
+# sentence to encode.
+#
+# History worth keeping: at equal weights this fusion scored 85% recall@4
+# against 100% for the vector arm ALONE — the keyword arms were pure noise.
+# The cause was the FTS config, not the arms: 'simple' does no stopword
+# removal, so "what is my current job title" OR-matched every fact containing
+# "is" or "my". Switching content_tsv to 'english' (see schema.sql) restored
+# the arm, and these weights then score 100% / 0.975 — the same as vector
+# alone, but with the identifier queries also covered.
+#
+# Re-tune after any embedding-model change; the balance is a property of the
+# model, not of the corpus.
+RRF_WEIGHT_VEC = 1.0
+RRF_WEIGHT_FTS = 0.35
+RRF_WEIGHT_TRG = 0.25
+
+# Minimum cosine for a row to enter the VECTOR arm's candidate pool.
+#
+# THIS NUMBER IS A PROPERTY OF THE EMBEDDING MODEL, not a universal constant —
+# re-derive it whenever EMBEDDING_MODEL changes. Models differ enormously in
+# where "unrelated" sits: mxbai-embed-large-v1 scores completely unrelated
+# text around 0.32-0.40, so the previous 0.25 admitted literally everything
+# and the gate was inert. Measure the floor before setting it:
+#
+#     cos("zzz qqq xyzzy nonsense", "The user works at Acme")  = 0.40
+#     cos("what is the capital of France", ...)                = 0.33
+#     cos("where does the user work", ...)                     = 0.72
+#
+# Swept against evals/recall_cases.yaml, recall@4 stays at 100% across
+# 0.25-0.55 while the false-inject rate goes 12.5% -> 0% at 0.40 and MRR
+# improves to 0.975 at 0.50. Chosen mid-band rather than at the edge of the
+# good region so it isn't balanced on a knife-edge.
+#
+# What it does NOT do is separate hard-but-real queries from gibberish — those
+# are genuinely indistinguishable to both the embedder (0.4029 vs 0.4034) and
+# the reranker (-10.47 vs -10.43). Precision on that boundary comes from
+# having a real corpus and a relative floor, not from this gate.
+VEC_MIN_SIMILARITY = 0.50
+
+# Additive tie-breaker, ~60-day half-life. Small on purpose: recency should
+# separate two near-equal facts, never outrank real evidence. Under max()
+# fusion this was 0.08 against scores that clustered near 0.2 — a third of the
+# signal. Against a normalized RRF score it needs to be much smaller.
+RECENCY_BOOST_MAX = 0.03
+RECENCY_HALFLIFE_DAYS = 60.0
 
 
 @dataclass
@@ -117,7 +198,13 @@ class MemoryDatabase:
             self._pool = None
 
     async def init_schema(self) -> None:
-        sql = _SCHEMA_PATH.read_text(encoding="utf-8")
+        """Apply the idempotent schema, templated with the current embedding
+        width. `{{EMBED_DIM}}` is substituted rather than hardcoded so that
+        changing EMBEDDING_MODEL migrates the column instead of failing every
+        insert with a dimension mismatch."""
+        sql = _SCHEMA_PATH.read_text(encoding="utf-8").replace(
+            "{{EMBED_DIM}}", str(_EMBED_DIM)
+        )
         async with self._acquire() as conn:
             await conn.execute(sql)
 
@@ -425,73 +512,168 @@ class MemoryDatabase:
         domain_key: Optional[str] = None,
         limit: int = 8,
     ) -> list[tuple[MemoryEntry, float]]:
-        """Hybrid search over active entries — three signals, max-combined:
-          ts_rank    — FTS relevance over title+content (keyword).
-          similarity — trigram similarity (short queries / typos).
-          vec_score  — local-embedding cosine similarity (semantic / paraphrase).
-        Vector signal is included only when the query embeds successfully AND
-        the stored vector came from the current embedding model (stale rows
-        from an older model still match via FTS/trigram).
+        """Hybrid search over active entries, fused with Reciprocal Rank Fusion.
 
-        Ranking gets a small recency boost (up to +0.08, ~60-day half-life)
-        so a fresh fact outranks a stale near-equal one.
+        Three arms rank the candidate pool independently:
+          fts    — FTS relevance over title+content (keyword).
+          trg    — trigram similarity (short identifiers, slugs, typos).
+          vec    — local-embedding cosine (semantic / paraphrase).
 
-        FTS matching is OR-of-tokens, not plainto_tsquery's AND-of-tokens —
-        a natural-language query ("where does the user work") must not
-        require every filler word to appear in the fact.
+        Each arm contributes 1/(RRF_K + rank) for the rows it found; the sum
+        is normalized by the maximum an arm-complete rank-1 hit could score,
+        so `match_score` is 0..1 and comparable ACROSS queries. A row ranked
+        first by all three arms scores ~1.0; one found only by the vector arm
+        tops out near 0.33. That is the intended signal — agreement between
+        independent retrieval strategies is evidence, and callers that
+        auto-inject memories threshold on it.
 
-        Returns (entry, score) pairs — callers that inject memories
-        automatically use the score to filter noise.
+        The vector arm is active only when the query embeds successfully AND
+        the stored vector came from the current embedding model (rows from an
+        older model still match via FTS/trigram until re-embedded).
+
+        FTS matching is OR-of-tokens, not plainto_tsquery's AND-of-tokens — a
+        natural-language query ("where does the user work") must not require
+        every filler word to appear in the fact.
+
+        Returns (entry, score) pairs, best first.
         """
-        qpg = await _embed_pg(query)
+        qpg = await _embed_pg(query, is_query=True)
         # OR-semantics token query; tokens are \w+ so to_tsquery is safe.
         tokens = re.findall(r"\w+", query, flags=re.UNICODE)[:12]
         or_query = " | ".join(tokens) if tokens else ""
+
         params: list[Any] = [persona_id, query, or_query]
+
+        # Compartment filters apply to the shared candidate base, so every arm
+        # ranks the same population.
+        base_filters = ""
+        if scope is not None:
+            params.append(scope)
+            base_filters += f"\n  AND scope = ${len(params)}"
+        if domain_key is not None:
+            params.append(domain_key)
+            base_filters += f"\n  AND domain_key = ${len(params)}"
+
         vec_idx: Optional[int] = None
         if qpg:
             params.append(qpg)
-            vec_idx = len(params)  # $4
-        vec_guard = (
-            f"(m.embedding IS NOT NULL AND m.embedding_model = '{_EMBED_MODEL}')"
+            vec_idx = len(params)
+
+        # Which arms can fire at all. Fixed up front (not "which arms returned
+        # rows") so the normalizer is deterministic and scores stay comparable
+        # between queries run under the same configuration.
+        fts_on = bool(or_query)
+        trg_on = True
+        vec_on = vec_idx is not None
+        active_weight = (
+            (RRF_WEIGHT_FTS if fts_on else 0.0)
+            + (RRF_WEIGHT_TRG if trg_on else 0.0)
+            + (RRF_WEIGHT_VEC if vec_on else 0.0)
         )
-        vec_expr = (
-            f"(CASE WHEN {vec_guard} THEN (1 - (m.embedding <=> ${vec_idx}::vector)) ELSE 0.0 END)"
-            if vec_idx else "0.0"
+        max_rrf = (active_weight or 1.0) * (1.0 / (RRF_K + 1))
+
+        def _arm(name: str, order_by: str, where: str, enabled: bool) -> str:
+            """One ranked candidate arm. Disabled arms still exist as empty
+            relations so the fusion join below stays a single static shape."""
+            if not enabled:
+                return (
+                    f"{name} AS (SELECT NULL::uuid AS id, NULL::bigint AS rnk "
+                    f"WHERE false)"
+                )
+            # ROW_NUMBER then filter: a bare LIMIT would truncate before the
+            # window function has ordered anything.
+            return (
+                f"{name} AS ("
+                f"SELECT id, rnk FROM ("
+                f"SELECT id, ROW_NUMBER() OVER (ORDER BY {order_by}, id) AS rnk "
+                f"FROM base WHERE {where}"
+                f") x WHERE rnk <= {RRF_CANDIDATES})"
+            )
+
+        vec_sim = f"(1 - (embedding <=> ${vec_idx}::vector))" if vec_on else "0"
+        arms = [
+            _arm(
+                "fts",
+                "ts_rank(content_tsv, to_tsquery('english', $3)) DESC",
+                "content_tsv @@ to_tsquery('english', $3)",
+                fts_on,
+            ),
+            _arm("trg", "similarity(content, $2) DESC", "content % $2", trg_on),
+            _arm(
+                "vec",
+                f"{vec_sim} DESC",
+                f"embedding IS NOT NULL AND embedding_model = '{_EMBED_MODEL}' "
+                f"AND {vec_sim} > {VEC_MIN_SIMILARITY}",
+                vec_on,
+            ),
+        ]
+
+        recency = (
+            f"{RECENCY_BOOST_MAX} * EXP(-EXTRACT(EPOCH FROM (NOW() - m.created_at))"
+            f" / ({RECENCY_HALFLIFE_DAYS} * 86400.0))"
         )
-        recency_boost = (
-            "0.08 * EXP(-EXTRACT(EPOCH FROM (NOW() - m.created_at)) / (60.0 * 86400.0))"
-        )
-        base_score = (
-            "GREATEST("
-            "ts_rank(content_tsv, to_tsquery('simple', $3)), "
-            f"similarity(content, $2), {vec_expr})"
+        rrf = (
+            f"(COALESCE({RRF_WEIGHT_FTS} / ({RRF_K} + fts.rnk), 0)"
+            f" + COALESCE({RRF_WEIGHT_TRG} / ({RRF_K} + trg.rnk), 0)"
+            f" + COALESCE({RRF_WEIGHT_VEC} / ({RRF_K} + vec.rnk), 0)) / {max_rrf}"
         )
 
-        sql = [
-            "SELECT m.*,",
-            f"  ({base_score} + {recency_boost}) AS match_score",
-            "FROM memory_entries m",
-            "WHERE persona_id = $1 AND superseded_by IS NULL",
-            "  AND (",
-            "    ($3 <> '' AND content_tsv @@ to_tsquery('simple', $3))",
-            "    OR content % $2",
-        ]
-        if vec_idx:
-            sql.append(f"    OR {vec_expr} > 0.45")
-        sql.append("  )")
-        if scope is not None:
-            sql.append(f"AND scope = ${len(params) + 1}")
-            params.append(scope)
-        if domain_key is not None:
-            sql.append(f"AND domain_key = ${len(params) + 1}")
-            params.append(domain_key)
-        sql.append("ORDER BY match_score DESC")
-        sql.append(f"LIMIT ${len(params) + 1}")
-        params.append(limit)
+        # Pull a deeper slice than the caller asked for when a reranker will
+        # re-sort it — fusion only has to get the right answer into the pool,
+        # the cross-encoder decides the final order.
+        fetch_n = max(limit, _rerank.CANDIDATES) if _rerank.available() else limit
+        params.append(fetch_n)
+        sql = f"""
+WITH base AS (
+    SELECT * FROM memory_entries
+    WHERE persona_id = $1 AND superseded_by IS NULL{base_filters}
+),
+{arms[0]},
+{arms[1]},
+{arms[2]},
+ids AS (
+    SELECT id FROM fts UNION SELECT id FROM trg UNION SELECT id FROM vec
+)
+SELECT m.*, LEAST(1.0, {rrf} + {recency}) AS match_score
+FROM ids
+JOIN base m USING (id)
+LEFT JOIN fts ON fts.id = ids.id
+LEFT JOIN trg ON trg.id = ids.id
+LEFT JOIN vec ON vec.id = ids.id
+ORDER BY match_score DESC, m.created_at DESC
+LIMIT ${len(params)}
+"""
         async with self._acquire() as conn:
-            rows = await conn.fetch("\n".join(sql), *params)
-        return [(MemoryEntry.from_row(r), float(r["match_score"] or 0)) for r in rows]
+            rows = await conn.fetch(sql, *params)
+
+        scored = [(MemoryEntry.from_row(r), float(r["match_score"] or 0)) for r in rows]
+        return await self._rerank_scored(query, scored, limit)
+
+    async def _rerank_scored(
+        self,
+        query: str,
+        scored: list[tuple[MemoryEntry, float]],
+        limit: int,
+    ) -> list[tuple[MemoryEntry, float]]:
+        """Re-score fused candidates with the cross-encoder and truncate.
+
+        The returned score becomes the RERANKER's calibrated 0..1 relevance,
+        replacing the RRF score rather than blending with it — blending would
+        reintroduce the compressed range that makes RRF scores unthresholdable
+        (see storage.reranking). If reranking is off or fails, RRF scores pass
+        through untouched and ordering is unchanged.
+        """
+        if not scored:
+            return scored
+        texts = [
+            (f"{e.title}\n{e.content}" if e.title else e.content) for e, _ in scored
+        ]
+        rescored = await asyncio.to_thread(_rerank.rerank, query, texts)
+        if rescored is None:
+            return scored[:limit]
+        pairs = [(entry, score) for (entry, _), score in zip(scored, rescored)]
+        pairs.sort(key=lambda p: p[1], reverse=True)
+        return pairs[:limit]
 
     async def backfill_embeddings(self, force: bool = False) -> int:
         """Compute + store embeddings for entries missing them (or, with

@@ -92,6 +92,8 @@ manage — majordomo stack
     cli [persona] -- <args...>       raw passthrough to python cli.py
     test [pytest-args...]            run the test suite (unit + integration)
     eval [--vendor groq,gemini]      replay tool-calling evals against live vendors
+    eval-recall [-v] [--min-recall]  measure memory recall quality (recall@k, MRR,
+                                     false-inject rate) against the test Postgres
     help                             this message
 
   Examples:
@@ -283,6 +285,7 @@ main() {
         cli)                cmd_cli "$@" ;;
         test)               require_venv; exec "$VENV_PY" -m pytest tests "$@" ;;
         eval)               require_venv; exec "$VENV_PY" -m evals "$@" ;;
+        eval-recall)        require_venv; exec "$VENV_PY" -m evals.recall "$@" ;;
         *)
             echo "unknown command: $cmd" >&2
             echo "" >&2

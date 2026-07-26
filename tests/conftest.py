@@ -18,9 +18,16 @@ from agents.history import ConversationHistory
 from connectors.base import Summarizer
 from storage.db import MemoryDatabase
 
+# A SEPARATE database from the one a running assistant uses. Tests call
+# init_schema(), which applies migrations — including destructive ones like
+# the embedding-dimension rebuild — so pointing them at the live database
+# means a test run can clear a real persona's vectors out from under a live
+# process. Create it once with:
+#     docker exec telegram-bot-postgres \
+#         psql -U tc -d postgres -c 'CREATE DATABASE telegram_claude_test OWNER tc;'
 TEST_DSN = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgres://tc:tc_local_dev@127.0.0.1:5433/telegram_claude",
+    "postgres://tc:tc_local_dev@127.0.0.1:5433/telegram_claude_test",
 )
 
 CHAT_ID = 424242

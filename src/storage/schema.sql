@@ -22,9 +22,10 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     title         TEXT NOT NULL DEFAULT '',
     content       TEXT NOT NULL,
     metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
-    -- Pre-allocated for future embedding rollout. Nullable; FTS works
-    -- without it.
-    embedding     vector(384),
+    -- Nullable; FTS/trigram recall works without it. The width is templated
+    -- from storage.embeddings.DIM at init_schema time — never edit the number
+    -- here, change EMBEDDING_MODEL instead (the migration below handles it).
+    embedding     vector({{EMBED_DIM}}),
     -- Which local model produced `embedding`. Vector recall only trusts
     -- rows embedded by the CURRENT model (see storage/embeddings.py);
     -- stale rows still match via FTS/trigram until re-embedded.
@@ -41,12 +42,48 @@ ALTER TABLE memory_entries
     ADD COLUMN IF NOT EXISTS embedding_model TEXT NOT NULL DEFAULT '';
 
 -- Generated FTS column over title+content. Indexed below.
+--
+-- 'english', not 'simple'. The 'simple' config does no stopword removal and
+-- no stemming, so a natural-language query became an OR over every word in
+-- it — "what is my current job title" matched any fact containing "is" or
+-- "my", which is to say all of them. The FTS arm was contributing noise at
+-- full strength: at equal RRF weight it dragged recall@4 from 100% to 85%.
+-- 'english' drops stopwords and stems ('title' -> 'titl'), which is what
+-- makes the arm selective enough to be worth fusing.
+--
+-- The multilingual justification for 'simple' lapsed when the assistant went
+-- English-only. If that reverses, 'simple' plus an explicit stopword list in
+-- db.recall_scored is the way back.
 ALTER TABLE memory_entries
     ADD COLUMN IF NOT EXISTS content_tsv tsvector
     GENERATED ALWAYS AS (
-        setweight(to_tsvector('simple', coalesce(title, '')), 'A') ||
-        setweight(to_tsvector('simple', coalesce(content, '')), 'B')
+        setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+        setweight(to_tsvector('english', coalesce(content, '')), 'B')
     ) STORED;
+
+-- Migrate deployments whose content_tsv was generated with 'simple'. A
+-- generated column's expression can't be altered in place, so drop and
+-- re-add; the GIN index below is recreated on the next statement.
+DO $$
+DECLARE gen_expr text;
+BEGIN
+    SELECT pg_get_expr(d.adbin, d.adrelid) INTO gen_expr
+      FROM pg_attrdef d
+      JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+     WHERE d.adrelid = 'memory_entries'::regclass
+       AND a.attname = 'content_tsv';
+
+    IF gen_expr IS NOT NULL AND gen_expr NOT LIKE '%english%' THEN
+        RAISE NOTICE 'rebuilding memory_entries.content_tsv with the english FTS config';
+        ALTER TABLE memory_entries DROP COLUMN content_tsv;
+        ALTER TABLE memory_entries
+            ADD COLUMN content_tsv tsvector
+            GENERATED ALWAYS AS (
+                setweight(to_tsvector('english', coalesce(title, '')), 'A') ||
+                setweight(to_tsvector('english', coalesce(content, '')), 'B')
+            ) STORED;
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS memory_entries_active_idx
     ON memory_entries (persona_id, scope, domain_key)
@@ -120,3 +157,52 @@ ALTER TABLE memory_entries
     ADD COLUMN IF NOT EXISTS volatile BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE memory_entries
     ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+
+-- Embedding-dimension migration. A new EMBEDDING_MODEL with a different
+-- width makes every stored vector both wrong and un-insertable, so widen the
+-- column and clear it. Clearing is safe by design: recall's vector arm only
+-- trusts rows whose embedding_model matches the current one, so until
+-- `memory reembed` runs, recall degrades to FTS + trigram rather than
+-- returning nonsense. Resetting embedding_model is what makes backfill_
+-- embeddings(force=False) pick these rows up.
+--
+-- pgvector stores the declared dimension directly in atttypmod (unlike
+-- varchar, there is no +4 header), so the comparison below is exact.
+DO $$
+DECLARE current_dim int;
+BEGIN
+    SELECT atttypmod INTO current_dim
+      FROM pg_attribute
+     WHERE attrelid = 'memory_entries'::regclass
+       AND attname = 'embedding'
+       AND NOT attisdropped;
+
+    IF current_dim IS NOT NULL AND current_dim > 0 AND current_dim <> {{EMBED_DIM}} THEN
+        RAISE NOTICE 'memory_entries.embedding: % -> {{EMBED_DIM}} dims; clearing stale vectors (run `memory reembed`)', current_dim;
+        DROP INDEX IF EXISTS memory_entries_embedding_hnsw_idx;
+        ALTER TABLE memory_entries
+            ALTER COLUMN embedding TYPE vector({{EMBED_DIM}}) USING NULL;
+        UPDATE memory_entries SET embedding_model = '' WHERE embedding_model <> '';
+    END IF;
+END $$;
+
+-- ANN index for the vector arm of recall. Without it every semantic query is
+-- a sequential scan computing a cosine per row — invisible at a few hundred
+-- entries, quadratically annoying at fifty thousand.
+--
+-- Partial on `superseded_by IS NULL` to match recall's predicate exactly (a
+-- partial index is only usable when the query repeats the predicate, and
+-- every recall path does). vector_cosine_ops matches the `<=>` operator used
+-- in db.recall_scored and db.find_similar.
+--
+-- Guarded: HNSW needs pgvector >= 0.5.0. On an older extension the CREATE
+-- fails and we degrade to the sequential scan rather than breaking startup —
+-- init_schema runs this file on every boot, so it must never be fatal.
+DO $$
+BEGIN
+    CREATE INDEX IF NOT EXISTS memory_entries_embedding_hnsw_idx
+        ON memory_entries USING hnsw (embedding vector_cosine_ops)
+        WHERE superseded_by IS NULL;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'skipping HNSW index on memory_entries.embedding: %', SQLERRM;
+END $$;

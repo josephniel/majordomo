@@ -1,0 +1,223 @@
+# Recall-quality eval corpus.
+#
+# Purpose: make retrieval changes MEASURABLE. Every tuning decision in the
+# memory layer (fusion strategy, embedding model, reranking, score
+# thresholds) is unjustifiable without this file and provable with it.
+#
+# Structure:
+#   facts   — the seeded corpus. `key` is a stable handle; the harness maps
+#             key -> uuid after insert so cases can name expected results
+#             without hardcoding ids.
+#   cases   — a query plus the fact keys that SHOULD surface, most relevant
+#             first. `expect` is the relevance set for recall@k; the FIRST
+#             entry is what MRR is measured against.
+#
+# The corpus is deliberately adversarial. It contains three families of
+# distractor that each defeat exactly one retrieval arm:
+#   * paraphrase queries with zero lexical overlap  -> defeat FTS/trigram
+#   * short identifiers and slugs ("BPI")           -> defeat FTS (tokenizes
+#                                                      away) and embeddings
+#                                                      (no context)
+#   * lexically-adjacent wrong answers              -> defeat naive vector
+#     ("previous job" vs current employer)             similarity
+# A fusion strategy that scores well here is genuinely hybrid rather than
+# one arm wearing three hats.
+#
+# Content is synthetic. Do NOT paste real operator memories in here — this
+# file is public.
+
+facts:
+  # ---- user scope ----
+  - key: work-employer
+    scope: user
+    content: The user works at BillEase as a senior data engineer.
+  - key: old-employer
+    scope: user
+    content: Before BillEase the user worked at Acme as a data analyst until 2023.
+  - key: commute
+    scope: user
+    content: The user goes in to the BGC office on Tuesdays and Thursdays only.
+  - key: reply-style
+    scope: user
+    content: The user prefers short, direct replies with no preamble.
+  - key: reply-format
+    scope: user
+    content: The user dislikes bullet-point lists in casual conversation.
+  - key: coffee
+    scope: user
+    content: The user drinks coffee only before noon.
+  - key: gym
+    scope: user
+    content: The user trains at Anytime Fitness on Monday, Wednesday and Friday evenings.
+  - key: gym-distractor
+    scope: user
+    content: Mara trains at a different gym near her office and goes on weekends.
+  - key: allergy
+    scope: user
+    content: The user is allergic to shellfish.
+  - key: allergy-distractor
+    scope: user
+    content: The user's favourite restaurant is Blue Crab, a seafood place in Poblacion.
+  - key: partner
+    scope: user
+    content: The user's partner is named Mara.
+  - key: partner-bday
+    scope: user
+    content: Mara's birthday is on 14 November.
+  - key: kid
+    scope: user
+    content: The user has a daughter named Ellie, born in 2021.
+  - key: tz
+    scope: user
+    content: The user lives in Manila and keeps Asia/Manila wall-clock time.
+  - key: flight-pref
+    scope: user
+    content: The user prefers aisle seats on flights longer than three hours.
+  - key: no-calls
+    scope: user
+    content: The user does not take phone calls before 9am.
+
+  # ---- domain scope ----
+  - key: work-email
+    scope: domain
+    domain_key: gmail
+    content: The user's work address is joseph@billease.example.
+  - key: personal-email
+    scope: domain
+    domain_key: gmail
+    content: The user's personal address is jn.tuazon@example.com.
+  - key: newsletter-rule
+    scope: domain
+    domain_key: gmail
+    content: Substack newsletters should never be treated as urgent mail.
+  - key: standup
+    scope: domain
+    domain_key: google_calendar
+    content: The daily standup is at 9:30am and the user considers it skippable.
+  - key: one-on-one
+    scope: domain
+    domain_key: google_calendar
+    content: A recurring 1:1 with manager Rina runs every other Wednesday at 2pm.
+  - key: deep-work
+    scope: domain
+    domain_key: google_calendar
+    content: Friday afternoons are blocked for deep work; the user declines meetings then.
+  - key: clickup-space
+    scope: domain
+    domain_key: clickup
+    content: The user's main ClickUp space is called Platform Engineering.
+  - key: sprint-cadence
+    scope: domain
+    domain_key: clickup
+    content: Sprints run two weeks and always start on a Monday.
+  - key: splitwise-group
+    scope: domain
+    domain_key: splitwise
+    content: Household expenses are split with Mara in a Splitwise group named Home.
+  - key: rent-split
+    scope: domain
+    domain_key: splitwise
+    content: Rent is divided 60/40 between the user and Mara.
+  - key: budget-currency
+    scope: domain
+    domain_key: budget
+    content: The budget ledger is denominated in PHP.
+  - key: card-maya
+    scope: domain
+    domain_key: budget
+    content: The Maya credit card is the one used for online subscriptions and streaming.
+  - key: card-bpi
+    scope: domain
+    domain_key: budget
+    content: The BPI debit card is used for groceries and utility bills.
+
+  # ---- agent scope ----
+  - key: agent-name
+    scope: agent
+    content: The assistant is named majordomo and refers to itself that way.
+  - key: agent-lang
+    scope: agent
+    content: The assistant replies in English only and never switches to Taglish.
+  - key: agent-silent
+    scope: agent
+    content: During heartbeats the assistant stays silent unless something needs action.
+
+  # ---- reference scope ----
+  - key: status-board
+    scope: reference
+    content: The cross-project status dashboard is at https://status.example.com
+  - key: repo
+    scope: reference
+    content: The majordomo repository is at https://github.com/example/majordomo
+  - key: runbook
+    scope: reference
+    content: The deploy runbook is at https://github.com/example/majordomo/blob/main/docs/DEPLOY.md
+
+cases:
+  # --- pure paraphrase: no lexical overlap with the target fact ---
+  - query: where does the user work
+    expect: [work-employer]
+  - query: what is my current job title
+    expect: [work-employer]
+  - query: workout schedule
+    expect: [gym]
+  - query: do I have any food allergies
+    expect: [allergy]
+  - query: which days am I in the office
+    expect: [commute]
+  - query: how should you talk to me
+    expect: [reply-style, reply-format]
+  - query: what timezone am I in
+    expect: [tz]
+
+  # --- semantic hop: query term never appears in the fact ---
+  - query: which card should I use for my Netflix subscription
+    expect: [card-maya]
+  - query: can you ring me at 7am
+    expect: [no-calls]
+  - query: am I free on Friday afternoon
+    expect: [deep-work]
+
+  # --- short identifiers / slugs: FTS tokenizes these away ---
+  - query: BPI
+    expect: [card-bpi]
+  - query: ClickUp space
+    expect: [clickup-space]
+  - query: PHP
+    expect: [budget-currency]
+
+  # --- lexically-adjacent distractor must NOT win ---
+  - query: what was my previous job
+    expect: [old-employer]
+  - query: where does Mara work out
+    expect: [gym-distractor]
+
+  # --- straightforward keyword recall (regression guard) ---
+  - query: Mara birthday
+    expect: [partner-bday]
+  - query: work email address
+    expect: [work-email]
+  - query: sprint length
+    expect: [sprint-cadence]
+  - query: status dashboard url
+    expect: [status-board]
+  - query: what language do you reply in
+    expect: [agent-lang]
+
+# Queries with NO relevant fact in the corpus. Auto-recall must inject
+# nothing for these — a memory system that answers every question with
+# something is just a random-fact generator, and the wasted context is paid
+# on every single turn.
+#
+# These exist because recall@k is blind to them: a harness that only measures
+# "did the right fact surface" scores a system that returns all 36 facts for
+# every query at 100%. Precision is the other half.
+negatives:
+  - what is the capital of France
+  - explain quantum tunneling to me
+  - write me a haiku about rain
+  - how do I fix a flat tyre
+  - what is the weather tomorrow
+  - summarise today's news
+  - convert 50 kilometres to miles
+  - who won the 1998 world cup

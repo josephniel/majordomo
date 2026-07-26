@@ -31,9 +31,14 @@ runtime.
   Approve/Deny keyboard in Telegram; 120s timeout = deny; every decision
   lands in a durable audit table.
 - **Memory** — a two-tier Postgres second brain (atomic facts + curated
-  narratives) with hybrid FTS/trigram/vector recall (local multilingual
-  embeddings), idle-time reflection that extracts facts from conversation,
-  and auto-RAG injection per turn.
+  narratives) with hybrid recall: FTS + trigram + pgvector arms fused by
+  weighted Reciprocal Rank Fusion, then reranked by a local cross-encoder for
+  a calibrated relevance score. Plus idle-time reflection that extracts facts
+  from conversation, and auto-RAG injection per turn. Retrieval quality is
+  measured, not asserted — `./manage eval-recall` reports recall@k, MRR, and
+  false-injection rate, and CI holds the floor (currently 100% recall@4,
+  0.975 MRR, 0% false-inject). All embedding and reranking runs locally; no
+  vector ever leaves the host.
 - **Documents** — text/PDF attachments are auto-ingested into a pgvector
   chunk store; `doc_search` / `doc_read` give the model RAG over your files.
 - **Skills** — markdown instruction notes (keyword-attached, always-on, or
