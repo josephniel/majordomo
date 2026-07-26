@@ -15,7 +15,7 @@ cached_property gives per-container singletons without a separate cache.
 """
 from __future__ import annotations
 
-from ports import ConversationRef
+from ports import ConversationRef, ModelRole
 
 import logging
 import os
@@ -65,6 +65,7 @@ from domain import (
 from adapters.chat import get_platform_cls, registered_platform_names, ChatPlatform, PlatformConfig
 
 from .persona import Persona
+from .model_roles import RoleChain, resolve_roles
 from .providers import CONNECTOR_NAMES, FACULTY_NAMES, PROVIDERS_BY_NAME
 from .settings import RuntimeSettings
 from .vendors import VENDORS, VENDORS_BY_NAME
@@ -144,27 +145,29 @@ class PersonaRuntime:
         subscription-limit usage down. Override via COMPACTION_MODEL /
         COMPACTION_DEEP_MODEL if ever needed.
         """
-        # Background vendor is decoupled from the chat primary via
-        # COMPACTION_LLM (falls back to PRIMARY_LLM). This lets a
-        # gemini-primary bot keep its scarce free Gemini quota for CHAT while
-        # running frequent background tasks on cheap Claude Haiku instead
-        # (COMPACTION_LLM=claude).
+        # Routed by the SUMMARIZE role: one resolution path, so a
+        # gemini-primary bot summarizes with gemini and a claude-primary one
+        # uses subscription auth, without either being special-cased here.
         s = self.settings
-        compaction_llm = s.compaction_llm or s.primary_llm
-        spec = VENDORS_BY_NAME.get(compaction_llm)
-        if spec is not None and spec.backend is not None:
+        role = self.model_roles[ModelRole.SUMMARIZE]
+        for name in role.chain:
+            spec = VENDORS_BY_NAME.get(name)
+            if spec is None or not spec.enabled(s):
+                continue
+            if spec.backend is None:
+                break  # claude leads: fall through to subscription auth below
             return ChatCompletionsSummarizer.for_backend(
-                spec.backend, model=spec.model(s), api_key=spec.api_key(s),
-                base_url=spec.base_url(s), extra=spec.extra(s),
+                spec.backend, model=role.model or spec.model(s),
+                api_key=spec.api_key(s), base_url=spec.base_url(s),
+                extra=spec.extra(s),
             )
 
         # Claude path: Haiku routine, Sonnet deep — NOT the persona chat model
-        # (that would put background on Sonnet too).
+        # (that would put frequent background work on Sonnet too).
         return SubscriptionAuthSummarizer(
-            primary_model=self.settings.compaction_model,
+            primary_model=role.model or self.settings.compaction_model,
             deep_model=self.settings.compaction_deep_model,
         )
-
 
     @cached_property
     def status_reporter(self):
@@ -417,6 +420,7 @@ class PersonaRuntime:
         session_id: Optional[str] = None,
         history: Optional[ConversationHistory] = None,
         persona_override: Optional[Persona] = None,
+        role: ModelRole = ModelRole.CHAT,
     ) -> Agent:
         """Build the per-chat fallback chain — LLM-agnostic, no privileged vendor.
 
@@ -489,6 +493,11 @@ class PersonaRuntime:
             )
 
         s = self.settings
+        # The role decides the chain and any model override. One resolution
+        # path for every vendor — the previous code applied a background model
+        # only on the Claude branch, so "cheap heartbeats" quietly did nothing
+        # on every other vendor.
+        role_chain = self.model_roles[role]
         primary = s.primary_llm
 
         # Every usable backend, keyed by name — driven by the vendor
@@ -500,12 +509,18 @@ class PersonaRuntime:
             if v.backend is None:
                 # Natively-integrated vendor (claude): SDK adapter with
                 # session resume; keyless under subscription auth.
+                builder = (
+                    claude_builder if role_chain.model is None
+                    else self._options_builder_for(
+                        persona, context_builder, role_chain.model
+                    )
+                )
                 available[v.name] = AnthropicAgent(
-                    claude_builder, session_id=session_id, chat_id=chat_id,
+                    builder, session_id=session_id, chat_id=chat_id,
                 )
             else:
                 available[v.name] = _oai(
-                    v.backend, model=v.model(s), api_key=v.api_key(s),
+                    v.backend, model=role_chain.model or v.model(s), api_key=v.api_key(s),
                     base_url=v.base_url(s), extra_completion_kwargs=v.extra(s),
                     supports_vision=v.supports_vision(s),
                 )
@@ -522,8 +537,8 @@ class PersonaRuntime:
         # below can't express e.g. claude-before-groq). Unknown/unavailable
         # names are dropped; any configured-but-unlisted vendors are appended
         # so they're never silently lost.
-        if s.llm_chain:
-            order = [n for n in s.llm_chain if n in available]
+        if role_chain.chain:
+            order = [n for n in role_chain.chain if n in available]
             order += [n for n in available if n not in order]  # append leftovers
             if not order:
                 order = list(available)
@@ -543,8 +558,9 @@ class PersonaRuntime:
 
         chain: list[tuple[str, Agent]] = [(n, available[n]) for n in order if n in available]
         log.info(
-            "persona %r: agent chain = %s (primary=%s)",
-            self.persona.id, [n for n, _ in chain], primary,
+            "persona %r: %s chain = %s (primary=%s, model=%s)",
+            self.persona.id, role.value, [n for n, _ in chain], primary,
+            role_chain.model or "per-vendor default",
         )
 
         memory_recaller = self.context_injector
@@ -560,6 +576,25 @@ class PersonaRuntime:
             # Same clock the scheduler runs on, so "in 20 minutes" and the
             # reminder it creates agree (the host clock is NOT the user's tz).
             timezone_name=self.settings.schedule_timezone,
+        )
+
+    @cached_property
+    def model_roles(self) -> dict[ModelRole, RoleChain]:
+        """Every role's resolved vendor chain. See runtime/model_roles.py."""
+        return resolve_roles(self.settings)
+
+    def _options_builder_for(
+        self, persona: Persona, context_builder: ContextBuilder, model: Optional[str]
+    ) -> AnthropicOptionsBuilder:
+        return AnthropicOptionsBuilder(
+            context_builder=context_builder,
+            config=self.config,
+            connectors=self.gated_services,
+            persona=persona,
+            model=model,
+            max_turns=self.settings.claude_max_turns,
+            max_output_tokens=self.settings.claude_max_output_tokens,
+            default_model=self.settings.claude_model,
         )
 
     @cached_property
@@ -606,56 +641,35 @@ class PersonaRuntime:
             platform_context=self.platform.system_prompt_section(),
         )
 
-    def _background_options_builder(
-        self, model: Optional[str] = None
-    ) -> AnthropicOptionsBuilder:
-        return AnthropicOptionsBuilder(
-            context_builder=self.background_context_builder,
-            config=self.config,
-            connectors=self.gated_services,
-            persona=self.background_persona,
-            model=model,
-            max_turns=self.settings.claude_max_turns,
-            max_output_tokens=self.settings.claude_max_output_tokens,
-            default_model=self.settings.claude_model,
-        )
-
     def _background_agent_factory(
-        self, chat_id: ConversationRef, model: Optional[str] = None
+        self, chat_id: ConversationRef, role: ModelRole = ModelRole.BACKGROUND
     ) -> Agent:
-        """Dedicated per-fire background agent on the reduced background
-        toolset. `model=None` resolves to the persona/chat Claude model.
-        Falls back to the normal chat chain (still with the reduced
-        toolset) when Claude isn't enabled. Fresh session each fire; turns
-        still mirror into the chat history so the main agent sees what the
-        background fire reported."""
-        if not VENDORS_BY_NAME["claude"].enabled(self.settings):
-            return self.create_agent(
-                chat_id=chat_id, persona_override=self.background_persona
-            )
-        return CascadingAgent(
-            chain=[("claude", AnthropicAgent(
-                self._background_options_builder(model),
-                session_id=None, chat_id=chat_id,
-            ))],
-            history=self.conversation_history,
-            persona_id=self.persona.id,
+        """A per-fire agent on the reduced background toolset and the role's
+        own chain.
+
+        This used to branch on whether Claude was enabled: the Claude path
+        honoured a model override but ran a SINGLE vendor with no health
+        board, and every other path ignored the override entirely and used the
+        full chat chain at the chat model. So "background runs on something
+        cheap" was true for exactly one vendor, and "background has failover"
+        for none.
+
+        Now there is one path. The role supplies the chain (with failover) and
+        the model; the only thing background-specific left here is the reduced
+        persona view, which is the actual point — background fires pay full
+        tool-schema cost per fire with no cache reuse.
+        """
+        return self.create_agent(
             chat_id=chat_id,
-            summarizer=self.summarizer,
-            # Deliberately NOT the shared board: a hiccup during a
-            # background fire must not put the CHAT chain's claude
-            # into cooldown.
-            health_board=None,
-            memory_recaller=self.context_injector,
-            timezone_name=self.settings.schedule_timezone,
+            persona_override=self.background_persona,
+            role=role,
         )
 
     def _heartbeat_agent_factory(self, chat_id: ConversationRef) -> Agent:
-        """Heartbeats run on the cheap heartbeat model (HEARTBEAT_MODEL,
-        default Haiku) — background work must not spend chat-vendor quota."""
-        return self._background_agent_factory(
-            chat_id, model=self.settings.heartbeat_model
-        )
+        """Heartbeats are background work — they must not spend chat-vendor
+        quota. Which model that means is now a property of the BACKGROUND
+        role rather than of whether Claude happens to be enabled."""
+        return self._background_agent_factory(chat_id)
 
     def _watch_agent_factory(self, chat_id: ConversationRef) -> Agent:
         """Watch fires (mail, splitwise) keep the main model (judgment) but

@@ -115,6 +115,36 @@ Two backup stories, deliberately: the JSON files are cheap, per-instance,
 host-local state that is safe to lose (sessions resume fresh, health
 re-learns); Postgres holds everything that must survive.
 
+## Model roles
+
+Which LLM answers which kind of work is a ROLE, and every role resolves to a
+vendor chain plus an optional model override (`runtime/model_roles.py`):
+
+| role | work | config |
+|---|---|---|
+| `chat` | the operator is waiting | `LLM_CHAIN` / `PRIMARY_LLM` |
+| `background` | heartbeats, watch fires | `BACKGROUND_LLM_CHAIN` / `BACKGROUND_MODEL` |
+| `summarize` | compaction, reflection | `COMPACTION_LLM` / `COMPACTION_MODEL` |
+| `ideate` | offline memory synthesis | `IDEATE_LLM` / `IDEATE_MODEL` |
+
+A role left unconfigured inherits the chat chain, failover included.
+
+This replaced a real bug, not just a naming scheme. `HEARTBEAT_MODEL` was
+honoured only on the Claude branch of the background agent factory; every
+other vendor fell through to the full chat chain at the chat model. So on an
+Ollama-primary bot — the setup the README documents — the "cheap heartbeat"
+ran the chat model, and nothing reported it. Meanwhile when Claude WAS
+enabled, background got a single-vendor chain with `health_board=None`: no
+failover at all. One code path now serves every vendor.
+
+**Legacy Claude-named defaults are guarded.** `COMPACTION_MODEL` and
+`HEARTBEAT_MODEL` both default to `claude-haiku-4-5`. Applied to an Ollama- or
+Groq-led chain that requests a model the vendor has never heard of, failing on
+every fire. `_vendor_safe_model` drops a `claude-*` name when the leader isn't
+Claude — narrow by design: an operator naming a model for their own vendor is
+never second-guessed. The first cut of this phase did exactly the wrong thing
+to the `summarize` role and the round-trip check caught it.
+
 ## Conversation identity: ConversationRef
 
 Identity used to be `chat_id: int` — a Telegram shape — in 61 signatures, in

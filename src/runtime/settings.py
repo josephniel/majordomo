@@ -56,6 +56,13 @@ class RuntimeSettings:
     # builds cannot, its 12b and qwen3.5 can. Unset = trust the class default.
     ollama_vision: Optional[bool] = None
 
+    # ---- model roles (see runtime/model_roles.py) ----
+    # Per-role chains. Empty = inherit the chat chain, failover included.
+    background_llm_chain: str = ""
+    background_model: str = ""
+    ideate_llm: str = ""
+    ideate_model: str = ""
+
     # ---- background summarization ----
     compaction_llm: str = ""            # falls back to primary_llm
     compaction_model: str = "claude-haiku-4-5"
@@ -108,6 +115,10 @@ class RuntimeSettings:
             ollama_reasoning_effort=env.get("OLLAMA_REASONING_EFFORT") or None,
             ollama_vision=(_truthy(env["OLLAMA_VISION"])
                            if env.get("OLLAMA_VISION") else None),
+            background_llm_chain=(env.get("BACKGROUND_LLM_CHAIN") or "").strip().lower(),
+            background_model=env.get("BACKGROUND_MODEL") or "",
+            ideate_llm=(env.get("IDEATE_LLM") or "").strip().lower(),
+            ideate_model=env.get("IDEATE_MODEL") or "",
             compaction_llm=(env.get("COMPACTION_LLM") or "").strip().lower(),
             compaction_model=env.get("COMPACTION_MODEL") or "claude-haiku-4-5",
             compaction_deep_model=env.get("COMPACTION_DEEP_MODEL") or "claude-sonnet-5",

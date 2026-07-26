@@ -16,9 +16,24 @@ reflection); concrete impls live in the agents package.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import StrEnum
 from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from .messaging import Attachment
+
+
+class ModelRole(StrEnum):
+    """What KIND of work a model is being asked to do.
+
+    A role is not a model name — it is a routing key. Each resolves to its own
+    vendor chain (see runtime/model_roles.py), which is what lets "background
+    work runs on something cheap" hold for every vendor instead of only the
+    one whose code path happened to honour an override.
+    """
+    CHAT = "chat"              # the operator is waiting
+    BACKGROUND = "background"  # heartbeats, watch fires — nobody is waiting
+    SUMMARIZE = "summarize"    # compaction, reflection; fires constantly
+    IDEATE = "ideate"          # offline memory synthesis; wants the best model
 
 
 class Summarizer(ABC):

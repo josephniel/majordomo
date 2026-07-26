@@ -15,6 +15,7 @@ from .context import ToolContext
 from .conversation import ConversationRef, chat_key
 from .llm import (
     Agent,
+    ModelRole,
     PersonaLike,
     Summarizer,
     ToolUseCallback,
@@ -59,6 +60,7 @@ __all__ = [
     "ToolContext",
     "ToolTraceReporting",
     "VendorIntrospectable",
+    "ModelRole",
     "PersonaLike",
     "ServiceCatalog",
     "Summarizer",
