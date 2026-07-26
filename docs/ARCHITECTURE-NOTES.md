@@ -23,9 +23,10 @@ src/
               files, documents, delegate, reflection.
   kernel/     the turn pipeline and its context modules (commands, recovery,
               proactive, ingestion). Depends on ports, never on concretes.
-  runtime/    the composition root: Persona (identity), RuntimeSettings (the
-              ONLY env reader), PersonaRuntime (wiring), and `__main__` (the
-              process entry point, `python -m runtime`).
+  runtime/    the composition root: config (the declared configuration
+              surface), Persona (identity), RuntimeSettings (the ONLY thing
+              that reads config), PersonaRuntime (wiring), doctor (the config
+              audit), and `__main__` (`python -m runtime`).
 ```
 
 Why this shape and not the previous one: the old names described
@@ -85,6 +86,122 @@ Contracts made explicit by the earlier restructure: chat-completions vendors
 read the current user turn from the history mirror — CascadingAgent mirrors
 before send, and ChatCompletionsAgent self-heals (with a loud warning) if a
 caller skips that.
+
+## Configuration: scope, not kind
+
+Configuration used to be split by KIND — `persona.yaml` held "identity", the
+instance `.env` held "tuning and secrets". The axis that actually matters is
+SCOPE: is this true of the MACHINE, or of this ASSISTANT?
+
+Splitting on the wrong axis put related settings in different files and
+unrelated settings in the same one, and the symptoms were consistent:
+`model:` (the Claude chat model) lived in `persona.yaml` while every other
+model lived in `.env`; `heartbeat.cron` in `persona.yaml`, `HEARTBEAT_MODEL`
+in `.env`; `webhooks.port` in `persona.yaml`, `WEBHOOK_TOKEN` in `.env`;
+`SCHEDULE_TIMEZONE` in `.env` governing `persona.yaml`'s crons.
+
+Measured across the two real instances, **12 of 15 keys were byte-identical
+copies**. That is not untidiness. The one key that had drifted — a
+`GEMINI_API_KEY` present in one instance and not the other — silently deleted
+Gemini from that persona's failover chain, and nothing said so.
+
+### The layout
+
+```
+config.yaml                    HOST. This machine: database, local retrieval
+                               models, retention, sandbox, timezone.
+instances/
+  _shared.env                  Secrets every persona uses.
+  <id>/
+    config.yaml                PERSONA. How this assistant routes work:
+                               vendor chain, per-role models, transcription.
+    persona.yaml               Identity: name, prompt, faculties, connectors.
+    platform.yaml              Which chat platform, and its binding.
+    .env                       Secrets unique to this persona (its token).
+```
+
+Configuration and identity are separate files deliberately. "What this
+assistant IS" changes when you redesign it; "which model summarizes for it"
+changes when a vendor has an outage.
+
+### Precedence
+
+```
+instances/<id>/config.yaml  >  config.yaml  >  environment  >  built-in default
+```
+
+The environment is a FALLBACK, not a deprecated path: every pre-split `.env`
+keeps working unchanged, and a half-migrated deployment still boots. A value
+that has moved into YAML leaves its env entry dead — `./manage doctor` lists
+which.
+
+`.env` files layer the same way: the persona's own file loads first and wins,
+then `instances/_shared.env` fills the gaps. That order is forced by
+`load_dotenv`, which never overwrites an already-set variable.
+
+### Scope is enforced, not suggested
+
+A HOST-scoped setting **cannot** be overridden by a persona, and the attempt
+is reported rather than ignored. This is what makes the layout more than a
+naming convention.
+
+The motivating case: personas normally share one database, and the embedding
+model sizes that database's vector column. `init_schema` migrates the column
+and **clears every vector** to do it. So a per-persona embedding model is not
+a preference — it is a way for the second persona to start and silently wipe
+the first one's semantic index, which then stays broken until someone runs
+`memory reembed`, with nothing reporting it because recall degrades to FTS +
+trigram and keeps answering.
+
+Two guards, because there are two ways in: the resolver refuses a host
+setting written in a persona's `config.yaml`, and startup refuses to run when
+two personas resolve different embedding models against the same DSN (the
+environment fallback can still express that).
+
+### One table, several consumers
+
+`src/runtime/config.py`'s `SETTINGS` is the single source of truth. Each
+entry declares the field, its YAML path, its legacy env variable, how to
+coerce a value from either side, its default, its scope, and whether it is a
+secret. From that one table:
+
+- `RuntimeSettings` resolves the whole surface
+- `./manage doctor` audits it
+- `scripts/gen_config_templates.py` generates both `.example` files
+- an import-time check fails the build if the table and the dataclass disagree
+
+Adding a setting in one place makes it configurable, auditable and documented
+at once. The previous arrangement needed three edits and usually got two —
+which is exactly how `EMBEDDING_MODEL` came to be documented in three files
+and read in none of them.
+
+### Secrets
+
+`config.yaml` supports `${VAR}`, so the SHAPE of a deployment is reviewable
+in a file while the values stay in the environment. Interpolation records
+which variables it consumed, which is what distinguishes
+`token: ${WEBHOOK_TOKEN}` (a reference) from `token: hunter2` (a secret in a
+file) — `doctor` reports the second as an error. It also means a variable a
+config file reads is never mistaken for a dead one; an earlier version made
+that mistake and its suggested fix was to delete the database URL.
+
+### Nothing downstream reads configuration
+
+Adapters take values, not environments. Two surfaces were violating this and
+both were silently broken:
+
+- `embeddings.py` and `reranking.py` read `os.environ` into module constants
+  at IMPORT time, and the composition root imports `adapters.store` before it
+  loads the instance `.env`. `EMBEDDING_MODEL` and all five `RERANK_*` knobs
+  were documented and inert. They are now `Embedder` and `Reranker` objects,
+  built from config and handed to the stores.
+- the chat platform called `build_transcriber_from_env(env)`, picking a
+  vendor order out of the raw environment — a second configuration surface
+  nothing else could see. It now receives a built transcriber.
+
+`RetentionJob` had the same bug in a milder form: it called
+`RetentionPolicy.from_env()` directly, so retention configured in
+`config.yaml` would have been ignored.
 
 ## Security & trust model
 
@@ -223,14 +340,25 @@ re-learns); Postgres holds everything that must survive.
 Which LLM answers which kind of work is a ROLE, and every role resolves to a
 vendor chain plus an optional model override (`runtime/model_roles.py`):
 
-| role | work | config |
-|---|---|---|
-| `chat` | the operator is waiting | `LLM_CHAIN` / `PRIMARY_LLM` |
-| `background` | heartbeats, watch fires | `BACKGROUND_LLM_CHAIN` / `BACKGROUND_MODEL` |
-| `summarize` | compaction, reflection | `COMPACTION_LLM` / `COMPACTION_MODEL` |
-| `ideate` | offline memory synthesis | `IDEATE_LLM` / `IDEATE_MODEL` |
+All four are persona-scoped — they are how one assistant differs from
+another — so they live in `instances/<id>/config.yaml` under `llm:`. The env
+column is the fallback layer, still read.
+
+| role | work | config key | env fallback |
+|---|---|---|---|
+| `chat` | the operator is waiting | `llm.chain` / `llm.primary` | `LLM_CHAIN` / `PRIMARY_LLM` |
+| `background` | heartbeats, watch fires | `llm.roles.background.chain` / `.model` | `BACKGROUND_LLM_CHAIN` / `BACKGROUND_MODEL` |
+| `summarize` | compaction, reflection | `llm.roles.summarize.chain` / `.model` | `COMPACTION_LLM` / `COMPACTION_MODEL` |
+| `ideate` | offline memory synthesis | `llm.roles.ideate.chain` / `.model` | `IDEATE_LLM` / `IDEATE_MODEL` |
 
 A role left unconfigured inherits the chat chain, failover included.
+
+**A chain that names an unusable vendor says so.** `[gemini, claude, groq]`
+with no Gemini credentials resolves to `[claude, groq]` and everything keeps
+working — which is why it went unnoticed in a real instance. The vendor
+registry carries each vendor's "why isn't this available" hint next to the
+predicate that decides it, so the warning names the variable to set, and
+`./manage doctor` reports what the chain actually runs as.
 
 This replaced a real bug, not just a naming scheme. `HEARTBEAT_MODEL` was
 honoured only on the Claude branch of the background agent factory; every
@@ -386,7 +514,10 @@ Four findings from that work worth not re-learning:
 
 ### Changing the embedding model
 
-`EMBEDDING_MODEL` (default `mixedbread-ai/mxbai-embed-large-v1`, 1024-dim).
+`embedding.model` in the HOST `config.yaml` (env fallback `EMBEDDING_MODEL`;
+default `mixedbread-ai/mxbai-embed-large-v1`, 1024-dim). Host-scoped because
+the column it sizes is shared — see
+[Configuration](#configuration-scope-not-kind).
 Vectors are tagged with the model that produced them
 (`memory_entries.embedding_model`) and recall's vector arm only trusts
 current-model vectors, so a change degrades to FTS/trigram rather than
