@@ -47,11 +47,39 @@ needed. That move also retired the one import-linter exemption this
 restructure started with: the entry point importing the composition root
 stopped being a layer violation once it lived in the same package as it.
 
-Still to come, and deliberately not faked here: `ports` currently holds the
-contracts that already existed. MemoryPort, TriggerPort and the ModelRole
-chains (Phases 1-5) land in it next, at which point `domain/` splits into
-domain logic plus thin Faculty adapters. The directories exist now so that
-work lands in its final home instead of being written twice.
+### The three domain ports
+
+`ports/` now holds the contracts the three named domains are built on:
+
+| port | contract | one implementation |
+|---|---|---|
+| `ports/llm.py` | `Agent`, `Summarizer`, `ModelRole` | `adapters/model/*` |
+| `ports/memory.py` | `MemoryStore`, `MemoryEntry`, verdicts | `adapters/store/db.py` |
+| `ports/triggers.py` | `TriggerEvent`, `TriggerSource` | `domain/triggers.py` |
+
+plus `ports/conversation.py` (`ConversationRef` — chat identity without a
+platform in it), `ports/documents.py` and `ports/tools.py`.
+
+The memory and document ports are **structural** Protocols. A nominal ABC
+would force every backing store to import our contracts package, which is
+the coupling a port exists to prevent. `tests/fakes/memory_store.py` is the
+second `MemoryStore` implementation — a contract with exactly one
+implementation is only a description of that implementation, and writing a
+non-Postgres one is what turned the docstring's promises into constraints.
+
+One thing the type system cannot state and so is written down instead:
+`recall_scored` must return scores in [0, 1] that are comparable **across
+queries**, because the auto-injection floor depends on it. A store returning
+raw cosine distances or BM25 scores type-checks and is still wrong.
+`evals/recall_cases.yaml` measures the part the types can't.
+
+### Storage adapters are reachable only through ports
+
+An import-linter contract forbids `domain` and `kernel` from importing
+`adapters.store`. The layer rule alone permitted it — `store` is a lower
+layer — and that is exactly the import that made the memory faculty
+inseparable from Postgres. `runtime` is exempt: the composition root is the
+one place allowed to name a concrete store, because someone has to.
 
 Contracts made explicit by the earlier restructure: chat-completions vendors
 read the current user turn from the history mirror — CascadingAgent mirrors
@@ -437,6 +465,41 @@ tool_use_failed as failing cases. Claude is deliberately not evaluated
 (reliable last resort; not worth the subscription budget).
 
 ## Deliberately not built
+
+- **LiteLLM behind the model port.** Proposed as a way to retire
+  `adapters/model/chat_completions.py` (1052 lines). Measured before
+  committing, and the numbers argue against it. Of those lines:
+
+  | lines | what it is | LiteLLM replaces it? |
+  |---|---|---|
+  | 647 | agent core, history assembly, attachments, tool loop | no — it replaces the HTTP call inside |
+  | 134 | per-vendor subclasses | no — these are quota policy, not protocol |
+  | 71 | llama malformed-tool-call recovery | no |
+  | 59 | usage-limit error taxonomy | partly |
+  | 31 | tool-schema translation + name fitting | partly |
+
+  So it swaps roughly 100 lines of `AsyncOpenAI` plumbing for a large
+  dependency sitting between the bot and its primary model. The per-vendor
+  classes are the tell: they exist almost entirely for quota tuning —
+  Groq's 12k TPM forcing `SUBSET_TOOLS` and a 10k history cap, Gemini's free
+  tier the same at 16k, Ollama's absence of any quota at all. LiteLLM's
+  value is abstracting vendor differences away, and those differences are
+  precisely what this layer is tuned against.
+
+  The optionality it was meant to buy already exists: `ports/llm.py` defines
+  `Agent`, every vendor implements it, and a LiteLLM-backed agent would be a
+  new adapter behind the same port. Nothing needs to change first.
+
+  Reconsider if a vendor arrives whose protocol is genuinely different (not
+  OpenAI-compatible), or if the error taxonomy in `_signals_usage_limit`
+  becomes a maintenance burden — those are the parts a shared library is
+  actually good at.
+
+- **Durable turns across a restart.** An in-flight approval lives in memory,
+  so restarting while one is pending loses it: the operator's tap lands on a
+  nonce nobody is waiting for. The visible half is fixed (a chat blocked on
+  an approval answers rather than stalling — see "Layer 5"), but surviving a
+  restart means persisting turn state and resuming mid-tool-call.
 
 - **Streaming replies.** Telegram's Bot API has no streaming; edit-in-place
   message updates fight rate limits and read worse than the existing
