@@ -91,10 +91,15 @@ class PersonaRuntime:
 
     @cached_property
     def settings(self) -> RuntimeSettings:
-        """Parsed .env surface — the only place environment variables become
-        config. Callers must have loaded the instance .env first (load_env,
-        which create_conversation and cli.py both do)."""
-        return RuntimeSettings.from_env()
+        """The whole resolved configuration for this persona.
+
+        Loads the instance .env FIRST, so nothing downstream depends on the
+        caller having remembered to. That ordering used to be an unwritten
+        rule ("callers must have loaded the instance .env first"), which is
+        the sort of rule that holds until someone adds a code path.
+        """
+        self.load_env()
+        return RuntimeSettings.load(self._project_root, self.persona.dir)
 
     @cached_property
     def config(self) -> ServiceRegistry:
@@ -337,10 +342,13 @@ class PersonaRuntime:
         """
         env_path = self.persona.env_file
         if not env_path.exists():
-            raise SystemExit(
-                f"persona {self.persona.id!r}: env file not found at {env_path}. "
-                f"Each instance needs instances/<id>/.env alongside platform.yaml."
-            )
+            # No longer fatal: with configuration in config.yaml, an instance
+            # whose secrets come from the ambient environment (a systemd
+            # unit, a launchd plist, CI) legitimately has no .env. A genuinely
+            # missing secret is caught by REQUIRED_ENV validation, which names
+            # the variable instead of the file.
+            log.debug("persona %r: no .env at %s", self.persona.id, env_path)
+            return
         load_dotenv(env_path)
 
     def _assert_embedding_model_is_host_wide(self, dsn: str) -> None:
@@ -390,12 +398,16 @@ class PersonaRuntime:
         ambient environment because that is what that persona would see if it
         were started in this shell.
         """
-        env_file = self._project_root / "instances" / persona_id / ".env"
-        if not env_file.exists():
-            return None
+        persona_dir = self._project_root / "instances" / persona_id
         try:
-            values = {k: v for k, v in dotenv_values(env_file).items() if v is not None}
-            return RuntimeSettings.from_env({**os.environ, **values})
+            env_file = persona_dir / ".env"
+            values = (
+                {k: v for k, v in dotenv_values(env_file).items() if v is not None}
+                if env_file.exists() else {}
+            )
+            return RuntimeSettings.load(
+                self._project_root, persona_dir, {**os.environ, **values},
+            )
         except Exception:
             # A sibling with a broken .env is that persona's problem, not a
             # reason this one can't start.

@@ -1,29 +1,33 @@
-"""Typed runtime settings — the single place environment variables become config.
+"""Typed runtime settings — the whole configuration surface, resolved once.
 
-The split: persona.yaml is IDENTITY (who this persona is, what it may do);
-the per-instance .env is TUNING AND SECRETS (keys, models, windows, ports).
-This module parses the entire .env surface once, into one frozen object, so
-that components take plain constructor parameters and only the composition
-root (runtime/container.py) ever consults the environment. The template
-enumerating every variable lives at instances/_template/.env.example — keep
-the two in sync.
+Every setting comes from `runtime/config.py`'s SETTINGS table, which declares
+where each one may be written (config.yaml, persona.yaml, environment) and
+what it means. This module turns a resolution of that table into one frozen
+object, so that components take plain constructor parameters and nothing
+downstream of the composition root reads a file or an environment.
+
+    RuntimeSettings.load(project_root, persona_dir)   the real entry point
+    RuntimeSettings.from_env(env)                     environment only
+
+`from_env` remains because a large amount of tooling and test code has no
+project root to point at, and because the environment is still a valid (if
+now lowest-precedence) layer. It resolves the same table, so the two cannot
+disagree about defaults or parsing.
+
+Scope — is a setting true of the MACHINE or of this ASSISTANT — is declared
+per setting and enforced by the resolver, not by convention. See config.py.
 """
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from typing import Mapping, Optional
+from dataclasses import dataclass, field, fields
+from pathlib import Path
+from typing import Any, Mapping, Optional
 
 from adapters.store.reranking import RerankConfig
 from adapters.trigger.retention import RetentionPolicy
 
-
-def _truthy(v: Optional[str]) -> bool:
-    return (v or "").strip().lower() in ("1", "true", "yes", "on")
-
-
-def _csv(v: Optional[str]) -> tuple[str, ...]:
-    return tuple(x.strip().lower() for x in (v or "").split(",") if x.strip())
+from .config import SETTINGS, ConfigResolver, Resolved
 
 
 @dataclass(frozen=True)
@@ -103,62 +107,89 @@ class RuntimeSettings:
     # ---- retention ----
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
 
+    # ---- construction ----
+    #
+    # Both entry points resolve the SAME declarative table, so a default or a
+    # parsing rule cannot mean one thing under `load` and another under
+    # `from_env`. The hand-written 40-line constructor call this replaced was
+    # exactly the kind of thing that drifts: it was the reason EMBEDDING_MODEL
+    # was documented in three files and read in none of them.
+
+    @classmethod
+    def load(
+        cls,
+        project_root: Path,
+        persona_dir: Optional[Path] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> "RuntimeSettings":
+        """Resolve config.yaml + persona.yaml + environment into one object.
+
+        This is what the composition root calls. `persona_dir` is optional so
+        that host-only tooling (retention, doctor's host section) can resolve
+        the machine's configuration without naming an assistant.
+        """
+        return cls.from_resolver(
+            ConfigResolver.load(project_root, persona_dir, env)
+        )
+
     @classmethod
     def from_env(cls, env: Mapping[str, str] = os.environ) -> "RuntimeSettings":
-        return cls(
-            memory_database_url=env.get("MEMORY_DATABASE_URL") or "",
-            primary_llm=(env.get("PRIMARY_LLM") or "").strip().lower(),
-            llm_chain=_csv(env.get("LLM_CHAIN")),
-            claude_enabled=_truthy(env.get("CLAUDE_ENABLED")),
-            anthropic_api_key=env.get("ANTHROPIC_API_KEY") or "",
-            claude_model=env.get("CLAUDE_MODEL") or "claude-sonnet-5",
-            groq_api_key=env.get("GROQ_API_KEY") or "",
-            groq_model=env.get("GROQ_MODEL") or None,
-            gemini_api_key=env.get("GEMINI_API_KEY") or "",
-            gemini_model=env.get("GEMINI_MODEL") or None,
-            openai_api_key=env.get("OPENAI_API_KEY") or "",
-            deepseek_api_key=env.get("DEEPSEEK_API_KEY") or "",
-            ollama_enabled=_truthy(env.get("OLLAMA_ENABLED")),
-            ollama_model=env.get("OLLAMA_MODEL") or None,
-            ollama_base_url=env.get("OLLAMA_BASE_URL") or None,
-            ollama_reasoning_effort=env.get("OLLAMA_REASONING_EFFORT") or None,
-            ollama_vision=(_truthy(env["OLLAMA_VISION"])
-                           if env.get("OLLAMA_VISION") else None),
-            background_llm_chain=(env.get("BACKGROUND_LLM_CHAIN") or "").strip().lower(),
-            background_model=env.get("BACKGROUND_MODEL") or "",
-            ideate_llm=(env.get("IDEATE_LLM") or "").strip().lower(),
-            ideate_model=env.get("IDEATE_MODEL") or "",
-            compaction_llm=(env.get("COMPACTION_LLM") or "").strip().lower(),
-            compaction_model=env.get("COMPACTION_MODEL") or "claude-haiku-4-5",
-            compaction_deep_model=env.get("COMPACTION_DEEP_MODEL") or "claude-sonnet-5",
-            schedule_timezone=env.get("SCHEDULE_TIMEZONE") or None,
-            webhook_token=env.get("WEBHOOK_TOKEN") or "",
-            heartbeat_model=env.get("HEARTBEAT_MODEL") or "claude-haiku-4-5",
-            llm_max_output_tokens=int(env.get("LLM_MAX_OUTPUT_TOKENS") or 4096),
-            claude_max_turns=int(env.get("CLAUDE_MAX_TURNS") or 50),
-            claude_max_output_tokens=int(env.get("CLAUDE_MAX_OUTPUT_TOKENS") or 16000),
-            code_exec_image=env.get("CODE_EXEC_IMAGE") or None,
-            code_exec_network=env.get("CODE_EXEC_NETWORK") or None,
-            status_push_url=env.get("STATUS_PUSH_URL") or "",
-            status_push_token=env.get("STATUS_PUSH_TOKEN") or "",
-            embedding_model=(env.get("EMBEDDING_MODEL") or "").strip(),
-            rerank=_rerank_from(env),
-            retention=RetentionPolicy.from_env(env),
+        """Resolve from the environment alone — no config files.
+
+        Kept for tooling and tests that have no project root, and because the
+        environment is still a supported (lowest-precedence) layer. Identical
+        rules to `load`, minus the two YAML layers.
+        """
+        return cls.from_resolver(ConfigResolver(env=env))
+
+    @classmethod
+    def from_resolver(cls, resolver: ConfigResolver) -> "RuntimeSettings":
+        return cls.from_resolved(resolver.resolve_all())
+
+    @classmethod
+    def from_resolved(cls, resolved: Mapping[str, Resolved]) -> "RuntimeSettings":
+        """Assemble from already-resolved values.
+
+        Split out from `from_resolver` so `doctor` can resolve once and then
+        both report the origins and build the settings, rather than resolving
+        twice and risking a different answer than the one it printed.
+        """
+        flat: dict[str, Any] = {}
+        nested: dict[str, dict[str, Any]] = {}
+        for f, r in resolved.items():
+            if "." in f:
+                group, key = f.split(".", 1)
+                nested.setdefault(group, {})[key] = r.value
+            else:
+                flat[f] = r.value
+        if "rerank" in nested:
+            flat["rerank"] = RerankConfig(**nested.pop("rerank"))
+        if "retention" in nested:
+            flat["retention"] = RetentionPolicy(**nested.pop("retention"))
+        for leftover in nested:
+            raise TypeError(f"no RuntimeSettings group named {leftover!r}")
+        return cls(**flat)
+
+
+def _assert_table_matches_dataclass() -> None:
+    """Every field must be declared, and every declaration must land.
+
+    Checked at import because the failure mode is otherwise invisible: a
+    field the table forgets silently keeps its default forever — which is
+    precisely how EMBEDDING_MODEL came to be documented but inert — and a
+    table entry with a typo'd field name raises only when that code path
+    happens to run.
+    """
+    declared = {s.field.split(".", 1)[0] for s in SETTINGS}
+    actual = {f.name for f in fields(RuntimeSettings)}
+    missing = actual - declared
+    unknown = declared - actual
+    if missing or unknown:  # pragma: no cover - import-time guard
+        raise RuntimeError(
+            "runtime/config.py SETTINGS is out of step with RuntimeSettings: "
+            f"fields with no setting: {sorted(missing)}; "
+            f"settings with no field: {sorted(unknown)}"
         )
 
 
-def _rerank_from(env: Mapping[str, str]) -> RerankConfig:
-    """Parse the reranking knobs here rather than in the adapter, so the
-    adapter takes a value and this module stays the only thing that reads
-    an environment. Falls back to RerankConfig's own defaults field by
-    field — the measured values are documented there, next to the
-    measurements that produced them, and must not be restated here."""
-    d = RerankConfig()
-    return RerankConfig(
-        enabled=(_truthy(env["RERANK_ENABLED"])
-                 if (env.get("RERANK_ENABLED") or "").strip() else d.enabled),
-        model=(env.get("RERANK_MODEL") or "").strip() or d.model,
-        candidates=int(env.get("RERANK_CANDIDATES") or d.candidates),
-        center=float(env.get("RERANK_CENTER") or d.center),
-        temperature=float(env.get("RERANK_TEMPERATURE") or d.temperature),
-    )
+_assert_table_matches_dataclass()
