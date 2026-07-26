@@ -234,10 +234,11 @@ class ConversationHistory:
         limit: int = 100,
         include_archived: bool = False,
     ) -> list[dict[str, Any]]:
-        """Rows with id > after_id, chronological. Used for the
-        return-to-primary digest (active only) and the reflection pass
-        (include_archived=True, so a compaction that ran in between can't
-        hide turns from fact extraction).
+        """Rows with id > after_id, chronological.
+
+        Used for the return-to-primary digest (active only) and the reflection pass
+        (include_archived=True, so a compaction that ran in between can't hide turns from fact
+        extraction).
         """
         archived_clause = "" if include_archived else "AND NOT archived"
         async with self._pool.acquire() as conn:
@@ -313,9 +314,10 @@ class ConversationHistory:
         query: str,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
-        """Search the FULL episodic record — including archived (compacted)
-        turns — for this chat. Trigram similarity + ILIKE, language-neutral.
-        Returns rows newest-first with ts so the agent can cite when.
+        """Search the FULL episodic record — including archived (compacted) turns — for this chat.
+
+        Trigram similarity + ILIKE, language-neutral. Returns rows newest-first with ts so the agent
+        can cite when.
         """
         pattern = f"%{query}%"
         async with self._pool.acquire() as conn:
@@ -339,9 +341,10 @@ class ConversationHistory:
     # ---- reset ----
 
     async def reset(self, persona_id: str, chat_id: ConversationRef) -> int:
-        """Archive every active row for (persona, chat). The fallback
-        vendors' client-side replay starts empty afterwards — this is what
-        makes /reset true on non-Claude paths. Returns rows archived.
+        """Archive every active row for (persona, chat).
+
+        The fallback vendors' client-side replay starts empty afterwards — this is what makes /reset
+        true on non-Claude paths. Returns rows archived.
         """
         async with self._pool.acquire() as conn:
             result = await conn.execute(

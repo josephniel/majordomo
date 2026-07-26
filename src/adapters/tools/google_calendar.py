@@ -13,7 +13,7 @@ import logging
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
@@ -163,7 +163,7 @@ class GoogleCalendarConnector(Connector):
     SCHEDULE_CLAIM_TOOLS = frozenset({"create_event"})
     WRITE_TOOLS = frozenset({"create_event", "update_event", "delete_event"})
 
-    TOOL_NAMES = [
+    TOOL_NAMES: ClassVar[list[str]] = [
         "list_calendars",
         "list_events",
         "get_event",
@@ -172,7 +172,7 @@ class GoogleCalendarConnector(Connector):
         "delete_event",
     ]
 
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "list_calendars": "Listing calendars",
         "list_events": "Checking your calendar",
         "get_event": "Reading the event",

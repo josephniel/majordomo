@@ -16,22 +16,22 @@ credentials/clickup/<slug>/secrets.json.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import json
 import logging
 import sys
 from datetime import UTC, datetime
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
 from ports import Connector, ToolContext, ToolResult, tool
 
-import contextlib
-
 if TYPE_CHECKING:
-    from .registry import ServiceRegistry
     from pathlib import Path
+
+    from .registry import ServiceRegistry
 
 log = logging.getLogger(__name__)
 
@@ -267,7 +267,7 @@ class ClickUpConnector(Connector):
                         "status")
     WRITE_TOOLS = frozenset({"update_task", "set_assignees", "add_task_to_list", "remove_task_from_list"})
 
-    TOOL_NAMES = [
+    TOOL_NAMES: ClassVar[list[str]] = [
         # read
         "search_tasks",
         "get_task",
@@ -283,7 +283,7 @@ class ClickUpConnector(Connector):
         "remove_task_from_list",
     ]
 
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "search_tasks": "Searching your ClickUp tasks",
         "get_task": "Reading the ClickUp task",
         "list_spaces": "Listing ClickUp spaces",

@@ -34,10 +34,9 @@ each mapping is recorded below and can be dropped once instances migrate.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ports import ModelRole
-
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .settings import RuntimeSettings

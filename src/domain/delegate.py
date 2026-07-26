@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextvars import ContextVar
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ports import Faculty, ToolContext, ToolResult, tool
 
@@ -66,7 +66,7 @@ class Delegator(Faculty):
     name = "delegate"
     TRIGGER_KEYWORDS = ("delegate", "summarize all", "audit", "go through",
                         "digest", "triage", "review all", "every")
-    STATUS = {"delegate_task": "Working on a delegated task"}
+    STATUS: ClassVar[dict[str, str]] = {"delegate_task": "Working on a delegated task"}
 
     def __init__(
         self,

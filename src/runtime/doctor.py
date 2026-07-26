@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from dotenv import dotenv_values
 
@@ -36,7 +37,6 @@ from .config import (
 from .persona import Persona
 from .settings import RuntimeSettings
 from .vendors import VENDORS_BY_NAME
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -75,9 +75,10 @@ class Report:
 
     @property
     def exit_code(self) -> int:
-        """Non-zero only for errors. Warnings describe things worth fixing
-        that are not breaking anything, and a CI gate that fails on those
-        gets disabled within a week.
+        """Non-zero only for errors.
+
+        Warnings describe things worth fixing that are not breaking anything, and a CI gate that
+        fails on those gets disabled within a week.
         """
         return 1 if any(f.level == ERROR for f in self.findings) else 0
 

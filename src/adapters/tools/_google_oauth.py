@@ -15,17 +15,17 @@ unchanged with the new in-process implementation.
 """
 from __future__ import annotations
 
+import contextlib
 import http.server
 import json
 import logging
 import socketserver
 import time
 import webbrowser
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
-import contextlib
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathlib import Path

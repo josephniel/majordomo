@@ -16,7 +16,7 @@ import secrets
 import time
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -44,8 +44,9 @@ from .base import (
 from .transcription import CascadingTranscriber, filename_for_mime
 
 if TYPE_CHECKING:
-    from adapters.comms import CommsLog
     from collections.abc import Callable, Mapping
+
+    from adapters.comms import CommsLog
 
 log = logging.getLogger(__name__)
 
@@ -105,8 +106,9 @@ PLATFORM_NAME = "telegram"
 
 
 def _ref(chat_id: int) -> ConversationRef:
-    """Telegram chat id -> ConversationRef. The ONLY place refs are minted
-    here; everything above receives them already built.
+    """Telegram chat id -> ConversationRef.
+
+    The ONLY place refs are minted here; everything above receives them already built.
     """
     return ConversationRef(PLATFORM_NAME, str(chat_id))
 
@@ -130,7 +132,7 @@ def _native(chat_id: ConversationRef | int) -> int:
 
 class TelegramPlatform(ChatPlatform):
     name = "telegram"
-    REQUIRED_ENV = ["TELEGRAM_TOKEN"]
+    REQUIRED_ENV: ClassVar[list[str]] = ["TELEGRAM_TOKEN"]
 
     def __init__(
         self,
@@ -578,8 +580,9 @@ class TelegramPlatform(ChatPlatform):
         ))
 
     async def _transcribe_voice(self, msg, bot) -> str | None:
-        """Download + transcribe a voice/audio message. Returns the text to
-        treat as the user's turn, or None after replying with why not.
+        """Download + transcribe a voice/audio message.
+
+        Returns the text to treat as the user's turn, or None after replying with why not.
         """
         media = msg.voice or msg.audio
         if self._transcriber is None:

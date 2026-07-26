@@ -103,8 +103,9 @@ class ToolSpec:
     handler: Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
 
     def json_schema(self) -> dict[str, Any]:
-        """Normalize `parameters` into a full JSON Schema object. Every agent
-        vendor translates from THIS — never from raw `parameters`.
+        """Normalize `parameters` into a full JSON Schema object.
+
+        Every agent vendor translates from THIS — never from raw `parameters`.
         """
         p = self.parameters or {}
         if isinstance(p, dict) and ("properties" in p or p.get("type") == "object"):
@@ -228,8 +229,9 @@ class ToolProvider:
 
     async def status_line(self) -> str | None:
         """One line for the /status command, or None to contribute nothing.
-        Lets providers report their own state without the command layer
-        reaching into their internals.
+
+        Lets providers report their own state without the command layer reaching into their
+        internals.
         """
         return None
 
@@ -252,8 +254,9 @@ class ToolProvider:
 
     @classmethod
     def has_mutable_prompt_section(cls) -> bool:
-        """True when this provider's `system_prompt_section()` can change
-        between turns — i.e. it overrode `context_version`.
+        """True when this provider's `system_prompt_section()` can change between turns — i.e.
+
+        it overrode `context_version`.
 
         Derived rather than declared. This is a query about the provider, not
         a knob on it: a provider whose contribution is versioned is by
@@ -273,6 +276,7 @@ class ToolProvider:
 
     async def on_chat_shutdown(self) -> None:
         """Optional async teardown invoked as the event loop exits.
+
         Default: no-op.
         """
 
@@ -295,15 +299,17 @@ class ToolProvider:
 
 
 class Faculty(ToolProvider):
-    """A first-party faculty of the agent itself. Singleton per persona; no
-    profiles, no auth flows — `./manage add <faculty>` is a category error,
-    and the type system says so.
+    """A first-party faculty of the agent itself.
+
+    Singleton per persona; no profiles, no auth flows — `./manage add <faculty>` is a category
+    error, and the type system says so.
     """
 
 
 class Connector(ToolProvider):
-    """An adapter to an external service. Owns credentialed, multi-account
-    profiles via ServiceRegistry and the `./manage add/auth` flows.
+    """An adapter to an external service.
+
+    Owns credentialed, multi-account profiles via ServiceRegistry and the `./manage add/auth` flows.
     """
 
     # ---- CLI contributions ----

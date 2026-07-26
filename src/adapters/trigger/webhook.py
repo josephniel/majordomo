@@ -43,8 +43,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, TYPE_CHECKING
-
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ports import ConversationRef

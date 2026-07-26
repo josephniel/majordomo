@@ -15,16 +15,16 @@ import getpass
 import json
 import logging
 import sys
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
 from ports import Connector, ToolContext, ToolResult, tool
 
-
 if TYPE_CHECKING:
-    from .registry import ServiceRegistry
     from pathlib import Path
+
+    from .registry import ServiceRegistry
 
 log = logging.getLogger(__name__)
 
@@ -245,7 +245,7 @@ class SplitwiseConnector(Connector):
                         "cost", "debt")
     WRITE_TOOLS = frozenset({"create_expense", "update_expense", "delete_expense"})
 
-    TOOL_NAMES = [
+    TOOL_NAMES: ClassVar[list[str]] = [
         # read
         "get_current_user",
         "list_groups",
@@ -258,7 +258,7 @@ class SplitwiseConnector(Connector):
         "delete_expense",
     ]
 
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "get_current_user": "Checking Splitwise profile",
         "list_groups": "Listing Splitwise groups",
         "list_friends": "Listing Splitwise friends",

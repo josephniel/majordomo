@@ -5,6 +5,7 @@ JSON on disk — no cryptographer dependency.
 """
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import logging
@@ -12,7 +13,7 @@ import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -20,11 +21,10 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
 from ports import ConversationRef, Faculty, ToolContext, ToolResult, chat_key, tool
-import contextlib
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from collections.abc import Awaitable, Callable
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -206,8 +206,9 @@ class ScheduleEngine:
         description: str = "",
     ) -> ScheduledTask:
         """Create a ONE-SHOT task that fires once at `when` then auto-removes.
-        `when` is either a relative offset (+30s, +5m, +2h, +1d) or an absolute
-        local ISO datetime (YYYY-MM-DDTHH:MM).
+
+        `when` is either a relative offset (+30s, +5m, +2h, +1d) or an absolute local ISO datetime
+        (YYYY-MM-DDTHH:MM).
         """
         name = self._validate_name(name)
         if name in self._schedules:
@@ -363,7 +364,7 @@ class TaskScheduler(Faculty):
         {"schedule_once", "schedule_create", "schedule_set_enabled"}
     )
 
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "schedule_create": "Setting up your schedule",
         "schedule_once": "Setting a reminder",
         "schedule_list": "Checking your schedules",

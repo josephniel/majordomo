@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ports import Faculty, ToolContext, ToolResult, tool
 
@@ -31,7 +31,7 @@ class FileCourier(Faculty):
     name = "files"
     TRIGGER_KEYWORDS = ("file", "send", "download", "csv", "chart",
                         "artifact", "attachment", "report")
-    STATUS = {"chat_send_file": "Sending a file to the chat"}
+    STATUS: ClassVar[dict[str, str]] = {"chat_send_file": "Sending a file to the chat"}
 
     def __init__(self, data_dir: Path) -> None:
         self._data_dir = data_dir

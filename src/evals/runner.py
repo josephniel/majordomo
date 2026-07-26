@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import re
 import sys
 from dataclasses import dataclass
@@ -35,7 +36,6 @@ from adapters.model.chat_completions import (
 )
 
 from .fakes import FakeBulkTools, FakeGmail, FakeMemory, FakeSchedule
-import contextlib
 
 VENDORS = {
     "groq": (GroqAgent, "GROQ_MODEL"),

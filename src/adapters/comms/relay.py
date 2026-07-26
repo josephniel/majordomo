@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, TYPE_CHECKING
-
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .log import CommsLog
@@ -46,9 +45,10 @@ class CommsRelay:
         self._bot_hops: dict[int, int] = {}
 
     async def start(self, mention_handle: str | None) -> None:
-        """Subscribe to comms_log notifications. `mention_handle` is the
-        instance's @-handle (no '@'); if None, the relay subscribes but never
-        relays anything (no addressable identity yet).
+        """Subscribe to comms_log notifications.
+
+        `mention_handle` is the instance's @-handle (no '@'); if None, the relay subscribes but
+        never relays anything (no addressable identity yet).
         """
         if mention_handle:
             self._mention_token = f"@{mention_handle.lower()}"
@@ -84,8 +84,9 @@ class CommsRelay:
 
     def _track_hops(self, entry: dict[str, Any]) -> None:
         """Human inbound resets the counter; every bot outbound bumps it.
-        (Only humans produce 'in' rows — Telegram never delivers one bot's
-        messages to another, which is why this relay exists at all.)
+
+        (Only humans produce 'in' rows — Telegram never delivers one bot's messages to another,
+        which is why this relay exists at all.)
         """
         chat_id = entry.get("chat_id")
         if chat_id is None:

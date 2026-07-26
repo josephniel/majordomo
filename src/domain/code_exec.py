@@ -20,14 +20,14 @@ before changing the network).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
 import uuid
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ports import Faculty, ToolContext, ToolResult, tool
-import contextlib
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -53,7 +53,7 @@ class CodeExecutor(Faculty):
                         "calculate", "csv", "chart", "graph", "convert",
                         "parse", "generate")
     WRITE_TOOLS = frozenset({"run_code"})
-    STATUS = {"run_code": "Running code in the sandbox"}
+    STATUS: ClassVar[dict[str, str]] = {"run_code": "Running code in the sandbox"}
 
     SYSTEM_PROMPT_SECTION = """== Code execution ==
 

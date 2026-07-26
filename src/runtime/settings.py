@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, fields
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from adapters.chat.transcription import (
     DEFAULT_VENDOR_ORDER as DEFAULT_TRANSCRIPTION_ORDER,
@@ -35,8 +35,8 @@ from adapters.trigger.retention import RetentionPolicy
 from .config import SETTINGS, ConfigResolver, Resolved
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from collections.abc import Mapping
+    from pathlib import Path
 
 
 @dataclass(frozen=True)

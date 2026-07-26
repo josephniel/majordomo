@@ -29,19 +29,19 @@ retrying every turn.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 from zoneinfo import ZoneInfo
 
 from ports import ConversationRef, SessionResettable, ToolCallProbe
 
 from .base import Agent, Attachment, Summarizer, ToolUseCallback, UsageLimitError
 from .health import VendorHealthBoard
-import contextlib
 
 if TYPE_CHECKING:
     from .history import ConversationHistory
@@ -82,7 +82,7 @@ MemoryRecaller = Callable[[str], Awaitable[str]]
 class CascadingAgent(Agent):
     """Composes a chain of named Agents. Public surface stays Agent-shaped."""
 
-    REQUIRED_ENV: list[str] = []
+    REQUIRED_ENV: ClassVar[list[str]] = []
 
     def __init__(
         self,
@@ -446,11 +446,11 @@ class CascadingAgent(Agent):
         return results
 
     async def prewarm(self) -> None:
-        """Warm each backend's prompt cache off the hot path (see
-        ChatCompletionsAgent.prewarm). Runs at startup alongside the canary,
-        so the first real turn after a restart isn't the one that pays the
-        cold prefill. Vendors that don't implement it are skipped — hosted
-        ones have nothing to gain.
+        """Warm each backend's prompt cache off the hot path (see ChatCompletionsAgent.prewarm).
+
+        Runs at startup alongside the canary, so the first real turn after a restart isn't the one
+        that pays the cold prefill. Vendors that don't implement it are skipped — hosted ones have
+        nothing to gain.
         """
         for name, agent in self._chain:
             warm = getattr(agent, "prewarm", None)
@@ -465,8 +465,9 @@ class CascadingAgent(Agent):
     # ---- reset hook (called by the orchestrator's /reset) ----
 
     async def reset_history(self) -> int:
-        """Archive the chat's mirror so client-side vendors start clean too
-        (B4). The orchestrator also drops the Claude session id.
+        """Archive the chat's mirror so client-side vendors start clean too (B4).
+
+        The orchestrator also drops the Claude session id.
         """
         self._last_seen_row_id.clear()
         return await self._history.reset(self._persona_id, self._chat_id)
@@ -511,8 +512,9 @@ class CascadingAgent(Agent):
 
     @staticmethod
     def _is_short_answer(text: str, attachments: list | None = None) -> bool:
-        """A brief, topicless reply that answers rather than opens. Messages
-        carrying attachments are new content, never a bare answer.
+        """A brief, topicless reply that answers rather than opens.
+
+        Messages carrying attachments are new content, never a bare answer.
         """
         if attachments:
             return False

@@ -59,8 +59,9 @@ class ProactiveMixin:
                 add_cron = source.add_cron
 
     async def _stop_trigger_sources(self) -> None:
-        """Stop every source, in reverse. Each failure is isolated: shutdown
-        is the one path where giving up early strands resources.
+        """Stop every source, in reverse.
+
+        Each failure is isolated: shutdown is the one path where giving up early strands resources.
         """
         for source in reversed(list(self._trigger_sources)):
             try:
@@ -69,7 +70,8 @@ class ProactiveMixin:
                 log.exception("trigger source %r failed to stop", source.name)
 
     def _describe_triggers(self) -> list[str]:
-        """Source names, for /status and boot logs. Previously unanswerable
-        without knowing the four attribute names by heart.
+        """Source names, for /status and boot logs.
+
+        Previously unanswerable without knowing the four attribute names by heart.
         """
         return [s.name for s in self._trigger_sources]

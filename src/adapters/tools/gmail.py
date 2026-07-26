@@ -20,7 +20,7 @@ import shutil
 import sys
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
@@ -211,7 +211,7 @@ class GmailConnector(Connector):
     # model can report a successful send having called nothing at all.
     SEND_CLAIM_TOOLS = frozenset({"send_email"})
 
-    TOOL_NAMES = [
+    TOOL_NAMES: ClassVar[list[str]] = [
         "search_emails",
         "read_email",
         "list_email_labels",
@@ -220,7 +220,7 @@ class GmailConnector(Connector):
         "send_email",
     ]
 
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "search_emails": "Searching your Gmail",
         "read_email": "Reading the email",
         "list_email_labels": "Checking mailboxes",
@@ -239,8 +239,9 @@ class GmailConnector(Connector):
     # ---- Connector contract ----
 
     def build_clients(self) -> dict[str, GmailClient]:
-        """One GmailClient per enabled profile. Shared by the tool servers
-        below and the mail-watch poller (domain/mailwatch.py).
+        """One GmailClient per enabled profile.
+
+        Shared by the tool servers below and the mail-watch poller (domain/mailwatch.py).
         """
         clients: dict[str, GmailClient] = {}
         for profile in self._config.load_all():

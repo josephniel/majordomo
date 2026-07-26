@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import httpx
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -95,8 +95,9 @@ class AudioTranscriber:
         self._key = api_key
 
     async def transcribe(self, data: bytes, filename: str = "voice.ogg") -> str:
-        """Returns the transcript ('' when the audio had no speech). Raises
-        on transport/API errors — the cascade decides what happens next.
+        """Returns the transcript ('' when the audio had no speech).
+
+        Raises on transport/API errors — the cascade decides what happens next.
         """
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(

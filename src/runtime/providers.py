@@ -35,10 +35,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-
 if TYPE_CHECKING:  # avoid a cycle: container imports this module
-    from ports import ConversationRef, ToolProvider
     from collections.abc import Callable
+
+    from ports import ConversationRef, ToolProvider
+
     from .container import PersonaRuntime
 
 

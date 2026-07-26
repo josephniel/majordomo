@@ -51,10 +51,11 @@ def _err(msg: str) -> ToolResult:
 
 
 def _uuid(raw: Any) -> UUID | None:
-    """Parse a model-supplied id, or None. The model hands us strings and
-    occasionally invents plausible ones, so every id is parsed defensively —
-    a ValueError escaping here would surface as a tool crash rather than a
-    correctable message.
+    """Parse a model-supplied id, or None.
+
+    The model hands us strings and occasionally invents plausible ones, so every id is parsed
+    defensively — a ValueError escaping here would surface as a tool crash rather than a correctable
+    message.
     """
     try:
         return UUID(str(raw or "").strip())

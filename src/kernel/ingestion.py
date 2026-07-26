@@ -8,9 +8,9 @@ ignorant of what a "document" is.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from ports import AttachmentIngestor, Connector, ConversationRef
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from adapters.chat import InboundMessage

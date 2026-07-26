@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -118,10 +118,11 @@ class SplitwiseWatcher:
     # ---- polling ----
 
     async def check(self) -> str | None:
-        """Poll every Splitwise profile. Returns a context block describing
-        NEW/EDITED expenses (caller must commit() after delivering), or None
-        when there's nothing new. Never raises — a broken profile logs and
-        is skipped; the others still report.
+        """Poll every Splitwise profile.
+
+        Returns a context block describing NEW/EDITED expenses (caller must commit() after
+        delivering), or None when there's nothing new. Never raises — a broken profile logs and is
+        skipped; the others still report.
         """
         now = datetime.now(UTC)
         lines: list[str] = []
@@ -140,8 +141,9 @@ class SplitwiseWatcher:
         return "\n".join(lines)
 
     def commit(self) -> None:
-        """Apply the state staged by the last check(). Call after the turn
-        was delivered (or when check() reported nothing).
+        """Apply the state staged by the last check().
+
+        Call after the turn was delivered (or when check() reported nothing).
         """
         self._state.update(self._pending)
         self._pending = {}

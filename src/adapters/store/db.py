@@ -24,7 +24,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import asyncpg
@@ -36,8 +36,8 @@ from .embeddings import to_pgvector as _to_pgvector
 from .reranking import Reranker
 
 if TYPE_CHECKING:
-    from uuid import UUID
     from datetime import datetime
+    from uuid import UUID
 
 log = logging.getLogger(__name__)
 
@@ -218,8 +218,9 @@ class MemoryDatabase:
 
     @property
     def embedder(self) -> Embedder:
-        """Which model this store writes vectors with. Read by the
-        shared-database guard in the composition root.
+        """Which model this store writes vectors with.
+
+        Read by the shared-database guard in the composition root.
         """
         return self._embed
 
@@ -248,10 +249,10 @@ class MemoryDatabase:
             self._pool = None
 
     async def init_schema(self) -> None:
-        """Apply the idempotent schema, templated with the current embedding
-        width. `{{EMBED_DIM}}` is substituted rather than hardcoded so that
-        changing EMBEDDING_MODEL migrates the column instead of failing every
-        insert with a dimension mismatch.
+        """Apply the idempotent schema, templated with the current embedding width.
+
+        `{{EMBED_DIM}}` is substituted rather than hardcoded so that changing EMBEDDING_MODEL
+        migrates the column instead of failing every insert with a dimension mismatch.
         """
         sql = _SCHEMA_PATH.read_text(encoding="utf-8").replace(
             "{{EMBED_DIM}}", str(self._embed.dim)
@@ -370,9 +371,10 @@ class MemoryDatabase:
         old_id: UUID,
         new_content: str,
     ) -> MemoryEntry | None:
-        """Insert a new active entry that replaces `old_id`. Marks the old
-        row's `superseded_by` to the new id. Returns the new entry, or None
-        if the old id wasn't found / already superseded.
+        """Insert a new active entry that replaces `old_id`.
+
+        Marks the old row's `superseded_by` to the new id. Returns the new entry, or None if the old
+        id wasn't found / already superseded.
         """
         async with self._acquire() as conn, conn.transaction():
             old = await conn.fetchrow(
@@ -442,8 +444,9 @@ class MemoryDatabase:
         to_id: UUID,
         relation: str = "relates_to",
     ) -> bool:
-        """Create a directional edge from_id --relation--> to_id. Idempotent:
-        returns True if a new edge was created, False if it already existed.
+        """Create a directional edge from_id --relation--> to_id.
+
+        Idempotent: returns True if a new edge was created, False if it already existed.
         """
         async with self._acquire() as conn:
             row = await conn.fetchrow(
@@ -463,9 +466,10 @@ class MemoryDatabase:
         to_id: UUID,
         relation: str | None = None,
     ) -> bool:
-        """Delete the edge(s) between two entries. With `relation`, only that
-        edge; without it, every edge from_id->to_id. Returns True if anything
-        was deleted.
+        """Delete the edge(s) between two entries.
+
+        With `relation`, only that edge; without it, every edge from_id->to_id. Returns True if
+        anything was deleted.
         """
         async with self._acquire() as conn:
             if relation is not None:
@@ -484,10 +488,11 @@ class MemoryDatabase:
         self,
         entry_id: UUID,
     ) -> list[Neighbor]:
-        """Directly-linked ACTIVE entries. Returns (neighbor, relation,
-        direction) where direction is 'out' (entry_id --rel--> neighbor) or
-        'in' (neighbor --rel--> entry_id). Superseded/forgotten neighbors are
-        excluded so recall never surfaces stale links.
+        """Directly-linked ACTIVE entries.
+
+        Returns (neighbor, relation, direction) where direction is 'out' (entry_id --rel-->
+        neighbor) or 'in' (neighbor --rel--> entry_id). Superseded/forgotten neighbors are excluded
+        so recall never surfaces stale links.
         """
         async with self._acquire() as conn:
             rows = await conn.fetch(
@@ -529,8 +534,10 @@ class MemoryDatabase:
         return result.split()[-1] != "0"
 
     async def set_pinned(self, entry_id: UUID, pinned: bool) -> bool:
-        """Pin/unpin an active entry. Pinned entries render verbatim in the
-        always-injected context. Returns True if a row was updated.
+        """Pin/unpin an active entry.
+
+        Pinned entries render verbatim in the always-injected context. Returns True if a row was
+        updated.
         """
         async with self._acquire() as conn:
             result = await conn.execute(
@@ -543,8 +550,9 @@ class MemoryDatabase:
         return result.split()[-1] != "0"
 
     async def mark_verified(self, entry_id: UUID) -> bool:
-        """Record that a fact was just confirmed to still hold. Resets its
-        staleness clock. Returns True if a row was updated.
+        """Record that a fact was just confirmed to still hold.
+
+        Resets its staleness clock. Returns True if a row was updated.
         """
         async with self._acquire() as conn:
             result = await conn.execute(
@@ -675,8 +683,10 @@ class MemoryDatabase:
         max_rrf = (active_weight or 1.0) * (1.0 / (RRF_K + 1))
 
         def _arm(name: str, order_by: str, where: str, enabled: bool) -> str:
-            """One ranked candidate arm. Disabled arms still exist as empty
-            relations so the fusion join below stays a single static shape.
+            """One ranked candidate arm.
+
+            Disabled arms still exist as empty relations so the fusion join below stays a single
+            static shape.
             """
             if not enabled:
                 return (
@@ -922,6 +932,7 @@ def _jsonb_decoder(raw: str) -> Any:
 
 def _dsn_host(dsn: str) -> str:
     """Just the hostname, for a log line that shouldn't carry a whole DSN.
+
     Use `redact_dsn` when the operator needs to recognise WHICH database.
     """
     try:

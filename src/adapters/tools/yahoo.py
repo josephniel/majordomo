@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import email
 import getpass
 import imaplib
@@ -17,15 +18,14 @@ import json
 import logging
 import sys
 from email.header import decode_header, make_header
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ports import Connector, ToolContext, ToolResult, tool
 
-import contextlib
-
 if TYPE_CHECKING:
-    from .registry import ServiceRegistry
     from pathlib import Path
+
+    from .registry import ServiceRegistry
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class YahooConnector(Connector):
                         "share price", "equity", "quote", "index")
     WRITE_TOOLS = frozenset({"mark_as_read"})
 
-    DEFAULT_TOOLS = [
+    DEFAULT_TOOLS: ClassVar[list[str]] = [
         "search_by_sender",
         "search_by_subject",
         "search_by_recipient",
@@ -49,7 +49,7 @@ class YahooConnector(Connector):
         "list_mailboxes",
         "get_attachments",
     ]
-    DEFAULT_ENV = {
+    DEFAULT_ENV: ClassVar[dict[str, str]] = {
         "IMAP_HOST": "imap.mail.yahoo.com",
         "IMAP_PORT": "993",
         "IMAP_SECURE": "true",
@@ -72,7 +72,7 @@ class YahooConnector(Connector):
     # Everything runs via imaplib in a worker thread, so it works on any LLM
     # backend. No external mcp-mail-server / npx dependency.
 
-    ALL_TOOLS = [*DEFAULT_TOOLS, "mark_as_read"]
+    ALL_TOOLS: ClassVar[list[Any]] = [*DEFAULT_TOOLS, "mark_as_read"]
 
     def builtin_servers(self) -> dict[str, list]:
         servers: dict[str, list] = {}

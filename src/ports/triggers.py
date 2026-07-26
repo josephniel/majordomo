@@ -50,8 +50,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol, runtime_checkable, TYPE_CHECKING
-
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from .conversation import ConversationRef
@@ -151,16 +150,18 @@ class TriggerSource(Protocol):
     name: str
 
     async def start(self, ctx: TriggerContext) -> None:
-        """Begin producing events. Must not raise: a source that cannot start
-        should log and stay dormant, because one misconfigured watch taking
-        the whole bot down with it is a much worse failure than that watch
-        being quietly unavailable.
+        """Begin producing events.
+
+        Must not raise: a source that cannot start should log and stay dormant, because one
+        misconfigured watch taking the whole bot down with it is a much worse failure than that
+        watch being quietly unavailable.
         """
         ...
 
     async def stop(self) -> None:
-        """Release resources. Must be safe to call when start() failed or was
-        never reached.
+        """Release resources.
+
+        Must be safe to call when start() failed or was never reached.
         """
         ...
 

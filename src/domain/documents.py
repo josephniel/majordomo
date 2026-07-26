@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 from ports import (
     ConversationRef,
@@ -51,7 +51,7 @@ class DocumentLibrary(Faculty):
     TRIGGER_KEYWORDS = ("document", "doc", "pdf", "file", "search", "saved",
                         "read", "attachment", "notes", "paper", "contract")
     WRITE_TOOLS = frozenset({"doc_delete"})
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "doc_list": "Listing saved documents",
         "doc_search": "Searching the documents",
         "doc_read": "Reading a document",
@@ -103,9 +103,10 @@ Prefer doc_search over asking the user to re-send anything."""
         mime: str,
         data: bytes,
     ) -> str | None:
-        """Ingest one attachment. Returns a short note for the model
-        ('[saved to documents: …]') or None when the type isn't ingestible.
-        Never raises.
+        """Ingest one attachment.
+
+        Returns a short note for the model ('[saved to documents: …]') or None when the type isn't
+        ingestible. Never raises.
         """
         if len(data) > MAX_INGEST_BYTES:
             return None

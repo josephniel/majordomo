@@ -25,7 +25,7 @@ Secrets (TELEGRAM_TOKEN, etc.) live in the sibling .env file, not here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 

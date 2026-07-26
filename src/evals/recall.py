@@ -113,9 +113,10 @@ class RecallReport:
 
     @property
     def false_inject_rate(self) -> float:
-        """Share of no-relevant-fact queries that would still inject
-        something. The counterweight to recall@k, which a system that returns
-        everything for every query would score 100% on.
+        """Share of no-relevant-fact queries that would still inject something.
+
+        The counterweight to recall@k, which a system that returns everything for every query would
+        score 100% on.
         """
         if not self.negatives_run:
             return 0.0

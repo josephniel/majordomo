@@ -16,11 +16,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from typing import TYPE_CHECKING
 
 from ports import ConversationRef, ToolTraceReporting
 
 from .formatting import chunk_for_platform
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from adapters.model import Agent
@@ -141,8 +141,9 @@ class RecoveryMixin:
     # ---- Layer 3c: hallucinated send ----
 
     def _detect_missed_send(self, reply: str, agent: Agent) -> bool:
-        """True when the reply claims an email/message was sent but no sending
-        tool ran this turn. Mirrors _detect_missed_schedule.
+        """True when the reply claims an email/message was sent but no sending tool ran this turn.
+
+        Mirrors _detect_missed_schedule.
         """
         if not self._send_claim_tools:
             return False  # no enabled provider can send anyway
@@ -159,10 +160,11 @@ class RecoveryMixin:
     async def _recover_missed_send(
         self, chat_id: ConversationRef, reply: str, agent: Agent,
     ) -> None:
-        """One-shot recovery for a hallucinated send. If the retry still sends
-        nothing, tell the user plainly — an unsent email the user believes was
-        sent is a silent, compounding failure, and the model's own reply must
-        not be relayed because it tends to repeat the false claim.
+        """One-shot recovery for a hallucinated send.
+
+        If the retry still sends nothing, tell the user plainly — an unsent email the user believes
+        was sent is a silent, compounding failure, and the model's own reply must not be relayed
+        because it tends to repeat the false claim.
         """
         if not self._detect_missed_send(reply, agent):
             return

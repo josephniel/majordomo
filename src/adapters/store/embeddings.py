@@ -139,9 +139,10 @@ class Embedder:
 
     @property
     def dim(self) -> int:
-        """Width of the vector(N) column in schema.sql and docs.py. Never
-        hardcode the number anywhere else — a mismatch between this and the
-        DDL is a silent insert failure at runtime.
+        """Width of the vector(N) column in schema.sql and docs.py.
+
+        Never hardcode the number anywhere else — a mismatch between this and the DDL is a silent
+        insert failure at runtime.
 
         Resolved on demand: for a listed model it's a dict lookup, and for an
         unlisted one it pulls in fastembed, which is exactly the cost the lazy
@@ -163,8 +164,9 @@ class Embedder:
         return self._loaded
 
     def embed_query(self, text: str) -> list[float]:
-        """Embed a SEARCH QUERY (short, interrogative). Applies the model's
-        query prefix where it has one.
+        """Embed a SEARCH QUERY (short, interrogative).
+
+        Applies the model's query prefix where it has one.
         """
         text = (text or "").strip()
         if not text:

@@ -114,9 +114,10 @@ class Reranker:
         return self.config.enabled and not self._unavailable
 
     def _model(self):
-        """Lazily load the cross-encoder. Returns None (once, loudly) if it
-        can't be loaded — reranking is an enhancement, not a dependency, and a
-        missing model must degrade to RRF rather than break recall.
+        """Lazily load the cross-encoder.
+
+        Returns None (once, loudly) if it can't be loaded — reranking is an enhancement, not a
+        dependency, and a missing model must degrade to RRF rather than break recall.
         """
         if self._unavailable:
             return None

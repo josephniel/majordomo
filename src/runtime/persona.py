@@ -17,11 +17,11 @@ DI factory that turns one Persona into a running ConversationOrchestrator.
 """
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field, replace
-from typing import Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 
 import yaml
-import contextlib
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -197,6 +197,7 @@ class Persona:
 
     def allowed_tool_names(self, connector) -> list[str] | None:
         """Resolve which of a connector's tools this persona may use.
+
         Returns None = all tools, a list = only those, [] = disabled.
 
         Takes the connector OBJECT (not just a name) so it can read the

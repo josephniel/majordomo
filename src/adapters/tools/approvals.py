@@ -143,14 +143,16 @@ class WriteApprovalGate:
         return self._pending.get(chat_id)
 
     def bind(self, confirmer: Confirmer) -> None:
-        """Attach the platform's approval UI. Called at composition time,
-        before the platform serves any traffic.
+        """Attach the platform's approval UI.
+
+        Called at composition time, before the platform serves any traffic.
         """
         self._confirmer = confirmer
 
     def bind_audit(self, auditor: Auditor) -> None:
-        """Attach the durable decision recorder (approval_log). Optional —
-        auditing must never block or break the write itself.
+        """Attach the durable decision recorder (approval_log).
+
+        Optional — auditing must never block or break the write itself.
         """
         self._auditor = auditor
 
@@ -169,9 +171,10 @@ class WriteApprovalGate:
     # ---- spec wrapping ----
 
     def wrap_spec(self, connector_name: str, spec: ToolSpec) -> ToolSpec:
-        """A copy of `spec` whose handler asks for approval first. Used by
-        GatedToolProvider for WRITE_TOOLS and by the composition root for
-        external stdio MCP tools (gated wholesale — reads too).
+        """A copy of `spec` whose handler asks for approval first.
+
+        Used by GatedToolProvider for WRITE_TOOLS and by the composition root for external stdio MCP
+        tools (gated wholesale — reads too).
         """
         inner = spec.handler
         tool_name = spec.name

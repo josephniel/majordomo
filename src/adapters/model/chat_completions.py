@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import re
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 from ports import Connector, ConversationRef, ToolContext, ToolSpec, as_tool_result
 
@@ -34,7 +35,6 @@ from .base import (
     ToolUseCallback,
     UsageLimitError,
 )
-import contextlib
 
 if TYPE_CHECKING:
     from .history import ConversationHistory
@@ -129,8 +129,9 @@ def _spec_to_openai_function(prefixed_name: str, spec: ToolSpec) -> dict[str, An
 
 
 def _fit_tool_name(name: str, taken: dict[str, Any]) -> str:
-    """OpenAI caps function names at 64 chars. Truncate, but never let two
-    long names silently collapse into the same key — disambiguate with a
+    """OpenAI caps function names at 64 chars.
+
+    Truncate, but never let two long names silently collapse into the same key — disambiguate with a
     short stable hash suffix.
     """
     if len(name) <= 64 and name not in taken:
@@ -145,6 +146,7 @@ def _fit_tool_name(name: str, taken: dict[str, Any]) -> str:
 
 def _extract_failed_generation(exc: BaseException) -> str | None:
     """Pull Groq's `failed_generation` string out of a tool_use_failed 400.
+
     Checks the SDK's parsed body first, then falls back to scraping str(exc).
     """
     body = getattr(exc, "body", None)
@@ -238,7 +240,7 @@ class ChatCompletionsAgent(Agent):
     REQUEST_TIMEOUT: float = 30.0
     # Extra params merged into every chat.completions.create() call. Subclasses
     # use this for vendor-specific knobs (e.g. Gemini's reasoning_effort).
-    EXTRA_COMPLETION_KWARGS: dict[str, Any] = {}
+    EXTRA_COMPLETION_KWARGS: ClassVar[dict[str, Any]] = {}
     # Whether this backend can accept image inputs (OpenAI multimodal parts).
     # Gemini + OpenAI: yes; DeepSeek's chat model: no.
     SUPPORTS_VISION: bool = False
@@ -387,9 +389,9 @@ class ChatCompletionsAgent(Agent):
 
     async def probe_tool_calling(self) -> tuple[bool, str]:
         """Layer-4 canary: does this model actually invoke a tool when asked?
-        Sends a tiny one-tool request (≈100 tokens, safe under any TPM cap).
-        Returns (ok, detail). This is what would have caught gemini-flash
-        silently regressing to hallucinated saves.
+
+        Sends a tiny one-tool request (≈100 tokens, safe under any TPM cap). Returns (ok, detail).
+        This is what would have caught gemini-flash silently regressing to hallucinated saves.
         """
         try:
             await self.start()
@@ -556,9 +558,10 @@ class ChatCompletionsAgent(Agent):
             self._current_task = None
 
     async def _merge_external_tools(self) -> None:
-        """Fold in tools from external stdio MCP servers (once). Keeps
-        connector parity with the Claude path, which mounts these natively —
-        without this, a failover silently loses capabilities (gap A3).
+        """Fold in tools from external stdio MCP servers (once).
+
+        Keeps connector parity with the Claude path, which mounts these natively — without this, a
+        failover silently loses capabilities (gap A3).
         """
         if self._external_tools_loaded or self._external_tools_provider is None:
             return
@@ -631,10 +634,11 @@ class ChatCompletionsAgent(Agent):
         return self._history_floor_id
 
     def _assemble_context(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Budget-based replay of the mirror. Newest rows win the budget;
-        summary rows always ride along; mirrored tool calls surface as
-        inline system notes so this vendor knows what actions were taken
-        (possibly by a different vendor).
+        """Budget-based replay of the mirror.
+
+        Newest rows win the budget; summary rows always ride along; mirrored tool calls surface as
+        inline system notes so this vendor knows what actions were taken (possibly by a different
+        vendor).
 
         The window's lower edge is sticky (see _history_floor) so the replayed
         prefix stays byte-identical between trims — that is what lets a local
@@ -837,6 +841,7 @@ class ChatCompletionsAgent(Agent):
         on_tool_use: ToolUseCallback | None,
     ) -> None:
         """Run each requested tool, appending its `tool` result message.
+
         Shared by the normal path and the malformed-call recovery path.
         """
         for call_id, tool_name, arguments in calls:
@@ -876,7 +881,7 @@ class OpenAIAgent(ChatCompletionsAgent):
     DEFAULT_MODEL = "gpt-4o-mini"
     DEFAULT_BASE_URL = None
     API_KEY_ENV = "OPENAI_API_KEY"
-    REQUIRED_ENV = ["OPENAI_API_KEY"]
+    REQUIRED_ENV: ClassVar[list[str]] = ["OPENAI_API_KEY"]
     SUPPORTS_VISION = True
     SUBSET_TOOLS = True
 
@@ -886,7 +891,7 @@ class DeepSeekAgent(ChatCompletionsAgent):
     DEFAULT_MODEL = "deepseek-chat"
     DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
     API_KEY_ENV = "DEEPSEEK_API_KEY"
-    REQUIRED_ENV = ["DEEPSEEK_API_KEY"]
+    REQUIRED_ENV: ClassVar[list[str]] = ["DEEPSEEK_API_KEY"]
     SUBSET_TOOLS = True
 
 
@@ -905,8 +910,8 @@ class GeminiAgent(ChatCompletionsAgent):
     DEFAULT_MODEL = "gemini-2.5-flash"
     DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
     API_KEY_ENV = "GEMINI_API_KEY"
-    REQUIRED_ENV = ["GEMINI_API_KEY"]
-    EXTRA_COMPLETION_KWARGS = {"reasoning_effort": "low"}
+    REQUIRED_ENV: ClassVar[list[str]] = ["GEMINI_API_KEY"]
+    EXTRA_COMPLETION_KWARGS: ClassVar[dict[str, str]] = {"reasoning_effort": "low"}
     SUPPORTS_VISION = True
     SUBSET_TOOLS = True
     MAX_HISTORY_CHARS = 16_000  # ≈ 4k tokens; conserve free-tier quota
@@ -926,7 +931,7 @@ class GroqAgent(ChatCompletionsAgent):
     DEFAULT_MODEL = "llama-3.3-70b-versatile"
     DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
     API_KEY_ENV = "GROQ_API_KEY"
-    REQUIRED_ENV = ["GROQ_API_KEY"]
+    REQUIRED_ENV: ClassVar[list[str]] = ["GROQ_API_KEY"]
     SUPPORTS_VISION = False
     SUBSET_TOOLS = True
     MAX_HISTORY_CHARS = 10_000  # ≈ 2.5k tokens — leaves headroom under 12k TPM
@@ -957,7 +962,7 @@ class OllamaAgent(ChatCompletionsAgent):
     DEFAULT_BASE_URL = "http://localhost:11434/v1"
     API_KEY_ENV = ""          # keyless
     BASE_URL_ENV = "OLLAMA_BASE_URL"
-    REQUIRED_ENV: list[str] = []
+    REQUIRED_ENV: ClassVar[list[str]] = []
     REQUIRES_API_KEY = False
     SUPPORTS_VISION = True
     # DELIBERATELY OFF, unlike every metered vendor — and it makes turns
@@ -993,7 +998,7 @@ class OllamaAgent(ChatCompletionsAgent):
     # the instance .env for models that don't need to think. Unset = leave the
     # model alone, which is the safe default. Ollama ignores per-request
     # `options` but its /v1 layer does honor reasoning_effort.
-    EXTRA_COMPLETION_KWARGS: dict[str, Any] = {}
+    EXTRA_COMPLETION_KWARGS: ClassVar[dict[str, Any]] = {}
     # NOT a context limit — that is raised on the Ollama server (see
     # docs/DEPLOYING.md). This is purely a LATENCY budget: local prefill runs
     # on the order of 100 tok/s, so every ~100 prompt tokens costs a second of

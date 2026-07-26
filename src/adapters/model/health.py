@@ -27,8 +27,9 @@ FAILURE_COOLDOWN_SECONDS = 120       # other errors: retry sooner
 
 
 class VendorHealthBoard:
-    """Tracks per-vendor "don't retry until" timestamps. Thread-unsafe by
-    design — everything runs on one asyncio loop.
+    """Tracks per-vendor "don't retry until" timestamps.
+
+    Thread-unsafe by design — everything runs on one asyncio loop.
     """
 
     def __init__(

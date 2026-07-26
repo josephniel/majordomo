@@ -6,12 +6,12 @@ by implementing the method, no orchestrator edits required.
 """
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable, TYPE_CHECKING
-
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from .conversation import ConversationRef
     from collections.abc import Sequence
+
+    from .conversation import ConversationRef
 
 
 @runtime_checkable

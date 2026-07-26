@@ -116,8 +116,9 @@ class ReflectionEngine:
             log.exception("reflection for chat %s failed", chat_id)
 
     async def run_reflection(self, chat_id: ConversationRef) -> int:
-        """Extract + save facts from turns past the watermark. Returns the
-        number of facts saved. Public so a CLI/test can invoke it directly.
+        """Extract + save facts from turns past the watermark.
+
+        Returns the number of facts saved. Public so a CLI/test can invoke it directly.
         """
         lock = self._run_locks.setdefault(chat_id, asyncio.Lock())
         if lock.locked():

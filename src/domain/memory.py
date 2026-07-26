@@ -39,7 +39,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from ports import (
     VALID_SCOPES,
@@ -54,6 +54,7 @@ from ports import (
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime; duck-typed otherwise
     from uuid import UUID
+
     from adapters.model.history import ConversationHistory
 
 log = logging.getLogger(__name__)
@@ -154,7 +155,7 @@ class LongTermMemory(Faculty):
     # derived from `context_version` being overridden below — there is no
     # flag to keep in sync. See ToolProvider.has_mutable_prompt_section.
 
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "memory_save": "Saving to memory",
         "memory_recall": "Looking up memory",
         "memory_update": "Updating memory",
@@ -246,9 +247,10 @@ Three principles:
         await self._db.close()
 
     async def refresh_core_cache(self) -> None:
-        """Reload the cached core summaries from the DB. Called at chat
-        startup and after each memory write so the next agent build sees
-        fresh state. Bumps context_version so long-lived agents rebuild.
+        """Reload the cached core summaries from the DB.
+
+        Called at chat startup and after each memory write so the next agent build sees fresh state.
+        Bumps context_version so long-lived agents rebuild.
         """
         try:
             self._memory_core_cache = await self._db.get_core(self._persona_id)
@@ -262,8 +264,10 @@ Three principles:
 
     @property
     def persona_id(self) -> str:
-        """Whose memory this is. Read-only — the tool surface needs it to
-        scope a history search, and nothing may reassign it.
+        """Whose memory this is.
+
+        Read-only — the tool surface needs it to scope a history search, and nothing may reassign
+        it.
         """
         return self._persona_id
 
@@ -299,6 +303,7 @@ Three principles:
         valid_to: datetime | None = None,
     ) -> tuple[str, MemoryEntry | None]:
         """Validate → dedup → insert → schedule auto-compaction.
+
         Returns (human-readable outcome, entry-or-None).
 
         Still an APPEND. It is the right shape when a caller already knows the
@@ -413,8 +418,9 @@ Three principles:
         )
 
     async def get(self, entry_id: UUID) -> MemoryEntry | None:
-        """One entry by id, regardless of persona. Prefer `resolve_active`
-        when acting on an id the MODEL supplied.
+        """One entry by id, regardless of persona.
+
+        Prefer `resolve_active` when acting on an id the MODEL supplied.
         """
         return await self._db.get_entry(entry_id)
 
@@ -493,23 +499,27 @@ Three principles:
         return True
 
     async def link(self, from_id: UUID, to_id: UUID, relation: str = "relates_to") -> bool:
-        """Create a typed edge. Also used by the reflection engine's
-        auto-linking. Returns whether a NEW edge was created (idempotent).
+        """Create a typed edge.
+
+        Also used by the reflection engine's auto-linking. Returns whether a NEW edge was created
+        (idempotent).
         """
         return await self._db.add_link(from_id, to_id, relation)
 
     async def unlink(
         self, from_id: UUID, to_id: UUID, relation: str | None = None
     ) -> bool:
-        """Remove one edge, or every edge from_id->to_id when relation is
-        None. Returns whether anything was removed.
+        """Remove one edge, or every edge from_id->to_id when relation is None.
+
+        Returns whether anything was removed.
         """
         return await self._db.remove_link(from_id, to_id, relation)
 
     async def set_pinned(self, entry_id: UUID, pinned: bool) -> bool:
-        """Pin/unpin. Refreshes the cache on success because pinned facts
-        render verbatim into the system prompt — a pin that doesn't take
-        effect until the next unrelated write is a pin the user can't see.
+        """Pin/unpin.
+
+        Refreshes the cache on success because pinned facts render verbatim into the system prompt —
+        a pin that doesn't take effect until the next unrelated write is a pin the user can't see.
         """
         ok = await self._db.set_pinned(entry_id, pinned)
         if ok:
@@ -539,6 +549,7 @@ Three principles:
 
     async def auto_recall(self, query: str) -> str:
         """Top relevant facts for this message, formatted for injection.
+
         Empty string when nothing clears the relevance bar.
         """
         query = (query or "").strip()
@@ -581,10 +592,10 @@ Three principles:
     # ---- prompt rendering ----
 
     def _render_pinned(self) -> str:
-        """Pinned facts, verbatim, each with its id so the agent can act on
-        it (update/forget/link). Deliberately NOT subject to the core-narrative
-        char budget — these are the facts the operator/agent decided must never
-        blur away.
+        """Pinned facts, verbatim, each with its id so the agent can act on it (update/forget/link).
+
+        Deliberately NOT subject to the core-narrative char budget — these are the facts the
+        operator/agent decided must never blur away.
         """
         lines = []
         for e in self._pinned_cache:

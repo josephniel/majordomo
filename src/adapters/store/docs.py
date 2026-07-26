@@ -207,8 +207,9 @@ class DocumentStore:
         return int(doc_id), len(chunks)
 
     async def prune(self, persona_id: str, older_than_days: int) -> int:
-        """Delete documents older than N days (chunks cascade). Disabled by
-        default in the retention policy — these are user-saved files.
+        """Delete documents older than N days (chunks cascade).
+
+        Disabled by default in the retention policy — these are user-saved files.
         """
         if older_than_days <= 0:
             return 0

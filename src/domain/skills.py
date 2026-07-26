@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import yaml
 
@@ -108,7 +108,7 @@ class SkillsLibrary(Faculty):
     # from `context_version` (which tracks note mtimes) being overridden
     # below — there is no separate flag to keep in sync. See
     # ToolProvider.has_mutable_prompt_section.
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "skill_read": "Reading a skill note",
         "skill_save": "Saving a skill note",
         "skill_delete": "Deleting a skill note",
@@ -294,9 +294,9 @@ class SkillsLibrary(Faculty):
         return await self.auto_inject(text)
 
     async def auto_inject(self, text: str) -> str:
-        """Skills whose keywords appear in the user's message, formatted as a
-        context block. `always` skills are excluded — they already live in
-        the system prompt.
+        """Skills whose keywords appear in the user's message, formatted as a context block.
+
+        `always` skills are excluded — they already live in the system prompt.
         """
         haystack = (text or "").lower()
         if not haystack:

@@ -51,11 +51,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from uuid import UUID
     from datetime import datetime
+    from uuid import UUID
 
 # The memory-scope taxonomy (mirrors the type system of a file-based second
 # brain). Single source of truth: the storage schema's CHECK constraints, the
@@ -272,9 +272,10 @@ class MemoryStore(Protocol):
         content: str,
         threshold: float = 0.90,
     ) -> tuple[MemoryEntry, float] | None:
-        """Nearest active entry in the same compartment, if it clears
-        `threshold`. The dedup hook: without it the model re-learns the same
-        fact every time the user mentions it.
+        """Nearest active entry in the same compartment, if it clears `threshold`.
+
+        The dedup hook: without it the model re-learns the same fact every time the user mentions
+        it.
         """
         ...
 
@@ -301,8 +302,9 @@ class MemoryStore(Protocol):
         domain_key: str | None = None,
         limit: int = 8,
     ) -> list[Scored]:
-        """Ranked relevant entries, best-first. See the module docstring for
-        what the scores must mean — the injection policy depends on it.
+        """Ranked relevant entries, best-first.
+
+        See the module docstring for what the scores must mean — the injection policy depends on it.
         """
         ...
 

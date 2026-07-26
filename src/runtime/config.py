@@ -84,7 +84,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -337,14 +337,17 @@ class Resolved:
 
 
 class ConfigError(Exception):
-    """A configuration file is malformed. Distinct from a missing one, which
-    is normal — every layer is optional.
+    """A configuration file is malformed.
+
+    Distinct from a missing one, which is normal — every layer is optional.
     """
 
 
 def _dig(tree: Mapping[str, Any], path: str) -> Any:
-    """Walk a dotted path. Returns None for a missing key OR an explicit
-    null, which are treated the same: unset, defer to the next layer.
+    """Walk a dotted path.
+
+    Returns None for a missing key OR an explicit null, which are treated the same: unset, defer to
+    the next layer.
     """
     node: Any = tree
     for part in path.split("."):
@@ -430,8 +433,10 @@ def interpolate(tree: Any, env: Mapping[str, str],
 
 def load_yaml(path: Path, env: Mapping[str, str],
               tracker: InterpolationTracker | None = None) -> dict[str, Any]:
-    """Parse one config file. A missing file is an empty layer, not an error
-    — every layer is optional and the defaults are complete.
+    """Parse one config file.
+
+    A missing file is an empty layer, not an error — every layer is optional and the defaults are
+    complete.
     """
     if not path.exists():
         return {}
@@ -474,9 +479,10 @@ class ConfigResolver:
         persona_dir: Path | None = None,
         env: Mapping[str, str] | None = None,
     ) -> ConfigResolver:
-        """Read both YAML layers. Each is optional — a deployment with no
-        config.yaml anywhere still boots on the environment and the
-        defaults, which is what keeps the migration incremental.
+        """Read both YAML layers.
+
+        Each is optional — a deployment with no config.yaml anywhere still boots on the environment
+        and the defaults, which is what keeps the migration incremental.
         """
         env = dict(env if env is not None else os.environ)
         ht, pt = InterpolationTracker(), InterpolationTracker()
@@ -527,9 +533,10 @@ class ConfigResolver:
                 if s.scope is Scope.HOST and _dig(self.persona, s.path) is not None]
 
     def literal_secrets(self) -> list[tuple[Setting, str]]:
-        """Secrets written as literals into a YAML file rather than
-        referenced with ${VAR}. config.yaml is committed and this repo is
-        public, so this is the check that keeps it safe to commit.
+        """Secrets written as literals into a YAML file rather than referenced with ${VAR}.
+
+        config.yaml is committed and this repo is public, so this is the check that keeps it safe to
+        commit.
         """
         out: list[tuple[Setting, str]] = []
         for s in SETTINGS:

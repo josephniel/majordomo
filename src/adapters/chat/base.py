@@ -23,7 +23,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 # RE-EXPORTED, not merely annotated with. Platform adapters import Attachment
 # and ConversationRef from here rather than reaching into `ports`, so these
@@ -101,7 +101,7 @@ class ChatPlatform(ABC):
     # Env vars this implementation expects in the per-instance .env. PersonaRuntime
     # validates them after loading instances/<persona_id>/.env. Future
     # providers (Discord, WhatsApp) declare their own contract here.
-    REQUIRED_ENV: list[str] = []
+    REQUIRED_ENV: ClassVar[list[str]] = []
 
     @classmethod
     @abstractmethod

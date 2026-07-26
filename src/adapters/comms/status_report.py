@@ -64,8 +64,9 @@ class StatusReporter:
     # ---- heartbeat (persona liveness on the dashboard) ----
 
     def start_heartbeat(self) -> None:
-        """Begin the periodic liveness push. Call from an async context
-        (the orchestrator's startup hook).
+        """Begin the periodic liveness push.
+
+        Call from an async context (the orchestrator's startup hook).
         """
         if self._heartbeat_task is not None and not self._heartbeat_task.done():
             return
@@ -94,9 +95,10 @@ class StatusReporter:
             pass
 
     def push_health(self, vendors: dict[str, float]) -> None:
-        """Schedule a push of vendor-health state. Sync + non-blocking so it
-        can be called from the health board's change hook. No-op outside an
-        event loop.
+        """Schedule a push of vendor-health state.
+
+        Sync + non-blocking so it can be called from the health board's change hook. No-op outside
+        an event loop.
         """
         payload = {
             "project": self._project,

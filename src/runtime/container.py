@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import os
 from functools import cached_property
+from typing import TYPE_CHECKING
 
 from dotenv import dotenv_values, load_dotenv
 
@@ -67,7 +68,6 @@ from .persona import Persona
 from .providers import CONNECTOR_NAMES, FACULTY_NAMES, PROVIDERS_BY_NAME
 from .settings import RuntimeSettings
 from .vendors import VENDORS, VENDORS_BY_NAME
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -210,10 +210,10 @@ class PersonaRuntime:
 
     @cached_property
     def status_reporter(self):
-        """Push channel to the cross-project status dashboard
-        (status.example.com). None when STATUS_PUSH_URL is unset.
-        Carries both the persona heartbeat (liveness on the board) and
-        vendor-health changes.
+        """Push channel to the cross-project status dashboard (status.example.com).
+
+        None when STATUS_PUSH_URL is unset. Carries both the persona heartbeat (liveness on the
+        board) and vendor-health changes.
         """
         push_url = self.settings.status_push_url
         if not push_url:
@@ -262,8 +262,10 @@ class PersonaRuntime:
 
     @cached_property
     def reflection_engine(self) -> ReflectionEngine | None:
-        """Idle-triggered fact extraction. Only exists when the persona has
-        the memory connector enabled — reflection writes through it.
+        """Idle-triggered fact extraction.
+
+        Only exists when the persona has the memory connector enabled — reflection writes through
+        it.
         """
         if not self.persona.is_connector_enabled("memory"):
             return None
@@ -282,10 +284,11 @@ class PersonaRuntime:
 
     @cached_property
     def approval_gate(self) -> WriteApprovalGate | None:
-        """Layer 5: per-call operator approval for write tools. None when the
-        persona opts out (write_approval: false). The platform confirmer is
-        bound in create_conversation(); before that (CLI contexts) the gate
-        allows, since no chat traffic exists yet.
+        """Layer 5: per-call operator approval for write tools.
+
+        None when the persona opts out (write_approval: false). The platform confirmer is bound in
+        create_conversation(); before that (CLI contexts) the gate allows, since no chat traffic
+        exists yet.
         """
         if not self.persona.write_approval:
             return None
@@ -294,10 +297,10 @@ class PersonaRuntime:
     # ---- tool providers (registry-driven; see runtime/providers.py) ----
 
     def provider(self, name: str) -> ToolProvider:
-        """The persona's singleton instance of one provider, built on first
-        use. Lazy because constructing some of them (memory, documents)
-        demands runtime resources a persona that hasn't enabled them
-        shouldn't have to supply.
+        """The persona's singleton instance of one provider, built on first use.
+
+        Lazy because constructing some of them (memory, documents) demands runtime resources a
+        persona that hasn't enabled them shouldn't have to supply.
         """
         cached = self._provider_cache.get(name)
         if cached is None:
@@ -352,8 +355,9 @@ class PersonaRuntime:
         return PlatformConfig.load(self.persona.dir)
 
     def load_env(self) -> None:
-        """Load the per-instance .env into process env. Idempotent (load_dotenv
-        won't overwrite vars already set by the caller's environment).
+        """Load the per-instance .env into process env.
+
+        Idempotent (load_dotenv won't overwrite vars already set by the caller's environment).
 
         Called explicitly by cli.py before accessing active_services, and
         called again implicitly when `platform` is first accessed. Safe to
@@ -842,11 +846,11 @@ class PersonaRuntime:
 
     @cached_property
     def heartbeat_source(self):
-        """Proactive check-in from persona.yaml. The conversation defaults to
-        the first allowed user's DM (on Telegram, DM chat_id == user_id).
-        The prompt loader re-reads persona.yaml on every fire, so prompt
-        edits apply without a restart; fires run on a dedicated background
-        agent.
+        """Proactive check-in from persona.yaml.
+
+        The conversation defaults to the first allowed user's DM (on Telegram, DM chat_id ==
+        user_id). The prompt loader re-reads persona.yaml on every fire, so prompt edits apply
+        without a restart; fires run on a dedicated background agent.
         """
         hb = self.persona.heartbeat
         if not hb or not hb.get("cron"):
@@ -894,8 +898,9 @@ class PersonaRuntime:
 
     @cached_property
     def retention_job(self):
-        """Daily prune of the growth tables. Documents arm is off unless
-        RETENTION_DOCS_DAYS is set — see adapters/trigger/retention.py.
+        """Daily prune of the growth tables.
+
+        Documents arm is off unless RETENTION_DOCS_DAYS is set — see adapters/trigger/retention.py.
         """
         from adapters.trigger import RetentionJob
         docs_store = None
@@ -929,8 +934,9 @@ class PersonaRuntime:
 
     @cached_property
     def mail_watch_source(self):
-        """Push-style mail alerts. None unless persona.yaml has mail_watch
-        and the gmail connector is enabled.
+        """Push-style mail alerts.
+
+        None unless persona.yaml has mail_watch and the gmail connector is enabled.
         """
         cfg = self.persona.mail_watch
         if not cfg or not self.persona.is_connector_enabled("gmail"):
@@ -955,9 +961,9 @@ class PersonaRuntime:
     @cached_property
     def splitwise_watch_source(self):
         """Splitwise expense mirroring (no webhooks upstream — polling).
-        None unless persona.yaml has splitwise_watch and both the splitwise
-        and budget connectors are enabled (the fire's whole job is writing
-        Splitwise activity into the budget ledger).
+
+        None unless persona.yaml has splitwise_watch and both the splitwise and budget connectors
+        are enabled (the fire's whole job is writing Splitwise activity into the budget ledger).
         """
         cfg = self.persona.splitwise_watch
         if not cfg or not self.persona.is_connector_enabled("splitwise"):
@@ -990,8 +996,10 @@ class PersonaRuntime:
 
     @cached_property
     def webhook_server(self):
-        """Event-driven triggers. None unless persona.yaml configures
-        webhooks AND WEBHOOK_TOKEN is set (refuse to run token-less).
+        """Event-driven triggers.
+
+        None unless persona.yaml configures webhooks AND WEBHOOK_TOKEN is set (refuse to run
+        token-less).
         """
         cfg = self.persona.webhooks
         if not cfg or not cfg.get("triggers"):

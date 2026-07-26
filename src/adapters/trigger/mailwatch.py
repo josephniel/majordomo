@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -80,11 +80,11 @@ class MailWatcher:
     # ---- polling ----
 
     async def check(self) -> str | None:
-        """Poll every Gmail profile. Returns a context block describing NEW
-        messages (caller must commit() after delivering), or None when
-        there's nothing new (state advances immediately — nothing to lose).
-        Never raises — a broken profile logs and is skipped; the others
-        still report.
+        """Poll every Gmail profile.
+
+        Returns a context block describing NEW messages (caller must commit() after delivering), or
+        None when there's nothing new (state advances immediately — nothing to lose). Never raises —
+        a broken profile logs and is skipped; the others still report.
         """
         now = int(time.time())
         lines: list[str] = []
@@ -103,8 +103,9 @@ class MailWatcher:
         return "\n".join(lines)
 
     def commit(self) -> None:
-        """Apply the state staged by the last check(). Call after the alert
-        turn was delivered (or when check() reported nothing).
+        """Apply the state staged by the last check().
+
+        Call after the alert turn was delivered (or when check() reported nothing).
         """
         self._state.update(self._pending)
         self._pending = {}

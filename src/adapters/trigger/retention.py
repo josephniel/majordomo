@@ -74,8 +74,10 @@ class RetentionJob:
         return self._policy
 
     async def run(self) -> dict[str, int]:
-        """Prune every configured arm. Per-arm failures are isolated —
-        retention must never take the bot down. Returns table -> deleted.
+        """Prune every configured arm.
+
+        Per-arm failures are isolated — retention must never take the bot down. Returns table ->
+        deleted.
         """
         deleted: dict[str, int] = {}
         p = self._policy

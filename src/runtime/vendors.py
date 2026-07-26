@@ -13,14 +13,14 @@ LLM_CHAIN overrides it entirely.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from adapters.model import DeepSeekAgent, GeminiAgent, GroqAgent, OllamaAgent, OpenAIAgent
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
-    from .settings import RuntimeSettings
     from collections.abc import Callable
+
+    from .settings import RuntimeSettings
 
 
 @dataclass(frozen=True)

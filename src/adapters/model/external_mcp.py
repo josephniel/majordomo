@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import AsyncExitStack
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ports import ServiceCatalog, ToolContext, ToolResult, ToolSpec
 
@@ -48,12 +48,11 @@ class ExternalMCPManager:
         skip_profiles: Callable[[str], bool] | None = None,
         tool_filter: Callable[[str, str], bool] | None = None,
     ) -> None:
-        """
-        Config        — the persona's ServiceRegistry (reads connectors.yaml).
-        skip_profiles — profile_name -> True when an in-process server already
-                        covers it (mirrors AnthropicOptionsBuilder's dedup).
-        tool_filter   — (profile_name, tool_name) -> allowed? Applies the
-                        persona's read-only / allowlist policy.
+        """Config        — the persona's ServiceRegistry (reads connectors.yaml).
+
+        skip_profiles — profile_name -> True when an in-process server already covers it (mirrors
+        AnthropicOptionsBuilder's dedup). tool_filter — (profile_name, tool_name) -> allowed?
+        Applies the persona's read-only / allowlist policy.
         """
         self._config = config
         self._skip_profiles = skip_profiles or (lambda _p: False)
@@ -62,8 +61,9 @@ class ExternalMCPManager:
         self._specs: dict[str, ToolSpec] | None = None
 
     async def get_tool_specs(self) -> dict[str, ToolSpec]:
-        """Connect (once) and return the merged tool map. Safe to call from
-        multiple agents; subsequent calls return the cached map.
+        """Connect (once) and return the merged tool map.
+
+        Safe to call from multiple agents; subsequent calls return the cached map.
         """
         if self._specs is not None:
             return dict(self._specs)

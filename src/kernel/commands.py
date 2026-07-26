@@ -8,9 +8,9 @@ _cancel_chat().
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from ports import ConversationRef, VendorIntrospectable
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from adapters.chat import CommandEvent

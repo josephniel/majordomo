@@ -17,16 +17,16 @@ import json
 import logging
 import sys
 from datetime import UTC, datetime
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
 from ports import Connector, ToolContext, ToolResult, tool
 
-
 if TYPE_CHECKING:
-    from .registry import ServiceRegistry
     from pathlib import Path
+
+    from .registry import ServiceRegistry
 
 log = logging.getLogger(__name__)
 
@@ -152,7 +152,7 @@ class BudgetConnector(Connector):
                         "track", "ledger")
     WRITE_TOOLS = frozenset({"record_transaction", "record_split"})
 
-    TOOL_NAMES = [
+    TOOL_NAMES: ClassVar[list[str]] = [
         # read
         "list_accounts",
         "list_tags",
@@ -162,7 +162,7 @@ class BudgetConnector(Connector):
         "record_split",
     ]
 
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "list_accounts": "Listing budget accounts",
         "list_tags": "Listing budget tags",
         "recent_transactions": "Reading recent transactions",

@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -47,7 +48,6 @@ from .base import (
     ToolUseCallback,
     UsageLimitError,
 )
-import contextlib
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -143,9 +143,10 @@ async def summarize_with_subscription_auth(
 
 
 async def _sdk_one_shot(prompt: str, model: str) -> str:
-    """Minimal stateless completion via ClaudeSDKClient. No tools, no MCP,
-    no system prompt — just send `prompt` as the user turn and read the
-    reply. Client is created and torn down per call (~200ms cold start).
+    """Minimal stateless completion via ClaudeSDKClient.
+
+    No tools, no MCP, no system prompt — just send `prompt` as the user turn and read the reply.
+    Client is created and torn down per call (~200ms cold start).
     """
     opts = ClaudeAgentOptions(
         model=model,
@@ -366,7 +367,7 @@ class AnthropicOptionsBuilder:
 class AnthropicAgent(Agent):
     """One persistent Claude conversation per chat (session-based)."""
 
-    REQUIRED_ENV: list[str] = []  # Subscription-auth fallback handles missing key.
+    REQUIRED_ENV: ClassVar[list[str]] = []  # Subscription-auth fallback handles missing key.
     USES_SERVER_SIDE_HISTORY = True  # Claude sessions live CLI-side.
 
     def __init__(
@@ -410,10 +411,10 @@ class AnthropicAgent(Agent):
             await self._open(None)
 
     async def reset_session(self) -> None:
-        """Abandon the resumed session and open a fresh one. The caller
-        (CascadingAgent rotation) reseeds context from the mirror; without
-        this, a resumed session replays the entire conversation as input
-        tokens on every turn, forever.
+        """Abandon the resumed session and open a fresh one.
+
+        The caller (CascadingAgent rotation) reseeds context from the mirror; without this, a
+        resumed session replays the entire conversation as input tokens on every turn, forever.
         """
         await self._discard_client()
         self._session_id = None
@@ -492,6 +493,7 @@ class AnthropicAgent(Agent):
 
     def _capture_usage(self, msg: ResultMessage) -> None:
         """Pull token usage off the ResultMessage (previously discarded).
+
         Shape varies slightly across SDK versions — read defensively.
         """
         try:

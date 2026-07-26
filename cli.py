@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
 
@@ -27,7 +28,6 @@ import yaml
 
 from adapters.tools import Connector, ServiceRegistry
 from runtime import Persona, PersonaRuntime
-import contextlib
 
 
 class ConnectorCLI:
@@ -438,6 +438,7 @@ async def _export_memory(container, out_dir: str) -> int:
 
 async def _reembed_memory(container) -> None:
     """Re-embed every memory entry with the current local embedding model.
+
     Idempotent; entries already embedded by the current model are skipped.
     """
     db = container.memory_database

@@ -113,8 +113,9 @@ Output ONLY the JSON array. No prose, no code fences.
 
 
 def _parse_proposals(raw: str) -> list[dict[str, Any]]:
-    """Extract the JSON array from a model reply. Same defensiveness as the
-    extraction and verdict parsers: fences and preamble are routine.
+    """Extract the JSON array from a model reply.
+
+    Same defensiveness as the extraction and verdict parsers: fences and preamble are routine.
     """
     text = (raw or "").strip()
     if not text:

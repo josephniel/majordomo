@@ -18,8 +18,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
-from typing import Any, Protocol, TYPE_CHECKING
-
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol
 
 if TYPE_CHECKING:
     from .messaging import Attachment
@@ -45,9 +44,10 @@ class Summarizer(ABC):
 
     @abstractmethod
     async def summarize(self, prompt: str, *, deep: bool = False) -> str:
-        """Run the prompt through a summarization model. `deep=True` picks a
-        more capable model. Returns empty string on failure so callers can
-        treat compaction as best-effort.
+        """Run the prompt through a summarization model.
+
+        `deep=True` picks a more capable model. Returns empty string on failure so callers can treat
+        compaction as best-effort.
         """
 
 
@@ -71,8 +71,9 @@ ToolUseCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
 class UsageLimitError(Exception):
-    """Vendor signaled it can't service this request now: rate-limit, overload,
-    or quota exhausted. CascadingAgent catches this and rotates.
+    """Vendor signaled it can't service this request now: rate-limit, overload, or quota exhausted.
+
+    CascadingAgent catches this and rotates.
     """
 
 
@@ -80,7 +81,7 @@ class Agent(ABC):
     """Vendor-neutral conversational agent contract."""
 
     # Per-impl env-var contract (e.g. ['OPENAI_API_KEY']). Empty if unconditional.
-    REQUIRED_ENV: list[str] = []
+    REQUIRED_ENV: ClassVar[list[str]] = []
 
     # True when the vendor keeps conversation history server-side (Claude
     # sessions). CascadingAgent uses this to know which agents need a
@@ -92,7 +93,15 @@ class Agent(ABC):
     # {"input_tokens": int?, "output_tokens": int?, "tool_calls": int}.
     # Concrete impls overwrite this per turn; CascadingAgent reads it into
     # the turn_log after each success.
-    last_turn_usage: dict[str, Any] = {}
+    #
+    # DECLARED, NOT DEFAULTED. This is per-instance state, and a mutable
+    # class-level default is shared by every Agent in the process — one impl
+    # doing `self.last_turn_usage["k"] = v` without assigning a fresh dict
+    # first would write into every other agent's usage. Nothing does that
+    # today only because each impl happens to assign in __init__, which is a
+    # property of the current implementations rather than of this contract.
+    # The one reader (CascadingAgent) already uses getattr with a default.
+    last_turn_usage: dict[str, Any]
 
     @property
     def model_name(self) -> str:
@@ -120,10 +129,10 @@ class Agent(ABC):
         attachments: list[Attachment] | None = None,
         current_row_id: int | None = None,
     ) -> str:
-        """Run one turn. `text` is the current user message, sent verbatim.
-        `current_row_id`: when the caller already mirrored this turn into
-        ConversationHistory, its row id — mirror-replaying vendors exclude
-        that row so the message isn't duplicated. Server-side-history
-        vendors ignore it.
+        """Run one turn.
+
+        `text` is the current user message, sent verbatim. `current_row_id`: when the caller already
+        mirrored this turn into ConversationHistory, its row id — mirror-replaying vendors exclude
+        that row so the message isn't duplicated. Server-side-history vendors ignore it.
         """
         ...

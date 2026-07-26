@@ -14,10 +14,9 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
-
 
 if TYPE_CHECKING:
     from ports import ConversationRef
@@ -170,8 +169,9 @@ class CommsLog:
         return dict(row) if row else None
 
     async def prune(self, older_than_days: int) -> int:
-        """Delete control-room rows older than N days. The table is shared
-        across instances on the same DB, so pruning is age-based, not
+        """Delete control-room rows older than N days.
+
+        The table is shared across instances on the same DB, so pruning is age-based, not
         per-instance — the room's history is one conversation.
         """
         if older_than_days <= 0:
@@ -186,9 +186,10 @@ class CommsLog:
     # ---- subscribe (LISTEN/NOTIFY) ----
 
     async def subscribe(self, callback: EntryCallback) -> None:
-        """Begin pushing new comms_log rows to `callback`. Holds one
-        dedicated connection from the pool for the lifetime of the
-        subscription. Call unsubscribe() / close() to release.
+        """Begin pushing new comms_log rows to `callback`.
+
+        Holds one dedicated connection from the pool for the lifetime of the subscription. Call
+        unsubscribe() / close() to release.
         """
         if self._listener_conn is not None:
             await self.unsubscribe()

@@ -10,6 +10,8 @@ that every vendor's options builder consumes.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ports.llm import (
     Agent,
     PersonaLike,
@@ -18,7 +20,6 @@ from ports.llm import (
     UsageLimitError,
 )
 from ports.messaging import Attachment
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ports import Connector, ServiceCatalog

@@ -18,10 +18,11 @@ ambient state.)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections import deque
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from adapters.chat import ChatPlatform, InboundMessage
 from adapters.comms import CommsLog, CommsRelay
@@ -39,13 +40,13 @@ from .formatting import chunk_for_platform, is_cancel_intent
 from .ingestion import ingest_attachments
 from .proactive import ProactiveMixin
 from .recovery import RecoveryMixin
-import contextlib
 
 if TYPE_CHECKING:
-    from adapters.tools import ServiceRegistry
     from adapters.model import Agent, ConversationHistory
-    from .sessions import SessionStore
+    from adapters.tools import ServiceRegistry
     from domain import ReflectionEngine
+
+    from .sessions import SessionStore
 
 log = logging.getLogger(__name__)
 
@@ -282,9 +283,10 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         attachments=None,
         typing: bool = True,
     ) -> str:
-        """THE single place an agent turn runs. Registers the task in
-        _pending_turns so /cancel reaches user, scheduled, AND recovery
-        turns. Caller holds the chat lock and owns exception handling.
+        """THE single place an agent turn runs.
+
+        Registers the task in _pending_turns so /cancel reaches user, scheduled, AND recovery turns.
+        Caller holds the chat lock and owns exception handling.
         """
         async def _run() -> str:
             if typing:
@@ -576,11 +578,11 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
 
     async def _reload_if_config_changed(self) -> None:
         """Mark every chat's agent stale when connectors.yaml changes.
-        Each chat then swaps its own agent under its OWN lock on its next
-        turn (via _refresh_agent_if_stale) — stopping all agents from here
-        would yank a client out from under another chat's in-flight turn
-        (we run with concurrent_updates, so chat B can be mid-send while
-        chat A holds only its own lock). Session ids survive the swap.
+
+        Each chat then swaps its own agent under its OWN lock on its next turn (via
+        _refresh_agent_if_stale) — stopping all agents from here would yank a client out from under
+        another chat's in-flight turn (we run with concurrent_updates, so chat B can be mid-send
+        while chat A holds only its own lock). Session ids survive the swap.
         """
         current = self._config.get_mtime()
         if self._config_mtime == 0.0:
@@ -623,8 +625,9 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             log.exception("could not deliver message to chat %s", chat_id)
 
     def _format_tool_status(self, tool_name: str, args: dict[str, Any]) -> str:
-        """Connector-registry-driven status text. Falls back to a generic
-        'Working on <server>/<tool>' for unknown tools.
+        """Connector-registry-driven status text.
+
+        Falls back to a generic 'Working on <server>/<tool>' for unknown tools.
         """
         if tool_name.startswith("mcp__"):
             parts = tool_name.split("__", 2)
