@@ -334,6 +334,28 @@ vectors out from under a running process. Create it once:
     docker exec telegram-bot-postgres \
         psql -U tc -d postgres -c 'CREATE DATABASE telegram_claude_test OWNER tc;'
 
+**This paragraph was true of the tests and false of the recall eval for a
+while, and the eval was migrating production.** Two changes, separately
+harmless: `MemoryDatabase.connect()` started applying the schema (so the
+memory port's lifecycle contract could be just "connect"), and the eval's DSN
+fallback named `telegram_claude` rather than `telegram_claude_test`. Together
+they made a read-only benchmark a production migration.
+
+It went unnoticed because the harness *is* careful — with rows. It seeds a
+throwaway `_eval_recall_*` persona and deletes it in a `finally`, which is the
+risk anyone thinks to check. Owning the schema and reading the data are
+different privileges, and only one of them was guarded.
+
+Both are now closed, and both are asserted in `tests/unit/test_eval_safety.py`:
+
+- `MemoryDatabase(dsn, migrate=False)` exists for callers that must be certain
+  they cannot move DDL. The composition root keeps the default.
+- `eval-recall` defaults to the test database, does not migrate, and refuses
+  with instructions (rather than an asyncpg traceback) when the schema is
+  absent. Pass `--migrate` for a scratch database you own.
+- A test pins the eval's default DSN equal to conftest's, because two defaults
+  that can drift apart is exactly how this happened.
+
 ## External status dashboard (optional)
 
 The vendor health board is local and authoritative — failover must work

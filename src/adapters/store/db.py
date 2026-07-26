@@ -175,12 +175,25 @@ class MemoryDatabase:
     `MemoryStore`'s lifecycle contract — the faculty used to call
     `init_schema()` too, and "you must run this Postgres-shaped migration
     step" is not something a port can ask of a store that isn't Postgres.
-    `init_schema` stays public for tests and the eval harness, and is
-    idempotent, so calling it again costs nothing.
+    `init_schema` stays public and is idempotent, so calling it again costs
+    nothing.
+
+    `migrate=False` opts out of that, for a caller that must be certain it
+    cannot move DDL on a database it does not own. This exists because
+    connect()-applies-schema turned every read-only consumer into a
+    migration: the recall eval — a benchmark, and documented as safe to
+    point at a live database — silently migrated production the first time
+    it ran after that change. It seeds and deletes its own throwaway
+    persona, so no DATA was ever at risk; the schema was, and nothing in the
+    call said so.
+
+    Owning the schema and reading the data are different privileges. Only
+    the composition root has the first.
     """
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, *, migrate: bool = True) -> None:
         self._dsn = dsn
+        self._migrate = migrate
         self._pool: Optional[asyncpg.Pool] = None
 
     async def connect(self) -> None:
@@ -199,7 +212,8 @@ class MemoryDatabase:
             self._dsn, min_size=1, max_size=4, init=_init_conn,
         )
         log.info("memory database connected (dsn host=%s)", _redact_dsn(self._dsn))
-        await self.init_schema()
+        if self._migrate:
+            await self.init_schema()
 
     async def close(self) -> None:
         if self._pool is not None:

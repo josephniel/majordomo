@@ -8,6 +8,7 @@ the failure is silent otherwise.
 Usage:
     ./manage eval-recall                 # against the local test Postgres
     ./manage eval-recall --verbose       # per-case detail incl. what won
+    ./manage eval-recall --migrate       # also create/upgrade the schema
 
 Seeds a throwaway persona from evals/recall_cases.yaml, runs every case
 through MemoryDatabase.recall_scored, and reports:
@@ -20,13 +21,22 @@ through MemoryDatabase.recall_scored, and reports:
                 ordering in a way recall@k is not
     p50/p95   — recall latency, so an index regression is visible too
 
-Every run tears its persona down. Nothing here touches production rows.
+Every run tears its persona down, so pointing this at a database holding real
+personas cannot lose their data.
+
+It CAN, however, change their schema — and for a while it silently did.
+`MemoryDatabase.connect()` applies migrations, this harness's DSN fallback
+named the live database, and the two together turned a read-only benchmark
+into a production migration. Both are fixed: the default is the test database
+now, and schema changes need an explicit `--migrate`. Being careful with rows
+is not the same as being safe.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import os
+import re
 import statistics
 import time
 import uuid
@@ -40,9 +50,17 @@ from adapters.store.db import MemoryDatabase
 
 DEFAULT_CASES = Path(__file__).resolve().parents[2] / "evals" / "recall_cases.yaml"
 
+# The SEPARATE test database, matching tests/conftest.py and the CI service.
+#
+# This fallback said `telegram_claude` — the LIVE database — which contradicted
+# both conftest and the architecture notes' claim that "tests and evals default
+# to a separate database". Nobody noticed because the harness is careful with
+# DATA (throwaway persona, deleted in a finally) and that is the risk anyone
+# thinks to check. What it was not careful with was DDL: once connect() started
+# applying the schema, running the benchmark migrated production.
 DEFAULT_DSN = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgres://tc:tc_local_dev@127.0.0.1:5433/telegram_claude",
+    "postgres://tc:tc_local_dev@127.0.0.1:5433/telegram_claude_test",
 )
 
 # The k values that matter. 4 mirrors AUTO_RECALL_LIMIT (what gets injected
@@ -262,19 +280,70 @@ async def run_negatives(
             )
 
 
+async def _require_schema(db: MemoryDatabase, dsn: str) -> None:
+    """Fail with instructions rather than a driver error.
+
+    Without migrate=True the harness will not create the tables, so a fresh
+    scratch database now fails here instead of at the first INSERT. The
+    message has to say what to actually do, or "don't migrate by default"
+    just trades a silent hazard for a cryptic one.
+    """
+    rows = await db.fetch("SELECT to_regclass('public.memory_entries') AS t")
+    if rows and rows[0]["t"] is not None:
+        return
+    raise SystemExit(
+        f"no memory_entries table in {_redact(dsn)}.\n\n"
+        f"The eval does not create schema by default — a benchmark should not "
+        f"be able to migrate a database it doesn't own.\n"
+        f"If this is a scratch database you own, re-run with --migrate.\n"
+        f"To create the standard test database:\n"
+        f"    docker exec telegram-bot-postgres \\\n"
+        f"        psql -U tc -d postgres -c "
+        f"'CREATE DATABASE telegram_claude_test OWNER tc;'"
+    )
+
+
+def _redact(dsn: str) -> str:
+    """DSN without the password — this string goes into an error the operator
+    may paste somewhere."""
+    return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", dsn)
+
+
 async def evaluate(
     dsn: str = DEFAULT_DSN,
     cases_path: Path = DEFAULT_CASES,
+    migrate: bool = False,
 ) -> RecallReport:
-    """Seed a throwaway persona, run every case, tear down. The whole point
-    of the throwaway persona id is that this is safe to run against the same
-    Postgres the real assistant uses."""
+    """Seed a throwaway persona, run every case, tear down.
+
+    Safe to point at a database that holds real personas: the seeded persona
+    id is a fresh `_eval_recall_*` and its rows are deleted in a `finally`.
+
+    That safety is about DATA only, which is why `migrate` defaults to False.
+    A benchmark has no business applying DDL, and when it silently could, it
+    did — the first run after connect() started applying the schema migrated
+    the live database. Pass migrate=True (or `--migrate`) when the target is
+    a scratch database you own and want set up.
+    """
     facts, cases, negatives = load_cases(cases_path)
     persona_id = f"_eval_recall_{uuid.uuid4().hex[:12]}"
-    db = MemoryDatabase(dsn)
+    db = MemoryDatabase(dsn, migrate=migrate)
     await db.connect()
+
+    # Checked BEFORE the try, deliberately. Inside it, the cleanup DELETE runs
+    # against the table we just established doesn't exist, and that
+    # UndefinedTableError replaces the explanatory SystemExit — the operator
+    # gets an asyncpg traceback instead of the sentence telling them to pass
+    # --migrate. There is nothing to clean up before the first seed anyway.
     try:
-        await db.init_schema()
+        if migrate:
+            await db.init_schema()
+        await _require_schema(db, dsn)
+    except BaseException:
+        await db.close()
+        raise
+
+    try:
         key_by_id = await seed(db, persona_id, facts)
         report = await run_cases(db, persona_id, cases, key_by_id)
         await run_negatives(db, persona_id, negatives, key_by_id, report)
@@ -289,18 +358,33 @@ async def evaluate(
             await db.close()
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Split out of main() so the flag defaults are testable without running
+    an eval — `--migrate` defaulting to off is a safety property, not a
+    preference, so it deserves an assertion."""
     ap = argparse.ArgumentParser(prog="eval-recall", description=__doc__)
-    ap.add_argument("--dsn", default=DEFAULT_DSN, help="Postgres DSN to seed against")
+    ap.add_argument("--dsn", default=DEFAULT_DSN,
+                    help=f"Postgres DSN to seed against (default: the test "
+                         f"database, NOT a live assistant's)")
+    ap.add_argument("--migrate", action="store_true",
+                    help="create/upgrade the schema on the target first. Off "
+                         "by default: a benchmark should not be able to apply "
+                         "DDL to a database it does not own.")
     ap.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     ap.add_argument("--verbose", "-v", action="store_true", help="per-case detail")
     ap.add_argument(
         "--min-recall", type=float, default=None,
         help=f"exit non-zero if recall@{K_AUTO} falls below this (0-1)",
     )
-    args = ap.parse_args(argv)
+    return ap
 
-    report = asyncio.run(evaluate(dsn=args.dsn, cases_path=args.cases))
+
+def main(argv: Optional[list[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
+
+    report = asyncio.run(
+        evaluate(dsn=args.dsn, cases_path=args.cases, migrate=args.migrate)
+    )
     print(report.render(verbose=args.verbose))
     if args.min_recall is not None and report.recall_at_auto < args.min_recall:
         print(
