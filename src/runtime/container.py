@@ -41,34 +41,29 @@ from kernel.core import ConversationOrchestrator
 from kernel.proactive import HeartbeatConfig
 from adapters.store import MemoryDatabase
 from kernel.sessions import SessionStore
+# Concrete provider classes are NOT imported here any more — runtime/
+# providers.py owns construction. What remains is the small set this module
+# genuinely needs: the shared contracts, the approval gate, and the three
+# classes used in isinstance() checks when wiring late-bound collaborators.
 from adapters.tools import (
-    ServiceRegistry,
-    BudgetConnector,
-    ClickUpConnector,
     Connector,
     Faculty,
     GatedToolProvider,
+    ServiceRegistry,
     ToolProvider,
-    GmailConnector,
-    GoogleCalendarConnector,
-    SplitwiseConnector,
     WriteApprovalGate,
-    YahooConnector,
 )
 from domain import (
-    CodeExecutor,
-    Delegator,
     DocumentLibrary,
     FileCourier,
-    LongTermMemory,
     ReflectionEngine,
     ScheduleEngine,
-    SkillsLibrary,
     TaskScheduler,
 )
 from adapters.chat import get_platform_cls, registered_platform_names, ChatPlatform, PlatformConfig
 
 from .persona import Persona
+from .providers import CONNECTOR_NAMES, FACULTY_NAMES, PROVIDERS_BY_NAME
 from .settings import RuntimeSettings
 from .vendors import VENDORS, VENDORS_BY_NAME
 
@@ -80,6 +75,10 @@ class PersonaRuntime:
 
     def __init__(self, persona: Persona) -> None:
         self.persona = persona
+        # Provider singletons, keyed by registry name. Not cached_property
+        # any more: which providers exist is data in runtime/providers.py,
+        # not a hand-written attribute per provider.
+        self._provider_cache: dict[str, ToolProvider] = {}
 
     # ---- foundation ----
 
@@ -126,35 +125,6 @@ class PersonaRuntime:
             timezone=self.settings.schedule_timezone,
         )
 
-    # ---- connector instances (constructed regardless; filtered below) ----
-
-    @cached_property
-    def gmail_connector(self) -> GmailConnector:
-        return GmailConnector(config=self.config)
-
-    @cached_property
-    def google_calendar_connector(self) -> GoogleCalendarConnector:
-        return GoogleCalendarConnector(
-            config=self.config,
-            default_timezone=self.settings.schedule_timezone,
-        )
-
-    @cached_property
-    def yahoo_connector(self) -> YahooConnector:
-        return YahooConnector(config=self.config)
-
-    @cached_property
-    def clickup_connector(self) -> ClickUpConnector:
-        return ClickUpConnector(config=self.config)
-
-    @cached_property
-    def splitwise_connector(self) -> SplitwiseConnector:
-        return SplitwiseConnector(config=self.config)
-
-    @cached_property
-    def budget_connector(self) -> BudgetConnector:
-        return BudgetConnector(config=self.config)
-
     @cached_property
     def summarizer(self) -> Summarizer:
         """Vendor-neutral summarization service for background work —
@@ -192,14 +162,6 @@ class PersonaRuntime:
             deep_model=self.settings.compaction_deep_model,
         )
 
-    @cached_property
-    def long_term_memory(self) -> LongTermMemory:
-        return LongTermMemory(
-            db=self.memory_database,
-            persona_id=self.persona.id,
-            summarizer=self.summarizer,
-            history=self.conversation_history,  # enables history_search
-        )
 
     @cached_property
     def status_reporter(self):
@@ -261,59 +223,16 @@ class PersonaRuntime:
             return None
         return ReflectionEngine(
             history=self.conversation_history,
-            memory=self.long_term_memory,
+            memory=self.provider("memory"),
             summarizer=self.summarizer,
             persona_id=self.persona.id,
         )
 
-    @cached_property
-    def task_scheduler(self) -> TaskScheduler:
-        return TaskScheduler(runtime=self.schedule_runtime)
 
-    @cached_property
-    def skills_library(self) -> SkillsLibrary:
-        return SkillsLibrary(skills_dir=self.persona.dir / "skills")
 
-    @cached_property
-    def code_executor(self) -> CodeExecutor:
-        return CodeExecutor(
-            runs_dir=self.persona.data_dir / "code_runs",
-            image=self.settings.code_exec_image,
-            network=self.settings.code_exec_network,
-        )
 
-    @cached_property
-    def file_courier(self) -> FileCourier:
-        return FileCourier(data_dir=self.persona.data_dir)
 
-    @cached_property
-    def document_library(self) -> DocumentLibrary:
-        from adapters.store import DocumentStore
-        dsn = self.settings.memory_database_url
-        if not dsn:
-            raise SystemExit(
-                f"persona {self.persona.id!r}: MEMORY_DATABASE_URL is not set "
-                f"(needed by the document library)."
-            )
-        return DocumentLibrary(
-            store=DocumentStore(dsn),
-            persona_id=self.persona.id,
-        )
 
-    @cached_property
-    def delegator(self) -> Delegator:
-        """Sub-agent one-shots: same chain and tools, but an ephemeral
-        in-memory history — real enough for the vendor's context assembly
-        (chat-completions vendors read the current turn from the mirror),
-        gone when the delegate is. Fresh per delegation so tasks never see
-        each other's context."""
-
-        def factory(chat_id: int) -> Agent:
-            return self.create_agent(
-                chat_id=chat_id, history=EphemeralConversationHistory(),
-            )
-
-        return Delegator(subagent_factory=factory)
 
     @cached_property
     def approval_gate(self) -> Optional[WriteApprovalGate]:
@@ -325,50 +244,39 @@ class PersonaRuntime:
             return None
         return WriteApprovalGate()
 
-    # External-service adapters (multi-profile, credentialed) vs the agent's
-    # own faculties (singletons, no auth). Only enabled ones are instantiated
-    # — important because some (e.g. memory) require runtime resources at
-    # construction time.
-    _CONNECTOR_FACTORY_NAMES = (
-        "gmail", "google_calendar", "yahoo", "clickup", "splitwise", "budget",
-    )
-    _FACULTY_FACTORY_NAMES = (
-        "memory", "schedule", "skills", "delegate", "code", "files", "documents",
-    )
+    # ---- tool providers (registry-driven; see runtime/providers.py) ----
 
-    def _factories(self) -> dict[str, callable]:
-        return {
-            "gmail": lambda: self.gmail_connector,
-            "google_calendar": lambda: self.google_calendar_connector,
-            "yahoo": lambda: self.yahoo_connector,
-            "clickup": lambda: self.clickup_connector,
-            "splitwise": lambda: self.splitwise_connector,
-            "budget": lambda: self.budget_connector,
-            "memory": lambda: self.long_term_memory,
-            "schedule": lambda: self.task_scheduler,
-            "skills": lambda: self.skills_library,
-            "delegate": lambda: self.delegator,
-            "code": lambda: self.code_executor,
-            "files": lambda: self.file_courier,
-            "documents": lambda: self.document_library,
-        }
+    def provider(self, name: str) -> ToolProvider:
+        """The persona's singleton instance of one provider, built on first
+        use. Lazy because constructing some of them (memory, documents)
+        demands runtime resources a persona that hasn't enabled them
+        shouldn't have to supply."""
+        cached = self._provider_cache.get(name)
+        if cached is None:
+            spec = PROVIDERS_BY_NAME.get(name)
+            if spec is None:
+                raise KeyError(
+                    f"unknown tool provider {name!r}; "
+                    f"known: {', '.join(sorted(PROVIDERS_BY_NAME))}"
+                )
+            cached = self._provider_cache[name] = spec.build(self)
+        return cached
 
     def _build_enabled(self, names) -> list:
-        factories = self._factories()
         return [
-            factories[name]() for name in names
+            self.provider(name) for name in names
             if self.persona.is_connector_enabled(name)
         ]
 
     @cached_property
     def active_connectors(self) -> list[Connector]:
         """External-service adapters enabled by this persona."""
-        return self._build_enabled(self._CONNECTOR_FACTORY_NAMES)
+        return self._build_enabled(CONNECTOR_NAMES)
 
     @cached_property
     def active_faculties(self) -> list[Faculty]:
         """The agent's own enabled faculties."""
-        return self._build_enabled(self._FACULTY_FACTORY_NAMES)
+        return self._build_enabled(FACULTY_NAMES)
 
     @cached_property
     def active_services(self) -> list[ToolProvider]:
@@ -837,7 +745,7 @@ class PersonaRuntime:
             cron=f"*/{every} * * * *",
             chat_id=chat_id,
             watcher=MailWatcher(
-                gmail_connector=self.gmail_connector,
+                gmail_connector=self.provider("gmail"),
                 state_file=self.persona.data_dir / "mail_watch.json",
             ),
             preamble=MAIL_WATCH_PROMPT_PREAMBLE,
@@ -873,7 +781,7 @@ class PersonaRuntime:
             cron=f"*/{every} * * * *",
             chat_id=chat_id,
             watcher=SplitwiseWatcher(
-                splitwise_connector=self.splitwise_connector,
+                splitwise_connector=self.provider("splitwise"),
                 state_file=self.persona.data_dir / "splitwise_watch.json",
             ),
             preamble=SPLITWISE_WATCH_PROMPT_PREAMBLE,
