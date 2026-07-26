@@ -27,7 +27,7 @@ from claude_agent_sdk import (
     tool as _claude_sdk_tool,
 )
 
-from ports import Connector, ServiceCatalog, ToolContext, ToolSpec, mcp_content
+from ports import ConversationRef, Connector, ServiceCatalog, ToolContext, ToolSpec, mcp_content
 
 from .base import (
     Agent,
@@ -247,7 +247,7 @@ class AnthropicOptionsBuilder:
     def build(
         self,
         resume_session_id: Optional[str] = None,
-        chat_id: Optional[int] = None,
+        chat_id: Optional[ConversationRef] = None,
     ) -> ClaudeAgentOptions:
         enabled = self._config.load_enabled()
         ctx = ToolContext(chat_id=chat_id)
@@ -343,7 +343,7 @@ class AnthropicAgent(Agent):
         self,
         options_builder: AnthropicOptionsBuilder,
         session_id: Optional[str] = None,
-        chat_id: Optional[int] = None,
+        chat_id: Optional[ConversationRef] = None,
     ) -> None:
         self._options_builder = options_builder
         self._session_id: Optional[str] = session_id

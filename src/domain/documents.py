@@ -14,7 +14,7 @@ import io
 import logging
 from typing import Any, Optional
 
-from ports import Faculty, ToolContext, ToolResult, tool
+from ports import ConversationRef, Faculty, ToolContext, ToolResult, tool
 from adapters.store.docs import DocumentStore
 
 log = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ Prefer doc_search over asking the user to re-send anything."""
 
     async def ingest_attachment(
         self,
-        chat_id: int,
+        chat_id: ConversationRef,
         filename: str,
         mime: str,
         data: bytes,

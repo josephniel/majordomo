@@ -23,7 +23,7 @@ import re
 import logging
 from typing import Any, Optional
 
-from ports import Connector, ToolContext, ToolSpec, as_tool_result
+from ports import ConversationRef, Connector, ToolContext, ToolSpec, as_tool_result
 
 from .base import (
     Agent,
@@ -253,7 +253,7 @@ class ChatCompletionsAgent(Agent):
         context_builder: ContextBuilder,
         history: ConversationHistory,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         connectors: Optional[list[Connector]] = None,
         persona: Optional[PersonaLike] = None,
         model: Optional[str] = None,

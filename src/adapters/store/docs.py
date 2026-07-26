@@ -10,6 +10,8 @@ Raw bytes are not stored; only extracted text (chunked) plus metadata.
 """
 from __future__ import annotations
 
+from ports import ConversationRef, chat_key
+
 import asyncio
 import logging
 from typing import Any, Optional
@@ -39,7 +41,7 @@ CREATE TABLE IF NOT EXISTS documents (
     persona_id  TEXT NOT NULL,
     name        TEXT NOT NULL,
     mime        TEXT NOT NULL DEFAULT '',
-    chat_id     BIGINT,
+    chat_id     TEXT,
     num_chunks  INT NOT NULL DEFAULT 0,
     char_count  INT NOT NULL DEFAULT 0,
     ts          TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -78,6 +80,30 @@ BEGIN
         ALTER TABLE document_chunks
             ALTER COLUMN embedding TYPE vector({{EMBED_DIM}}) USING NULL;
         UPDATE document_chunks SET embedding_model = '' WHERE embedding_model <> '';
+    END IF;
+END $$;
+
+-- chat_id migration: BIGINT (a Telegram shape) -> TEXT (a ConversationRef key).
+--
+-- Existing rows hold bare platform ids ("12345"); new rows hold namespaced
+-- keys ("telegram:12345"). Left alone, a live assistant would lose its own
+-- history at the moment of deploy — the lookup key simply stops matching. So
+-- the migration rewrites the old values, prefixing them with the platform
+-- that must have written them.
+--
+-- telegram is templated from the persona's platform.yaml by the caller.
+-- Idempotent: rows already containing ':' are left as they are.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'documents' AND column_name = 'chat_id'
+           AND data_type IN ('bigint', 'integer')
+    ) THEN
+        RAISE NOTICE 'documents.chat_id: bigint -> text, namespacing existing rows as telegram:*';
+        ALTER TABLE documents ALTER COLUMN chat_id TYPE TEXT USING chat_id::text;
+        UPDATE documents SET chat_id = 'telegram:' || chat_id
+         WHERE chat_id IS NOT NULL AND position(':' in chat_id) = 0;
     END IF;
 END $$;
 
@@ -145,7 +171,7 @@ class DocumentStore:
         name: str,
         mime: str,
         text: str,
-        chat_id: Optional[int] = None,
+        chat_id: Optional[ConversationRef] = None,
     ) -> tuple[int, int]:
         """Chunk + embed + store. Returns (doc_id, num_chunks)."""
         chunks = chunk_text(text)
@@ -161,7 +187,8 @@ class DocumentStore:
                     VALUES ($1, $2, $3, $4, $5, $6)
                     RETURNING id
                     """,
-                    persona_id, name, mime, chat_id, len(chunks), len(text),
+                    persona_id, name, mime, chat_key(chat_id) if chat_id is not None else None,
+                    len(chunks), len(text),
                 )
                 await conn.executemany(
                     """

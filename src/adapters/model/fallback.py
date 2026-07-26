@@ -36,7 +36,7 @@ from datetime import datetime
 from typing import Any, Awaitable, Callable, Optional
 from zoneinfo import ZoneInfo
 
-from ports import SessionResettable, ToolCallProbe
+from ports import ConversationRef, SessionResettable, ToolCallProbe
 
 from .base import Agent, Attachment, Summarizer, ToolUseCallback, UsageLimitError
 from .health import VendorHealthBoard
@@ -85,7 +85,7 @@ class CascadingAgent(Agent):
         chain: list[tuple[str, Agent]],
         history: ConversationHistory,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         summarizer: Summarizer,
         health_board: Optional[VendorHealthBoard] = None,
         memory_recaller: Optional[MemoryRecaller] = None,
@@ -744,7 +744,7 @@ class CascadingAgent(Agent):
                 # rows <= this id get folded, no matter what arrives meanwhile.
                 cutoff_id = int(to_summarize[-1]["id"])
                 log.info(
-                    "history for chat %d is %d chars; compacting %d rows through id=%d",
+                    "history for chat %s is %d chars; compacting %d rows through id=%d",
                     self._chat_id, chars, len(to_summarize), cutoff_id,
                 )
                 summary = await self._summarize(to_summarize)

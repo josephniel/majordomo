@@ -26,13 +26,17 @@ read from it.
 """
 from __future__ import annotations
 
+from ports import ConversationRef, chat_key
+
 import json
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 import asyncpg
 
 log = logging.getLogger(__name__)
+
 
 _SCHEMA = """
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -40,7 +44,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE TABLE IF NOT EXISTS chat_history (
     id          BIGSERIAL PRIMARY KEY,
     persona_id  TEXT NOT NULL,
-    chat_id     BIGINT NOT NULL,
+    chat_id     TEXT NOT NULL,
     role        TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'summary')),
     content     TEXT NOT NULL,
     metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -64,7 +68,7 @@ CREATE INDEX IF NOT EXISTS chat_history_content_trgm_idx
 CREATE TABLE IF NOT EXISTS turn_log (
     id             BIGSERIAL PRIMARY KEY,
     persona_id     TEXT NOT NULL,
-    chat_id        BIGINT NOT NULL,
+    chat_id        TEXT NOT NULL,
     vendor         TEXT NOT NULL,
     model          TEXT NOT NULL DEFAULT '',
     status         TEXT NOT NULL CHECK (status IN ('ok', 'error', 'cancelled')),
@@ -82,7 +86,7 @@ CREATE INDEX IF NOT EXISTS turn_log_chat_idx ON turn_log (persona_id, chat_id, t
 CREATE TABLE IF NOT EXISTS approval_log (
     id            BIGSERIAL PRIMARY KEY,
     persona_id    TEXT NOT NULL,
-    chat_id       BIGINT NOT NULL,
+    chat_id       TEXT NOT NULL,
     connector     TEXT NOT NULL,
     tool          TEXT NOT NULL,
     args_preview  TEXT NOT NULL DEFAULT '',
@@ -96,7 +100,7 @@ CREATE INDEX IF NOT EXISTS approval_log_persona_idx ON approval_log (persona_id,
 -- fact-extraction pass has already processed, per chat.
 CREATE TABLE IF NOT EXISTS reflection_state (
     persona_id  TEXT NOT NULL,
-    chat_id     BIGINT NOT NULL,
+    chat_id     TEXT NOT NULL,
     last_row_id BIGINT NOT NULL DEFAULT 0,
     last_run_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (persona_id, chat_id)
@@ -116,7 +120,18 @@ class ConversationHistory:
     # NullConversationHistory (below) must stay signature-compatible with
     # every method the agents call on this class.
 
-    def __init__(self, dsn: str) -> None:
+    # Tables in this module carrying a conversation id; all migrate together.
+    # Every table in this module with a conversation column. Derived by reading
+    # the DDL above, not by memory — reflection_state was missed on the first
+    # pass and only surfaced as a DataError at runtime.
+    _CHAT_ID_TABLES = ("chat_history", "turn_log", "approval_log", "reflection_state")
+
+    def __init__(self, dsn: str, legacy_platform: str = "telegram") -> None:
+        """`legacy_platform` names the platform that wrote any pre-migration
+        rows, so their bare `12345` chat ids can be rewritten as
+        `telegram:12345` and keep matching. It is only ever consulted by the
+        one-shot migration; new rows already carry a full key."""
+        self._legacy_platform = legacy_platform
         self._dsn = dsn
         self._pool: Optional[asyncpg.Pool] = None
 
@@ -140,6 +155,25 @@ class ConversationHistory:
     async def init_schema(self) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(_SCHEMA)
+            await self._migrate_chat_ids(conn)
+
+    async def _migrate_chat_ids(self, conn) -> None:
+        """One-shot BIGINT -> TEXT conversion for every conversation column.
+
+        Rewrites existing bare ids into namespaced ConversationRef keys.
+        Without it a deploy silently orphans the assistant's whole history:
+        the rows survive but the lookup key no longer matches, which reads to
+        the operator as the bot developing amnesia rather than as a failure.
+        """
+        template = (Path(__file__).resolve().parents[1] / "store" / "chat_id_migration.sql").read_text(
+            encoding="utf-8"
+        )
+        for table in self._CHAT_ID_TABLES:
+            await conn.execute(
+                template.replace("{{TABLE}}", table).replace(
+                    "{{PLATFORM}}", self._legacy_platform
+                )
+            )
 
     async def close(self) -> None:
         if self._pool is not None:
@@ -152,7 +186,7 @@ class ConversationHistory:
         self,
         *,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         role: str,
         content: str,
         metadata: Optional[dict[str, Any]] = None,
@@ -164,7 +198,7 @@ class ConversationHistory:
                 VALUES ($1, $2, $3, $4, $5::jsonb)
                 RETURNING id
                 """,
-                persona_id, chat_id, role, content, metadata or {},
+                persona_id, chat_key(chat_id), role, content, metadata or {},
             )
 
     # ---- reads ----
@@ -172,7 +206,7 @@ class ConversationHistory:
     async def recent(
         self,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         limit: int = 40,
     ) -> list[dict[str, Any]]:
         """Return the last N ACTIVE (non-archived) rows in chronological order."""
@@ -187,14 +221,14 @@ class ConversationHistory:
                 ) sub
                 ORDER BY id ASC
                 """,
-                persona_id, chat_id, limit,
+                persona_id, chat_key(chat_id), limit,
             )
         return [dict(r) for r in rows]
 
     async def rows_between(
         self,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         after_id: int,
         limit: int = 100,
         include_archived: bool = False,
@@ -212,25 +246,25 @@ class ConversationHistory:
                 ORDER BY id ASC
                 LIMIT $4
                 """,
-                persona_id, chat_id, after_id, limit,
+                persona_id, chat_key(chat_id), after_id, limit,
             )
         return [dict(r) for r in rows]
 
     # ---- reflection watermark ----
 
-    async def get_reflection_watermark(self, persona_id: str, chat_id: int) -> int:
+    async def get_reflection_watermark(self, persona_id: str, chat_id: ConversationRef) -> int:
         async with self._pool.acquire() as conn:
             row = await conn.fetchval(
                 """
                 SELECT last_row_id FROM reflection_state
                 WHERE persona_id = $1 AND chat_id = $2
                 """,
-                persona_id, chat_id,
+                persona_id, chat_key(chat_id),
             )
         return int(row or 0)
 
     async def set_reflection_watermark(
-        self, persona_id: str, chat_id: int, last_row_id: int,
+        self, persona_id: str, chat_id: ConversationRef, last_row_id: int,
     ) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
@@ -240,10 +274,10 @@ class ConversationHistory:
                 ON CONFLICT (persona_id, chat_id)
                 DO UPDATE SET last_row_id = EXCLUDED.last_row_id, last_run_at = NOW()
                 """,
-                persona_id, chat_id, last_row_id,
+                persona_id, chat_key(chat_id), last_row_id,
             )
 
-    async def last_row_id(self, persona_id: str, chat_id: int) -> int:
+    async def last_row_id(self, persona_id: str, chat_id: ConversationRef) -> int:
         """Highest active row id for the chat (0 if empty)."""
         async with self._pool.acquire() as conn:
             return await conn.fetchval(
@@ -251,10 +285,10 @@ class ConversationHistory:
                 SELECT COALESCE(MAX(id), 0) FROM chat_history
                 WHERE persona_id = $1 AND chat_id = $2 AND NOT archived
                 """,
-                persona_id, chat_id,
+                persona_id, chat_key(chat_id),
             ) or 0
 
-    async def total_chars(self, persona_id: str, chat_id: int) -> int:
+    async def total_chars(self, persona_id: str, chat_id: ConversationRef) -> int:
         async with self._pool.acquire() as conn:
             return await conn.fetchval(
                 """
@@ -262,10 +296,10 @@ class ConversationHistory:
                 FROM chat_history
                 WHERE persona_id = $1 AND chat_id = $2 AND NOT archived
                 """,
-                persona_id, chat_id,
+                persona_id, chat_key(chat_id),
             ) or 0
 
-    async def approx_tokens(self, persona_id: str, chat_id: int) -> int:
+    async def approx_tokens(self, persona_id: str, chat_id: ConversationRef) -> int:
         return max(1, (await self.total_chars(persona_id, chat_id)) // 4)
 
     # ---- episodic search (history_search tool) ----
@@ -273,7 +307,7 @@ class ConversationHistory:
     async def search(
         self,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         query: str,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
@@ -295,13 +329,13 @@ class ConversationHistory:
                          id DESC
                 LIMIT $5
                 """,
-                persona_id, chat_id, query, pattern, limit,
+                persona_id, chat_key(chat_id), query, pattern, limit,
             )
         return [dict(r) for r in rows]
 
     # ---- reset ----
 
-    async def reset(self, persona_id: str, chat_id: int) -> int:
+    async def reset(self, persona_id: str, chat_id: ConversationRef) -> int:
         """Archive every active row for (persona, chat). The fallback
         vendors' client-side replay starts empty afterwards — this is what
         makes /reset true on non-Claude paths. Returns rows archived."""
@@ -313,10 +347,10 @@ class ConversationHistory:
                     metadata = metadata || '{"reset": true}'::jsonb
                 WHERE persona_id = $1 AND chat_id = $2 AND NOT archived
                 """,
-                persona_id, chat_id,
+                persona_id, chat_key(chat_id),
             )
         n = int(result.split()[-1] or 0)
-        log.info("reset chat %d for %s: archived %d rows", chat_id, persona_id, n)
+        log.info("reset chat %s for %s: archived %d rows", chat_id, persona_id, n)
         return n
 
     # ---- compaction ----
@@ -324,7 +358,7 @@ class ConversationHistory:
     async def compact(
         self,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         summary_text: str,
         cutoff_id: int,
     ) -> int:
@@ -347,7 +381,7 @@ class ConversationHistory:
                     WHERE persona_id = $1 AND chat_id = $2
                       AND NOT archived AND id <= $3
                     """,
-                    persona_id, chat_id, cutoff_id,
+                    persona_id, chat_key(chat_id), cutoff_id,
                 )
                 folded = int(result.split()[-1] or 0)
                 if folded == 0:
@@ -357,7 +391,7 @@ class ConversationHistory:
                     INSERT INTO chat_history (persona_id, chat_id, role, content, metadata)
                     VALUES ($1, $2, 'summary', $3, $4::jsonb)
                     """,
-                    persona_id, chat_id, summary_text,
+                    persona_id, chat_key(chat_id), summary_text,
                     {"compacted_count": folded, "compacted_through_id": cutoff_id},
                 )
         return folded
@@ -368,7 +402,7 @@ class ConversationHistory:
         self,
         *,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         vendor: str,
         model: str = "",
         status: str = "ok",
@@ -388,7 +422,7 @@ class ConversationHistory:
                          input_tokens, output_tokens, tool_calls, failovers, error)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     """,
-                    persona_id, chat_id, vendor, model, status, latency_ms,
+                    persona_id, chat_key(chat_id), vendor, model, status, latency_ms,
                     input_tokens, output_tokens, tool_calls, failovers, error[:2000],
                 )
         except Exception:
@@ -441,7 +475,7 @@ class ConversationHistory:
         self,
         *,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         connector: str,
         tool: str,
         args_preview: str,
@@ -457,7 +491,7 @@ class ConversationHistory:
                     (persona_id, chat_id, connector, tool, args_preview, decision, reason)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                 """,
-                persona_id, chat_id, connector, tool,
+                persona_id, chat_key(chat_id), connector, tool,
                 args_preview[:500], decision, reason[:300],
             )
 
@@ -476,7 +510,7 @@ class ConversationHistory:
     async def turn_stats(
         self,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
     ) -> dict[str, Any]:
         """Aggregates for /status: today's turns/tokens + last turn info."""
         async with self._pool.acquire() as conn:
@@ -489,7 +523,7 @@ class ConversationHistory:
                 FROM turn_log
                 WHERE persona_id = $1 AND chat_id = $2 AND ts >= date_trunc('day', NOW())
                 """,
-                persona_id, chat_id,
+                persona_id, chat_key(chat_id),
             )
             last = await conn.fetchrow(
                 """
@@ -497,7 +531,7 @@ class ConversationHistory:
                 WHERE persona_id = $1 AND chat_id = $2
                 ORDER BY id DESC LIMIT 1
                 """,
-                persona_id, chat_id,
+                persona_id, chat_key(chat_id),
             )
         return {
             "today": dict(agg) if agg else {},
@@ -530,7 +564,7 @@ class EphemeralConversationHistory:
         self,
         *,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         role: str,
         content: str,
         metadata: Optional[dict[str, Any]] = None,
@@ -538,7 +572,7 @@ class EphemeralConversationHistory:
         row = {
             "id": self._next_id,
             "persona_id": persona_id,
-            "chat_id": chat_id,
+            "chat_id": chat_key(chat_id),
             "role": role,
             "content": content,
             "metadata": metadata or {},
@@ -548,20 +582,23 @@ class EphemeralConversationHistory:
         self._rows.append(row)
         return row["id"]
 
-    def _match(self, persona_id: str, chat_id: int, include_archived: bool = False):
+    def _match(self, persona_id: str, chat_id: ConversationRef, include_archived: bool = False):
+        # Normalize on BOTH sides: append() stores the rendered key, so
+        # comparing against a raw ref here silently matched nothing.
+        wanted = chat_key(chat_id)
         return [
             r for r in self._rows
-            if r["persona_id"] == persona_id and r["chat_id"] == chat_id
+            if r["persona_id"] == persona_id and r["chat_id"] == wanted
             and (include_archived or not r["archived"])
         ]
 
-    async def recent(self, persona_id: str, chat_id: int, limit: int = 40) -> list:
+    async def recent(self, persona_id: str, chat_id: ConversationRef, limit: int = 40) -> list:
         return self._match(persona_id, chat_id)[-limit:]
 
     async def rows_between(
         self,
         persona_id: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         after_id: int,
         limit: int = 100,
         include_archived: bool = False,
@@ -569,10 +606,10 @@ class EphemeralConversationHistory:
         rows = self._match(persona_id, chat_id, include_archived)
         return [r for r in rows if r["id"] > after_id][:limit]
 
-    async def total_chars(self, persona_id: str, chat_id: int) -> int:
+    async def total_chars(self, persona_id: str, chat_id: ConversationRef) -> int:
         return sum(len(r["content"]) for r in self._match(persona_id, chat_id))
 
-    async def reset(self, persona_id: str, chat_id: int) -> int:
+    async def reset(self, persona_id: str, chat_id: ConversationRef) -> int:
         rows = self._match(persona_id, chat_id)
         for r in rows:
             r["archived"] = True

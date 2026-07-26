@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
-from ports import Faculty, ToolContext, ToolResult, tool
+from ports import ConversationRef, chat_key, Faculty, ToolContext, ToolResult, tool
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ def _is_async_callable(fn: Any) -> bool:
 class ScheduledTask:
     name: str
     cron: str  # 5-field cron for recurring tasks; "" for one-shot
-    chat_id: int
+    chat_id: ConversationRef
     prompt: str
     description: str = ""
     enabled: bool = True
@@ -53,7 +53,18 @@ class ScheduleEngine:
 
     NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
-    def __init__(self, store_file: Path, timezone: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        store_file: Path,
+        timezone: Optional[str] = None,
+        legacy_platform: str = "telegram",
+    ) -> None:
+        # The platform a bare chat id belongs to. Two uses, same value:
+        # schedules written before ConversationRef stored plain ints
+        # ("chat_id": 12345), and callers that pass one today. Coercing at the
+        # boundary means a ScheduledTask ALWAYS holds a real ref, so nothing
+        # downstream has to defend against a stray int.
+        self._legacy_platform = legacy_platform
         self.store_file = store_file
         self._scheduler: Optional[AsyncIOScheduler] = None
         self._fire_callback: Optional[Callable[[ScheduledTask], Awaitable[None]]] = None
@@ -141,8 +152,9 @@ class ScheduleEngine:
         )
         log.info("system cron %r registered (%s)", name, cron)
 
-    def list_for_chat(self, chat_id: int) -> list[ScheduledTask]:
-        return [s for s in self._schedules.values() if s.chat_id == chat_id]
+    def list_for_chat(self, chat_id: ConversationRef) -> list[ScheduledTask]:
+        wanted = ConversationRef.coerce(chat_id, platform=self._legacy_platform)
+        return [s for s in self._schedules.values() if s.chat_id == wanted]
 
     def get(self, name: str) -> Optional[ScheduledTask]:
         return self._schedules.get(name)
@@ -151,7 +163,7 @@ class ScheduleEngine:
         self,
         name: str,
         cron: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         prompt: str,
         description: str = "",
         enabled: bool = True,
@@ -166,7 +178,7 @@ class ScheduleEngine:
         entry = ScheduledTask(
             name=name,
             cron=cron,
-            chat_id=chat_id,
+            chat_id=ConversationRef.coerce(chat_id, platform=self._legacy_platform),
             prompt=prompt,
             description=description,
             enabled=enabled,
@@ -180,7 +192,7 @@ class ScheduleEngine:
         self,
         name: str,
         when: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         prompt: str,
         description: str = "",
     ) -> ScheduledTask:
@@ -194,7 +206,9 @@ class ScheduleEngine:
         if run_dt <= self._now():
             raise ValueError(f"time {when!r} resolves to the past ({run_dt.isoformat()})")
         entry = ScheduledTask(
-            name=name, cron="", chat_id=chat_id, prompt=prompt,
+            name=name, cron="",
+            chat_id=ConversationRef.coerce(chat_id, platform=self._legacy_platform),
+            prompt=prompt,
             description=description, enabled=True, run_at=run_dt.isoformat(timespec="seconds"),
         )
         self._schedules[name] = entry
@@ -252,7 +266,12 @@ class ScheduleEngine:
             return
         try:
             raw = json.loads(self.store_file.read_text(encoding="utf-8"))
-            self._schedules = {s["name"]: ScheduledTask(**s) for s in raw}
+            self._schedules = {
+                s["name"]: ScheduledTask(**{**s, "chat_id": ConversationRef.coerce(
+                    s["chat_id"], platform=self._legacy_platform,
+                )})
+                for s in raw
+            }
         except (json.JSONDecodeError, TypeError, KeyError) as e:
             log.warning("could not load schedule store (%s); starting empty", e)
             self._schedules = {}
@@ -262,7 +281,14 @@ class ScheduleEngine:
         # os.replace() over the target. A crash mid-write leaves the previous
         # store intact rather than a half-written (corrupt) JSON file.
         self.store_file.parent.mkdir(parents=True, exist_ok=True)
-        raw = [asdict(s) for s in self._schedules.values()]
+        # chat_id is flattened to its key rather than left to asdict(), which
+        # would nest the ConversationRef as a dict and break the round-trip on
+        # load. The key is the on-disk contract, same as in Postgres.
+        raw = []
+        for sched in self._schedules.values():
+            d = asdict(sched)
+            d["chat_id"] = chat_key(sched.chat_id)
+            raw.append(d)
         tmp = self.store_file.with_suffix(self.store_file.suffix + ".tmp")
         tmp.write_text(json.dumps(raw), encoding="utf-8")
         os.replace(tmp, self.store_file)
@@ -379,7 +405,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
     def shutdown(self) -> None:
         self._runtime.shutdown()
 
-    def schedules_for_chat(self, chat_id: int) -> list[ScheduledTask]:
+    def schedules_for_chat(self, chat_id: ConversationRef) -> list[ScheduledTask]:
         """Public accessor for /status."""
         return self._runtime.list_for_chat(chat_id)
 
@@ -425,7 +451,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
                 entry = runtime.add(
                     name=args["name"],
                     cron=args["cron"],
-                    chat_id=chat_id,
+                    chat_id=ConversationRef.coerce(chat_id, platform=self._legacy_platform),
                     prompt=args["prompt"],
                     description=args.get("description", ""),
                 )
@@ -453,7 +479,7 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
                 entry = runtime.add_once(
                     name=args["name"],
                     when=args["when"],
-                    chat_id=chat_id,
+                    chat_id=ConversationRef.coerce(chat_id, platform=self._legacy_platform),
                     prompt=args["prompt"],
                     description=args.get("description", ""),
                 )

@@ -13,6 +13,8 @@ _webhook_server, _retention, _on_schedule_fire().
 """
 from __future__ import annotations
 
+from ports import ConversationRef
+
 import asyncio
 import logging
 from dataclasses import dataclass
@@ -38,7 +40,7 @@ class HeartbeatConfig:
     chain — heartbeats are background work and must not spend the chat
     vendors' scarce quota."""
     cron: str
-    chat_id: int
+    chat_id: ConversationRef
     prompt_loader: Callable[[], str]
     agent_factory: Any = None  # Callable[[int], Agent] | None
 
@@ -57,7 +59,7 @@ class WatchConfig:
     tool surface."""
     name: str  # system-cron name + log label, e.g. "mail_watch"
     cron: str
-    chat_id: int
+    chat_id: ConversationRef
     watcher: Any  # check() -> Optional[str]; commit()
     preamble: str  # instructions prepended to the watcher's context block
     agent_factory: Any = None  # Callable[[int], Agent] | None

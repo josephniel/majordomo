@@ -18,7 +18,7 @@ import logging
 import re
 
 from adapters.model import Agent
-from ports import ToolTraceReporting
+from ports import ConversationRef, ToolTraceReporting
 
 from .formatting import chunk_for_platform
 
@@ -116,7 +116,7 @@ class RecoveryMixin:
 
     # ---- Layer 3: hallucinated memory save ----
 
-    def _detect_missed_save(self, chat_id: int, reply: str, agent: Agent) -> None:
+    def _detect_missed_save(self, chat_id: ConversationRef, reply: str, agent: Agent) -> None:
         """If the model's reply CLAIMS it saved something to memory but it
         never actually called a tool this turn, run reflection immediately
         instead of waiting for the idle timer — turning a hallucinated save
@@ -127,7 +127,7 @@ class RecoveryMixin:
         if not _CLAIMS_MEMORY_SAVE.search(reply or ""):
             return
         log.info(
-            "chat %d: reply claims a save but no tool was called; "
+            "chat %s: reply claims a save but no tool was called; "
             "triggering reflection now", chat_id,
         )
         task = asyncio.create_task(self._reflection.run_reflection(chat_id))
@@ -152,7 +152,7 @@ class RecoveryMixin:
         )
 
     async def _recover_missed_send(
-        self, chat_id: int, reply: str, agent: Agent,
+        self, chat_id: ConversationRef, reply: str, agent: Agent,
     ) -> None:
         """One-shot recovery for a hallucinated send. If the retry still sends
         nothing, tell the user plainly — an unsent email the user believes was
@@ -161,7 +161,7 @@ class RecoveryMixin:
         if not self._detect_missed_send(reply, agent):
             return
         log.warning(
-            "chat %d: reply claims an email/message was sent but no sending "
+            "chat %s: reply claims an email/message was sent but no sending "
             "tool was called; sending corrective turn", chat_id,
         )
         try:
@@ -171,7 +171,7 @@ class RecoveryMixin:
         except asyncio.CancelledError:
             return
         except Exception:
-            log.exception("chat %d: send-recovery turn failed", chat_id)
+            log.exception("chat %s: send-recovery turn failed", chat_id)
             await self._send_safe(chat_id, _SEND_RECOVERY_FAILED_TEXT)
             return
 
@@ -183,7 +183,7 @@ class RecoveryMixin:
             sat in name for name in tool_names for sat in self._send_claim_tools
         )
         if recovered:
-            log.info("chat %d: send recovered on corrective turn", chat_id)
+            log.info("chat %s: send recovered on corrective turn", chat_id)
             self._persist_session_id(chat_id, agent)
             if retry_reply.strip().lower() != "<silent>":
                 for chunk in chunk_for_platform(
@@ -192,9 +192,9 @@ class RecoveryMixin:
                     await self._send_safe(chat_id, chunk)
             return
         if retry_reply.strip().lower() == "<silent>":
-            log.info("chat %d: send-recovery declined as false positive", chat_id)
+            log.info("chat %s: send-recovery declined as false positive", chat_id)
             return
-        log.warning("chat %d: send recovery failed; correcting user", chat_id)
+        log.warning("chat %s: send recovery failed; correcting user", chat_id)
         await self._send_safe(chat_id, _SEND_RECOVERY_FAILED_TEXT)
 
     # ---- Layer 3b: hallucinated schedule ----
@@ -217,7 +217,7 @@ class RecoveryMixin:
         )
 
     async def _recover_missed_schedule(
-        self, chat_id: int, reply: str, agent: Agent,
+        self, chat_id: ConversationRef, reply: str, agent: Agent,
     ) -> None:
         """One-shot recovery for a hallucinated schedule: re-prompt the agent
         to actually make the tool call it claimed. If even the retry produces
@@ -229,7 +229,7 @@ class RecoveryMixin:
         if not self._detect_missed_schedule(reply, agent):
             return
         log.warning(
-            "chat %d: reply claims a schedule/reminder but no scheduling tool "
+            "chat %s: reply claims a schedule/reminder but no scheduling tool "
             "was called; sending corrective turn", chat_id,
         )
         try:
@@ -239,7 +239,7 @@ class RecoveryMixin:
         except asyncio.CancelledError:
             return
         except Exception:
-            log.exception("chat %d: schedule-recovery turn failed", chat_id)
+            log.exception("chat %s: schedule-recovery turn failed", chat_id)
             await self._send_safe(chat_id, _SCHEDULE_RECOVERY_FAILED_TEXT)
             return
 
@@ -251,7 +251,7 @@ class RecoveryMixin:
             sat in name for name in tool_names for sat in self._schedule_claim_tools
         )
         if recovered:
-            log.info("chat %d: schedule recovered on corrective turn", chat_id)
+            log.info("chat %s: schedule recovered on corrective turn", chat_id)
             self._persist_session_id(chat_id, agent)
             if retry_reply.strip().lower() != "<silent>":
                 for chunk in chunk_for_platform(
@@ -262,9 +262,9 @@ class RecoveryMixin:
         if retry_reply.strip().lower() == "<silent>":
             # Model says no schedule was actually promised — regex false
             # positive, drop it quietly.
-            log.info("chat %d: schedule-recovery declined as false positive", chat_id)
+            log.info("chat %s: schedule-recovery declined as false positive", chat_id)
             return
         # Retried and STILL no tool call: don't relay the model's reply (it
         # may repeat the hallucination) — send our own deterministic correction.
-        log.warning("chat %d: schedule recovery failed; correcting user", chat_id)
+        log.warning("chat %s: schedule recovery failed; correcting user", chat_id)
         await self._send_safe(chat_id, _SCHEDULE_RECOVERY_FAILED_TEXT)

@@ -26,7 +26,7 @@ from typing import Any, Optional
 from adapters.model import Agent, ConversationHistory
 from adapters.comms import CommsLog, CommsRelay
 from adapters.tools import ServiceRegistry
-from ports import CanaryRunner, Connector
+from ports import ConversationRef, CanaryRunner, Connector
 from domain import ReflectionEngine, ScheduledTask, TaskScheduler
 from adapters.chat import ChatPlatform, InboundMessage
 
@@ -191,7 +191,9 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
     async def _startup_canary(self) -> None:
         await asyncio.sleep(20)  # let startup settle; don't compete with first turns
         try:
-            agent = self._agent_factory(chat_id=0)
+            # Synthetic conversation: the canary proves the vendor can call
+            # tools before any real chat exists, so it belongs to no platform.
+            agent = self._agent_factory(chat_id=ConversationRef("system", "canary"))
             if isinstance(agent, CanaryRunner):
                 await agent.run_canary()
             # Warm the prompt cache while nobody is waiting. On a local
@@ -240,7 +242,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
 
     async def _on_peer_message(
         self,
-        chat_id: int,
+        chat_id: ConversationRef,
         text: str,
         original_message_id: Optional[int],
     ) -> None:
@@ -262,7 +264,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
 
     async def _execute_agent_turn(
         self,
-        chat_id: int,
+        chat_id: ConversationRef,
         agent: Agent,
         text: str,
         *,
@@ -311,7 +313,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                     chat_id,
                     "I'm getting a lot of messages at once — give me a minute to catch up.",
                 )
-            log.warning("rate limit hit for chat %d; dropping message", chat_id)
+            log.warning("rate limit hit for chat %s; dropping message", chat_id)
             return
 
         # Auto-ingest supported attachments into the document library and
@@ -349,7 +351,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             # the agent emits a literal "<silent>" when the message wasn't
             # for it, and we drop the send so the room stays quiet.
             if reply.strip().lower() == "<silent>":
-                log.debug("agent silenced for chat %d", chat_id)
+                log.debug("agent silenced for chat %s", chat_id)
                 return
 
             # Only the first chunk reply-quotes the original message; the
@@ -372,7 +374,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             await self._recover_missed_schedule(chat_id, reply, agent)
             await self._recover_missed_send(chat_id, reply, agent)
 
-    async def _ingest_attachments(self, chat_id: int, text: str, msg: InboundMessage) -> str:
+    async def _ingest_attachments(self, chat_id: ConversationRef, text: str, msg: InboundMessage) -> str:
         return await ingest_attachments(self._connectors, chat_id, text, msg)
 
     # ---- scheduled task fire ----
@@ -387,7 +389,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         never persisted — that would clobber the chat's real session — and
         it's torn down after the turn."""
         chat_id = sched.chat_id
-        log.info("scheduled task fired: %s for chat %d", sched.name, chat_id)
+        log.info("scheduled task fired: %s for chat %s", sched.name, chat_id)
 
         # Same serialization as user messages — a schedule firing during an
         # in-flight user turn waits its turn rather than racing the agent.
@@ -439,7 +441,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 try:
                     await self._platform.send_text(chat_id, chunk)
                 except Exception:
-                    log.exception("could not deliver scheduled reply to chat %d", chat_id)
+                    log.exception("could not deliver scheduled reply to chat %s", chat_id)
                     return False
 
             if self._reflection is not None:
@@ -448,7 +450,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
 
     # ---- internals ----
 
-    def _get_agent(self, chat_id: int) -> Agent:
+    def _get_agent(self, chat_id: ConversationRef) -> Agent:
         if chat_id not in self._agents:
             self._agents[chat_id] = self._agent_factory(
                 chat_id=chat_id,
@@ -460,7 +462,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
     def _current_ctx_version(self) -> int:
         return sum(c.context_version() for c in self._connectors)
 
-    def _refresh_agent_if_stale(self, chat_id: int) -> None:
+    def _refresh_agent_if_stale(self, chat_id: ConversationRef) -> None:
         """Drop this chat's agent if a connector's system-prompt contribution
         changed since it was built (e.g. memory core recompacted). The Claude
         session id survives — the rebuilt agent resumes it, so only the baked
@@ -472,7 +474,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         if self._agent_ctx_versions.get(chat_id) == current:
             return
         log.info(
-            "connector context changed; rebuilding agent for chat %d "
+            "connector context changed; rebuilding agent for chat %s "
             "(session preserved)", chat_id,
         )
         self._persist_session_id(chat_id, agent)
@@ -490,7 +492,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._stale_agent_stops.add(task)
         task.add_done_callback(self._stale_agent_stops.discard)
 
-    def _check_rate_limit(self, chat_id: int) -> bool:
+    def _check_rate_limit(self, chat_id: ConversationRef) -> bool:
         """Sliding-window flood control. True = allowed."""
         now = time.monotonic()
         times = self._turn_times.setdefault(chat_id, deque())
@@ -501,12 +503,12 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         times.append(now)
         return True
 
-    def _get_chat_lock(self, chat_id: int) -> asyncio.Lock:
+    def _get_chat_lock(self, chat_id: ConversationRef) -> asyncio.Lock:
         if chat_id not in self._per_chat_locks:
             self._per_chat_locks[chat_id] = asyncio.Lock()
         return self._per_chat_locks[chat_id]
 
-    def _persist_session_id(self, chat_id: int, agent: Agent) -> None:
+    def _persist_session_id(self, chat_id: ConversationRef, agent: Agent) -> None:
         sid = agent.session_id
         if not sid or self._session_ids.get(chat_id) == sid:
             return
@@ -533,13 +535,13 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 self._agent_ctx_versions[chat_id] = -1  # force rebuild
             self._config_mtime = current
 
-    async def _cancel_chat(self, chat_id: int) -> bool:
+    async def _cancel_chat(self, chat_id: ConversationRef) -> bool:
         entry = self._pending_turns.get(chat_id)
         if entry is None or entry[0].done():
-            log.info("cancel requested for chat %d but nothing in flight", chat_id)
+            log.info("cancel requested for chat %s but nothing in flight", chat_id)
             return False
         task, agent = entry
-        log.info("cancelling in-flight turn for chat %d", chat_id)
+        log.info("cancelling in-flight turn for chat %s", chat_id)
         # Interrupt the agent that is ACTUALLY serving this turn — for an
         # ephemeral heartbeat turn that isn't self._agents[chat_id].
         try:
@@ -559,11 +561,11 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             del self._pending_turns[chat_id]
         return True
 
-    async def _send_safe(self, chat_id: int, text: str) -> None:
+    async def _send_safe(self, chat_id: ConversationRef, text: str) -> None:
         try:
             await self._platform.send_text(chat_id, text)
         except Exception:
-            log.exception("could not deliver message to chat %d", chat_id)
+            log.exception("could not deliver message to chat %s", chat_id)
 
     def _format_tool_status(self, tool_name: str, args: dict[str, Any]) -> str:
         """Connector-registry-driven status text. Falls back to a generic

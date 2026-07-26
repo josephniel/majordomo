@@ -11,13 +11,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+from .conversation import ConversationRef
+
 
 @dataclass(frozen=True)
 class ToolContext:
     """What a tool invocation knows about its caller.
 
-    chat_id — the chat this turn belongs to; None outside a chat (CLI,
-    probes). Handlers that require a chat should return an error result
+    chat_id — the conversation this turn belongs to; None outside a chat
+    (CLI, probes). Handlers that require a chat should return an error result
     when it's None rather than guessing.
+
+    Opaque by contract: it is a ConversationRef, not a platform id. A handler
+    that reaches into `.chat_key` has coupled a faculty to one platform.
     """
-    chat_id: Optional[int] = None
+    chat_id: Optional[ConversationRef] = None

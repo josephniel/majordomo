@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from ports import AttachmentIngestor, Connector
+from ports import ConversationRef, AttachmentIngestor, Connector
 from adapters.chat import InboundMessage
 
 log = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 
 async def ingest_attachments(
     connectors: list[Connector],
-    chat_id: int,
+    chat_id: ConversationRef,
     text: str,
     msg: InboundMessage,
 ) -> str:

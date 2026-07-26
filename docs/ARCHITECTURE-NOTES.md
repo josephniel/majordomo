@@ -115,6 +115,54 @@ Two backup stories, deliberately: the JSON files are cheap, per-instance,
 host-local state that is safe to lose (sessions resume fresh, health
 re-learns); Postgres holds everything that must survive.
 
+## Conversation identity: ConversationRef
+
+Identity used to be `chat_id: int` — a Telegram shape — in 61 signatures, in
+`ToolContext`, in five Postgres columns, and in the scheduler's JSON. Discord
+snowflakes survive that by luck; Slack (`C0123ABC`), Matrix (`!room:server`),
+WhatsApp JIDs and a web UI's UUIDs do not. "Plug in whatever chat interface"
+was false while the contracts layer itself demanded an int.
+
+`ports/conversation.py` replaces it with an opaque, hashable, orderable
+`ConversationRef(platform, chat_key, thread_key)`:
+
+- **platform is part of identity**, not decoration — one persona may serve
+  Telegram and a web UI at once, and `#general` on two platforms are
+  different rooms.
+- **thread_key** covers Slack threads, Discord threads, email chains. None
+  where the platform has no such concept.
+- **`key`** (`telegram:12345`, `slack:C1#1699.0`) is the storage form, in
+  Postgres and JSON. Changing its shape is a migration, not a refactor.
+
+Only `adapters/chat` may mint a ref or read `.chat_key` back out. That
+asymmetry is the whole point: everything above it — kernel, faculties,
+scheduler, database — moves platforms without noticing.
+
+`chat_key()` at persistence boundaries is deliberately tolerant (ref, rendered
+key, or bare id). The column is TEXT either way, so strictness would only turn
+a harmless call-site difference into a runtime DataError.
+
+### Migrating existing data
+
+Two stores held bare ids and both migrate automatically on first connect:
+
+- **Postgres** — `chat_history`, `turn_log`, `approval_log`,
+  `reflection_state`, `documents`, `comms_log` go BIGINT -> TEXT, and existing
+  values are rewritten `12345` -> `telegram:12345`. Without that rewrite a
+  deploy silently orphans the assistant's whole history: the rows survive but
+  the lookup key stops matching, which reads to the operator as the bot
+  developing amnesia. The prefix comes from the persona's platform.yaml.
+- **schedules.json** — bare ids are coerced on load, and re-persisted as keys.
+  A long-standing reminder survives the upgrade.
+
+Both are idempotent (a second run does not produce `telegram:telegram:...`)
+and were rehearsed against a pre-migration database, including negative
+Telegram supergroup ids.
+
+`reflection_state` was missed on the first pass and only surfaced as a runtime
+DataError — the table list is now derived from the DDL rather than from
+memory.
+
 ## Architecture enforcement (CI)
 
 The dependency rule used to live in a docstring, which is exactly why it had

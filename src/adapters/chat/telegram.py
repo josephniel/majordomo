@@ -30,7 +30,7 @@ from telegram.ext import (
     filters,
 )
 
-from ports import Attachment
+from ports import Attachment, ConversationRef
 from adapters.comms import CommsLog
 
 from .base import (
@@ -96,6 +96,32 @@ In this group:
 - To address a peer bot directly, include their @username in your reply.
 - The operator is in the room and reads everything, including the inter-bot dialogue. Be concise — multiple bots talking gets noisy fast.
 """
+
+
+PLATFORM_NAME = "telegram"
+
+
+def _ref(chat_id: int) -> ConversationRef:
+    """Telegram chat id -> ConversationRef. The ONLY place refs are minted
+    here; everything above receives them already built."""
+    return ConversationRef(PLATFORM_NAME, str(chat_id))
+
+
+def _native(chat_id: ConversationRef | int) -> int:
+    """ConversationRef -> the int the Bot API wants.
+
+    Accepts a bare int too: internal helpers (control-room redirection, the
+    startup log) still deal in native ids, and a ref that didn't come from
+    this adapter is a wiring bug worth failing loudly on.
+    """
+    if isinstance(chat_id, int):
+        return chat_id
+    if chat_id.platform != PLATFORM_NAME:
+        raise ValueError(
+            f"TelegramPlatform received a {chat_id.platform!r} conversation "
+            f"({chat_id.key}) — check the composition root's wiring"
+        )
+    return int(chat_id.chat_key)
 
 
 class TelegramPlatform(ChatPlatform):
@@ -209,12 +235,13 @@ class TelegramPlatform(ChatPlatform):
 
     async def send_text(
         self,
-        chat_id: int,
+        chat_id: ConversationRef,
         text: str,
         reply_to: Optional[int] = None,
     ) -> None:
         if self._app is None:
             raise RuntimeError("TelegramPlatform.send_text called before run()")
+        chat_id = _native(chat_id)
         kwargs: dict[str, Any] = {}
         if reply_to is not None:
             # If the original message was deleted, fall back to a normal send
@@ -235,26 +262,27 @@ class TelegramPlatform(ChatPlatform):
             except Exception:
                 log.exception("could not append outbound to comms_log")
 
-    def keep_typing(self, chat_id: int) -> AbstractAsyncContextManager[None]:
+    def keep_typing(self, chat_id: ConversationRef) -> AbstractAsyncContextManager[None]:
         if self._app is None:
             raise RuntimeError("TelegramPlatform.keep_typing called before run()")
-        return _keep_typing_cm(self._app.bot, chat_id)
+        return _keep_typing_cm(self._app.bot, _native(chat_id))
 
     def status_tracker(
         self,
-        chat_id: int,
+        chat_id: ConversationRef,
         friendly_status: Callable[[str, dict[str, Any]], str],
     ) -> AbstractAsyncContextManager[StatusTracker]:
         if self._app is None:
             raise RuntimeError("TelegramPlatform.status_tracker called before run()")
-        return _TelegramStatusTracker(self._app.bot, chat_id, friendly_status)
+        return _TelegramStatusTracker(self._app.bot, _native(chat_id), friendly_status)
 
     async def send_file(
         self,
-        chat_id: int,
+        chat_id: ConversationRef,
         path: str,
         caption: Optional[str] = None,
     ) -> bool:
+        chat_id = _native(chat_id)
         if self._app is None:
             raise RuntimeError("TelegramPlatform.send_file called before run()")
         p = Path(path)
@@ -283,7 +311,7 @@ class TelegramPlatform(ChatPlatform):
 
     async def request_approval(
         self,
-        chat_id: int,
+        chat_id: ConversationRef,
         text: str,
         timeout: float = APPROVAL_TIMEOUT_SECONDS,
     ) -> bool:
@@ -293,6 +321,7 @@ class TelegramPlatform(ChatPlatform):
         concurrent_updates(True) — the callback handler doesn't take the
         per-chat lock, so answering can't deadlock the waiting tool call.
         """
+        chat_id = _native(chat_id)
         if self._app is None:
             raise RuntimeError("TelegramPlatform.request_approval called before run()")
         # Writes triggered from the control room are approved in the
@@ -458,15 +487,15 @@ class TelegramPlatform(ChatPlatform):
                 return
             if not self._is_authorized_chat(chat, user):
                 log.warning(
-                    "rejected /%s from chat_id=%d user_id=%s",
+                    "rejected /%s from chat_id=%s user_id=%s",
                     command, chat.id, user.id,
                 )
                 return
             if self._on_command is None:
                 return
             await self._on_command(CommandEvent(
-                chat_id=chat.id,
-                sender_id=user.id,
+                chat_id=_ref(chat.id),
+                sender_id=str(user.id),
                 command=command,
                 message_id=update.message.message_id if update.message else None,
             ))
@@ -483,7 +512,7 @@ class TelegramPlatform(ChatPlatform):
 
         if not self._is_authorized_chat(chat, user):
             log.warning(
-                "rejected message from chat_id=%d user_id=%s", chat.id, user.id
+                "rejected message from chat_id=%s user_id=%s", chat.id, user.id
             )
             return
 
@@ -525,7 +554,7 @@ class TelegramPlatform(ChatPlatform):
                     instance=self._persona_id,
                     direction="in",
                     text=text,
-                    chat_id=chat.id,
+                    chat_id=_ref(chat.id),
                     message_id=msg.message_id,
                     from_user=user.id,
                     from_username=user.username,
@@ -536,8 +565,8 @@ class TelegramPlatform(ChatPlatform):
         if self._on_message is None:
             return
         await self._on_message(InboundMessage(
-            chat_id=chat.id,
-            sender_id=user.id,
+            chat_id=_ref(chat.id),
+            sender_id=str(user.id),
             text=text,
             attachments=attachments,
             message_id=msg.message_id,
@@ -698,7 +727,7 @@ class _TelegramStatusTracker:
     def __init__(
         self,
         bot,
-        chat_id: int,
+        chat_id: int,  # internal: already converted by status_tracker()
         friendly: Callable[[str, dict[str, Any]], str],
         *,
         first_status_after: float = 10.0,

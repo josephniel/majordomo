@@ -33,6 +33,8 @@ traffic, and the bot loop is reached via run_coroutine_threadsafe.
 """
 from __future__ import annotations
 
+from ports import ConversationRef
+
 import asyncio
 import hmac
 import json
@@ -56,7 +58,7 @@ DEFAULT_PORT = 18790
 class WebhookTrigger:
     name: str
     prompt: str
-    chat_id: int
+    chat_id: ConversationRef
     cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS
 
 

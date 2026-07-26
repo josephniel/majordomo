@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Callable
 
-from ports import ToolProvider
+from ports import ConversationRef, ToolProvider
 
 if TYPE_CHECKING:  # avoid a cycle: container imports this module
     from .container import PersonaRuntime
@@ -128,7 +128,7 @@ def _build_delegate(rt: "PersonaRuntime") -> ToolProvider:
     from adapters.model import EphemeralConversationHistory
     from domain import Delegator
 
-    def factory(chat_id: int):
+    def factory(chat_id: ConversationRef):
         # Ephemeral history: a delegate's turns stay out of the chat mirror
         # and turn_log, but chat-completions vendors still read the current
         # turn from a mirror, so it can't be null.

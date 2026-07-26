@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Optional, Protocol, runtime_checkable, Sequence
 
+from .conversation import ConversationRef
+
 
 @runtime_checkable
 class EnabledService(Protocol):
@@ -38,7 +40,7 @@ class AttachmentIngestor(Protocol):
     """Consumes inbound attachments (documents library implements this)."""
 
     async def ingest_attachment(
-        self, chat_id: int, filename: str, mime: str, data: bytes,
+        self, chat_id: ConversationRef, filename: str, mime: str, data: bytes,
     ) -> Optional[str]: ...
 
 

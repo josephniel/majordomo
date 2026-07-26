@@ -3,6 +3,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
+import json
+
+from ports import ConversationRef
 from domain.schedule import ScheduleEngine, ScheduledTask
 
 
@@ -91,7 +94,12 @@ class TestPersistence:
         e2 = ScheduleEngine(store_file=f)
         e2._load()
         got = e2.get("keepme")
-        assert got and got.chat_id == 7 and got.prompt == "hello"
+        assert got and got.prompt == "hello"
+        # A bare id handed to add() is namespaced on the way in and survives
+        # the JSON round-trip as a ref, not as the int it was written with —
+        # which is what stops a pre-upgrade reminder from silently vanishing.
+        assert got.chat_id == ConversationRef("telegram", "7")
+        assert json.loads(f.read_text())[0]["chat_id"] == "telegram:7"
 
     def test_corrupt_store_starts_empty(self, tmp_path):
         f = tmp_path / "s.json"

@@ -12,6 +12,7 @@ shared contracts from here and never from a sibling's internals.
     context.py   — ToolContext (explicit per-invocation scope for handlers)
 """
 from .context import ToolContext
+from .conversation import ConversationRef, chat_key
 from .llm import (
     Agent,
     PersonaLike,
@@ -49,6 +50,8 @@ __all__ = [
     "CanaryRunner",
     "Connector",
     "ContextInjector",
+    "ConversationRef",
+    "chat_key",
     "EnabledService",
     "Faculty",
     "SessionResettable",

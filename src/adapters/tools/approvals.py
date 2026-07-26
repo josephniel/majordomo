@@ -29,7 +29,7 @@ import logging
 from dataclasses import replace
 from typing import Any, Awaitable, Callable, Optional
 
-from ports import ToolContext, ToolResult, ToolSpec
+from ports import ConversationRef, ToolContext, ToolResult, ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -120,7 +120,7 @@ class WriteApprovalGate:
         self._auditor = auditor
 
     async def _audit(
-        self, chat_id: Optional[int], connector: str, tool: str,
+        self, chat_id: Optional[ConversationRef], connector: str, tool: str,
         args: dict[str, Any], decision: str, reason: str,
     ) -> None:
         if self._auditor is None:
@@ -162,7 +162,7 @@ class WriteApprovalGate:
         connector_name: str,
         tool_name: str,
         args: dict[str, Any],
-        chat_id: Optional[int],
+        chat_id: Optional[ConversationRef],
     ) -> tuple[bool, str]:
         if self._confirmer is None:
             # Only reachable outside the bot process (CLI, tests):

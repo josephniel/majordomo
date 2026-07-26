@@ -15,6 +15,8 @@ cached_property gives per-container singletons without a separate cache.
 """
 from __future__ import annotations
 
+from ports import ConversationRef
+
 import logging
 import os
 from functools import cached_property
@@ -123,6 +125,7 @@ class PersonaRuntime:
             # e.g. Asia/Manila — decouples the user's wall clock from the
             # host machine's timezone. Unset = host-local (old behavior).
             timezone=self.settings.schedule_timezone,
+            legacy_platform=self.platform_config.type,
         )
 
     @cached_property
@@ -404,11 +407,13 @@ class PersonaRuntime:
                 f"persona {self.persona.id!r}: MEMORY_DATABASE_URL is not set "
                 f"(needed for the conversation history mirror)."
             )
-        return ConversationHistory(dsn)
+        # legacy_platform: pre-migration rows hold bare ids; the migration
+        # namespaces them with the platform that must have written them.
+        return ConversationHistory(dsn, legacy_platform=self.platform_config.type)
 
     def create_agent(
         self,
-        chat_id: int,
+        chat_id: ConversationRef,
         session_id: Optional[str] = None,
         history: Optional[ConversationHistory] = None,
         persona_override: Optional[Persona] = None,
@@ -616,7 +621,7 @@ class PersonaRuntime:
         )
 
     def _background_agent_factory(
-        self, chat_id: int, model: Optional[str] = None
+        self, chat_id: ConversationRef, model: Optional[str] = None
     ) -> Agent:
         """Dedicated per-fire background agent on the reduced background
         toolset. `model=None` resolves to the persona/chat Claude model.
@@ -645,14 +650,14 @@ class PersonaRuntime:
             timezone_name=self.settings.schedule_timezone,
         )
 
-    def _heartbeat_agent_factory(self, chat_id: int) -> Agent:
+    def _heartbeat_agent_factory(self, chat_id: ConversationRef) -> Agent:
         """Heartbeats run on the cheap heartbeat model (HEARTBEAT_MODEL,
         default Haiku) — background work must not spend chat-vendor quota."""
         return self._background_agent_factory(
             chat_id, model=self.settings.heartbeat_model
         )
 
-    def _watch_agent_factory(self, chat_id: int) -> Agent:
+    def _watch_agent_factory(self, chat_id: ConversationRef) -> Agent:
         """Watch fires (mail, splitwise) keep the main model (judgment) but
         shed the chat toolset — the activity arrives as injected context."""
         return self._background_agent_factory(chat_id)
@@ -688,14 +693,25 @@ class PersonaRuntime:
 
         return HeartbeatConfig(
             cron=str(hb["cron"]),
-            chat_id=int(chat_id),
+            chat_id=self._conversation(chat_id),
             prompt_loader=_load_prompt,
             agent_factory=self._heartbeat_agent_factory,
         )
 
-    def _default_operator_chat_id(self) -> Optional[int]:
+    def _conversation(self, value) -> ConversationRef:
+        """Config value (persona.yaml / platform.yaml) -> ConversationRef.
+
+        Operators write bare platform ids (`heartbeat.chat_id: 12345`), and
+        should keep being able to: the platform is already declared once in
+        platform.yaml, so repeating it in every id would be noise. `coerce`
+        also accepts a full `platform:chat` key for the day a persona serves
+        more than one platform.
+        """
+        return ConversationRef.coerce(value, platform=self.platform_config.type)
+
+    def _default_operator_chat_id(self) -> Optional[ConversationRef]:
         ids = self.platform_config.raw.get("allowed_user_ids") or []
-        return int(ids[0]) if ids else None
+        return self._conversation(ids[0]) if ids else None
 
     @cached_property
     def retention_job(self):
@@ -725,7 +741,7 @@ class PersonaRuntime:
                 "persona %r: %s configured but no chat to notify",
                 self.persona.id, label,
             )
-        return int(chat_id) if chat_id is not None else None
+        return self._conversation(chat_id) if chat_id is not None else None
 
     @cached_property
     def mail_watch_config(self):
@@ -816,7 +832,7 @@ class PersonaRuntime:
             triggers[str(name)] = WebhookTrigger(
                 name=str(name),
                 prompt=prompt,
-                chat_id=int(chat_id),
+                chat_id=self._conversation(chat_id),
                 cooldown_seconds=float(
                     (t or {}).get("cooldown_seconds") or DEFAULT_COOLDOWN_SECONDS
                 ),

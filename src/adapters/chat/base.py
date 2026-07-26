@@ -11,6 +11,11 @@ The platform also owns platform-specific concerns: authorization (Telegram
 int user IDs vs Discord snowflakes vs WhatsApp phone numbers), attachment
 extraction (PhotoSize vs Attachment vs media URL), and reply chunking
 (Telegram 4096, Discord 2000, WhatsApp ~65k).
+
+Conversation identity crosses this boundary as a ConversationRef, never as a
+platform id. The adapter is the ONLY layer allowed to build one or to read
+`.chat_key` back out — that asymmetry is what lets a persona move platforms
+without the kernel, the faculties, or the database noticing.
 """
 from __future__ import annotations
 
@@ -20,7 +25,7 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping, Optional, Protocol
 
-from ports import Attachment
+from ports import Attachment, ConversationRef
 from adapters.comms import CommsLog
 
 log = logging.getLogger(__name__)
@@ -29,8 +34,11 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class InboundMessage:
     """A user-sent message, normalized across platforms."""
-    chat_id: int
-    sender_id: int  # platform-native user id
+    chat_id: ConversationRef
+    # Platform-native user id, kept as an opaque STRING. Authorization is the
+    # platform's business (Telegram ints vs Slack `U…` vs Matrix MXIDs), so
+    # nothing above the adapter should parse it.
+    sender_id: str
     text: str
     attachments: list[Attachment] = field(default_factory=list)
     # Platform-native id of this inbound message, when supported. Lets the
@@ -44,8 +52,8 @@ class CommandEvent:
 
     Canonical command names: 'start', 'reset', 'cancel'.
     """
-    chat_id: int
-    sender_id: int
+    chat_id: ConversationRef
+    sender_id: str
     command: str
     message_id: Optional[int] = None
 
@@ -114,7 +122,7 @@ class ChatPlatform(ABC):
     @abstractmethod
     async def send_text(
         self,
-        chat_id: int,
+        chat_id: ConversationRef,
         text: str,
         reply_to: Optional[int] = None,
     ) -> None:
@@ -127,7 +135,7 @@ class ChatPlatform(ABC):
 
     async def send_file(
         self,
-        chat_id: int,
+        chat_id: ConversationRef,
         path: str,
         caption: Optional[str] = None,
     ) -> bool:
@@ -139,7 +147,7 @@ class ChatPlatform(ABC):
         log.warning("platform %s cannot send files", self.name)
         return False
 
-    async def request_approval(self, chat_id: int, text: str) -> bool:
+    async def request_approval(self, chat_id: ConversationRef, text: str) -> bool:
         """Ask the operator to approve a pending write action, blocking until
         they answer (or a platform-defined timeout). Returns approved?.
 
@@ -153,13 +161,13 @@ class ChatPlatform(ABC):
         return False
 
     @abstractmethod
-    def keep_typing(self, chat_id: int) -> AbstractAsyncContextManager[None]:
+    def keep_typing(self, chat_id: ConversationRef) -> AbstractAsyncContextManager[None]:
         """While open, show a typing indicator in the chat."""
 
     @abstractmethod
     def status_tracker(
         self,
-        chat_id: int,
+        chat_id: ConversationRef,
         friendly_status: Callable[[str, dict[str, Any]], str],
     ) -> AbstractAsyncContextManager[StatusTracker]:
         """Yields a StatusTracker that surfaces in-chat tool progress."""

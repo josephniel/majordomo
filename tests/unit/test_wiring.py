@@ -435,6 +435,11 @@ class TestFacultyConnectorTiering:
             "  prompt: |\n    check the first thing\n"
         )
         (d / "persona.yaml").write_text(yaml_text)
+        # A heartbeat targets a CONVERSATION, and a conversation belongs to a
+        # platform — so building its ConversationRef needs platform.yaml. A
+        # persona without one can't run at all, so requiring it here just
+        # makes the fixture a realistic persona.
+        (d / "platform.yaml").write_text("telegram:\n  allowed_user_ids:\n    - 7\n")
         runtime = PersonaRuntime(Persona.load("p", tmp_path))
         hb = runtime.heartbeat_config
         assert hb.prompt_loader() == "check the first thing"

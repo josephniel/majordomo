@@ -10,6 +10,8 @@ Schema is created idempotently on connect — safe to call repeatedly.
 """
 from __future__ import annotations
 
+from ports import ConversationRef
+
 import asyncio
 import json
 import logging
@@ -30,13 +32,37 @@ CREATE TABLE IF NOT EXISTS comms_log (
     instance      TEXT NOT NULL,
     direction     TEXT NOT NULL CHECK (direction IN ('in', 'out')),
     text          TEXT NOT NULL,
-    chat_id       BIGINT NOT NULL,
+    chat_id       TEXT NOT NULL,
     message_id    BIGINT,
     from_user     BIGINT,
     from_username TEXT,
     metadata      JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 CREATE INDEX IF NOT EXISTS comms_log_chat_idx ON comms_log (chat_id, ts DESC);
+-- chat_id migration: BIGINT (a Telegram shape) -> TEXT (a ConversationRef key).
+--
+-- Existing rows hold bare platform ids ("12345"); new rows hold namespaced
+-- keys ("telegram:12345"). Left alone, a live assistant would lose its own
+-- history at the moment of deploy — the lookup key simply stops matching. So
+-- the migration rewrites the old values, prefixing them with the platform
+-- that must have written them.
+--
+-- telegram is templated from the persona's platform.yaml by the caller.
+-- Idempotent: rows already containing ':' are left as they are.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'comms_log' AND column_name = 'chat_id'
+           AND data_type IN ('bigint', 'integer')
+    ) THEN
+        RAISE NOTICE 'comms_log.chat_id: bigint -> text, namespacing existing rows as telegram:*';
+        ALTER TABLE comms_log ALTER COLUMN chat_id TYPE TEXT USING chat_id::text;
+        UPDATE comms_log SET chat_id = 'telegram:' || chat_id
+         WHERE chat_id IS NOT NULL AND position(':' in chat_id) = 0;
+    END IF;
+END $$;
+
 
 CREATE OR REPLACE FUNCTION comms_log_notify() RETURNS TRIGGER AS $$
 BEGIN
@@ -106,7 +132,7 @@ class CommsLog:
         instance: str,
         direction: str,  # 'in' | 'out'
         text: str,
-        chat_id: int,
+        chat_id: ConversationRef,
         message_id: Optional[int] = None,
         from_user: Optional[int] = None,
         from_username: Optional[str] = None,

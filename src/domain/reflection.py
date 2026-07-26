@@ -24,7 +24,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Optional
 
-from ports import Summarizer
+from ports import ConversationRef, Summarizer
 
 if TYPE_CHECKING:
     from adapters.model.history import ConversationHistory
@@ -85,7 +85,7 @@ class ReflectionEngine:
 
     # ---- orchestrator hooks ----
 
-    def note_activity(self, chat_id: int) -> None:
+    def note_activity(self, chat_id: ConversationRef) -> None:
         """Called after every completed turn. (Re)arms the idle timer."""
         old = self._timers.pop(chat_id, None)
         if old is not None and not old.done():
@@ -99,16 +99,16 @@ class ReflectionEngine:
 
     # ---- internals ----
 
-    async def _idle_then_reflect(self, chat_id: int) -> None:
+    async def _idle_then_reflect(self, chat_id: ConversationRef) -> None:
         try:
             await asyncio.sleep(self._idle_seconds)
             await self.run_reflection(chat_id)
         except asyncio.CancelledError:
             pass
         except Exception:
-            log.exception("reflection for chat %d failed", chat_id)
+            log.exception("reflection for chat %s failed", chat_id)
 
-    async def run_reflection(self, chat_id: int) -> int:
+    async def run_reflection(self, chat_id: ConversationRef) -> int:
         """Extract + save facts from turns past the watermark. Returns the
         number of facts saved. Public so a CLI/test can invoke it directly."""
         lock = self._run_locks.setdefault(chat_id, asyncio.Lock())
@@ -167,7 +167,7 @@ class ReflectionEngine:
                 self._persona_id, chat_id, last_id,
             )
             log.info(
-                "reflection for chat %d: %d rows read, %d facts extracted, %d saved",
+                "reflection for chat %s: %d rows read, %d facts extracted, %d saved",
                 chat_id, len(convo), len(facts), saved,
             )
             return saved
