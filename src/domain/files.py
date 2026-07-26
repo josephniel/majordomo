@@ -19,12 +19,12 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, ClassVar
 
-from ports import Faculty, ToolContext, ToolResult, ToolSpec, tool
+from ports import ConversationRef, Faculty, ToolContext, ToolResult, ToolSpec, tool
 
 log = logging.getLogger(__name__)
 
 # sender(chat_id, path, caption) -> delivered?
-FileSender = Callable[[int, str, str | None], Awaitable[bool]]
+FileSender = Callable[[ConversationRef, str, str | None], Awaitable[bool]]
 
 
 class FileCourier(Faculty):

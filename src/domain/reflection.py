@@ -87,8 +87,8 @@ class ReflectionEngine:
         # contradicting it. See domain/reconcile.py.
         self._reconciler = Reconciler(memory, summarizer)
         # chat_id -> pending idle timer
-        self._timers: dict[int, asyncio.Task] = {}
-        self._run_locks: dict[int, asyncio.Lock] = {}
+        self._timers: dict[ConversationRef, asyncio.Task[None]] = {}
+        self._run_locks: dict[ConversationRef, asyncio.Lock] = {}
 
     # ---- orchestrator hooks ----
 

@@ -112,23 +112,23 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         )
 
         # per-instance state
-        self._agents: dict[int, Agent] = {}
+        self._agents: dict[ConversationRef, Agent] = {}
         self._session_ids: dict[ConversationRef, str] = session_store.load()
         # chat_id -> (task, agent actually serving it). The agent rides
         # along so /cancel can interrupt the RIGHT agent — an ephemeral
         # heartbeat agent is not self._agents[chat_id].
-        self._pending_turns: dict[int, tuple[asyncio.Task, Agent]] = {}
+        self._pending_turns: dict[ConversationRef, tuple[asyncio.Task[str], Agent]] = {}
         # Per-chat lock serializes turn processing so back-to-back messages
         # don't race the shared ClaudeSDKClient (which couples query() and
         # receive_response() and would deadlock under concurrent calls).
         # Message 2 waits for message 1's reply to be delivered, then runs
         # with full context including that reply.
-        self._per_chat_locks: dict[int, asyncio.Lock] = {}
+        self._per_chat_locks: dict[ConversationRef, asyncio.Lock] = {}
         self._config_mtime: float = 0.0
         # Connector-context version each chat's agent was built against —
         # when a connector's system-prompt contribution changes (memory
         # recompaction), stale agents rebuild with the session preserved.
-        self._agent_ctx_versions: dict[int, int] = {}
+        self._agent_ctx_versions: dict[ConversationRef, int] = {}
         # Flood control: recent turn timestamps + "already warned" flag.
         self._turn_times: dict[int, deque[float]] = {}
         self._rate_warned_at: dict[int, float] = {}

@@ -69,7 +69,7 @@ FireCallback = Callable[[WebhookTrigger, str], Awaitable[None]]
 
 
 class _QuietHTTPServer(ThreadingHTTPServer):
-    def server_bind(self):
+    def server_bind(self) -> None:
         # HTTPServer.server_bind calls socket.getfqdn(), whose reverse-DNS
         # lookup can hang ~30s on macOS. We never use server_name — bind
         # like a plain TCPServer instead.
@@ -127,10 +127,10 @@ class WebhookServer:
                 self.end_headers()
                 self.wfile.write(data)
 
-            def do_GET(self):
+            def do_GET(self) -> None:
                 self._reply(405, {"error": "POST only"})
 
-            def do_POST(self):
+            def do_POST(self) -> None:
                 auth = self.headers.get("Authorization") or ""
                 expected = f"Bearer {outer._token}"
                 if not hmac.compare_digest(auth, expected):

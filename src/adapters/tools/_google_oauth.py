@@ -114,7 +114,7 @@ class GoogleOAuthClient:
         captured: dict[str, str] = {}
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):
+            def do_GET(self) -> None:
                 qs = parse_qs(urlparse(self.path).query)
                 if "code" in qs:
                     captured["code"] = qs["code"][0]

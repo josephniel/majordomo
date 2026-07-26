@@ -36,7 +36,7 @@ from ports import ConversationRef, ToolContext, ToolResult, ToolSpec
 log = logging.getLogger(__name__)
 
 # confirmer(chat_id, prompt_text) -> approved?
-Confirmer = Callable[[int, str], Awaitable[bool]]
+Confirmer = Callable[[ConversationRef, str], Awaitable[bool]]
 
 _DESCRIPTION_SUFFIX = (
     " NOTE: calling this asks the user for interactive approval first; "
@@ -102,7 +102,7 @@ def _refusal(tool_name: str, reason: str) -> ToolResult:
 
 
 # auditor(chat_id, connector, tool, args_preview, decision, reason)
-Auditor = Callable[[int, str, str, str, str, str], Awaitable[None]]
+Auditor = Callable[[ConversationRef, str, str, str, str, str], Awaitable[None]]
 
 
 @dataclass(frozen=True)

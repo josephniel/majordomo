@@ -15,13 +15,15 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from ports import ConversationRef
+
 if TYPE_CHECKING:
     from .log import CommsLog
 
 log = logging.getLogger(__name__)
 
 # Callback signature matches ConversationOrchestrator's relay handler: (chat_id, text, message_id_or_None).
-OnRelay = Callable[[int, str, int | None], Awaitable[None]]
+OnRelay = Callable[[ConversationRef, str, int | None], Awaitable[None]]
 
 # Loop guard: max consecutive bot 'out' messages in a chat (no human 'in'
 # between them) before this instance stops relaying. Two bots @-mentioning
