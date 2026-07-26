@@ -198,8 +198,9 @@ class TestScheduleHallucinationRecovery:
         o = ConversationOrchestrator(
             platform=platform, agent_factory=lambda **k: None,
             session_store=SessionStore(tmp_path / "s.json"), config=object(),
+            # The scheduler is discovered through the connectors' declared
+            # SCHEDULE_CLAIM_TOOLS, not from a separate handle.
             connectors_list=[self.FakeSchedulerProvider()], persona_id="t",
-            task_scheduler=object(),  # persona has a scheduler
         )
         return o, platform
 
@@ -257,7 +258,7 @@ class TestScheduleHallucinationRecovery:
         orch = ConversationOrchestrator(
             platform=platform, agent_factory=lambda **k: None,
             session_store=SessionStore(tmp_path / "s.json"), config=object(),
-            connectors_list=[], persona_id="t", task_scheduler=None,
+            connectors_list=[], persona_id="t",
         )
         agent = self.ScriptedAgent()
         await orch._recover_missed_schedule(5, "I'll remind you at 6pm!", agent)

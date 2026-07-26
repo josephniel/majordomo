@@ -40,7 +40,6 @@ from adapters.model import (
 from adapters.model.anthropic import AnthropicOptionsBuilder, SubscriptionAuthSummarizer
 from adapters.comms import CommsLog
 from kernel.core import ConversationOrchestrator
-from kernel.proactive import HeartbeatConfig
 from adapters.store import MemoryDatabase
 from kernel.sessions import SessionStore
 # Concrete provider classes are NOT imported here any more — runtime/
@@ -665,24 +664,21 @@ class PersonaRuntime:
             role=role,
         )
 
-    def _heartbeat_agent_factory(self, chat_id: ConversationRef) -> Agent:
-        """Heartbeats are background work — they must not spend chat-vendor
-        quota. Which model that means is now a property of the BACKGROUND
-        role rather than of whether Claude happens to be enabled."""
-        return self._background_agent_factory(chat_id)
-
-    def _watch_agent_factory(self, chat_id: ConversationRef) -> Agent:
-        """Watch fires (mail, splitwise) keep the main model (judgment) but
-        shed the chat toolset — the activity arrives as injected context."""
-        return self._background_agent_factory(chat_id)
+    # NB: there is no longer a _heartbeat_agent_factory or a
+    # _watch_agent_factory. Both were one-line pass-throughs to
+    # _background_agent_factory, and both existed only because each trigger
+    # config carried its own `agent_factory: Any`. A trigger now declares the
+    # KIND of work it is (TriggerAgent.DEDICATED) and the orchestrator
+    # resolves that once, so which model background work runs on is answered
+    # in exactly one place: ModelRole.BACKGROUND.
 
     @cached_property
-    def heartbeat_config(self) -> Optional[HeartbeatConfig]:
-        """Proactive check-in config from persona.yaml. chat_id defaults to
+    def heartbeat_source(self):
+        """Proactive check-in from persona.yaml. The conversation defaults to
         the first allowed user's DM (on Telegram, DM chat_id == user_id).
-        The prompt loader re-reads persona.yaml on every fire, so
-        prompt edits apply without a restart; fires run on a dedicated
-        Haiku agent (see _heartbeat_agent_factory)."""
+        The prompt loader re-reads persona.yaml on every fire, so prompt
+        edits apply without a restart; fires run on a dedicated background
+        agent."""
         hb = self.persona.heartbeat
         if not hb or not hb.get("cron"):
             return None
@@ -705,11 +701,11 @@ class PersonaRuntime:
             cfg = yaml.safe_load(persona_yaml.read_text(encoding="utf-8")) or {}
             return str((cfg.get("heartbeat") or {}).get("prompt") or "").strip()
 
-        return HeartbeatConfig(
+        from domain.triggers import HeartbeatSource
+        return HeartbeatSource(
             cron=str(hb["cron"]),
-            chat_id=self._conversation(chat_id),
+            conversation=self._conversation(chat_id),
             prompt_loader=_load_prompt,
-            agent_factory=self._heartbeat_agent_factory,
         )
 
     def _conversation(self, value) -> ConversationRef:
@@ -758,7 +754,7 @@ class PersonaRuntime:
         return self._conversation(chat_id) if chat_id is not None else None
 
     @cached_property
-    def mail_watch_config(self):
+    def mail_watch_source(self):
         """Push-style mail alerts. None unless persona.yaml has mail_watch
         and the gmail connector is enabled."""
         cfg = self.persona.mail_watch
@@ -768,22 +764,21 @@ class PersonaRuntime:
         if chat_id is None:
             return None
         from adapters.trigger.mailwatch import MAIL_WATCH_PROMPT_PREAMBLE, MailWatcher
-        from kernel.proactive import WatchConfig
+        from domain.triggers import WatchSource
         every = max(1, int(cfg.get("every_minutes") or 3))
-        return WatchConfig(
+        return WatchSource(
             name="mail_watch",
             cron=f"*/{every} * * * *",
-            chat_id=chat_id,
+            conversation=chat_id,
             watcher=MailWatcher(
                 gmail_connector=self.provider("gmail"),
                 state_file=self.persona.data_dir / "mail_watch.json",
             ),
             preamble=MAIL_WATCH_PROMPT_PREAMBLE,
-            agent_factory=self._watch_agent_factory,
         )
 
     @cached_property
-    def splitwise_watch_config(self):
+    def splitwise_watch_source(self):
         """Splitwise expense mirroring (no webhooks upstream — polling).
         None unless persona.yaml has splitwise_watch and both the splitwise
         and budget connectors are enabled (the fire's whole job is writing
@@ -804,18 +799,17 @@ class PersonaRuntime:
             SPLITWISE_WATCH_PROMPT_PREAMBLE,
             SplitwiseWatcher,
         )
-        from kernel.proactive import WatchConfig
+        from domain.triggers import WatchSource
         every = max(1, int(cfg.get("every_minutes") or 10))
-        return WatchConfig(
+        return WatchSource(
             name="splitwise_watch",
             cron=f"*/{every} * * * *",
-            chat_id=chat_id,
+            conversation=chat_id,
             watcher=SplitwiseWatcher(
                 splitwise_connector=self.provider("splitwise"),
                 state_file=self.persona.data_dir / "splitwise_watch.json",
             ),
             preamble=SPLITWISE_WATCH_PROMPT_PREAMBLE,
-            agent_factory=self._watch_agent_factory,
         )
 
     @cached_property
@@ -913,16 +907,37 @@ class PersonaRuntime:
             config=self.config,
             connectors_list=self.active_services,
             persona_id=self.persona.id,
-            task_scheduler=schedule_conn,
             comms_log=comms,
             conversation_history=self.conversation_history,
             reflection=self.reflection_engine,
             status_reporter=self.status_reporter,
-            heartbeat=self.heartbeat_config,
-            webhook_server=self.webhook_server,
-            watches=[
-                w for w in (self.mail_watch_config, self.splitwise_watch_config)
-                if w is not None
-            ],
-            retention=self.retention_job,
+            trigger_sources=self.trigger_sources(schedule_conn),
+            background_agent_factory=self._background_agent_factory,
         )
+
+    def trigger_sources(self, schedule_conn) -> list:
+        """Every way this persona can be woken without the user typing.
+
+        One list, assembled in one place. Previously these were four
+        constructor arguments of four different shapes — a config object, a
+        server, a list, and a job — each with bespoke handling in the
+        orchestrator.
+
+        The schedule source leads because it owns the APScheduler instance
+        the cron-driven sources register against.
+        """
+        from domain.triggers import RetentionSource, ScheduleSource, WebhookSource
+
+        sources: list = []
+        if schedule_conn is not None:
+            sources.append(ScheduleSource(schedule_conn))
+        if self.heartbeat_source is not None:
+            sources.append(self.heartbeat_source)
+        for watch in (self.mail_watch_source, self.splitwise_watch_source):
+            if watch is not None:
+                sources.append(watch)
+        if self.webhook_server is not None:
+            sources.append(WebhookSource(self.webhook_server))
+        if self.retention_job is not None:
+            sources.append(RetentionSource(self.retention_job))
+        return sources

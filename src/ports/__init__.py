@@ -11,6 +11,7 @@ shared contracts from here and never from a sibling's internals.
     protocols.py — structural capability protocols (AttachmentIngestor, …)
     context.py   — ToolContext (explicit per-invocation scope for handlers)
     conversation.py — ConversationRef (platform-agnostic chat identity)
+    triggers.py  — TriggerEvent/TriggerSource (waking the agent unprompted)
     memory.py    — MemoryStore + MemoryEntry (the second brain's contract)
     documents.py — DocumentStore (RAG corpus contract)
 """
@@ -45,6 +46,14 @@ from .protocols import (
     ToolCallProbe,
     ToolTraceReporting,
     VendorIntrospectable,
+)
+from .triggers import (
+    AddCron,
+    EmitTrigger,
+    TriggerAgent,
+    TriggerContext,
+    TriggerEvent,
+    TriggerSource,
 )
 from .tools import (
     Connector,
@@ -88,6 +97,12 @@ __all__ = [
     "ToolResult",
     "ToolSpec",
     "ToolUseCallback",
+    "AddCron",
+    "EmitTrigger",
+    "TriggerAgent",
+    "TriggerContext",
+    "TriggerEvent",
+    "TriggerSource",
     "UsageLimitError",
     "as_tool_result",
     "tool",

@@ -223,9 +223,16 @@ class RecoveryMixin:
         to actually make the tool call it claimed. If even the retry produces
         no scheduling call, tell the user plainly that nothing was scheduled —
         a false 'reminder set' is the one failure mode this bot must never
-        leave standing. Never raises: the user's turn already succeeded."""
-        if self._schedule_connector is None:
-            return  # persona has no scheduler; nothing to recover with
+        leave standing. Never raises: the user's turn already succeeded.
+
+        "Does this persona even have a scheduler?" is answered by
+        `_schedule_claim_tools` being non-empty (checked inside
+        `_detect_missed_schedule`) — i.e. by whether any enabled provider
+        declared a tool that can satisfy the claim. There used to be a second
+        guard here on a separate scheduler handle, which could disagree with
+        the first: a persona with a calendar connector but no schedule
+        faculty can genuinely set a reminder, and that guard silently
+        suppressed the recovery for it."""
         if not self._detect_missed_schedule(reply, agent):
             return
         log.warning(
