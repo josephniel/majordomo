@@ -51,6 +51,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Optional, Protocol, runtime_checkable
 from uuid import UUID
 
@@ -96,14 +97,115 @@ class MemoryEntry:
     volatile: bool = False
     verified_at: Optional[datetime] = None
 
+    # ---- bi-temporal validity ----
+    # created_at is when the fact was WRITTEN; these are when it is TRUE.
+    # Conflating them is how "the user is on leave 12-19 Aug" keeps being
+    # injected on the 25th: nothing superseded it, so by write-time reasoning
+    # it is still the freshest thing known.
+    valid_from: Optional[datetime] = None
+    valid_to: Optional[datetime] = None
+    """None means no known end — the common case, and the reason this
+    defaults to "always true" rather than requiring a date nobody has."""
+
+    provenance: str = "chat"
+    """Who claimed this: 'chat', 'reflection', 'ideation'. Matters most for
+    ideation — an inferred fact is a hypothesis, and when one turns out to be
+    wrong the operator needs to be able to find the others."""
+
+    confidence: float = 1.0
+    """1.0 for asserted, lower for inferred."""
+
     @property
     def is_active(self) -> bool:
         return self.superseded_by is None
+
+    def is_valid_at(self, when: datetime) -> bool:
+        """Whether the fact is claimed to hold at `when`.
+
+        Independent of `is_active`: a fact can be un-superseded and still not
+        apply right now (a finished holiday), and it can be superseded while
+        having been true for the period it covers. Recall needs the first;
+        history needs the second.
+        """
+        if self.valid_from is not None and when < self.valid_from:
+            return False
+        if self.valid_to is not None and when >= self.valid_to:
+            return False
+        return True
+
+    @property
+    def is_inferred(self) -> bool:
+        return self.provenance == "ideation"
 
     @property
     def is_forgotten(self) -> bool:
         """Retracted rather than corrected — the tombstone convention."""
         return self.superseded_by is not None and self.superseded_by == self.id
+
+
+class MemoryVerdict(StrEnum):
+    """What to do with a candidate fact, given what is already known.
+
+    The extraction path used to have only one verb. Every candidate that
+    wasn't a near-duplicate was appended, so a CHANGED fact became a second,
+    contradicting row: "the user lives in Manila" and "the user moved to
+    Cebu" are not textually similar enough to trip the dedup threshold, so
+    both stayed active and both got recalled. The assistant then had to pick
+    one, with nothing to pick on.
+
+    Borrowed from mem0, which reached the same conclusion: extraction is a
+    reconciliation against existing memory, not an insert.
+    """
+
+    ADD = "add"
+    """Genuinely new. Nothing known contradicts or covers it."""
+
+    UPDATE = "update"
+    """The same underlying fact with a new value. Supersedes the old entry,
+    which stays for provenance."""
+
+    DELETE = "delete"
+    """What was known is now false and has no replacement — the user cancelled
+    the trip rather than moving it. Retracts, keeping the row."""
+
+    NOOP = "noop"
+    """Already known. The overwhelmingly common verdict, and the cheap one:
+    saying nothing is how memory avoids accumulating restatements of itself."""
+
+
+@dataclass(frozen=True)
+class FactCandidate:
+    """A proposed fact, before anything has been decided about it.
+
+    Produced by extraction (reading a conversation) and by ideation
+    (synthesising from existing facts). Both feed the same reconciliation, so
+    an inferred fact is held to exactly the same checks as an observed one.
+    """
+    scope: str
+    content: str
+    domain_key: str = ""
+    title: str = ""
+    volatile: bool = False
+    provenance: str = "chat"
+    confidence: float = 1.0
+    valid_from: Optional[datetime] = None
+    valid_to: Optional[datetime] = None
+
+
+@dataclass(frozen=True)
+class Reconciliation:
+    """The decision about one candidate, and why.
+
+    `reason` is not decoration. These decisions are made by a model against
+    a prompt, they run unattended in the background, and DELETE and UPDATE
+    both destroy the currently-visible value. When memory later turns out to
+    be wrong, the log line saying which candidate superseded what, and on
+    what grounds, is the only way to find out where it went wrong.
+    """
+    verdict: MemoryVerdict
+    candidate: FactCandidate
+    target_id: Optional[UUID] = None
+    reason: str = ""
 
 
 @dataclass
@@ -152,6 +254,10 @@ class MemoryStore(Protocol):
         title: str = "",
         metadata: Optional[dict[str, Any]] = None,
         volatile: bool = False,
+        provenance: str = "chat",
+        confidence: float = 1.0,
+        valid_from: Optional[datetime] = None,
+        valid_to: Optional[datetime] = None,
     ) -> MemoryEntry: ...
 
     async def find_similar(
@@ -200,6 +306,17 @@ class MemoryStore(Protocol):
         domain_key: Optional[str] = None,
         limit: int = 200,
     ) -> list[MemoryEntry]: ...
+
+    async def expire_entry(self, entry_id: UUID, at: datetime) -> bool:
+        """Set a fact's `valid_to`, ending it without retracting it.
+
+        Distinct from `forget_entry`: forgetting says the fact should never
+        have been recorded, expiring says it was true and no longer is. The
+        difference is visible to the operator ("what did I have on last
+        August?") and to compaction, which should not narrate a cancelled
+        trip as if it had happened.
+        """
+        ...
 
     async def list_pinned(self, persona_id: str) -> list[MemoryEntry]: ...
 

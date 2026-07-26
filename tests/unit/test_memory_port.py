@@ -202,3 +202,87 @@ class TestRecall:
         await mem.save_fact("user", "a fact")
         store.fail_recall = True
         assert await mem.auto_recall("tell me the fact") == ""
+
+
+class TestBiTemporalValidity:
+    """created_at is when a fact was WRITTEN; valid_from/valid_to are when it
+    is TRUE. Conflating them is how "the user is on leave 12-19 Aug" is still
+    the freshest un-superseded fact on the 25th — nothing contradicted it, so
+    recall keeps injecting it and the assistant keeps acting on it."""
+
+    async def test_an_expired_fact_stops_being_recalled(self, mem):
+        from datetime import datetime, timedelta, timezone
+        _, e = await mem.save_fact("user", "the user is on leave until August")
+        assert await mem.recall("is the user on leave")
+
+        await mem.expire_fact(e.id, datetime.now(timezone.utc) - timedelta(days=1))
+        assert await mem.recall("is the user on leave") == []
+
+    async def test_expiring_keeps_the_row_and_its_history(self, mem, store):
+        """Distinct from forgetting. The fact WAS true, so "what did I have on
+        last August?" must still be answerable, and compaction must not
+        narrate a cancelled trip as if it happened."""
+        from datetime import datetime, timedelta, timezone
+        _, e = await mem.save_fact("user", "the user is on leave until August")
+        await mem.expire_fact(e.id, datetime.now(timezone.utc) - timedelta(days=1))
+
+        row = store.entries[e.id]
+        assert row.valid_to is not None
+        assert not row.is_forgotten, "expired is not retracted"
+        assert row.is_active, "the row is not tombstoned"
+
+    async def test_forgetting_is_still_a_tombstone(self, mem, store):
+        _, e = await mem.save_fact("user", "a fact recorded in error")
+        await mem.forget_fact(e.id)
+        assert store.entries[e.id].is_forgotten
+
+    async def test_expiry_only_ever_moves_earlier(self, mem, store):
+        """A stale re-extraction must not be able to resurrect a fact the
+        user already ended."""
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        _, e = await mem.save_fact("user", "a temporary arrangement")
+        await mem.expire_fact(e.id, now)
+        await mem.expire_fact(e.id, now + timedelta(days=30))
+        assert store.entries[e.id].valid_to == now
+
+    async def test_a_not_yet_valid_fact_is_not_recalled(self, mem):
+        """The other end of the window: a fact scheduled to become true is
+        not true yet."""
+        from datetime import datetime, timedelta, timezone
+        await mem.save_fact(
+            "user", "the user starts at the new company",
+            valid_from=datetime.now(timezone.utc) + timedelta(days=30),
+        )
+        assert await mem.recall("where does the user start") == []
+
+    async def test_superseding_closes_the_old_window(self, mem, store):
+        """The replacement starts being true now; the old row keeps the
+        window it actually covered. Copying valid_from forward would claim
+        the corrected value had been true all along."""
+        _, old = await mem.save_fact("user", "the user drives a red car")
+        new = await mem.update_fact(old.id, "the user drives a blue car")
+        await mem.drain()
+        assert store.entries[old.id].valid_to is not None
+        assert store.entries[new.id].valid_to is None
+
+
+class TestProvenance:
+    async def test_the_write_path_records_who_claimed_it(self, mem, store):
+        _, e = await mem.save_fact("user", "extracted from a chat",
+                                   source="reflection")
+        assert store.entries[e.id].provenance == "reflection"
+        assert not store.entries[e.id].is_inferred
+
+    async def test_inferred_facts_are_distinguishable(self, mem, store):
+        _, e = await mem.save_fact("user", "an inference", source="ideation",
+                                   confidence=0.6)
+        assert store.entries[e.id].is_inferred
+        assert store.entries[e.id].confidence == 0.6
+
+    async def test_source_is_also_kept_in_metadata(self, mem, store):
+        """Older rows only have the metadata copy, and the CLI still reads
+        it — dropping it would silently blank provenance in `memory export`
+        for everything written before the column existed."""
+        _, e = await mem.save_fact("user", "a fact", source="reflection")
+        assert store.entries[e.id].metadata["source"] == "reflection"

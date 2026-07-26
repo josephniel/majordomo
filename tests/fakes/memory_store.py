@@ -71,6 +71,10 @@ class FakeMemoryStore:
         title: str = "",
         metadata: Optional[dict[str, Any]] = None,
         volatile: bool = False,
+        provenance: str = "chat",
+        confidence: float = 1.0,
+        valid_from: Optional[datetime] = None,
+        valid_to: Optional[datetime] = None,
     ):
         from ports import MemoryEntry
 
@@ -86,9 +90,24 @@ class FakeMemoryStore:
             updated_at=_now(),
             verified_at=_now(),
             volatile=volatile,
+            provenance=provenance,
+            confidence=confidence,
+            valid_from=valid_from or _now(),
+            valid_to=valid_to,
         )
         self.entries[entry.id] = entry
         return entry
+
+    async def expire_entry(self, entry_id: uuid.UUID, at: datetime) -> bool:
+        entry = self.entries.get(entry_id)
+        if entry is None or not entry.is_active:
+            return False
+        # Only ever moves the end date earlier, matching the store's LEAST():
+        # an expiry that could be pushed out would let a stale re-extraction
+        # resurrect a fact the user already ended.
+        entry.valid_to = min(entry.valid_to, at) if entry.valid_to else at
+        entry.updated_at = _now()
+        return True
 
     async def find_similar(
         self,
@@ -135,10 +154,16 @@ class FakeMemoryStore:
             verified_at=_now(),
             pinned=old.pinned,
             volatile=old.volatile,
+            provenance=old.provenance,
+            confidence=old.confidence,
+            valid_from=_now(),
         )
         self.entries[new.id] = new
         old.superseded_by = new.id
         old.updated_at = _now()
+        # The replacement starts being true NOW; the old row keeps the window
+        # it actually covered.
+        old.valid_to = old.valid_to or _now()
         # Carry edges onto the replacement — a correction must not orphan the
         # fact's relationships. The port promises this; the real store does it
         # in SQL, so the fake has to do it too or the fake is easier to pass.
@@ -300,7 +325,11 @@ class FakeMemoryStore:
     # ---- internals ----
 
     def _active(self, persona_id: str):
+        """Un-superseded AND currently valid — the same two-part predicate the
+        real store applies in the `base` CTE. A fake that skipped the validity
+        half would make expiry look like it worked."""
+        now = _now()
         return [
             e for e in self.entries.values()
-            if e.persona_id == persona_id and e.is_active
+            if e.persona_id == persona_id and e.is_active and e.is_valid_at(now)
         ]

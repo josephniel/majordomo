@@ -293,9 +293,18 @@ Three principles:
         title: str = "",
         source: str = "chat",
         volatile: bool = False,
+        confidence: float = 1.0,
+        valid_from: Optional[datetime] = None,
+        valid_to: Optional[datetime] = None,
     ) -> tuple[str, Optional[MemoryEntry]]:
         """Validate → dedup → insert → schedule auto-compaction.
-        Returns (human-readable outcome, entry-or-None)."""
+        Returns (human-readable outcome, entry-or-None).
+
+        Still an APPEND. It is the right shape when a caller already knows the
+        fact is new — the memory_save tool, where the model just decided to
+        save something. For candidates arriving from extraction or ideation,
+        where "is this already known, or does it CHANGE something known?" is
+        the whole question, go through `reconcile`."""
         scope = (scope or "").strip().lower()
         if scope not in VALID_SCOPES:
             return (f"invalid scope {scope!r}; must be one of {'/'.join(VALID_SCOPES)}", None)
@@ -329,8 +338,15 @@ Three principles:
             domain_key=domain_key,
             title=(title or "").strip(),
             content=content,
+            # `source` stays in metadata as well as going to the provenance
+            # column: older rows only have the metadata copy, and the /status
+            # and CLI paths still read it.
             metadata={"source": source},
             volatile=volatile,
+            provenance=source,
+            confidence=confidence,
+            valid_from=valid_from,
+            valid_to=valid_to,
         )
         self._spawn_bg(self._maybe_auto_compact(scope, domain_key))
         return (
@@ -378,6 +394,18 @@ Three principles:
         callers applying their own selection policy."""
         return await self._db.recall_scored(
             self._persona_id, query, scope=scope, domain_key=domain_key, limit=limit,
+        )
+
+    async def list_active(
+        self,
+        scope: Optional[str] = None,
+        domain_key: Optional[str] = None,
+        limit: int = 200,
+    ) -> list[MemoryEntry]:
+        """Everything currently held, newest first — the raw material for
+        compaction and ideation, as opposed to a ranked answer to a query."""
+        return await self._db.list_active(
+            self._persona_id, scope=scope, domain_key=domain_key, limit=limit,
         )
 
     async def get(self, entry_id: UUID) -> Optional[MemoryEntry]:
@@ -431,6 +459,29 @@ Three principles:
         """
         entry = await self._db.get_entry(entry_id)
         if not await self._db.forget_entry(entry_id):
+            return False
+        if entry is not None:
+            self._spawn_bg(self.compact_compartment(entry.scope, entry.domain_key))
+        return True
+
+    async def expire_fact(
+        self, entry_id: UUID, at: Optional[datetime] = None
+    ) -> bool:
+        """End a fact's validity without retracting it.
+
+        The difference from `forget_fact` is what it claims about the past.
+        Forgetting says the fact should not have been recorded; expiring says
+        it was true and no longer is. That distinction is what lets "what did
+        I have on last August?" answer correctly, and it is what stops
+        compaction from narrating a cancelled trip as though it happened.
+
+        Recompacts, for the same reason update and forget do: an expired fact
+        still sitting in the injected narrative has not expired as far as the
+        model is concerned.
+        """
+        entry = await self._db.get_entry(entry_id)
+        when = at or datetime.now(timezone.utc)
+        if not await self._db.expire_entry(entry_id, when):
             return False
         if entry is not None:
             self._spawn_bg(self.compact_compartment(entry.scope, entry.domain_key))
@@ -563,8 +614,8 @@ Three principles:
         the result back to memory_core, refreshes the local cache.
         Returns the new summary (or an explanatory error string on failure).
         """
-        entries = await self._db.list_active(
-            self._persona_id, scope=scope, domain_key=domain_key, limit=500,
+        entries = await self.list_active(
+            scope=scope, domain_key=domain_key, limit=500,
         )
         if not entries:
             await self._db.set_core(self._persona_id, scope, domain_key, "", 0)

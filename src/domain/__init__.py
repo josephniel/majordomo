@@ -18,7 +18,9 @@ from .code_exec import CodeExecutor
 from .delegate import Delegator
 from .documents import DocumentLibrary
 from .files import FileCourier
+from .ideation import Ideator
 from .memory import LongTermMemory
+from .reconcile import Reconciler
 from .reflection import ReflectionEngine
 from .schedule import ScheduleEngine, TaskScheduler, ScheduledTask
 from .skills import SkillsLibrary
@@ -28,7 +30,9 @@ __all__ = [
     "Delegator",
     "DocumentLibrary",
     "FileCourier",
+    "Ideator",
     "LongTermMemory",
+    "Reconciler",
     "ReflectionEngine",
     "ScheduleEngine",
     "SkillsLibrary",

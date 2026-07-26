@@ -154,6 +154,16 @@ def _entry(row: asyncpg.Record) -> MemoryEntry:
         pinned=bool(row["pinned"]) if "pinned" in row else False,
         volatile=bool(row["volatile"]) if "volatile" in row else False,
         verified_at=row["verified_at"] if "verified_at" in row else None,
+        # `in row` guards throughout: several read paths SELECT a projection
+        # rather than *, and a KeyError here would take out recall entirely
+        # over a column that has a sensible default.
+        valid_from=row["valid_from"] if "valid_from" in row else None,
+        valid_to=row["valid_to"] if "valid_to" in row else None,
+        provenance=(row["provenance"] if "provenance" in row else None) or "chat",
+        confidence=(
+            float(row["confidence"]) if "confidence" in row
+            and row["confidence"] is not None else 1.0
+        ),
     )
 
 
@@ -218,6 +228,10 @@ class MemoryDatabase:
         title: str = "",
         metadata: Optional[dict[str, Any]] = None,
         volatile: bool = False,
+        provenance: str = "chat",
+        confidence: float = 1.0,
+        valid_from: Optional[datetime] = None,
+        valid_to: Optional[datetime] = None,
     ) -> MemoryEntry:
         emb = await _embed_pg(f"{title}\n{content}" if title else content)
         async with self._acquire() as conn:
@@ -225,14 +239,37 @@ class MemoryDatabase:
                 """
                 INSERT INTO memory_entries
                     (persona_id, scope, domain_key, title, content, metadata,
-                     embedding, embedding_model, volatile, verified_at)
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::vector, $8, $9, NOW())
+                     embedding, embedding_model, volatile, verified_at,
+                     provenance, confidence, valid_from, valid_to)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::vector, $8, $9, NOW(),
+                        $10, $11, COALESCE($12, NOW()), $13)
                 RETURNING *
                 """,
                 persona_id, scope, domain_key, title, content, metadata or {},
                 emb, _EMBED_MODEL if emb else "", volatile,
+                provenance, confidence, valid_from, valid_to,
             )
         return _entry(row)
+
+    async def expire_entry(self, entry_id: UUID, at: datetime) -> bool:
+        """End a fact's validity without retracting it.
+
+        Only ever moves the end date EARLIER (or sets it), via LEAST. An
+        expiry that could be pushed out would let a stale re-extraction
+        resurrect a fact the user already ended — the mistake runs one way
+        here, so the SQL only permits the safe direction.
+        """
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE memory_entries
+                   SET valid_to = LEAST(COALESCE(valid_to, $2), $2),
+                       updated_at = NOW()
+                 WHERE id = $1 AND superseded_by IS NULL
+                """,
+                entry_id, at,
+            )
+        return result.split()[-1] != "0"
 
     async def find_similar(
         self,
@@ -310,13 +347,30 @@ class MemoryDatabase:
                     """
                     INSERT INTO memory_entries
                         (persona_id, scope, domain_key, title, content, metadata,
-                         embedding, embedding_model, pinned, volatile, verified_at)
-                    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::vector, $8, $9, $10, NOW())
+                         embedding, embedding_model, pinned, volatile, verified_at,
+                         provenance, confidence, valid_from)
+                    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::vector, $8, $9, $10, NOW(),
+                            $11, $12, NOW())
                     RETURNING *
                     """,
                     old["persona_id"], old["scope"], old["domain_key"],
                     old["title"], new_content, dict(old["metadata"] or {}),
                     emb, _EMBED_MODEL if emb else "", old["pinned"], old["volatile"],
+                    # Provenance is inherited but validity is NOT: the
+                    # replacement starts being true now, whereas the old row
+                    # keeps the window it actually covered. Copying valid_from
+                    # forward would claim the corrected value had been true
+                    # all along, which is exactly the history this table is
+                    # supposed to preserve.
+                    old["provenance"], old["confidence"],
+                )
+                # Close the old row's validity window at the moment it was
+                # replaced, so "what did I believe last Tuesday?" answers with
+                # the value that was current then.
+                await conn.execute(
+                    "UPDATE memory_entries SET valid_to = COALESCE(valid_to, NOW()) "
+                    "WHERE id = $1",
+                    old["id"],
                 )
                 await conn.execute(
                     "UPDATE memory_entries SET superseded_by = $1, updated_at = NOW() WHERE id = $2",
@@ -625,7 +679,18 @@ class MemoryDatabase:
         sql = f"""
 WITH base AS (
     SELECT * FROM memory_entries
-    WHERE persona_id = $1 AND superseded_by IS NULL{base_filters}
+    WHERE persona_id = $1 AND superseded_by IS NULL
+      -- Bi-temporal gate. All three arms rank the same `base`, so putting
+      -- expiry here covers every retrieval path at once rather than needing
+      -- the predicate repeated (and eventually forgotten) in one of them.
+      --
+      -- valid_to is NULL for almost every fact — "no known end" — and the
+      -- partial index makes the exception cheap. What this stops is the case
+      -- write-time reasoning gets wrong: "the user is on leave 12-19 Aug" is
+      -- the freshest un-superseded fact on 25 Aug, so without this it is
+      -- still recalled, still injected, and still acted on.
+      AND (valid_to IS NULL OR valid_to > NOW())
+      AND (valid_from IS NULL OR valid_from <= NOW()){base_filters}
 ),
 {arms[0]},
 {arms[1]},
