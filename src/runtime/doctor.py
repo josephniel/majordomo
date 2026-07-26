@@ -27,7 +27,13 @@ from dotenv import dotenv_values
 
 from adapters.store import Embedder, redact_dsn
 
-from .config import SETTINGS, ConfigError, ConfigResolver, Scope
+from .config import (
+    SETTINGS,
+    SHARED_ENV_FILENAME,
+    ConfigError,
+    ConfigResolver,
+    Scope,
+)
 from .persona import Persona
 from .settings import RuntimeSettings
 from .vendors import VENDORS_BY_NAME
@@ -99,10 +105,7 @@ def audit(
     report = Report(persona_id=persona_id)
     persona_dir = (project_root / "instances" / persona_id) if persona_id else None
 
-    dotenv: dict[str, str] = {}
-    if persona_dir is not None and (persona_dir / ".env").exists():
-        dotenv = {k: v for k, v in dotenv_values(persona_dir / ".env").items()
-                  if v is not None}
+    dotenv = _persona_env(project_root, persona_dir)
     shell = dict(shell_env or {})
     effective = dict(env) if env is not None else {**shell, **dotenv}
 
@@ -123,6 +126,26 @@ def audit(
     _check_shared_database(report, project_root, persona_id, resolver, shell)
     _check_duplication(report, project_root, shell)
     return report
+
+
+def _persona_env(root: Path, persona_dir: Optional[Path]) -> dict[str, str]:
+    """The .env layers as the runtime loads them.
+
+    MUST mirror PersonaRuntime.load_env, including the precedence: the
+    persona's own file first, then the shared one, because load_dotenv never
+    overwrites. An audit that models the layering differently from the
+    runtime reports on a deployment that doesn't exist — which is worse than
+    not auditing.
+    """
+    out: dict[str, str] = {}
+    for f in ((persona_dir / ".env") if persona_dir else None,
+              root / "instances" / SHARED_ENV_FILENAME):
+        if f is None or not f.exists():
+            continue
+        for k, v in dotenv_values(f).items():
+            if v is not None:
+                out.setdefault(k, v)   # first file wins, as load_dotenv does
+    return out
 
 
 def _check_files_exist(report: Report, root: Path, persona_dir: Optional[Path]) -> None:
@@ -351,10 +374,9 @@ def _settings_for(root: Path, persona_id: str,
                   shell: Mapping[str, str]) -> Optional[RuntimeSettings]:
     persona_dir = root / "instances" / persona_id
     try:
-        env_file = persona_dir / ".env"
-        values = ({k: v for k, v in dotenv_values(env_file).items() if v is not None}
-                  if env_file.exists() else {})
-        return RuntimeSettings.load(root, persona_dir, {**shell, **values})
+        return RuntimeSettings.load(
+            root, persona_dir, {**shell, **_persona_env(root, persona_dir)},
+        )
     except Exception:
         return None
 
@@ -409,12 +431,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     shell = dict(os.environ)
 
     if args.resolved:
-        env = shell
-        if args.persona:
-            f = root / "instances" / args.persona / ".env"
-            if f.exists():
-                env = {**shell,
-                       **{k: v for k, v in dotenv_values(f).items() if v is not None}}
+        persona_dir = (root / "instances" / args.persona) if args.persona else None
+        env = {**shell, **_persona_env(root, persona_dir)}
         print(render_resolution(root, args.persona, env, args.show_secrets))
         return 0
 

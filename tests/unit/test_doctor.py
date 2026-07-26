@@ -143,6 +143,60 @@ class TestDeadAndShadowedEnvironmentEntries:
         assert levels(r, "shadowing") == [OK]
 
 
+class TestTheSharedSecretsFile:
+    def _shared(self, root, values):
+        (root / "instances" / "_shared.env").write_text(
+            "".join(f"{k}={v}\n" for k, v in values.items()))
+
+    def test_a_variable_a_config_file_reads_is_not_dead(self, tmp_path):
+        """The false positive that mattered: config.yaml says
+        `url: ${MEMORY_DATABASE_URL}` and _shared.env supplies it. Calling
+        that entry "dead" told the operator to delete the value itself."""
+        root = make(tmp_path, {"a": {"env": {}}},
+                    host={"database": {"url": "${MEMORY_DATABASE_URL}"}})
+        self._shared(root, {"MEMORY_DATABASE_URL": DSN})
+        r = audit(root, "a")
+        assert levels(r, "dead env") == [OK]
+        assert "MEMORY_DATABASE_URL" not in messages(r, "dead env")
+
+    def test_an_entry_a_config_file_genuinely_overrides_is_still_dead(self, tmp_path):
+        """The fix must not silence the real case: a literal in YAML
+        supersedes the env entry, and that one IS dead."""
+        root = make(tmp_path, {"a": {"env": {"PRIMARY_LLM": "gemini",
+                                             "MEMORY_DATABASE_URL": DSN}}},
+                    host={"llm": {"primary": "claude"}})
+        assert "PRIMARY_LLM" in messages(audit(root, "a"), "dead env")
+
+    def test_shared_secrets_reach_the_audit(self, tmp_path):
+        """A key in _shared.env must count as configuring the vendor, or
+        the audit reports a chain drop that isn't happening."""
+        root = make(tmp_path, {"a": {"env": {}, "config": {
+            "llm": {"chain": ["gemini", "groq"]}}}},
+            host={"database": {"url": "${MEMORY_DATABASE_URL}"},
+                  "llm": {"vendors": {"gemini": {"api_key": "${GEMINI_API_KEY}"},
+                                      "groq": {"api_key": "${GROQ_API_KEY}"}}}})
+        self._shared(root, {"MEMORY_DATABASE_URL": DSN,
+                            "GEMINI_API_KEY": "g", "GROQ_API_KEY": "q"})
+        assert levels(audit(root, "a"), "llm chain") == [OK]
+
+    def test_a_persona_env_overrides_the_shared_one(self, tmp_path):
+        """Mirrors load_dotenv: the persona file is loaded first and wins,
+        so a persona can hold its own billing key."""
+        root = make(tmp_path, {"a": {"env": {"MEMORY_DATABASE_URL": DSN,
+                                             "GROQ_API_KEY": "persona-key"}}})
+        self._shared(root, {"GROQ_API_KEY": "shared-key"})
+        from runtime.doctor import _persona_env
+        env = _persona_env(root, root / "instances" / "a")
+        assert env["GROQ_API_KEY"] == "persona-key"
+
+    def test_the_shared_file_fills_gaps(self, tmp_path):
+        root = make(tmp_path, {"a": {"env": {"MEMORY_DATABASE_URL": DSN}}})
+        self._shared(root, {"GROQ_API_KEY": "shared-key"})
+        from runtime.doctor import _persona_env
+        assert _persona_env(root, root / "instances" / "a")["GROQ_API_KEY"] \
+            == "shared-key"
+
+
 class TestSharedDatabase:
     def test_disagreeing_embedding_models_on_one_database_is_an_error(self, tmp_path):
         root = make(tmp_path, {

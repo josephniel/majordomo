@@ -24,13 +24,18 @@ The layout
 ----------
     config.yaml                 HOST defaults. One per machine, committed,
                                 no secrets — they arrive by ${VAR}.
-    instances/<id>/
-      config.yaml               THIS ASSISTANT's configuration. The file you
+    instances/
+      _shared.env               Secrets every persona uses (API keys, the
+                                database). Loaded after each persona's own
+                                .env, so a persona can still override one.
+      <id>/
+        config.yaml             THIS ASSISTANT's configuration. The file you
                                 edit to change how one persona behaves.
-      persona.yaml              Identity: name, system prompt, which
+        persona.yaml            Identity: name, system prompt, which
                                 faculties and connectors it may use.
-      platform.yaml             Which chat platform, and its binding.
-      .env                      Secrets only.
+        platform.yaml           Which chat platform, and its binding.
+        .env                    Secrets unique to this persona — in practice
+                                just its bot token.
 
 Configuration and identity are separate files on purpose. "What this
 assistant IS" changes when you redesign the assistant; "which model it routes
@@ -97,6 +102,9 @@ _RERANK = RerankConfig()
 _RETENTION = RetentionPolicy()
 
 CONFIG_FILENAME = "config.yaml"
+# Secrets shared by every persona on this machine, loaded after (and so
+# overridden by) each persona's own .env.
+SHARED_ENV_FILENAME = "_shared.env"
 
 # Where a resolved value came from. Strings rather than an enum because they
 # are printed verbatim by `doctor` and compared in migration diffs.
@@ -352,16 +360,27 @@ class InterpolationTracker:
 
     def __init__(self) -> None:
         self._interpolated: set[str] = set()
+        self._consumed: set[str] = set()
         self._unresolved: dict[str, str] = {}
 
     def note(self, path: str, var: str, resolved: bool) -> None:
         if resolved:
             self._interpolated.add(path)
+            self._consumed.add(var)
         else:
             self._unresolved[path] = var
 
     def was_interpolated(self, path: str) -> bool:
         return path in self._interpolated
+
+    def consumed(self, var: str) -> bool:
+        """True if a config file read this variable through ${VAR}.
+
+        Such a variable is the OPPOSITE of dead — it is where the value
+        comes from. Without this distinction the audit tells an operator to
+        delete the entries holding all their secrets.
+        """
+        return var in self._consumed
 
     @property
     def unresolved(self) -> dict[str, str]:
@@ -519,15 +538,27 @@ class ConfigResolver:
     def dead_env_entries(self) -> list[Setting]:
         """Env variables that are set but can no longer have any effect,
         because a YAML layer supplies the same setting. Harmless, and
-        completely misleading to read."""
+        completely misleading to read.
+
+        A variable a config file READS via ${VAR} is not dead — it is the
+        value. Reporting those was worse than reporting nothing: the fix it
+        suggested (delete the entry) would have deleted every credential.
+        """
         out = []
         for s in SETTINGS:
             raw = self.env.get(s.env)
             if raw is None or not raw.strip():
                 continue
+            if self.consumes_variable(s.env):
+                continue
             if self.resolve(s).source not in (f"env:{s.env}", SOURCE_DEFAULT):
                 out.append(s)
         return out
+
+    def consumes_variable(self, var: str) -> bool:
+        """Did either config file interpolate this variable?"""
+        return (self._host_tracker.consumed(var)
+                or self._persona_tracker.consumed(var))
 
     def unresolved_variables(self) -> dict[str, str]:
         """${VAR} references with nothing behind them, per file."""

@@ -68,6 +68,7 @@ from .persona import Persona
 from .model_roles import RoleChain, resolve_roles
 from .providers import CONNECTOR_NAMES, FACULTY_NAMES, PROVIDERS_BY_NAME
 from .settings import RuntimeSettings
+from .config import SHARED_ENV_FILENAME
 from .vendors import VENDORS, VENDORS_BY_NAME
 
 log = logging.getLogger(__name__)
@@ -352,16 +353,28 @@ class PersonaRuntime:
         called again implicitly when `platform` is first accessed. Safe to
         call multiple times.
         """
+        # Persona file FIRST: load_dotenv never overwrites an already-set
+        # variable, so whichever is loaded first wins. A persona must be able
+        # to override a shared credential (a second Telegram account, a
+        # separate billing key), not the other way round.
         env_path = self.persona.env_file
-        if not env_path.exists():
+        if env_path.exists():
+            load_dotenv(env_path)
+        else:
             # No longer fatal: with configuration in config.yaml, an instance
             # whose secrets come from the ambient environment (a systemd
             # unit, a launchd plist, CI) legitimately has no .env. A genuinely
             # missing secret is caught by REQUIRED_ENV validation, which names
             # the variable instead of the file.
             log.debug("persona %r: no .env at %s", self.persona.id, env_path)
-            return
-        load_dotenv(env_path)
+
+        # Secrets every persona on this machine shares. Without this file the
+        # only way to give two personas the same API key was to paste it into
+        # both .env files — which is how 12 of 15 keys came to be duplicated,
+        # and how the one that WASN'T duplicated silently dropped a vendor.
+        shared = self._project_root / "instances" / SHARED_ENV_FILENAME
+        if shared.exists():
+            load_dotenv(shared)
 
     def _assert_embedding_model_is_host_wide(self, dsn: str) -> None:
         """Refuse to start if a sibling persona points at the same database
