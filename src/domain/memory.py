@@ -1,38 +1,58 @@
-"""Memory connector — Postgres-backed second brain.
+"""The memory faculty — the agent's second brain, with no database in it.
 
 Two tiers:
-  * memory_entries: atomic facts the agent saves over time.
-  * memory_core:    one curated narrative per (scope, domain_key), auto-
-                    injected into the system prompt every turn.
+  * entries — atomic facts the agent saves over time.
+  * core    — one curated narrative per (scope, domain_key), auto-injected
+              into the system prompt every turn.
 
-The DB is owned by PersonaRuntime (one MemoryDatabase pool per process);
-this connector just wraps it and exposes agent-facing tools. Compaction
-delegates to a Summarizer (vendor-neutral) — the connector knows nothing
-about which model actually runs the call.
+Backed by any `ports.MemoryStore`; the store is owned and constructed by the
+composition root. Compaction delegates to a `Summarizer`, so this module
+knows neither which database holds the facts nor which model summarises them.
 
 Beyond the explicit tools, two automatic paths keep memory honest:
-  * auto_recall() — called by CascadingAgent per user turn to inject the
-    top relevant facts (RAG), so remembering doesn't depend on the model
-    deciding to call memory_recall.
-  * save_fact() — the shared write path (used by the tool AND the
-    reflection engine) that dedups near-identical facts before insert.
+  * auto_recall() — called per user turn to inject the top relevant facts
+    (RAG), so remembering doesn't depend on the model deciding to call
+    memory_recall.
+  * save_fact() — the shared write path (used by the tool AND the reflection
+    engine) that dedups near-identical facts before insert.
 
 Every write bumps `context_version()`, which tells the orchestrator to
-rebuild agents whose baked-in system prompt has gone stale (Claude
-sessions otherwise keep serving a frozen "What you know" section).
+rebuild agents whose baked-in system prompt has gone stale (a long-lived
+server-side session otherwise keeps serving a frozen "What you know").
+
+Where the tools went
+--------------------
+The model-facing tool surface is in `memory_tools.py`. The split is not
+cosmetic: it changed who is allowed to talk to the store. Those handlers used
+to close over the raw store object and call it directly, which meant every
+policy this class enforces — scope validation, dedup, ownership checks,
+recompaction after a correction — was enforced only on the paths that
+happened to remember to go through here. A tool could (and `memory_update`
+nearly did) mutate memory without any of it.
+
+Now the operations below are the ONLY way in, and `memory_tools.py` is given
+this faculty rather than a store. Policy has one home; the tool module does
+argument parsing and rendering, which is what it is for.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 from uuid import UUID
 
-from ports import Faculty, Summarizer, ToolContext, ToolResult, tool
-
-from adapters.store import LINK_RELATIONS, MemoryCoreEntry, MemoryDatabase, MemoryEntry, VALID_SCOPES
+from ports import (
+    LINK_RELATIONS,
+    VALID_SCOPES,
+    Faculty,
+    MemoryCoreEntry,
+    MemoryEntry,
+    MemoryStore,
+    Neighbor,
+    Scored,
+    Summarizer,
+)
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime; duck-typed otherwise
     from adapters.model.history import ConversationHistory
@@ -104,15 +124,36 @@ AUTO_COMPACT_THRESHOLD = 30
 STALE_AFTER_DAYS = 30
 
 
+def staleness_suffix(entry: MemoryEntry) -> str:
+    """A re-verification note for a volatile fact that hasn't been confirmed
+    within STALE_AFTER_DAYS. Empty for stable or fresh facts.
+
+    Module-level so the tool surface can render the same warning without
+    reaching into the faculty for it. A volatile fact shown WITHOUT this
+    suffix reads as current, which is the failure mode the flag exists to
+    prevent — so every path that renders a fact to the model owes it.
+    """
+    if not entry.volatile:
+        return ""
+    ref = entry.verified_at or entry.created_at
+    if ref is None:
+        return ""
+    age_days = (datetime.now(timezone.utc) - ref).days
+    if age_days >= STALE_AFTER_DAYS:
+        return f"  ⚠ unverified for {age_days}d — confirm before trusting"
+    return ""
+
+
 class LongTermMemory(Faculty):
     name = "memory"
     # Cheap and relevant to almost any turn — rides every turn even under
     # tool subsetting.
     ALWAYS_ATTACH = True
-    # "Pinned facts" + "What you know" are rewritten by every save and every
-    # core recompaction (hence context_version below), so this section goes
-    # last in the system prompt to keep the cacheable prefix intact.
-    VOLATILE_PROMPT_SECTION = True
+    # NB: "Pinned facts" + "What you know" are rewritten by every save and
+    # every core recompaction, so this section must be emitted late in the
+    # system prompt to keep a local model's cacheable prefix intact. That is
+    # derived from `context_version` being overridden below — there is no
+    # flag to keep in sync. See ToolProvider.has_mutable_prompt_section.
 
     STATUS = {
         "memory_save": "Saving to memory",
@@ -130,8 +171,8 @@ class LongTermMemory(Faculty):
 
     SYSTEM_PROMPT_HEADER = """== Memory (second brain) ==
 
-You have a persistent Postgres-backed memory: atomic facts indexed by scope
-and an optional domain_key.
+You have a persistent memory: atomic facts indexed by scope and an optional
+domain_key.
 
 Scopes:
   user      — facts about the operator (preferences, identity, schedule, goals).
@@ -171,7 +212,7 @@ Three principles:
 
     def __init__(
         self,
-        db: MemoryDatabase,
+        db: MemoryStore,
         persona_id: str,
         summarizer: Summarizer,
         history: Optional["ConversationHistory"] = None,
@@ -196,10 +237,13 @@ Three principles:
 
     async def on_chat_startup(self) -> None:
         await self._db.connect()
-        await self._db.init_schema()
         await self.refresh_core_cache()
 
     async def on_chat_shutdown(self) -> None:
+        # Drain before closing: an in-flight recompaction writing to a store
+        # whose pool just went away logs a confusing error, and the summary
+        # it computed is lost for nothing.
+        await self.drain()
         await self._db.close()
 
     async def refresh_core_cache(self) -> None:
@@ -216,26 +260,30 @@ Three principles:
     def context_version(self) -> int:
         return self._context_version
 
+    @property
+    def persona_id(self) -> str:
+        """Whose memory this is. Read-only — the tool surface needs it to
+        scope a history search, and nothing may reassign it."""
+        return self._persona_id
+
     def _spawn_bg(self, coro) -> None:
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
 
-    # ---- shared write path (tool + reflection engine) ----
+    async def drain(self) -> None:
+        """Wait for outstanding background work (recompaction after a
+        correction, auto-compaction after a save).
 
-    @staticmethod
-    def _staleness_suffix(entry: MemoryEntry) -> str:
-        """A re-verification note for a volatile fact that hasn't been
-        confirmed within STALE_AFTER_DAYS. Empty for stable/fresh facts."""
-        if not entry.volatile:
-            return ""
-        ref = entry.verified_at or entry.created_at
-        if ref is None:
-            return ""
-        age_days = (datetime.now(timezone.utc) - ref).days
-        if age_days >= STALE_AFTER_DAYS:
-            return f"  ⚠ unverified for {age_days}d — confirm before trusting"
-        return ""
+        Exists for tests and for shutdown. Those writes are fire-and-forget
+        because a user's turn must not block on a summarizer call, but
+        "eventually" is untestable — without this a test asserting that a
+        correction recompacted would be racing the event loop.
+        """
+        while self._bg_tasks:
+            await asyncio.gather(*tuple(self._bg_tasks), return_exceptions=True)
+
+    # ---- shared write path (tool + reflection engine) ----
 
     async def save_fact(
         self,
@@ -290,10 +338,129 @@ Three principles:
             entry,
         )
 
+    # ---- operations (the ONLY way the tool surface reaches the store) ----
+    #
+    # Each of these is a memory operation with its policy attached, in the
+    # vocabulary of a second brain rather than of a database: recollection,
+    # replacement, retraction. `memory_tools.py` calls these and never the
+    # store, so a policy added here cannot be bypassed by a new tool.
+    #
+    # They raise nothing and return no error strings — outcomes are values
+    # (None, False, empty list). Turning an outcome into something the model
+    # reads is the tool layer's job.
+
+    async def recall(
+        self,
+        query: str,
+        scope: Optional[str] = None,
+        domain_key: Optional[str] = None,
+        limit: int = 8,
+    ) -> list[MemoryEntry]:
+        """Explicit recollection — what the model asked for, ranked.
+
+        Unlike `auto_recall` this applies NO relevance floor. The model asked
+        a direct question and can judge a weak hit itself; the floors exist to
+        protect the context window from facts nobody asked for.
+        """
+        scored = await self._db.recall_scored(
+            self._persona_id, query, scope=scope, domain_key=domain_key, limit=limit,
+        )
+        return [e for e, _ in scored]
+
+    async def recall_scored(
+        self,
+        query: str,
+        scope: Optional[str] = None,
+        domain_key: Optional[str] = None,
+        limit: int = 8,
+    ) -> list[Scored]:
+        """Ranked recollection with scores — for the eval harness and for
+        callers applying their own selection policy."""
+        return await self._db.recall_scored(
+            self._persona_id, query, scope=scope, domain_key=domain_key, limit=limit,
+        )
+
+    async def get(self, entry_id: UUID) -> Optional[MemoryEntry]:
+        """One entry by id, regardless of persona. Prefer `resolve_active`
+        when acting on an id the MODEL supplied."""
+        return await self._db.get_entry(entry_id)
+
+    async def resolve_active(self, entry_id: UUID) -> tuple[Optional[MemoryEntry], str]:
+        """Confirm an id names an active entry belonging to THIS persona.
+
+        Returns (entry, "") or (None, reason). The ownership check is the
+        point: ids reach us from the model, which can hallucinate a
+        well-formed UUID, and several personas may share one database. Every
+        id-taking operation that mutates goes through here.
+        """
+        entry = await self._db.get_entry(entry_id)
+        if entry is None or entry.persona_id != self._persona_id:
+            return None, f"no memory with id={entry_id}"
+        if not entry.is_active:
+            return None, (
+                f"id={entry_id} is superseded/forgotten; "
+                f"act on the current entry instead"
+            )
+        return entry, ""
+
+    async def neighbors(self, entry_id: UUID) -> list[Neighbor]:
+        """One-hop linked entries — the graph payoff of `link`."""
+        return await self._db.neighbors(entry_id)
+
+    async def update_fact(self, entry_id: UUID, content: str) -> Optional[MemoryEntry]:
+        """Replacement: supersede a fact's content, keeping the old row.
+
+        Recompacts the compartment in the background. Without that the
+        corrected fact is right in the archive while the OLD one keeps being
+        injected into every system prompt until the next compaction — the
+        agent confidently repeating something it has already been told is
+        wrong. Returns the new entry, or None if the id wasn't active.
+        """
+        new_entry = await self._db.supersede_entry(entry_id, content)
+        if new_entry is not None:
+            self._spawn_bg(
+                self.compact_compartment(new_entry.scope, new_entry.domain_key)
+            )
+        return new_entry
+
+    async def forget_fact(self, entry_id: UUID) -> bool:
+        """Retraction: tombstone a fact, keeping the row for provenance.
+
+        Recompacts for the same reason `update_fact` does — a forgotten fact
+        that stays in the injected narrative has not been forgotten.
+        """
+        entry = await self._db.get_entry(entry_id)
+        if not await self._db.forget_entry(entry_id):
+            return False
+        if entry is not None:
+            self._spawn_bg(self.compact_compartment(entry.scope, entry.domain_key))
+        return True
+
     async def link(self, from_id: UUID, to_id: UUID, relation: str = "relates_to") -> bool:
-        """Public link helper (used by the reflection engine's auto-linking).
-        Best-effort; returns whether a new edge was created."""
+        """Create a typed edge. Also used by the reflection engine's
+        auto-linking. Returns whether a NEW edge was created (idempotent)."""
         return await self._db.add_link(from_id, to_id, relation)
+
+    async def unlink(
+        self, from_id: UUID, to_id: UUID, relation: Optional[str] = None
+    ) -> bool:
+        """Remove one edge, or every edge from_id->to_id when relation is
+        None. Returns whether anything was removed."""
+        return await self._db.remove_link(from_id, to_id, relation)
+
+    async def set_pinned(self, entry_id: UUID, pinned: bool) -> bool:
+        """Pin/unpin. Refreshes the cache on success because pinned facts
+        render verbatim into the system prompt — a pin that doesn't take
+        effect until the next unrelated write is a pin the user can't see."""
+        ok = await self._db.set_pinned(entry_id, pinned)
+        if ok:
+            await self.refresh_core_cache()
+        return ok
+
+    async def verify(self, entry_id: UUID) -> bool:
+        """Record that a volatile fact was re-confirmed, resetting its
+        staleness clock (see `staleness_suffix`)."""
+        return await self._db.mark_verified(entry_id)
 
     # ---- auto-RAG (called by CascadingAgent per user turn) ----
 
@@ -326,14 +493,15 @@ Three principles:
         lines = []
         for entry, _score in select_for_injection(scored):
             label = entry.scope if not entry.domain_key else f"{entry.scope}/{entry.domain_key}"
-            lines.append(f"- ({label}) {entry.content}{self._staleness_suffix(entry)}")
+            lines.append(f"- ({label}) {entry.content}{staleness_suffix(entry)}")
         return "\n".join(lines)
 
     # ---- Connector contract ----
 
     def builtin_tools(self) -> list:
         if self._tools_cache is None:
-            self._tools_cache = self._build_tools()
+            from .memory_tools import build_memory_tools  # deferred: cycle
+            self._tools_cache = build_memory_tools(self, history=self._history)
         return list(self._tools_cache)
 
     def system_prompt_section(self) -> str:
@@ -359,7 +527,7 @@ Three principles:
         lines = []
         for e in self._pinned_cache:
             label = e.scope if not e.domain_key else f"{e.scope}/{e.domain_key}"
-            lines.append(f"- ({label}) {e.content}  [id={e.id}]{self._staleness_suffix(e)}")
+            lines.append(f"- ({label}) {e.content}  [id={e.id}]{staleness_suffix(e)}")
         return "\n".join(lines)
 
     def _render_memory_for_context(self) -> str:
@@ -454,434 +622,6 @@ Three principles:
         return "\n".join(lines)
 
 
-    # ---- tools ----
-
-    def _build_tools(self) -> list:
-        db = self._db
-        persona_id = self._persona_id
-        connector = self
-
-        @tool(
-            "memory_save",
-            "Save one atomic fact to long-term memory. Be conservative — only "
-            "save what's worth long-term recall. ATOMIC: one fact per call. "
-            "Near-duplicates of existing facts are rejected (update the "
-            "existing entry instead).",
-            {
-                "type": "object",
-                "properties": {
-                    "scope": {
-                        "type": "string",
-                        "enum": list(VALID_SCOPES),
-                        "description": "user = about the operator; agent = about you; domain = about an external system; reference = pointer to a URL/doc/resource",
-                    },
-                    "content": {"type": "string", "description": "The fact, in one sentence."},
-                    "domain_key": {
-                        "type": "string",
-                        "description": "Required when scope='domain': gmail, google_calendar, clickup, splitwise, yahoo, schedule, …",
-                    },
-                    "title": {"type": "string", "description": "Short label (optional)."},
-                    "volatile": {
-                        "type": "boolean",
-                        "description": "true if the fact can drift (cites a file path, flag, commit, version, config value) — it'll be flagged for re-verification when it ages.",
-                    },
-                },
-                "required": ["scope", "content"],
-            },
-        )
-        async def memory_save_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                msg, entry = await connector.save_fact(
-                    scope=args.get("scope") or "",
-                    content=args.get("content") or "",
-                    domain_key=args.get("domain_key") or "",
-                    title=args.get("title") or "",
-                    source="chat",
-                    volatile=bool(args.get("volatile")),
-                )
-                if entry is None and not msg.startswith("not saved"):
-                    return _tool_error(msg)
-                return ToolResult.ok(msg)
-            except Exception as e:
-                return _tool_error(str(e))
-
-        @tool(
-            "memory_recall",
-            "Search active memory entries by full-text query. Returns ranked "
-            "list with id (use for memory_update / memory_forget), scope, "
-            "domain_key, content.",
-            {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "Search string."},
-                    "scope": {
-                        "type": "string",
-                        "enum": list(VALID_SCOPES),
-                        "description": "Optional scope filter.",
-                    },
-                    "domain_key": {"type": "string", "description": "Optional domain filter."},
-                    "limit": {"type": "integer", "description": "Max results (default 8, cap 25)."},
-                },
-                "required": ["query"],
-            },
-        )
-        async def memory_recall_tool(args: dict[str, Any], _ctx: ToolContext):
-            query = (args.get("query") or "").strip()
-            if not query:
-                return _tool_error("query is empty")
-            scope = (args.get("scope") or "").strip().lower() or None
-            domain_key = (args.get("domain_key") or "").strip().lower() or None
-            limit = max(1, min(int(args.get("limit") or 8), 25))
-            try:
-                results = await db.recall(
-                    persona_id=persona_id, query=query,
-                    scope=scope, domain_key=domain_key, limit=limit,
-                )
-                if not results:
-                    return ToolResult.ok("(no matching memories)")
-                lines = []
-                for r in results:
-                    label = r.scope if not r.domain_key else f"{r.scope}/{r.domain_key}"
-                    title = f" [{r.title}]" if r.title else ""
-                    lines.append(f"id={r.id} ({label}){title}\n  {r.content}{connector._staleness_suffix(r)}")
-                    # Surface 1-hop links so related facts travel together —
-                    # the graph payoff of memory_link.
-                    try:
-                        neigh = await db.neighbors(r.id)
-                    except Exception:
-                        neigh = []
-                    for n, relation, direction in neigh:
-                        arrow = "→" if direction == "out" else "←"
-                        lines.append(f"  related ({relation} {arrow}) id={n.id}: {n.content}")
-                return ToolResult.ok("\n".join(lines))
-            except Exception as e:
-                return _tool_error(str(e))
-
-        @tool(
-            "memory_update",
-            "Supersede an existing memory with revised content. Use when a "
-            "previously-saved fact changed (don't write a contradicting new "
-            "entry — supersede the old one).",
-            {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "UUID from memory_recall."},
-                    "content": {"type": "string", "description": "The corrected fact."},
-                },
-                "required": ["id", "content"],
-            },
-        )
-        async def memory_update_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                eid = UUID(str(args.get("id") or "").strip())
-            except ValueError:
-                return _tool_error("id must be a valid UUID (use memory_recall to find it)")
-            content = (args.get("content") or "").strip()
-            if not content:
-                return _tool_error("content is empty")
-            try:
-                new_entry = await db.supersede_entry(eid, content)
-                if new_entry is None:
-                    return _tool_error(f"no active entry with id={eid}")
-                # The old fact may still sit in the injected core narrative —
-                # recompact the compartment so the correction takes effect
-                # NOW, not 30 saves from now (gap M3).
-                connector._spawn_bg(connector.compact_compartment(
-                    new_entry.scope, new_entry.domain_key,
-                ))
-                return ToolResult.ok(f"superseded {eid} with new id={new_entry.id}")
-            except Exception as e:
-                return _tool_error(str(e))
-
-        @tool(
-            "memory_forget",
-            "Soft-delete an entry by id (drops it from active recall, keeps "
-            "the row for traceability).",
-            {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "description": "UUID from memory_recall."},
-                },
-                "required": ["id"],
-            },
-        )
-        async def memory_forget_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                eid = UUID(str(args.get("id") or "").strip())
-            except ValueError:
-                return _tool_error("id must be a valid UUID")
-            try:
-                entry = await db.get_entry(eid)
-                ok = await db.forget_entry(eid)
-                if not ok:
-                    return _tool_error(f"no active entry with id={eid}")
-                # Same staleness fix as memory_update: purge the forgotten
-                # fact from the injected narrative immediately.
-                if entry is not None:
-                    connector._spawn_bg(connector.compact_compartment(
-                        entry.scope, entry.domain_key,
-                    ))
-                return ToolResult.ok(f"forgotten: {eid}")
-            except Exception as e:
-                return _tool_error(str(e))
-
-        @tool(
-            "memory_compact",
-            "Fold a compartment's active entries into its running summary so "
-            "what's auto-injected in your context stays current.",
-            {
-                "type": "object",
-                "properties": {
-                    "scope": {
-                        "type": "string",
-                        "enum": list(VALID_SCOPES),
-                    },
-                    "domain_key": {
-                        "type": "string",
-                        "description": "Required when scope='domain'.",
-                    },
-                    "deep": {
-                        "type": "boolean",
-                        "description": "true = use a more capable model for tricky reconciliation (default false = cheap fast model).",
-                    },
-                },
-                "required": ["scope"],
-            },
-        )
-        async def memory_compact_tool(args: dict[str, Any], _ctx: ToolContext):
-            scope = (args.get("scope") or "").strip().lower()
-            if scope not in VALID_SCOPES:
-                return _tool_error(f"scope must be one of {'/'.join(VALID_SCOPES)}")
-            domain_key = (args.get("domain_key") or "").strip().lower()
-            if scope == "domain" and not domain_key:
-                return _tool_error("scope='domain' requires a domain_key")
-            deep = bool(args.get("deep"))
-            summary = await connector.compact_compartment(scope, domain_key, deep=deep)
-            return ToolResult.ok(
-                f"compacted {scope}{('/' + domain_key) if domain_key else ''}:\n\n{summary}"
-            )
-
-        async def _resolve_own_entry(raw_id: str) -> tuple[Optional[UUID], Optional[str]]:
-            """Parse a UUID and confirm it's an active entry of THIS persona.
-            Returns (uuid, None) on success or (None, error-message)."""
-            try:
-                eid = UUID(str(raw_id or "").strip())
-            except ValueError:
-                return None, f"{raw_id!r} is not a valid UUID (use memory_recall to find ids)"
-            entry = await db.get_entry(eid)
-            if entry is None or entry.persona_id != persona_id:
-                return None, f"no memory with id={eid}"
-            if entry.superseded_by is not None:
-                return None, f"id={eid} is superseded/forgotten; link the current entry instead"
-            return eid, None
-
-        @tool(
-            "memory_link",
-            "Connect two related memories so they surface together on recall. "
-            "Directional: from_id --relation--> to_id. Relations: relates_to "
-            "(default), refines, depends_on, contradicts, caused_by. Use ids "
-            "from memory_recall.",
-            {
-                "type": "object",
-                "properties": {
-                    "from_id": {"type": "string", "description": "UUID of the source memory."},
-                    "to_id": {"type": "string", "description": "UUID of the target memory."},
-                    "relation": {
-                        "type": "string",
-                        "enum": list(LINK_RELATIONS),
-                        "description": "Edge type (default relates_to).",
-                    },
-                },
-                "required": ["from_id", "to_id"],
-            },
-        )
-        async def memory_link_tool(args: dict[str, Any], _ctx: ToolContext):
-            relation = (args.get("relation") or "relates_to").strip().lower()
-            if relation not in LINK_RELATIONS:
-                return _tool_error(f"relation must be one of {'/'.join(LINK_RELATIONS)}")
-            from_id, err = await _resolve_own_entry(args.get("from_id"))
-            if err:
-                return _tool_error(err)
-            to_id, err = await _resolve_own_entry(args.get("to_id"))
-            if err:
-                return _tool_error(err)
-            if from_id == to_id:
-                return _tool_error("cannot link a memory to itself")
-            try:
-                created = await db.add_link(from_id, to_id, relation)
-            except Exception as e:
-                return _tool_error(str(e))
-            if not created:
-                return ToolResult.ok(f"already linked ({relation})")
-            return ToolResult.ok(f"linked {from_id} --{relation}--> {to_id}")
-
-        @tool(
-            "memory_unlink",
-            "Remove the connection between two memories. Omit relation to "
-            "remove every edge from_id->to_id.",
-            {
-                "type": "object",
-                "properties": {
-                    "from_id": {"type": "string", "description": "UUID of the source memory."},
-                    "to_id": {"type": "string", "description": "UUID of the target memory."},
-                    "relation": {
-                        "type": "string",
-                        "enum": list(LINK_RELATIONS),
-                        "description": "Optional: only this edge type.",
-                    },
-                },
-                "required": ["from_id", "to_id"],
-            },
-        )
-        async def memory_unlink_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                from_id = UUID(str(args.get("from_id") or "").strip())
-                to_id = UUID(str(args.get("to_id") or "").strip())
-            except ValueError:
-                return _tool_error("from_id and to_id must be valid UUIDs")
-            relation = (args.get("relation") or "").strip().lower() or None
-            if relation is not None and relation not in LINK_RELATIONS:
-                return _tool_error(f"relation must be one of {'/'.join(LINK_RELATIONS)}")
-            try:
-                removed = await db.remove_link(from_id, to_id, relation)
-            except Exception as e:
-                return _tool_error(str(e))
-            if not removed:
-                return _tool_error("no such link")
-            return ToolResult.ok(f"unlinked {from_id} -x- {to_id}")
-
-        @tool(
-            "memory_pin",
-            "Pin a fact so it stays in your always-on context verbatim — use "
-            "for load-bearing facts a rolling summary must never blur or drop "
-            "(allergies, credentials location, hard preferences, key ids). Use "
-            "an id from memory_recall.",
-            {
-                "type": "object",
-                "properties": {"id": {"type": "string", "description": "UUID from memory_recall."}},
-                "required": ["id"],
-            },
-        )
-        async def memory_pin_tool(args: dict[str, Any], _ctx: ToolContext):
-            eid, err = await _resolve_own_entry(args.get("id"))
-            if err:
-                return _tool_error(err)
-            try:
-                ok = await db.set_pinned(eid, True)
-            except Exception as e:
-                return _tool_error(str(e))
-            if not ok:
-                return _tool_error(f"no active entry with id={eid}")
-            await connector.refresh_core_cache()
-            return ToolResult.ok(f"pinned {eid}")
-
-        @tool(
-            "memory_unpin",
-            "Stop pinning a fact (it stays in memory, just no longer forced "
-            "verbatim into context).",
-            {
-                "type": "object",
-                "properties": {"id": {"type": "string", "description": "UUID of a pinned entry."}},
-                "required": ["id"],
-            },
-        )
-        async def memory_unpin_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                eid = UUID(str(args.get("id") or "").strip())
-            except ValueError:
-                return _tool_error("id must be a valid UUID")
-            try:
-                ok = await db.set_pinned(eid, False)
-            except Exception as e:
-                return _tool_error(str(e))
-            if not ok:
-                return _tool_error(f"no active entry with id={eid}")
-            await connector.refresh_core_cache()
-            return ToolResult.ok(f"unpinned {eid}")
-
-        @tool(
-            "memory_verify",
-            "Mark a volatile fact as re-confirmed right now (you checked it "
-            "still holds). Clears its 'unverified' staleness warning and "
-            "resets the clock.",
-            {
-                "type": "object",
-                "properties": {"id": {"type": "string", "description": "UUID of the fact you re-checked."}},
-                "required": ["id"],
-            },
-        )
-        async def memory_verify_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                eid = UUID(str(args.get("id") or "").strip())
-            except ValueError:
-                return _tool_error("id must be a valid UUID")
-            try:
-                ok = await db.mark_verified(eid)
-            except Exception as e:
-                return _tool_error(str(e))
-            if not ok:
-                return _tool_error(f"no active entry with id={eid}")
-            return ToolResult.ok(f"verified {eid}")
-
-        tools = [
-            memory_save_tool,
-            memory_recall_tool,
-            memory_update_tool,
-            memory_forget_tool,
-            memory_compact_tool,
-            memory_link_tool,
-            memory_unlink_tool,
-            memory_pin_tool,
-            memory_unpin_tool,
-            memory_verify_tool,
-        ]
-
-        if self._history is not None:
-            history = self._history
-
-            @tool(
-                "history_search",
-                "Search the FULL past conversation record of THIS chat — "
-                "including old turns already folded into summaries. Use for "
-                "'what did we discuss about X?', 'when did I ask you to…?', "
-                "'what did you tell me about Y last week?'. Returns matching "
-                "turns with timestamps, newest first.",
-                {
-                    "type": "object",
-                    "properties": {
-                        "query": {"type": "string", "description": "Words or phrase to look for."},
-                        "limit": {"type": "integer", "description": "Max results (default 10, cap 25)."},
-                    },
-                    "required": ["query"],
-                },
-            )
-            async def history_search_tool(args: dict[str, Any], ctx: ToolContext):
-                query = (args.get("query") or "").strip()
-                if not query:
-                    return _tool_error("query is empty")
-                chat_id = ctx.chat_id
-                if chat_id is None:
-                    return _tool_error("no current chat context")
-                limit = max(1, min(int(args.get("limit") or 10), 25))
-                try:
-                    rows = await history.search(persona_id, chat_id, query, limit=limit)
-                except Exception as e:
-                    return _tool_error(str(e))
-                if not rows:
-                    return ToolResult.ok("(no matching turns)")
-                lines = []
-                for r in rows:
-                    when = r["ts"].strftime("%Y-%m-%d %H:%M") if r.get("ts") else "?"
-                    content = r["content"]
-                    if len(content) > 400:
-                        content = content[:400] + "…"
-                    lines.append(f"[{when}] {r['role']}: {content}")
-                return ToolResult.ok("\n\n".join(lines))
-
-            tools.append(history_search_tool)
-
-        return tools
-
     async def _maybe_auto_compact(self, scope: str, domain_key: str) -> None:
         try:
             active = await self._db.count_active(self._persona_id, scope, domain_key)
@@ -899,7 +639,3 @@ Three principles:
                 await self.compact_compartment(scope, domain_key, deep=False)
         except Exception:
             log.exception("auto-compaction check failed")
-
-
-def _tool_error(msg: str) -> ToolResult:
-    return ToolResult.error(f"error: {msg}")

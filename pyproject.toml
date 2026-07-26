@@ -53,6 +53,17 @@ type = "forbidden"
 source_modules = ["adapters", "domain", "kernel"]
 forbidden_modules = ["dotenv"]
 
+# The teeth behind the memory/document ports. Without this the layer rule
+# still ALLOWS domain -> adapters.store (it is a lower layer), and that is
+# exactly the import that made the memory faculty inseparable from Postgres.
+# `runtime` is deliberately absent from the sources: the composition root is
+# the one place allowed to name a concrete store, because someone has to.
+[[tool.importlinter.contracts]]
+name = "faculties talk to storage ports, never to a storage adapter"
+type = "forbidden"
+source_modules = ["domain", "kernel"]
+forbidden_modules = ["adapters.store"]
+
 [[tool.importlinter.contracts]]
 name = "layered: runtime > kernel > domain > adapters > infrastructure > ports"
 type = "layers"

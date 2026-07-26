@@ -27,7 +27,14 @@ from claude_agent_sdk import (
     tool as _claude_sdk_tool,
 )
 
-from ports import ConversationRef, Connector, ServiceCatalog, ToolContext, ToolSpec, mcp_content
+from ports import (
+    ConversationRef,
+    Connector,
+    ServiceCatalog,
+    ToolContext,
+    ToolSpec,
+    as_tool_result,
+)
 
 from .base import (
     Agent,
@@ -207,8 +214,25 @@ def _to_claude_sdk_tool(spec: ToolSpec, ctx: ToolContext):
     """
     @_claude_sdk_tool(spec.name, spec.description, spec.json_schema())
     async def _wrapped(args: dict[str, Any]):
-        return mcp_content(await spec.handler(args, ctx))
+        return _mcp_content(await spec.handler(args, ctx))
     return _wrapped
+
+
+def _mcp_content(raw: Any) -> dict[str, Any]:
+    """MCP wire shape from a handler result.
+
+    Lives here, at the one edge that speaks MCP, rather than in `ports`.
+    It was in the contracts package for a while, which put an Anthropic wire
+    format in the module every faculty imports — the exact leak that made
+    "vendor-neutral tools" only nearly true. `as_tool_result` is the neutral
+    half and stays in ports; this is the translation, and translation belongs
+    to the translator.
+    """
+    r = as_tool_result(raw)
+    out: dict[str, Any] = {"content": [{"type": "text", "text": r.text}]}
+    if r.is_error:
+        out["isError"] = True
+    return out
 
 
 class AnthropicOptionsBuilder:
