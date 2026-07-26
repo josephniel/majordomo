@@ -1,8 +1,8 @@
 """capabilities.code_exec — validation paths (no Docker needed)."""
 import pytest
 
-from capabilities.code_exec import CodeExecutor, _read_head, MAX_OUTPUT_CHARS
-from core import ToolContext
+from domain.code_exec import CodeExecutor, _read_head, MAX_OUTPUT_CHARS
+from ports import ToolContext
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ class TestValidation:
         assert "too large" in result.text
 
     async def test_docker_missing_reported(self, executor, monkeypatch):
-        monkeypatch.setattr("capabilities.code_exec.shutil.which", lambda _: None)
+        monkeypatch.setattr("domain.code_exec.shutil.which", lambda _: None)
         result = await _spec(executor).handler(
             {"language": "python", "code": "print(1)"}, ToolContext()
         )

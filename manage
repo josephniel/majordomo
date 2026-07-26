@@ -117,13 +117,13 @@ cmd_up() {
     done
     local persona; persona="$(persona_or_default "${1:-}")"
     echo "[manage] postgres ready; starting persona=$persona"
-    exec "$VENV_PY" -m chat --persona "$persona"
+    exec "$VENV_PY" -m runtime --persona "$persona"
 }
 
 cmd_chat() {
     require_venv
     local persona; persona="$(persona_or_default "${1:-}")"
-    exec "$VENV_PY" -m chat --persona "$persona"
+    exec "$VENV_PY" -m runtime --persona "$persona"
 }
 
 cmd_list_personas() {

@@ -7,7 +7,7 @@ objects (identity, not copies).
 import ast
 from pathlib import Path
 
-import core
+import ports
 
 SRC = Path(__file__).resolve().parents[2] / "src"
 OTHER_PACKAGES = {
@@ -36,65 +36,65 @@ class TestCoreIsALeaf:
 
 class TestShimsPreserveIdentity:
     def test_connectors_base_reexports(self):
-        from connectors import base
-        assert base.ToolSpec is core.ToolSpec
-        assert base.ToolProvider is core.ToolProvider
-        assert base.Faculty is core.Faculty
-        assert base.Connector is core.Connector
-        assert base.Summarizer is core.Summarizer
-        assert base.tool is core.tool
+        from adapters.tools import base
+        assert base.ToolSpec is ports.ToolSpec
+        assert base.ToolProvider is ports.ToolProvider
+        assert base.Faculty is ports.Faculty
+        assert base.Connector is ports.Connector
+        assert base.Summarizer is ports.Summarizer
+        assert base.tool is ports.tool
 
     def test_agents_base_reexports(self):
-        from agents import base
-        assert base.Agent is core.Agent
-        assert base.Attachment is core.Attachment
-        assert base.UsageLimitError is core.UsageLimitError
-        assert base.Summarizer is core.Summarizer
+        from adapters.model import base
+        assert base.Agent is ports.Agent
+        assert base.Attachment is ports.Attachment
+        assert base.UsageLimitError is ports.UsageLimitError
+        assert base.Summarizer is ports.Summarizer
 
     def test_platform_attachment_is_core_attachment(self):
-        import platforms.base as pb
-        assert pb.Attachment is core.Attachment
+        import adapters.chat.base as pb
+        assert pb.Attachment is ports.Attachment
 
 
 class TestToolResult:
     def test_ok_and_error_constructors(self):
-        assert core.ToolResult.ok("hi") == core.ToolResult("hi", is_error=False)
-        assert core.ToolResult.error("no") == core.ToolResult("no", is_error=True)
+        assert ports.ToolResult.ok("hi") == ports.ToolResult("hi", is_error=False)
+        assert ports.ToolResult.error("no") == ports.ToolResult("no", is_error=True)
 
     def test_as_tool_result_passthrough(self):
-        r = core.ToolResult.ok("x")
-        assert core.as_tool_result(r) is r
+        r = ports.ToolResult.ok("x")
+        assert ports.as_tool_result(r) is r
 
     def test_as_tool_result_legacy_mcp_dict(self):
         raw = {"content": [{"type": "text", "text": "a"},
                            {"type": "text", "text": "b"}], "isError": True}
-        r = core.as_tool_result(raw)
+        r = ports.as_tool_result(raw)
         assert r.text == "a\nb" and r.is_error
 
     def test_as_tool_result_stringifies_unknown(self):
-        assert core.as_tool_result(42).text == "42"
-        assert core.as_tool_result(None).text == ""
+        assert ports.as_tool_result(42).text == "42"
+        assert ports.as_tool_result(None).text == ""
 
     def test_mcp_content_wire_shape(self):
-        assert core.mcp_content(core.ToolResult.ok("hi")) == {
+        assert ports.mcp_content(ports.ToolResult.ok("hi")) == {
             "content": [{"type": "text", "text": "hi"}]
         }
-        assert core.mcp_content(core.ToolResult.error("no")) == {
+        assert ports.mcp_content(ports.ToolResult.error("no")) == {
             "content": [{"type": "text", "text": "no"}], "isError": True,
         }
 
 
 class TestToolContext:
     def test_defaults_to_no_chat(self):
-        assert core.ToolContext().chat_id is None
+        assert ports.ToolContext().chat_id is None
 
     def test_frozen(self):
         import dataclasses
         import pytest
         with pytest.raises(dataclasses.FrozenInstanceError):
-            core.ToolContext(chat_id=1).chat_id = 2
+            ports.ToolContext(chat_id=1).chat_id = 2
 
     def test_no_ambient_chat_state_remains(self):
         # The ContextVar is gone for good — scope travels only through the
         # explicit handler parameter.
-        assert not hasattr(core, "current_chat_id")
+        assert not hasattr(ports, "current_chat_id")

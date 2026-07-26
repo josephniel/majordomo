@@ -1,5 +1,5 @@
 """connectors.google_calendar — construction defaults."""
-from connectors.google_calendar import GoogleCalendarConnector
+from adapters.tools.google_calendar import GoogleCalendarConnector
 
 
 class TestDefaultTimezone:

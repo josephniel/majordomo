@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from capabilities.schedule import ScheduleEngine, ScheduledTask
+from domain.schedule import ScheduleEngine, ScheduledTask
 
 
 @pytest.fixture

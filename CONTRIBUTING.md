@@ -12,14 +12,14 @@ NOT built).
   downloads a ~100MB local embedding model. Without Postgres, run just the
   unit tests: `pytest -m "not integration"`. Point the DB tests elsewhere
   with `TEST_DATABASE_URL`.
-- **The dependency rule is load-bearing**: `chat/` (application layer)
+- **The dependency rule is load-bearing**: `kernel/` (application layer)
   depends on ports and protocols, never concrete capabilities; only
-  `personas/container.py` touches concretes and `os.environ` (via
-  `personas/settings.py` — add new env vars there AND in
+  `runtime/container.py` touches concretes and `os.environ` (via
+  `runtime/settings.py` — add new env vars there AND in
   `instances/_template/.env.example`).
 - **New tools**: a Faculty (agent's own, no accounts) goes in
-  `capabilities/`; an external adapter (profiles + auth) goes in
-  `connectors/`. Anything that mutates the outside world belongs in
+  `domain/`; an external adapter (profiles + auth) goes in
+  `adapters/tools/`. Anything that mutates the outside world belongs in
   `WRITE_TOOLS` so the approval gate covers it.
 - **No executable skills, no skill marketplace.** Instructions-only is a
   security decision, not an oversight.

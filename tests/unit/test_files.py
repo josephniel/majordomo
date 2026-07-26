@@ -2,8 +2,8 @@
 Telegram send_file implementation."""
 from types import SimpleNamespace
 
-from capabilities.files import FileCourier
-from core import ToolContext
+from domain.files import FileCourier
+from ports import ToolContext
 
 
 class RecordingSender:
@@ -101,7 +101,7 @@ class TestTelegramSendFile:
             self.docs.append((chat_id, document.read(), filename, caption))
 
     def _platform(self):
-        from platforms.telegram import TelegramPlatform
+        from adapters.chat.telegram import TelegramPlatform
         p = TelegramPlatform(token="x", allowed_user_ids={7}, persona_id="t")
         p._app = SimpleNamespace(bot=self.FakeBot())
         return p
@@ -120,7 +120,7 @@ class TestTelegramSendFile:
         assert await p.send_file(5, str(tmp_path / "nope.bin")) is False
 
     async def test_oversize_returns_false(self, tmp_path, monkeypatch):
-        import platforms.telegram as tg
+        import adapters.chat.telegram as tg
         monkeypatch.setattr(tg, "MAX_OUTBOUND_FILE_BYTES", 3)
         p = self._platform()
         f = tmp_path / "big.bin"

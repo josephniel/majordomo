@@ -7,7 +7,7 @@ the cacheable prefix, and a clock in there would invalidate it every turn.
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from agents.fallback import CascadingAgent
+from adapters.model.fallback import CascadingAgent
 from tests.conftest import FakeAgent, FakeSummarizer
 
 

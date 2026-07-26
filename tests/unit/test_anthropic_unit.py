@@ -3,8 +3,8 @@ import base64
 
 import pytest
 
-from agents.anthropic import AnthropicAgent, _is_usage_limit
-from agents.base import Attachment
+from adapters.model.anthropic import AnthropicAgent, _is_usage_limit
+from adapters.model.base import Attachment
 
 
 class TestUsageLimitClassification:
@@ -67,7 +67,7 @@ class TestAgentFlags:
         assert AnthropicAgent.USES_SERVER_SIDE_HISTORY is True
 
     def test_openai_agents_are_client_side(self):
-        from agents.chat_completions import ChatCompletionsAgent
+        from adapters.model.chat_completions import ChatCompletionsAgent
         assert ChatCompletionsAgent.USES_SERVER_SIDE_HISTORY is False
 
 
@@ -90,7 +90,7 @@ class _FakePersona:
 
 class TestOptionsBuilder:
     def _builder(self, **kw):
-        from agents.anthropic import AnthropicOptionsBuilder
+        from adapters.model.anthropic import AnthropicOptionsBuilder
         return AnthropicOptionsBuilder(
             context_builder=_FakeComposer(),
             config=_FakeRegistry(),

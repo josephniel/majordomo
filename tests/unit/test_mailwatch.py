@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from services.mailwatch import MailWatcher
+from adapters.trigger.mailwatch import MailWatcher
 
 
 class FakeGmailClient:

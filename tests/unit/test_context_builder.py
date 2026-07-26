@@ -1,6 +1,6 @@
 """agents.base.ContextBuilder — system-prompt assembly and, critically, the
 stable/volatile ordering that keeps a local model's KV prefix cache alive."""
-from agents.base import ContextBuilder
+from adapters.model.base import ContextBuilder
 
 
 class _Enabled:

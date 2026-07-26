@@ -5,12 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from connectors.approvals import (
+from adapters.tools.approvals import (
     GatedToolProvider,
     WriteApprovalGate,
     format_approval_prompt,
 )
-from core import Connector, ToolContext, ToolResult, tool
+from ports import Connector, ToolContext, ToolResult, tool
 
 
 class FakeMailConnector(Connector):
@@ -206,14 +206,14 @@ class TestApprovalPromptFormat:
 
 class TestPersonaWriteApprovalFlag:
     def test_default_true(self, tmp_path):
-        from personas.persona import Persona
+        from runtime.persona import Persona
         d = tmp_path / "instances" / "p1"
         d.mkdir(parents=True)
         (d / "persona.yaml").write_text("name: P1\nsystem_prompt: hi\n")
         assert Persona.load("p1", tmp_path).write_approval is True
 
     def test_explicit_false(self, tmp_path):
-        from personas.persona import Persona
+        from runtime.persona import Persona
         d = tmp_path / "instances" / "p2"
         d.mkdir(parents=True)
         (d / "persona.yaml").write_text(
@@ -249,7 +249,7 @@ class FakeQuery:
 
 class TestTelegramApproval:
     def _platform(self):
-        from platforms.telegram import TelegramPlatform
+        from adapters.chat.telegram import TelegramPlatform
         p = TelegramPlatform(token="x", allowed_user_ids={7}, persona_id="t")
         p._app = SimpleNamespace(bot=FakeBot())
         return p

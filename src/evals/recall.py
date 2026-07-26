@@ -36,7 +36,7 @@ from typing import Any, Optional
 
 import yaml
 
-from storage.db import MemoryDatabase
+from adapters.store.db import MemoryDatabase
 
 DEFAULT_CASES = Path(__file__).resolve().parents[2] / "evals" / "recall_cases.yaml"
 
@@ -250,7 +250,7 @@ async def run_negatives(
     injection) rather than a reimplementation, so this measures the assistant
     that exists rather than one the harness invented.
     """
-    from capabilities.memory import select_for_injection
+    from domain.memory import select_for_injection
 
     report.negatives_run = len(negatives)
     for q in negatives:

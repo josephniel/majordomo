@@ -64,28 +64,24 @@ runtime.
 
 ## Architecture
 
-Hexagonal-ish; the dependency rule is: the application layer (`chat/`)
+Hexagonal-ish; the dependency rule is: the application layer (`kernel/`)
 depends on ports and protocols, never on concrete implementations; only the
 composition root touches concretes and the environment.
 
 ```
 src/
-  platforms/     ChatPlatform port + adapters (Telegram; voice transcription)
-  agents/        Agent port + vendor adapters, CascadingAgent failover,
-                 Postgres conversation mirror
-  connectors/    ToolProvider contract → Faculty (the agent's own) and
-                 Connector (external adapters); capability protocols;
-                 the write-approval gate
-  capabilities/  Faculties: memory, schedule, skills, code, files,
-                 documents, delegate
-  services/      Runtime services on their own triggers: webhooks,
-                 mail watch, retention
-  chat/          The turn pipeline + command/recovery/proactive/ingestion
-                 context modules
-  personas/      Persona (identity), RuntimeSettings (the only env reader),
-                 PersonaRuntime (composition root)
-  storage/       Postgres stores (memory, documents) + local embeddings
-  evals/         Vendor tool-calling replay harness
+  ports/       the contracts leaf — Agent, ChatPlatform, ToolProvider,
+               ToolSpec/@tool, ToolContext. Stdlib only; no vendor SDK.
+  adapters/    chat/ (telegram) · model/ (LLM vendors + failover) ·
+               tools/ (gmail, calendar, clickup, ...) · trigger/ (webhooks,
+               watches, retention) · store/ (Postgres, embeddings, rerank) ·
+               comms/ (inter-bot bus)
+  domain/      the agent's own faculties: memory, schedule, skills, code,
+               files, documents, delegate
+  kernel/      the turn pipeline + command/recovery/proactive/ingestion
+  runtime/     Persona, RuntimeSettings (the only env reader), the
+               composition root, and the entry point (`python -m runtime`)
+  evals/       vendor tool-calling replay + recall-quality harnesses
 ```
 
 Design decisions and their reasoning live in

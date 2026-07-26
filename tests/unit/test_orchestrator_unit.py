@@ -5,9 +5,9 @@ import time
 
 import pytest
 
-from chat.core import RATE_LIMIT_MAX_TURNS, ConversationOrchestrator
-from chat.sessions import SessionStore
-from connectors.base import Connector
+from kernel.core import RATE_LIMIT_MAX_TURNS, ConversationOrchestrator
+from kernel.sessions import SessionStore
+from adapters.tools.base import Connector
 
 
 class VersionedConnector(Connector):
@@ -131,8 +131,8 @@ class TestHallucinationDetector:
             self.last_turn_tool_names = ()
 
     def _orch_with_reflection(self, tmp_path):
-        from chat.core import ConversationOrchestrator
-        from chat.sessions import SessionStore
+        from kernel.core import ConversationOrchestrator
+        from kernel.sessions import SessionStore
         refl = self.FakeReflection()
         o = ConversationOrchestrator(
             platform=object(), agent_factory=lambda **k: None,

@@ -6,8 +6,8 @@ reset and reseeded once from the mirror (summary + kept tail).
 """
 import pytest
 
-from agents.fallback import DIGEST_CHAR_LIMIT, CascadingAgent
-from agents.history import EphemeralConversationHistory
+from adapters.model.fallback import DIGEST_CHAR_LIMIT, CascadingAgent
+from adapters.model.history import EphemeralConversationHistory
 
 from tests.conftest import FakeAgent, FakeSummarizer
 

@@ -26,4 +26,4 @@ RUN pip install -r requirements.txt
 COPY . .
 
 # Default command — overridden per-service in docker-compose.yml.
-CMD ["python", "-m", "chat", "--persona", "personal_assistant"]
+CMD ["python", "-m", "runtime", "--persona", "personal_assistant"]

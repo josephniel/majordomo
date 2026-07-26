@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from capabilities.schedule import TaskScheduler
-from core import Connector, ToolContext, ToolResult, tool
+from domain.schedule import TaskScheduler
+from ports import Connector, ToolContext, ToolResult, tool
 
 
 class RecordingConnector(Connector):

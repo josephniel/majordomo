@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from capabilities.schedule import ScheduleEngine, ScheduledTask, TaskScheduler
-from chat.core import ConversationOrchestrator
-from chat.proactive import HeartbeatConfig, _HEARTBEAT_PREAMBLE
-from chat.sessions import SessionStore
+from domain.schedule import ScheduleEngine, ScheduledTask, TaskScheduler
+from kernel.core import ConversationOrchestrator
+from kernel.proactive import HeartbeatConfig, _HEARTBEAT_PREAMBLE
+from kernel.sessions import SessionStore
 
 
 class FakePlatform:
@@ -142,7 +142,7 @@ class TestScheduleTimezone:
         engine.shutdown()
 
     def test_prompt_section_mentions_timezone(self, tmp_path):
-        from capabilities.schedule import TaskScheduler
+        from domain.schedule import TaskScheduler
         section = TaskScheduler(runtime=self._engine(tmp_path)).system_prompt_section()
         assert "Asia/Manila" in section
 

@@ -5,14 +5,14 @@ the agent holds no per-service keyword tables.
 """
 import pytest
 
-from agents.chat_completions import (
+from adapters.model.chat_completions import (
     ChatCompletionsAgent,
     DeepSeekAgent,
     GeminiAgent,
     GroqAgent,
     OpenAIAgent,
 )
-from core import Connector, tool
+from ports import Connector, tool
 
 
 def _mk_tool(name):

@@ -7,13 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from agents.base import Attachment
-from capabilities.documents import DocumentLibrary
-from services.webhook import WebhookTrigger
-from chat.core import ConversationOrchestrator
-from chat.proactive import HeartbeatConfig, WatchConfig
-from chat.sessions import SessionStore
-from platforms.base import InboundMessage
+from adapters.model.base import Attachment
+from domain.documents import DocumentLibrary
+from adapters.trigger.webhook import WebhookTrigger
+from kernel.core import ConversationOrchestrator
+from kernel.proactive import HeartbeatConfig, WatchConfig
+from kernel.sessions import SessionStore
+from adapters.chat.base import InboundMessage
 
 
 class FakePlatform:
@@ -107,7 +107,7 @@ class TestIngestAttachments:
     async def test_discovery_is_protocol_based_not_concrete(self, tmp_path):
         """Any connector implementing ingest_attachment is discovered — no
         DocumentLibrary inheritance required (AttachmentIngestor protocol)."""
-        from connectors import Connector
+        from adapters.tools import Connector
 
         class PlainIngestor(Connector):
             name = "plain"
@@ -201,7 +201,7 @@ class RecordingScheduleConnector:
         self.crons: dict[str, object] = {}
 
     def add_system_cron(self, name, cron, callback):
-        from capabilities.schedule import _is_async_callable
+        from domain.schedule import _is_async_callable
         if not _is_async_callable(callback):
             raise TypeError(f"system cron {name!r} needs an async callback")
         self.crons[name] = callback
@@ -261,7 +261,7 @@ class TestSystemCronRegistration:
 
 class TestAddSystemCronRejectsSyncCallbacks:
     def _engine(self, tmp_path):
-        from capabilities.schedule import ScheduleEngine
+        from domain.schedule import ScheduleEngine
 
         async def _fire(task):
             return None
@@ -322,9 +322,9 @@ class TestStatusProactiveBlock:
 
 class TestContainerWiring:
     def test_agent_builders_get_the_gated_view(self, tmp_path):
-        from connectors.approvals import GatedToolProvider
-        from personas.container import PersonaRuntime
-        from personas.persona import Persona
+        from adapters.tools.approvals import GatedToolProvider
+        from runtime.container import PersonaRuntime
+        from runtime.persona import Persona
         persona = Persona(
             id="t", dir=tmp_path / "instances" / "t", name="T",
             system_prompt="x",
@@ -352,9 +352,9 @@ class TestContainerWiring:
         assert "approval" in by_tool["skill_save"].description
 
     def test_write_approval_optout_disables_gate(self, tmp_path):
-        from connectors.approvals import GatedToolProvider
-        from personas.container import PersonaRuntime
-        from personas.persona import Persona
+        from adapters.tools.approvals import GatedToolProvider
+        from runtime.container import PersonaRuntime
+        from runtime.persona import Persona
         persona = Persona(
             id="t", dir=tmp_path / "instances" / "t", name="T",
             system_prompt="x", write_approval=False,
@@ -374,8 +374,8 @@ class TestFacultyConnectorTiering:
     shared ToolProvider contract, two identities."""
 
     def _runtime(self, tmp_path, cfg):
-        from personas.container import PersonaRuntime
-        from personas.persona import Persona
+        from runtime.container import PersonaRuntime
+        from runtime.persona import Persona
         return PersonaRuntime(Persona(
             id="t", dir=tmp_path / "instances" / "t", name="T",
             system_prompt="x", enabled_connectors=cfg,
@@ -388,7 +388,7 @@ class TestFacultyConnectorTiering:
         assert {c.name for c in runtime.active_services} == {"skills", "delegate"}
 
     def test_faculties_are_faculty_not_connector(self, tmp_path):
-        from connectors import Connector, Faculty, ToolProvider
+        from adapters.tools import Connector, Faculty, ToolProvider
         runtime = self._runtime(tmp_path, {"skills": True, "files": True})
         for c in runtime.active_faculties:
             assert isinstance(c, Faculty)
@@ -397,7 +397,7 @@ class TestFacultyConnectorTiering:
             assert not hasattr(c, "cmd_add"), "faculties have no add/auth flows"
 
     def test_persona_yaml_split_blocks_merge(self, tmp_path):
-        from personas.persona import Persona
+        from runtime.persona import Persona
         d = tmp_path / "instances" / "p"
         d.mkdir(parents=True)
         (d / "persona.yaml").write_text(
@@ -411,7 +411,7 @@ class TestFacultyConnectorTiering:
         assert not persona.is_connector_enabled("clickup")
 
     def test_legacy_enabled_connectors_still_works(self, tmp_path):
-        from personas.persona import Persona
+        from runtime.persona import Persona
         d = tmp_path / "instances" / "p"
         d.mkdir(parents=True)
         (d / "persona.yaml").write_text(
@@ -425,8 +425,8 @@ class TestFacultyConnectorTiering:
     def test_heartbeat_checklist_hot_reload(self, tmp_path):
         """The heartbeat prompt loader re-reads persona.yaml on every call —
         edits apply at the next fire, no restart."""
-        from personas.container import PersonaRuntime
-        from personas.persona import Persona
+        from runtime.container import PersonaRuntime
+        from runtime.persona import Persona
         d = tmp_path / "instances" / "p"
         d.mkdir(parents=True)
         yaml_text = (
@@ -468,7 +468,7 @@ class TestMailWatchDedicatedAgent:
 
 class TestBackgroundToolView:
     def _persona(self, tmp_path, **kw):
-        from personas.persona import Persona
+        from runtime.persona import Persona
         return Persona(
             id="t", dir=tmp_path / "instances" / "t", name="T",
             system_prompt="x",
@@ -477,14 +477,14 @@ class TestBackgroundToolView:
         )
 
     def test_background_persona_downgrades_writes(self, tmp_path):
-        from personas.container import PersonaRuntime
+        from runtime.container import PersonaRuntime
         runtime = PersonaRuntime(self._persona(tmp_path))
         assert runtime.background_persona.enabled_connectors == {
             "skills": True, "files": True,
         }
 
     def test_background_tools_override_wins(self, tmp_path):
-        from personas.container import PersonaRuntime
+        from runtime.container import PersonaRuntime
         runtime = PersonaRuntime(
             self._persona(tmp_path, background_tools={"files": True})
         )

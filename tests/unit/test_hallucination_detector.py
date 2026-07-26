@@ -1,7 +1,7 @@
 """chat.core — Layer 3 memory-claim + Layer 3b schedule-claim regexes."""
 import pytest
 
-from chat.recovery import _CLAIMS_MEMORY_SAVE, _CLAIMS_SCHEDULE_SET, _CLAIMS_SENT
+from kernel.recovery import _CLAIMS_MEMORY_SAVE, _CLAIMS_SCHEDULE_SET, _CLAIMS_SENT
 
 
 class TestClaimsMemorySave:

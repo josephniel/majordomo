@@ -7,8 +7,8 @@ import shutil
 
 import pytest
 
-from capabilities.code_exec import CodeExecutor
-from core import ToolContext
+from domain.code_exec import CodeExecutor
+from ports import ToolContext
 
 pytestmark = pytest.mark.skipif(
     shutil.which("docker") is None, reason="docker not available"

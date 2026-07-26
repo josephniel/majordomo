@@ -25,9 +25,9 @@ from typing import Any, Optional
 
 import yaml
 
-from agents import EphemeralConversationHistory
-from agents.base import ContextBuilder
-from agents.chat_completions import (
+from adapters.model import EphemeralConversationHistory
+from adapters.model.base import ContextBuilder
+from adapters.model.chat_completions import (
     DeepSeekAgent,
     GeminiAgent,
     GroqAgent,

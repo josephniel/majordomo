@@ -13,10 +13,10 @@ from typing import Any, Optional
 
 import pytest
 
-from agents.base import Agent, UsageLimitError
-from agents.history import ConversationHistory
-from connectors.base import Summarizer
-from storage.db import MemoryDatabase
+from adapters.model.base import Agent, UsageLimitError
+from adapters.model.history import ConversationHistory
+from adapters.tools.base import Summarizer
+from adapters.store.db import MemoryDatabase
 
 # A SEPARATE database from the one a running assistant uses. Tests call
 # init_schema(), which applies migrations — including destructive ones like

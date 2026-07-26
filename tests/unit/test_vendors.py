@@ -1,6 +1,6 @@
 """personas.vendors — the vendor registry drives chain assembly."""
-from personas.settings import RuntimeSettings
-from personas.vendors import VENDORS, VENDORS_BY_NAME
+from runtime.settings import RuntimeSettings
+from runtime.vendors import VENDORS, VENDORS_BY_NAME
 
 
 class TestRegistry:

@@ -4,8 +4,8 @@ import json
 import httpx
 import pytest
 
-from connectors.budget import BudgetClient, BudgetConnector, DEFAULT_BASE_URL
-from core import ToolContext
+from adapters.tools.budget import BudgetClient, BudgetConnector, DEFAULT_BASE_URL
+from ports import ToolContext
 
 CTX = ToolContext(chat_id=1)
 

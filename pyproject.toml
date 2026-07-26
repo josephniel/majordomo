@@ -22,62 +22,49 @@ packages = []
 # Prose does not fail a build. These contracts do.
 # ---------------------------------------------------------------------------
 [tool.importlinter]
-root_packages = [
-    "core", "storage", "agents", "connectors", "capabilities",
-    "platforms", "services", "chat", "personas", "comms", "evals",
-]
+root_packages = ["ports", "kernel", "runtime", "adapters", "domain", "evals"]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
-name = "core is a leaf: it imports nothing of ours"
+name = "ports is a leaf: it imports nothing of ours"
 type = "forbidden"
-source_modules = ["core"]
-forbidden_modules = [
-    "storage", "agents", "connectors", "capabilities",
-    "platforms", "services", "chat", "personas", "comms", "evals",
-]
+source_modules = ["ports"]
+forbidden_modules = ["kernel", "runtime", "adapters", "domain", "evals"]
 
 [[tool.importlinter.contracts]]
-name = "core imports no third-party SDK (contracts stay vendor-neutral)"
+name = "ports imports no third-party SDK (contracts stay vendor-neutral)"
 type = "forbidden"
-source_modules = ["core"]
+source_modules = ["ports"]
 forbidden_modules = [
     "anthropic", "claude_agent_sdk", "openai", "telegram",
     "asyncpg", "apscheduler", "fastembed", "httpx",
 ]
 
 [[tool.importlinter.contracts]]
-name = "adapters do not import each other"
+name = "peer adapters do not import each other"
 type = "independence"
-modules = ["agents", "connectors", "platforms", "storage"]
+modules = [
+    "adapters.model", "adapters.chat", "adapters.tools", "adapters.trigger",
+]
 
 [[tool.importlinter.contracts]]
 name = "only the composition root touches the environment"
 type = "forbidden"
-source_modules = [
-    "agents", "connectors", "capabilities", "platforms", "services", "chat",
-]
+source_modules = ["adapters", "domain", "kernel"]
 forbidden_modules = ["dotenv"]
-# chat.__main__ is the PROCESS ENTRY POINT (`python -m chat`), not application
-# code — wiring the composition root is its whole job. It sits inside the chat
-# package only for historical reasons; Phase 6 moves it to runtime/ and this
-# exemption goes away with it.
-ignore_imports = ["chat.__main__ -> personas"]
 
 [[tool.importlinter.contracts]]
-name = "layered: application over adapters over contracts"
+name = "layered: runtime > kernel > domain > adapters > infrastructure > ports"
 type = "layers"
 layers = [
-    "personas",                                  # composition root
-    "chat",                                      # application
-    "capabilities | services",                   # domain services
-    "agents | connectors | platforms",           # adapters
-    "storage | comms",                           # infrastructure
-    "core",                                      # contracts leaf
+    "runtime",                                                   # composition root + entry point
+    "kernel",                                                    # the turn pipeline
+    "domain",                                                    # faculties / domain services
+    "adapters.model | adapters.chat | adapters.tools | adapters.trigger",
+    "adapters.store | adapters.comms",                           # infrastructure adapters
+    "ports",                                                     # contracts leaf
 ]
 exhaustive = false
-# Same entry-point exemption as above.
-ignore_imports = ["chat.__main__ -> personas"]
 
 # ---------------------------------------------------------------------------
 # Type checking.
@@ -101,5 +88,5 @@ ignore_missing_imports = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["core.*"]
+module = ["ports.*"]
 strict = true

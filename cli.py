@@ -26,8 +26,8 @@ from typing import Optional
 
 import yaml
 
-from connectors import ServiceRegistry, Connector
-from personas import Persona, PersonaRuntime
+from adapters.tools import ServiceRegistry, Connector
+from runtime import Persona, PersonaRuntime
 
 
 class ConnectorCLI:
@@ -414,7 +414,7 @@ async def _export_memory(container, out_dir: str) -> int:
 async def _reembed_memory(container) -> None:
     """Re-embed every memory entry with the current local embedding model.
     Idempotent; entries already embedded by the current model are skipped."""
-    from storage.embeddings import MODEL_NAME
+    from adapters.store.embeddings import MODEL_NAME
 
     db = container.memory_database
     await db.connect()

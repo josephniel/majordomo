@@ -4,7 +4,7 @@ import asyncio
 import httpx
 import pytest
 
-from services.webhook import (
+from adapters.trigger.webhook import (
     WebhookServer,
     WebhookTrigger,
     build_trigger_prompt,

@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from capabilities.memory import LongTermMemory
-from capabilities.reflection import MIN_NEW_ROWS, ReflectionEngine
+from domain.memory import LongTermMemory
+from domain.reflection import MIN_NEW_ROWS, ReflectionEngine
 from tests.conftest import CHAT_ID, FakeSummarizer
 
 pytestmark = pytest.mark.integration

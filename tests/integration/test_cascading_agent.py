@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
-from agents.fallback import CascadingAgent
-from agents.health import VendorHealthBoard
-from agents.base import UsageLimitError
+from adapters.model.fallback import CascadingAgent
+from adapters.model.health import VendorHealthBoard
+from adapters.model.base import UsageLimitError
 from tests.conftest import CHAT_ID, FakeAgent, FakeSummarizer
 
 pytestmark = pytest.mark.integration

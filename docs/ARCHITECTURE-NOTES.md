@@ -1,54 +1,62 @@
 # Architecture notes — decisions, caveats, and deliberate scope cuts
 
-## Layout (post-restructure, 2026-07-22)
+## Layout (ports & adapters, 2026-07-26)
 
-Hexagonal-ish: ports at the edges, one composition root, contexts kept
-apart. The dependency rule: `chat/` (application) depends on ports and
-protocols, never on concrete capabilities; only `personas/container.py`
-(the composition root) touches concretes and the environment.
+Five top-level packages, named after the ROLE they play rather than the
+technology they contain. The dependency rule runs one way and CI enforces it
+(see "Architecture enforcement" below) — it is no longer a convention.
 
-- `core/`       — the neutral contracts leaf (2026-07-23 restructure):
-                  Agent ABC, Attachment, Summarizer, UsageLimitError,
-                  ToolProvider and its two refinements (Faculty = the
-                  agent's own, singleton, no auth; Connector = external
-                  adapter, multi-profile, credentialed), ToolSpec/@tool,
-                  the capability protocols (AttachmentIngestor,
-                  ContextInjector, the optional-agent-capability
-                  protocols), and ToolContext — the explicit per-invocation
-                  scope every tool handler receives as its second
-                  parameter (no ambient ContextVar). Imports only the
-                  stdlib; every other package imports shared contracts
-                  from here. `connectors/base.py` and `agents/base.py`
-                  re-export for back-compat.
-- `platforms/`  — ChatPlatform port + adapters (telegram; transcription).
-- `agents/`     — vendor adapters for the Agent port, CascadingAgent
-                  failover, ConversationHistory mirror, ContextBuilder.
-- `connectors/` — the external-service connector implementations, the
-                  approval gate, and ServiceRegistry. persona.yaml enables
-                  providers via separate `faculties:` / `connectors:`
-                  blocks (same grammar; legacy `enabled_connectors` accepted).
-- `capabilities/` — the Faculty implementations (memory, schedule, skills,
-                  code, files, documents, delegate).
-- `services/`   — runtime services on their OWN triggers, never in a tool
-                  schema (webhooks, mail watch, retention).
-- `chat/`       — the application layer: core.py is only the turn pipeline
-                  (`_execute_agent_turn` = the single place a turn runs:
-                  one site for _pending_turns); commands / recovery /
-                  proactive / ingestion are sibling context modules mixed
-                  in.
-- `personas/`   — Persona (identity, from persona.yaml), RuntimeSettings
-                  (the ONLY env reader, from .env), PersonaRuntime (the
-                  composition root).
-- `storage/`, `comms/`, `evals/` — infrastructure and the eval harness.
+```
+src/
+  ports/      the contracts leaf. Imports only the stdlib, and — checked by
+              contract — no vendor SDK. Agent, ChatPlatform, ToolProvider /
+              Faculty / Connector, ToolSpec + @tool, ToolContext, Summarizer,
+              ServiceCatalog, and the structural capability protocols.
+  adapters/   one subpackage per external reality:
+                chat/     chat platforms (telegram, transcription)
+                model/    LLM vendors, CascadingAgent failover, history mirror
+                tools/    external services (gmail, calendar, clickup, ...)
+                trigger/  time/event sources (webhooks, mail watch, retention)
+                store/    Postgres persistence + local embeddings/reranking
+                comms/    the shared inter-bot comms bus
+  domain/     the agent's own faculties: memory, schedule, skills, code,
+              files, documents, delegate, reflection.
+  kernel/     the turn pipeline and its context modules (commands, recovery,
+              proactive, ingestion). Depends on ports, never on concretes.
+  runtime/    the composition root: Persona (identity), RuntimeSettings (the
+              ONLY env reader), PersonaRuntime (wiring), and `__main__` (the
+              process entry point, `python -m runtime`).
+```
 
-Contracts made explicit by the restructure: chat-completions vendors read
-the current user turn from the history mirror — CascadingAgent mirrors
-before send, and ChatCompletionsAgent self-heals (with a loud warning) if
-a caller skips that.
+Why this shape and not the previous one: the old names described
+implementation (`storage`, `agents`, `connectors`) and gave no hint about
+which way dependencies were allowed to flow, which is how `agents/` ended up
+importing `connectors/` in three places without anyone noticing. `ports` /
+`adapters` / `domain` / `kernel` / `runtime` state the rule in the directory
+names, and `scripts/check_architecture.py` fails the build when it's broken.
 
-Companion to the 2026-07-21 agent-completeness audit and build-out. Records
-the *info-level* findings that were resolved by documentation rather than
-code, plus what was deliberately not built.
+Peer adapters (`model`, `chat`, `tools`, `trigger`) may not import each other
+— anything two of them need is a contract and belongs in `ports`. `store` and
+`comms` sit one tier lower, as infrastructure the others are allowed to build
+on (the chat platform legitimately writes to the comms log).
+
+The entry point moved from `chat/__main__.py` to `runtime/__main__.py`, so
+`python -m chat` is now `python -m runtime`. `./manage` and the Dockerfile
+were updated; the LaunchAgent invokes `./manage up`, so no plist change is
+needed. That move also retired the one import-linter exemption this
+restructure started with: the entry point importing the composition root
+stopped being a layer violation once it lived in the same package as it.
+
+Still to come, and deliberately not faked here: `ports` currently holds the
+contracts that already existed. MemoryPort, TriggerPort and the ModelRole
+chains (Phases 1-5) land in it next, at which point `domain/` splits into
+domain logic plus thin Faculty adapters. The directories exist now so that
+work lands in its final home instead of being written twice.
+
+Contracts made explicit by the earlier restructure: chat-completions vendors
+read the current user turn from the history mirror — CascadingAgent mirrors
+before send, and ChatCompletionsAgent self-heals (with a loud warning) if a
+caller skips that.
 
 ## Security & trust model
 
@@ -56,7 +64,7 @@ code, plus what was deliberately not built.
 "bypassPermissions"` and read external content (email bodies, ClickUp task
 text, calendar descriptions). Injected instructions in that content could
 drive tool calls. The mitigation is the persona-level tool policy in
-`persona.yaml` (`personas/persona.py:allowed_tool_names`):
+`persona.yaml` (`runtime/persona.py:allowed_tool_names`):
 
 - `true`  → connector active, **read-only** (everything except `WRITE_TOOLS`)
 - `read_write` → all tools including mutating ones
@@ -69,12 +77,12 @@ must never get `read_write` on gmail. Treat every `read_write` grant as
 **Telegram allowlist.** `platform.yaml`'s `allowed_user_ids` is the entire
 auth model for DMs; the platform refuses to start with an empty list. In the
 control room, any bot is trusted (curated by the operator) — the relay's
-hop guard (`comms/relay.py`, 8 bot messages max without a human) bounds
+hop guard (`adapters/comms/relay.py`, 8 bot messages max without a human) bounds
 runaway bot-to-bot loops.
 
 **Log hygiene.** `python-telegram-bot`'s httpx logging would print the bot
 token inside every polled URL at INFO — the httpx/httpcore loggers are
-therefore capped at WARNING in `chat/__main__.py`. Keep `logs/` out of any
+therefore capped at WARNING in `kernel/__main__.py`. Keep `logs/` out of any
 VCS/backup that leaves the machine regardless (it's gitignored).
 
 ## Memory scoping (single-operator by design)
@@ -110,7 +118,7 @@ re-learns); Postgres holds everything that must survive.
 ## Architecture enforcement (CI)
 
 The dependency rule used to live in a docstring, which is exactly why it had
-drifted: `agents/` (an adapter) imported `connectors/` (another adapter) in
+drifted: `adapters/model/` (an adapter) imported `adapters/tools/` (another adapter) in
 three places, and nothing failed. Prose does not fail a build.
 
 `scripts/check_architecture.py` runs five import-linter contracts in CI:
@@ -121,7 +129,7 @@ three places, and nothing failed. Prose does not fail a build.
 3. **adapters do not import each other** — agents / connectors / platforms /
    storage are mutually independent.
 4. **only the composition root touches the environment** — nothing but
-   `personas/` imports dotenv.
+   `runtime/` imports dotenv.
 5. **layers** — personas > chat > capabilities|services > adapters >
    storage|comms > core.
 
@@ -133,13 +141,13 @@ structurally — no inheritance, no registration, no import.
 
 One exemption, recorded rather than hidden: `chat.__main__` imports
 `personas`, because it is the process entry point (`python -m chat`) and
-wiring the composition root is its job. It lives inside `chat/` for
+wiring the composition root is its job. It lives inside `kernel/` for
 historical reasons only; Phase 6 moves it to `runtime/` and the exemption
 goes with it.
 
 **Type checking is a ratchet, not a wall.** `mypy --strict` over all of
 `src/` reports ~180 errors, so requiring it everywhere would mean a flag day
-or a permanently red build. CI enforces strict on `core/` only — the layer
+or a permanently red build. CI enforces strict on `ports/` only — the layer
 whose job is precision, that everything else imports, and that is small
 enough to hold. Promote packages in as they are cleaned up.
 
@@ -155,11 +163,11 @@ The pipeline, and what each stage is for:
 
 1. **Three candidate arms.** FTS (`english` config), trigram, and pgvector
    cosine, each ranking independently over the same compartment-filtered base.
-2. **Weighted Reciprocal Rank Fusion** (`storage/db.py`). Not `max()` of the
+2. **Weighted Reciprocal Rank Fusion** (`adapters/store/db.py`). Not `max()` of the
    three scores — `ts_rank`, trigram similarity, and cosine are on
    incomparable scales, so a max is really just "whatever the vector arm
    said". RRF keeps only the ordering, which is the comparable part.
-3. **Cross-encoder rerank** (`storage/reranking.py`) over the top ~20. RRF
+3. **Cross-encoder rerank** (`adapters/store/reranking.py`) over the top ~20. RRF
    orders well but its scores compress (rank 1 vs rank 5 differ by ~7%), so
    they cannot be thresholded. The reranker supplies a calibrated relevance
    score, which is what makes "only inject memories above X" mean anything.
@@ -231,7 +239,7 @@ when the network doesn't. For the cross-project status page, the bot
 
 and every vendor-health change POSTs a JSON payload
 (`{project, instance, kind, vendors, ok, ts}` — see
-`comms/status_report.py`). Unset = feature off. The dashboard service
+`adapters/comms/status_report.py`). Unset = feature off. The dashboard service
 itself lives outside this repo; any project can report into it with the
 same payload shape.
 
@@ -262,7 +270,7 @@ matches tool *names* by substring because vendors report different forms
 ## Layer 5: write-tool approval gate
 
 The persona tool policy decides which write tools are EXPOSED; the approval
-gate (`connectors/approvals.py`) decides whether an exposed write may
+gate (`adapters/tools/approvals.py`) decides whether an exposed write may
 EXECUTE — one inline Approve/Deny tap in Telegram per call, 120s timeout =
 deny. It wraps `WRITE_TOOLS` handlers at the connector's `builtin_*`
 methods, so both vendors' tool paths (Claude in-process MCP, chat-completions
@@ -275,7 +283,7 @@ can mutate any read_write system. Opt out per persona with
 
 ## Skills: instructions-only, self-written under approval
 
-Skills (`capabilities/skills.py`) are markdown notes under
+Skills (`domain/skills.py`) are markdown notes under
 instances/<id>/skills/ — description/keywords/always frontmatter; `always`
 inlined into the system prompt, keyword matches attached per-turn beside
 memory recall, everything else on-demand via skill_read. No code, no
@@ -305,23 +313,23 @@ rewrite its own system prompt".
 
 ## Acting: sandboxed code execution + file delivery
 
-`run_code` (capabilities/code_exec.py) executes Python/shell in a throwaway
+`run_code` (domain/code_exec.py) executes Python/shell in a throwaway
 Docker container: --network=none, 256MB/1cpu/128pids caps, read-only root,
 /work (per-run dir under data/code_runs/) as the only writable surface.
 Sandbox bounds what code can touch; the Layer 5 approval tap bounds when
 code runs at all — together stricter than the big-harness defaults.
 Artifacts survive the run and are deliverable via `chat_send_file`
-(capabilities/files.py), which is path-restricted to the data/ subtree —
+(domain/files.py), which is path-restricted to the data/ subtree —
 so credentials/ can never be shipped anywhere, even to the operator.
 
 ## Event-driven proactivity
 
-- **Webhooks** (capabilities/webhook.py): stdlib HTTP listener (loopback,
+- **Webhooks** (domain/webhook.py): stdlib HTTP listener (loopback,
   bearer token, per-trigger cooldown) firing persona-configured prompts as
   scheduled-style turns. The push-in primitive: CI, the status board, or
   any curl can wake the bot. NB: HTTPServer's default server_bind calls
   socket.getfqdn(), which hangs ~30s on macOS — we bind TCPServer-style.
-- **Mail watch** (capabilities/mailwatch.py): Gmail true push needs cloud
+- **Mail watch** (domain/mailwatch.py): Gmail true push needs cloud
   Pub/Sub, so instead a 3-minute system cron does a TOKEN-FREE REST
   prefilter (unread after a persisted watermark, overlap + seen-id dedupe);
   an LLM turn (with the <silent> option) runs only when new mail actually
@@ -329,7 +337,7 @@ so credentials/ can never be shipped anywhere, even to the operator.
 
 ## Document RAG
 
-storage/docs.py: documents + document_chunks (pgvector 384 + trigram),
+adapters/store/docs.py: documents + document_chunks (pgvector 384 + trigram),
 overlap chunking, hybrid max(trigram, cosine) search — the same recipe as
 memory recall. The orchestrator auto-ingests text/PDF attachments at the
 chat edge and tells the model inline ("[saved to documents: …]"); tools are

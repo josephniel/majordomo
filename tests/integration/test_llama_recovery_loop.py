@@ -2,8 +2,8 @@
 the failed generation, running the tool, and producing a final answer."""
 import pytest
 
-from agents.chat_completions import GroqAgent
-from core import Connector, ToolResult, tool
+from adapters.model.chat_completions import GroqAgent
+from ports import Connector, ToolResult, tool
 
 pytestmark = pytest.mark.integration  # uses the memory tool + DB-free connector
 

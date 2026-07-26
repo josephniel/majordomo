@@ -1,8 +1,8 @@
 """storage.docs chunking + capabilities.documents extraction (no DB)."""
 import pytest
 
-from capabilities.documents import extract_text
-from storage.docs import CHUNK_CHARS, CHUNK_OVERLAP, chunk_text
+from domain.documents import extract_text
+from adapters.store.docs import CHUNK_CHARS, CHUNK_OVERLAP, chunk_text
 
 
 class TestChunking:

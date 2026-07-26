@@ -1,7 +1,7 @@
 """services.splitwisewatch — polling watcher (Splitwise has no webhooks)."""
 import pytest
 
-from services.splitwisewatch import MAX_NEW_PER_PROFILE, SplitwiseWatcher
+from adapters.trigger.splitwisewatch import MAX_NEW_PER_PROFILE, SplitwiseWatcher
 
 
 def _expense(eid=1, updated="2026-07-23T10:00:00Z", cost="1385.0", deleted=False,
