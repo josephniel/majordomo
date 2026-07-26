@@ -16,15 +16,33 @@ the host providing `_trigger_sources` and `_run_trigger()`.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from ports import TriggerContext
+
+if TYPE_CHECKING:
+    from ports import TriggerEvent, TriggerSource
 
 log = logging.getLogger(__name__)
 
 
 class ProactiveMixin:
     """Trigger-source lifecycle for the orchestrator."""
+
+    # ---- supplied by the host (ConversationOrchestrator) ----
+    #
+    # These were a docstring promise. A mixin that reads `self._platform`
+    # without declaring it is only correct as long as every host happens to
+    # define it, which no tool was checking — ARCHITECTURE-NOTES flagged this
+    # coupling as "documented only in prose", and prose does not fail a
+    # build. Declared under TYPE_CHECKING so they stay annotations: the host
+    # owns the real attributes, this block only states what is required.
+    if TYPE_CHECKING:
+        _trigger_sources: list[TriggerSource]
+
+        async def _run_trigger(self, event: TriggerEvent) -> bool: ...
 
     async def _start_trigger_sources(self) -> None:
         """Start every configured source.

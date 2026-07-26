@@ -27,7 +27,7 @@ import shutil
 import uuid
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from ports import Faculty, ToolContext, ToolResult, tool
+from ports import Faculty, ToolContext, ToolResult, ToolSpec, tool
 
 if TYPE_CHECKING:
     from pathlib import Path

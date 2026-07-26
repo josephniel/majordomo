@@ -23,7 +23,7 @@ import logging
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from ports import Faculty, ToolContext, ToolResult, tool
+from ports import Faculty, ToolContext, ToolResult, ToolSpec, tool
 
 if TYPE_CHECKING:
     from collections.abc import Callable

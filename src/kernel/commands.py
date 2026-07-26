@@ -13,13 +13,40 @@ from typing import TYPE_CHECKING
 from ports import ConversationRef, VendorIntrospectable
 
 if TYPE_CHECKING:
-    from adapters.chat import CommandEvent
+    import asyncio
+
+    from adapters.chat import ChatPlatform, CommandEvent
+    from adapters.model import ConversationHistory
+    from kernel.sessions import SessionStore
+    from ports import Agent, ServiceCatalog, ToolProvider, TriggerSource
 
 log = logging.getLogger(__name__)
 
 
 class CommandsMixin:
     """Command-handling context of the orchestrator."""
+
+    # ---- supplied by the host (ConversationOrchestrator) ----
+    #
+    # These were a docstring promise. A mixin that reads `self._platform`
+    # without declaring it is only correct as long as every host happens to
+    # define it, which no tool was checking — ARCHITECTURE-NOTES flagged this
+    # coupling as "documented only in prose", and prose does not fail a
+    # build. Declared under TYPE_CHECKING so they stay annotations: the host
+    # owns the real attributes, this block only states what is required.
+    if TYPE_CHECKING:
+        _platform: ChatPlatform
+        _config: ServiceCatalog
+        _connectors: list[ToolProvider]
+        _persona_id: str
+        _agents: dict[ConversationRef, Agent]
+        _session_ids: dict[ConversationRef, str]
+        _session_store: SessionStore
+        _conversation_history: ConversationHistory | None
+        _trigger_sources: list[TriggerSource]
+
+        async def _cancel_chat(self, chat_id: ConversationRef) -> bool: ...
+        def _get_chat_lock(self, chat_id: ConversationRef) -> asyncio.Lock: ...
 
     async def _handle_command(self, cmd: CommandEvent) -> None:
         if cmd.command == "start":

@@ -20,7 +20,7 @@ import sys
 from email.header import decode_header, make_header
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from ports import Connector, ToolContext, ToolResult, tool
+from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
 if TYPE_CHECKING:
     from pathlib import Path

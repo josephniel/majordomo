@@ -23,7 +23,10 @@ from ports import ConversationRef, ToolTraceReporting
 from .formatting import chunk_for_platform
 
 if TYPE_CHECKING:
+    from adapters.chat import ChatPlatform
     from adapters.model import Agent
+    from domain import ReflectionEngine
+    from ports import Attachment, ToolUseCallback
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +119,34 @@ _SEND_RECOVERY_FAILED_TEXT = (
 
 class RecoveryMixin:
     """Hallucination-recovery context of the orchestrator."""
+
+    # ---- supplied by the host (ConversationOrchestrator) ----
+    #
+    # These were a docstring promise. A mixin that reads `self._platform`
+    # without declaring it is only correct as long as every host happens to
+    # define it, which no tool was checking — ARCHITECTURE-NOTES flagged this
+    # coupling as "documented only in prose", and prose does not fail a
+    # build. Declared under TYPE_CHECKING so they stay annotations: the host
+    # owns the real attributes, this block only states what is required.
+    if TYPE_CHECKING:
+        _platform: ChatPlatform
+        _reflection: ReflectionEngine | None
+        _schedule_claim_tools: tuple[str, ...]
+        _send_claim_tools: tuple[str, ...]
+        _stale_agent_stops: set[asyncio.Task[None]]
+
+        async def _send_safe(self, chat_id: ConversationRef, text: str) -> None: ...
+        def _persist_session_id(self, chat_id: ConversationRef, agent: Agent) -> None: ...
+        async def _execute_agent_turn(
+            self,
+            chat_id: ConversationRef,
+            agent: Agent,
+            text: str,
+            *,
+            on_tool_use: ToolUseCallback | None = ...,
+            attachments: list[Attachment] | None = ...,
+            typing: bool = ...,
+        ) -> str: ...
 
     # ---- Layer 3: hallucinated memory save ----
 

@@ -20,6 +20,7 @@ from ports import (
     Faculty,
     ToolContext,
     ToolResult,
+    ToolSpec,
     tool,
 )
 

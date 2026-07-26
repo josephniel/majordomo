@@ -113,7 +113,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
 
         # per-instance state
         self._agents: dict[int, Agent] = {}
-        self._session_ids: dict[int, str] = session_store.load()
+        self._session_ids: dict[ConversationRef, str] = session_store.load()
         # chat_id -> (task, agent actually serving it). The agent rides
         # along so /cancel can interrupt the RIGHT agent — an ephemeral
         # heartbeat agent is not self._agents[chat_id].

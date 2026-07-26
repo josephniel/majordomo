@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from domain.schedule import TaskScheduler
-from ports import Connector, ToolContext, ToolResult, tool
+from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
 
 class RecordingConnector(Connector):

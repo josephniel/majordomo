@@ -20,7 +20,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
-from ports import ConversationRef, Faculty, ToolContext, ToolResult, chat_key, tool
+from ports import ConversationRef, Faculty, ToolContext, ToolResult, ToolSpec, chat_key, tool
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable

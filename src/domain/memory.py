@@ -50,6 +50,7 @@ from ports import (
     Neighbor,
     Scored,
     Summarizer,
+    ToolSpec,
 )
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime; duck-typed otherwise

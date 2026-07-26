@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
-from ports import Connector, ToolContext, ToolResult, tool
+from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
 from ._google_oauth import (
     CredentialStore,
