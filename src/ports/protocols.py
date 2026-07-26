@@ -16,8 +16,9 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class EnabledService(Protocol):
-    """What a rendered service entry looks like to anything downstream of the
-    registry: a name, a description, and the tools it exposes.
+    """What a rendered service entry looks like to anything downstream of the registry.
+
+    A name, a description, and the tools it exposes.
     """
 
     name: str
@@ -50,8 +51,9 @@ class AttachmentIngestor(Protocol):
 
 @runtime_checkable
 class ContextInjector(Protocol):
-    """Contributes a per-turn context block for the user's message (memory
-    recall, keyword-matched skills).
+    """Contributes a per-turn context block for the user's message.
+
+    Memory recall and keyword-matched skills are the two implementations.
     """
 
     async def inject_context(self, text: str) -> str: ...
@@ -84,8 +86,9 @@ class VendorIntrospectable(Protocol):
 
 @runtime_checkable
 class ToolTraceReporting(Protocol):
-    """An agent that records which tools ran during its last turn — the
-    hallucination detectors (Layers 3/3b) read these.
+    """An agent that records which tools ran during its last turn.
+
+    The hallucination detectors (Layers 3/3b) read these.
     """
 
     last_turn_tool_calls: int
@@ -94,26 +97,20 @@ class ToolTraceReporting(Protocol):
 
 @runtime_checkable
 class SessionResettable(Protocol):
-    """A server-side-history agent whose session can be abandoned and
-    reopened fresh (compaction rotation).
-    """
+    """A server-side-history agent whose session can be reopened fresh (compaction rotation)."""
 
     async def reset_session(self) -> None: ...
 
 
 @runtime_checkable
 class ToolCallProbe(Protocol):
-    """An agent that can cheaply prove its vendor still calls tools
-    (Layer 4 canary).
-    """
+    """An agent that can cheaply prove its vendor still calls tools (Layer 4 canary)."""
 
     async def probe_tool_calling(self) -> tuple[bool, str]: ...
 
 
 @runtime_checkable
 class CanaryRunner(Protocol):
-    """A composite agent that runs the tool-calling canary across its
-    chain at startup.
-    """
+    """A composite agent that runs the tool-calling canary across its chain at startup."""
 
     async def run_canary(self) -> dict[str, Any]: ...

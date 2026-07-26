@@ -267,6 +267,7 @@ class MemoryDatabase:
         persona_id: str,
         scope: str,
         content: str,
+        *,
         domain_key: str = "",
         title: str = "",
         metadata: dict[str, Any] | None = None,

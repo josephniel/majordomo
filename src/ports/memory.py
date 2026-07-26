@@ -249,11 +249,14 @@ class MemoryStore(Protocol):
     async def close(self) -> None: ...
 
     # ---- writing ----
-    async def save_entry(
+    # A memory row has this many columns; a params object here would just be the
+    # row spelled twice, so the width is the schema, not a missing abstraction.
+    async def save_entry(  # noqa: PLR0913
         self,
         persona_id: str,
         scope: str,
         content: str,
+        *,
         domain_key: str = "",
         title: str = "",
         metadata: dict[str, Any] | None = None,
@@ -283,9 +286,9 @@ class MemoryStore(Protocol):
     async def supersede_entry(
         self, old_id: UUID, new_content: str
     ) -> MemoryEntry | None:
-        """Replace a fact's content, keeping the old row for provenance and
-        carrying its edges onto the replacement. None if `old_id` isn't an
-        active entry.
+        """Replace a fact's content, keeping the old row for provenance.
+
+        Edges carry onto the replacement. None if `old_id` isn't an active entry.
         """
         ...
 

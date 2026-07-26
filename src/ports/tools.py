@@ -125,7 +125,7 @@ class ToolSpec:
 def tool(
     name: str, description: str, parameters: dict[str, Any]
 ) -> Callable[[ToolHandler], ToolSpec]:
-    """Decorator — wraps an async handler as a ToolSpec.
+    """Wrap an async handler as a ToolSpec.
 
     @tool("memory_save", "Save a fact.", {"scope": str, "content": str})
     async def memory_save_tool(args: dict[str, Any], ctx: ToolContext):
@@ -205,9 +205,10 @@ class ToolProvider:
     # ---- agent contributions (in-process MCPs) ----
 
     def builtin_tools(self) -> list[ToolSpec]:
-        """Single in-process MCP server worth of tools (legacy single-server
-        providers like memory and schedule). Override `builtin_servers`
-        instead for multi-server contributors.
+        """Single in-process MCP server worth of tools.
+
+        For legacy single-server providers like memory and schedule. Override
+        `builtin_servers` instead for multi-server contributors.
         """
         return []
 
@@ -236,11 +237,12 @@ class ToolProvider:
         return None
 
     def context_version(self) -> int:
-        """Monotonic counter that bumps whenever this provider's
-        system-prompt contribution changes (e.g. memory core recompacted).
-        The orchestrator sums versions across providers and rebuilds agents
-        whose baked-in system prompt has gone stale — this is what keeps a
-        long-lived server-side session's injected memory fresh.
+        """Monotonic counter that bumps when this provider's prompt contribution changes.
+
+        (E.g. the memory core recompacted.) The orchestrator sums versions
+        across providers and rebuilds agents whose baked-in system prompt has
+        gone stale — this is what keeps a long-lived server-side session's
+        injected memory fresh.
 
         Overriding this is also the declaration that the section is MUTABLE.
         Callers that care where a section can safely sit in the prompt should
@@ -254,9 +256,9 @@ class ToolProvider:
 
     @classmethod
     def has_mutable_prompt_section(cls) -> bool:
-        """True when this provider's `system_prompt_section()` can change between turns — i.e.
+        """Report whether this provider's prompt section can change between turns.
 
-        it overrode `context_version`.
+        That is: when it overrode `context_version`.
 
         Derived rather than declared. This is a query about the provider, not
         a knob on it: a provider whose contribution is versioned is by
@@ -270,14 +272,15 @@ class ToolProvider:
     # ---- chat lifecycle hooks ----
 
     async def on_chat_startup(self) -> None:
-        """Optional async setup invoked after the platform's event loop is
-        ready (DB connections, cache priming, etc.). Default: no-op.
+        """Set up anything that needs the platform's event loop to exist first.
+
+        DB connections, cache priming, etc. Optional hook; default: no-op.
         """
 
     async def on_chat_shutdown(self) -> None:
-        """Optional async teardown invoked as the event loop exits.
+        """Tear down whatever `on_chat_startup` set up, as the event loop exits.
 
-        Default: no-op.
+        Optional hook; default: no-op.
         """
 
     # ---- friendly tool status ----
@@ -293,8 +296,9 @@ class ToolProvider:
         return self._tool_status(local_tool_name, args)
 
     def _tool_status(
-        self, local_tool_name: str, args: dict[str, Any]
+        self, _local_tool_name: str, _args: dict[str, Any]
     ) -> str | None:
+        # Underscored: the default reports nothing. Overrides name them for real.
         return None
 
 
