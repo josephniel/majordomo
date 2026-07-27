@@ -43,7 +43,7 @@ New messages:
 class MailWatcher:
     def __init__(
         self,
-        gmail_connector,  # connectors.gmail.GmailConnector
+        gmail_connector: Any,  # adapters.tools.GmailConnector — a peer adapter, so not imported
         state_file: Path,
         query: str = DEFAULT_QUERY,
     ) -> None:
@@ -112,7 +112,7 @@ class MailWatcher:
         self._persist()
 
     async def _check_profile(
-        self, name: str, client, now: int,
+        self, name: str, client: Any, now: int,
     ) -> tuple[list[str], dict[str, Any]]:
         state = self._state.get(name) or {}
         watermark = int(state.get("watermark") or 0)

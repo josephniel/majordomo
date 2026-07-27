@@ -22,6 +22,7 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -92,7 +93,7 @@ class _EvalPersona:
     model = None
     system_prompt = EVAL_SYSTEM_PROMPT
 
-    def allowed_tool_names(self, _connector):
+    def allowed_tool_names(self, _connector: Any) -> list[str] | None:
         return None  # all tools
 
 

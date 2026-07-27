@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Coroutine
 from datetime import UTC, datetime
 from typing import Any
 
@@ -116,7 +117,7 @@ class StatusReporter:
             return  # health changed outside the loop (e.g. CLI); skip
         self._spawn(self._post(payload))
 
-    def _spawn(self, coro) -> None:
+    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
         task = asyncio.get_running_loop().create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)

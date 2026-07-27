@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -59,9 +59,11 @@ class RetentionJob:
         self,
         persona_id: str,
         policy: RetentionPolicy,
-        history=None,        # agents.history.ConversationHistory | None
-        comms_log=None,      # comms.log.CommsLog | None
-        document_store=None, # storage.docs.DocumentStore | None
+        # Peer adapters, named in comments rather than imported: the layering
+        # contract keeps adapters.trigger independent of adapters.model/store.
+        history: Any = None,         # adapters.model.ConversationHistory | None
+        comms_log: Any = None,       # adapters.comms.CommsLog | None
+        document_store: Any = None,  # adapters.store.DocumentStore | None
     ) -> None:
         self._persona_id = persona_id
         self._policy = policy

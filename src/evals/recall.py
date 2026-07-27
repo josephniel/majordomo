@@ -39,6 +39,7 @@ import os
 import statistics
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -122,7 +123,7 @@ class RecallReport:
             return 0.0
         return len(self.false_injections) / self.negatives_run
 
-    def _mean(self, fn) -> float:
+    def _mean(self, fn: Callable[[CaseResult], float]) -> float:
         return statistics.mean([fn(r) for r in self.results]) if self.results else 0.0
 
     @property

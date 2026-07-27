@@ -54,6 +54,7 @@ from ports import (
 )
 
 if TYPE_CHECKING:  # avoid an import cycle at runtime; duck-typed otherwise
+    from collections.abc import Coroutine
     from uuid import UUID
 
     from adapters.model.history import ConversationHistory
@@ -274,7 +275,7 @@ Three principles:
         """
         return self._persona_id
 
-    def _spawn_bg(self, coro) -> None:
+    def _spawn_bg(self, coro: Coroutine[Any, Any, Any]) -> None:
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)

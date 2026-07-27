@@ -321,7 +321,7 @@ def candidate_from_extraction(
     )
 
 
-def _parse_valid_to(raw) -> datetime | None:
+def _parse_valid_to(raw: Any) -> datetime | None:
     """Extract an end date, if the model supplied a usable one.
 
     Optional by design. Most facts have no end and asking a small background

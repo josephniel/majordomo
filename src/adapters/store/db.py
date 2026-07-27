@@ -924,7 +924,7 @@ LIMIT ${len(params)}
                 persona_id, scope, domain_key, summary, source_count,
             )
 
-    async def fetch(self, sql: str, *args):
+    async def fetch(self, sql: str, *args: Any) -> list[asyncpg.Record]:
         """Execute a SELECT and return all rows. For ad-hoc inspection only."""
         async with self._acquire() as conn:
             return await conn.fetch(sql, *args)

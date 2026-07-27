@@ -44,7 +44,10 @@ from .base import (
 from .transcription import CascadingTranscriber, filename_for_mime
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Mapping
+    from types import TracebackType
+
+    from telegram import Bot, Chat, Message, User
 
     from adapters.comms import CommsLog
 
@@ -456,7 +459,7 @@ class TelegramPlatform(ChatPlatform):
 
     # ---- PTB lifecycle adapters ----
 
-    async def _post_init(self, _application) -> None:
+    async def _post_init(self, _application: object) -> None:
         # Cache our own identity so we can detect @-mentions and replies-to-self.
         try:
             me = await self._app.bot.get_me()
@@ -482,7 +485,7 @@ class TelegramPlatform(ChatPlatform):
         if self._on_startup is not None:
             await self._on_startup()
 
-    async def _post_shutdown(self, _application) -> None:
+    async def _post_shutdown(self, _application: object) -> None:
         if self._on_shutdown is not None:
             await self._on_shutdown()
 
@@ -581,7 +584,7 @@ class TelegramPlatform(ChatPlatform):
             message_id=msg.message_id,
         ))
 
-    async def _transcribe_voice(self, msg, bot) -> str | None:
+    async def _transcribe_voice(self, msg: Message, bot: Bot) -> str | None:
         """Download + transcribe a voice/audio message.
 
         Returns the text to treat as the user's turn, or None after replying with why not.
@@ -625,7 +628,7 @@ class TelegramPlatform(ChatPlatform):
             and chat_id == self._control_room_chat_id
         )
 
-    def _is_authorized_chat(self, chat, user) -> bool:
+    def _is_authorized_chat(self, chat: Chat, user: User) -> bool:
         # 1:1 DM with an allowed user.
         if chat.type == "private":
             return user.id in self._allowed_user_ids
@@ -638,7 +641,9 @@ class TelegramPlatform(ChatPlatform):
         return False
 
 
-    async def _extract_attachments(self, msg, bot) -> tuple[list[Attachment], list[str]]:
+    async def _extract_attachments(
+        self, msg: Message, bot: Bot
+    ) -> tuple[list[Attachment], list[str]]:
         """Pull supported attachments off a Telegram message.
 
         Returns (attachments, complaints). `complaints` are human-readable
@@ -697,7 +702,7 @@ class TelegramPlatform(ChatPlatform):
 # ---- typing heartbeat ----
 
 @asynccontextmanager
-async def _keep_typing_cm(bot, chat_id: int, interval: float = 4.0):
+async def _keep_typing_cm(bot: Bot, chat_id: int, interval: float = 4.0) -> AsyncIterator[None]:
     """Hold the Telegram 'typing' indicator until the block exits.
 
     Telegram clears chat_action after ~5s, so we re-send it every `interval`.
@@ -735,7 +740,7 @@ class _TelegramStatusTracker:
 
     def __init__(
         self,
-        bot,
+        bot: Bot,
         chat_id: int,  # internal: already converted by status_tracker()
         friendly: Callable[[str, dict[str, Any]], str],
         *,
@@ -757,7 +762,12 @@ class _TelegramStatusTracker:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         if self._heartbeat_task is not None:
             self._heartbeat_task.cancel()
             with suppress(asyncio.CancelledError):

@@ -42,8 +42,11 @@ from .proactive import ProactiveMixin
 from .recovery import RecoveryMixin
 
 if TYPE_CHECKING:
-    from adapters.model import Agent, ConversationHistory
-    from adapters.tools import ServiceRegistry
+    from collections.abc import Callable
+
+    from adapters.comms.status_report import StatusReporter
+    from adapters.model import Agent, Attachment, ConversationHistory, ToolUseCallback
+    from adapters.tools import ServiceRegistry, WriteApprovalGate
     from domain import ReflectionEngine
 
     from .sessions import SessionStore
@@ -69,7 +72,9 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
     def __init__(
         self,
         platform: ChatPlatform,
-        agent_factory,
+        # Keyword-called with (chat_id, session_id?) — see create_agent, whose
+        # other parameters carry defaults the orchestrator never sets.
+        agent_factory: Callable[..., Agent],
         session_store: SessionStore,
         config: ServiceRegistry,
         connectors_list: list[Connector],
@@ -77,10 +82,10 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         comms_log: CommsLog | None = None,
         conversation_history: ConversationHistory | None = None,
         reflection: ReflectionEngine | None = None,
-        status_reporter=None,  # comms.status_report.StatusReporter | None
+        status_reporter: StatusReporter | None = None,
         trigger_sources: list[TriggerSource] | None = None,
-        background_agent_factory=None,  # (ConversationRef) -> Agent
-        approval_gate=None,  # adapters.tools.WriteApprovalGate | None
+        background_agent_factory: Callable[[ConversationRef], Agent] | None = None,
+        approval_gate: WriteApprovalGate | None = None,
     ) -> None:
         self._platform = platform
         # agent_factory(chat_id, session_id) -> Agent
@@ -280,8 +285,8 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         agent: Agent,
         text: str,
         *,
-        on_tool_use=None,
-        attachments=None,
+        on_tool_use: ToolUseCallback | None = None,
+        attachments: list[Attachment] | None = None,
         typing: bool = True,
     ) -> str:
         """Run an agent turn — THE single place that happens.

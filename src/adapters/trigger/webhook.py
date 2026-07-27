@@ -116,7 +116,7 @@ class WebhookServer:
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, fmt, *args) -> None:  # route to our logger, not stderr
+            def log_message(self, fmt: str, *args: Any) -> None:  # route to our logger
                 log.debug("webhook http: %s", fmt % args)
 
             def _reply(self, code: int, body: dict[str, Any]) -> None:

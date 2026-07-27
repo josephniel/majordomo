@@ -70,6 +70,7 @@ from .settings import RuntimeSettings
 from .vendors import VENDORS, VENDORS_BY_NAME
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -316,7 +317,7 @@ class PersonaRuntime:
             cached = self._provider_cache[name] = spec.build(self)
         return cached
 
-    def _build_enabled(self, names) -> list[Any]:
+    def _build_enabled(self, names: Iterable[str]) -> list[Any]:
         return [
             self.provider(name) for name in names
             if self.persona.is_connector_enabled(name)
@@ -616,7 +617,7 @@ class PersonaRuntime:
                 }
             external_provider = _gated_external
 
-        def _oai(cls, **extra):
+        def _oai(cls: type[Any], **extra: Any) -> Any:
             return cls(
                 context_builder=context_builder,
                 history=hist,
@@ -900,7 +901,7 @@ class PersonaRuntime:
             prompt_loader=_load_prompt,
         )
 
-    def _conversation(self, value) -> ConversationRef:
+    def _conversation(self, value: ConversationRef | str | int) -> ConversationRef:
         """Config value (persona.yaml / platform.yaml) -> ConversationRef.
 
         Operators write bare platform ids (`heartbeat.chat_id: 12345`), and
@@ -1098,7 +1099,14 @@ class PersonaRuntime:
             hist = self.conversation_history
             persona_id = self.persona.id
 
-            async def _audit(chat_id, connector, tool, preview, decision, reason) -> None:
+            async def _audit(
+                chat_id: ConversationRef,
+                connector: str,
+                tool: str,
+                preview: str,
+                decision: str,
+                reason: str,
+            ) -> None:
                 await hist.log_approval(
                     persona_id=persona_id,
                     chat_id=chat_id,
@@ -1135,7 +1143,7 @@ class PersonaRuntime:
             approval_gate=self.approval_gate,
         )
 
-    def trigger_sources(self, schedule_conn) -> list[Any]:
+    def trigger_sources(self, schedule_conn: Any) -> list[Any]:
         """Every way this persona can be woken without the user typing.
 
         One list, assembled in one place. Previously these were four

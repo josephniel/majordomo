@@ -33,7 +33,7 @@ import contextlib
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 from zoneinfo import ZoneInfo
@@ -697,7 +697,7 @@ class CascadingAgent(Agent):
             f"{memory_block}\n]\n\n{text}"
         )
 
-    def _spawn_bg(self, coro) -> None:
+    def _spawn_bg(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Fire-and-forget with a held reference.
 
         A bare create_task can be garbage-collected mid-flight.

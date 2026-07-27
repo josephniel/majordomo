@@ -20,6 +20,10 @@ import sys
 from email.header import decode_header, make_header
 from typing import TYPE_CHECKING, Any, ClassVar
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from email.message import Message as EmailMessage
+
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
 if TYPE_CHECKING:
@@ -488,7 +492,7 @@ def _open(env: dict[str, Any], mailbox: str, readonly: bool = True):
     return m
 
 
-def _logout(m) -> None:
+def _logout(m: imaplib.IMAP4) -> None:
     with contextlib.suppress(Exception):
         m.logout()
 
@@ -520,7 +524,7 @@ def _imap_fetch_uids(env: dict[str, Any], mailbox: str, uids: list[Any], full: b
         _logout(m)
 
 
-def _fetch_one(m, uid, full: bool) -> dict[str, Any]:
+def _fetch_one(m: imaplib.IMAP4, uid: bytes | str, full: bool) -> dict[str, Any]:
     uid_s = uid.decode() if isinstance(uid, (bytes, bytearray)) else str(uid)
     spec = "(RFC822)" if full else "(BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)])"
     _typ, data = m.uid("FETCH", uid_s, spec)
@@ -537,14 +541,14 @@ def _fetch_one(m, uid, full: bool) -> dict[str, Any]:
     return d
 
 
-def _first_bytes(data) -> bytes:
+def _first_bytes(data: Sequence[Any] | None) -> bytes:
     for part in data or []:
         if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
             return bytes(part[1])
     return b""
 
 
-def _decode(v) -> str:
+def _decode(v: str | None) -> str:
     if not v:
         return ""
     try:
@@ -553,7 +557,7 @@ def _decode(v) -> str:
         return str(v)
 
 
-def _text_body(msg) -> str:
+def _text_body(msg: EmailMessage) -> str:
     if msg.is_multipart():
         for part in msg.walk():
             disp = str(part.get("Content-Disposition", "")).lower()

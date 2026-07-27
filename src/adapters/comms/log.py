@@ -212,7 +212,9 @@ class CommsLog:
             self._listener_conn = None
         self._listener_callback = None
 
-    async def _on_notify(self, _conn, _pid, _channel, payload) -> None:
+    async def _on_notify(
+        self, _conn: object, _pid: int, _channel: str, payload: str
+    ) -> None:
         try:
             row_id = int(payload)
         except (TypeError, ValueError):

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ports import Faculty, ToolContext, ToolResult, ToolSpec, tool
@@ -54,11 +54,11 @@ class DelegationDepth:
     def current(self) -> int:
         return self._var.get()
 
-    def enter(self):
+    def enter(self) -> Token[int]:
         """Descend one level. Returns a token to pass back to `exit`."""
         return self._var.set(self._var.get() + 1)
 
-    def exit(self, token) -> None:
+    def exit(self, token: Token[int]) -> None:
         self._var.reset(token)
 
 

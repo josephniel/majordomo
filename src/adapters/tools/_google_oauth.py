@@ -131,7 +131,7 @@ class GoogleOAuthClient:
                     b"</body></html>"
                 )
 
-            def log_message(self, *args, **kwargs) -> None:  # silence default access log
+            def log_message(self, *args: Any, **kwargs: Any) -> None:  # silence access log
                 pass
 
         # SO_REUSEADDR so consecutive auth flows don't get blocked by the

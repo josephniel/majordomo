@@ -84,7 +84,7 @@ def _format_expense(e: dict[str, Any], my_id: int | None) -> str:
 class SplitwiseWatcher:
     def __init__(
         self,
-        splitwise_connector,  # narrow surface: build_clients() -> {name: client}
+        splitwise_connector: Any,  # narrow surface: build_clients() -> {name: client}
         state_file: Path,
     ) -> None:
         self._splitwise = splitwise_connector
@@ -150,7 +150,7 @@ class SplitwiseWatcher:
         self._persist()
 
     async def _check_profile(
-        self, name: str, client, now: datetime,
+        self, name: str, client: Any, now: datetime,
     ) -> tuple[list[str], dict[str, Any]]:
         state = self._state.get(name) or {}
         seen: dict[str, str] = dict(state.get("seen") or {})

@@ -162,7 +162,7 @@ class ConversationHistory:
             await conn.execute(_SCHEMA)
             await self._migrate_chat_ids(conn)
 
-    async def _migrate_chat_ids(self, conn) -> None:
+    async def _migrate_chat_ids(self, conn: Any) -> None:
         """One-shot BIGINT -> TEXT conversion for every conversation column.
 
         Rewrites existing bare ids into namespaced ConversationRef keys.
@@ -679,11 +679,11 @@ class EphemeralConversationHistory:
             r["archived"] = True
         return len(rows)
 
-    async def compact(self, *_a, **_kw) -> None:
+    async def compact(self, *_a: Any, **_kw: Any) -> None:
         return None
 
-    async def log_turn(self, *_a, **_kw) -> None:
+    async def log_turn(self, *_a: Any, **_kw: Any) -> None:
         return None
 
-    async def turn_stats(self, *_a, **_kw) -> dict[str, Any]:
+    async def turn_stats(self, *_a: Any, **_kw: Any) -> dict[str, Any]:
         return {"today": {}, "last": None}
