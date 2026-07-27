@@ -68,7 +68,8 @@ class ExternalMCPManager:
         """
         if self._specs is not None:
             return dict(self._specs)
-        self._specs = {}
+        specs: dict[str, ToolSpec] = {}
+        self._specs = specs
         self._stack = AsyncExitStack()
         for entry in self._config.load_enabled():
             if self._skip_profiles(entry.name):
@@ -76,7 +77,7 @@ class ExternalMCPManager:
             if not getattr(entry, "command", None):
                 continue
             try:
-                await self._connect_server(entry)
+                await self._connect_server(entry, specs)
             except Exception:
                 log.exception(
                     "external MCP server %r failed to start; skipping", entry.name,
@@ -84,7 +85,7 @@ class ExternalMCPManager:
         log.info("external MCP manager exposing %d tools", len(self._specs))
         return dict(self._specs)
 
-    async def _connect_server(self, entry: Any) -> None:
+    async def _connect_server(self, entry: Any, specs: dict[str, ToolSpec]) -> None:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
 
@@ -109,7 +110,7 @@ class ExternalMCPManager:
             if not self._tool_filter(entry.name, tool.name):
                 continue
             spec = self._make_spec(session, entry.name, tool)
-            self._specs[f"{entry.name}__{tool.name}"] = spec
+            specs[f"{entry.name}__{tool.name}"] = spec
             count += 1
         log.info("external MCP %r connected: %d tools exposed", entry.name, count)
 

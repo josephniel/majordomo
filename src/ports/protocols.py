@@ -25,6 +25,14 @@ class EnabledService(Protocol):
     description: str
     allowed_tools: list[str]
 
+    # How to spawn it. The registry's whole job is flattening a connector and
+    # profile into a runnable stdio server, and the Claude adapter reads these
+    # to build mcp_servers — so leaving them off the contract only meant the
+    # contract disagreed with every implementation of it.
+    command: str
+    args: list[str]
+    env: dict[str, str]
+
 
 class ServiceCatalog(Protocol):
     """Reads which adapters/trigger/profiles are currently enabled.

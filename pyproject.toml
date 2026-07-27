@@ -216,6 +216,7 @@ warn_unused_configs = true
 module = [
     "ports.*",
     "adapters.chat.*",
+    "adapters.model.*",
     "adapters.comms.*",
     "adapters.store.*",
     "adapters.tools.*",

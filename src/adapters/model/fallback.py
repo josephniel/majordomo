@@ -188,7 +188,7 @@ class CascadingAgent(Agent):
         # (summary + kept tail) on their next turn, so per-turn input tokens
         # stay bounded instead of replaying the whole conversation forever.
         self._pending_rotation: set[str] = set()
-        self._bg_tasks: set[asyncio.Task] = set()
+        self._bg_tasks: set[asyncio.Task[None]] = set()
         # Tools invoked during the most recent successful turn — the
         # orchestrator's hallucination detector (Layer 3) reads these to spot
         # a model that CLAIMED a save/schedule but never called the tool.

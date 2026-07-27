@@ -244,7 +244,7 @@ class ConversationHistory:
         metadata: dict[str, Any] | None = None,
     ) -> int:
         async with self._acquire() as conn:
-            return await conn.fetchval(
+            row_id = await conn.fetchval(
                 """
                 INSERT INTO chat_history (persona_id, chat_id, role, content, metadata)
                 VALUES ($1, $2, $3, $4, $5::jsonb)
@@ -256,6 +256,7 @@ class ConversationHistory:
                 content,
                 metadata or {},
             )
+        return int(row_id)
 
     # ---- reads ----
 
@@ -453,7 +454,7 @@ class ConversationHistory:
         Folded rows are archived, not deleted — the raw record stays
         available to `search()`. Returns the count of rows folded in.
         """
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with self._acquire() as conn, conn.transaction():
             result = await conn.execute(
                 """
                     UPDATE chat_history
@@ -645,7 +646,7 @@ class EphemeralConversationHistory:
     """
 
     def __init__(self) -> None:
-        self._rows: list[dict] = []
+        self._rows: list[dict[str, Any]] = []
         self._next_id = 1
 
     async def connect(self) -> None:
@@ -663,18 +664,18 @@ class EphemeralConversationHistory:
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        row = {
-            "id": self._next_id,
+        row_id = self._next_id
+        self._next_id += 1
+        self._rows.append({
+            "id": row_id,
             "persona_id": persona_id,
             "chat_id": chat_key(chat_id),
             "role": role,
             "content": content,
             "metadata": metadata or {},
             "archived": False,
-        }
-        self._next_id += 1
-        self._rows.append(row)
-        return row["id"]
+        })
+        return row_id
 
     def _match(
         self, persona_id: str, chat_id: ConversationRef, include_archived: bool = False

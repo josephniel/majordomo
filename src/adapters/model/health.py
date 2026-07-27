@@ -16,6 +16,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class VendorHealthBoard:
     def __init__(
         self,
         store_file: Path | None = None,
-        on_change: callable | None = None,
+        on_change: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._store_file = store_file
         # Called with snapshot() after every state change — used to push

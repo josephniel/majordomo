@@ -22,6 +22,8 @@ from ports.llm import (
 from ports.messaging import Attachment
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from ports import Connector, ServiceCatalog
 
 __all__ = [
@@ -116,7 +118,7 @@ class ContextBuilder:
         parts.extend(volatile)
         return "\n\n".join(p for p in parts if p)
 
-    def _connectors_section(self, enabled: list[Any]) -> str:
+    def _connectors_section(self, enabled: Sequence[Any]) -> str:
         if not enabled:
             return "== Connectors ==\n\nNo connectors are enabled right now."
         lines = ["== Connectors ==", ""]

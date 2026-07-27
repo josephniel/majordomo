@@ -23,7 +23,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from ports import Connector, ConversationRef, ToolContext, ToolSpec, as_tool_result
 
@@ -38,6 +38,7 @@ from .base import (
 )
 
 if TYPE_CHECKING:
+
     from .history import ConversationHistory
 
 log = logging.getLogger(__name__)
@@ -254,6 +255,25 @@ class VendorEndpoint:
     supports_vision: bool | None = None
 
 
+@runtime_checkable
+class _CompletionsClient(Protocol):
+    """The sliver of an OpenAI-shaped client this adapter actually uses.
+
+    Deliberately NOT openai.AsyncOpenAI. These vendors are OpenAI-COMPATIBLE:
+    they speak the wire protocol, but the SDK's types pin `model` to a Literal
+    of OpenAI's own model names and `messages` to OpenAI's TypedDicts. Groq,
+    Gemini, DeepSeek and Ollama satisfy none of that and do not need to.
+
+    What this buys is the part that matters: the None-until-first-use is in the
+    type, so a call before start() is a type error rather than an AttributeError.
+    """
+
+    @property
+    def chat(self) -> Any: ...
+
+    async def close(self) -> None: ...
+
+
 class ChatCompletionsAgent(Agent):
     """Base implementation for any vendor speaking the OpenAI Chat Completions API.
 
@@ -324,8 +344,8 @@ class ChatCompletionsAgent(Agent):
         # API_KEY_ENV and passes the key in — settings own the environment.
         self._api_key = api_key
         self._base_url = base_url or self.DEFAULT_BASE_URL
-        self._client = None
-        self._current_task: asyncio.Task | None = None
+        self._client: _CompletionsClient | None = None
+        self._current_task: asyncio.Task[Any] | None = None
         self._external_tools_provider = external_tools_provider
         self._external_tools_loaded = False
         self._max_tokens = max_tokens or None  # 0/None → vendor default
@@ -403,6 +423,8 @@ class ChatCompletionsAgent(Agent):
         low = (text or "").lower()
 
         def _attach(base: str | None) -> bool:
+            if base is None:
+                return True  # unnamed tool → always keep
             routing = self._provider_routing.get(base)
             if routing is None:
                 return True  # unknown/external provider → always keep
@@ -442,8 +464,11 @@ class ChatCompletionsAgent(Agent):
                         "ok": {"type": "boolean"}}},
                 },
             }
+            client = self._client
+            if client is None:
+                return False, "client not started"
             try:
-                resp = await self._client.chat.completions.create(
+                resp = await client.chat.completions.create(
                     model=self._model,
                     messages=[{"role": "user", "content":
                                "Call the ping tool to confirm you can use tools."}],
@@ -539,13 +564,16 @@ class ChatCompletionsAgent(Agent):
         """
         if self._client is None:
             await self.start()
+        client = self._client
+        if client is None:  # start() sets it; a failed start has already logged
+            return False
         await self._merge_external_tools()
         messages = [
             {"role": "system", "content": self._composer.build()},
             {"role": "user", "content": "."},
         ]
         try:
-            await self._client.chat.completions.create(
+            await client.chat.completions.create(
                 model=self._model,
                 messages=messages,
                 tools=self._openai_tools,
@@ -783,29 +811,44 @@ class ChatCompletionsAgent(Agent):
         elif note:
             messages[idx]["content"] = base_text + note
 
+    def _completion_kwargs(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None
+    ) -> dict[str, Any]:
+        """One completion call's arguments, with the optional knobs left out.
+
+        Omitted rather than passed as None: a self-hosted endpoint will happily
+        reject max_tokens=null, and tool_choice means nothing without tools.
+        """
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            **self._extra_kwargs,
+        }
+        if self._max_tokens:
+            kwargs["max_tokens"] = self._max_tokens
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        return kwargs
+
     async def _run_tool_loop(
         self,
         messages: list[dict[str, Any]],
         on_tool_use: ToolUseCallback | None,
         tools: list[dict[str, Any]] | None = None,
     ) -> str:
+        client = self._client
+        if client is None:
+            raise RuntimeError(f"{type(self).__name__}.start() not called yet")
         if tools is None:
             tools = self._openai_tools
         total_in = 0
         total_out = 0
         for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
             try:
-                kwargs: dict[str, Any] = {
-                    "model": self._model,
-                    "messages": messages,
-                    **self._extra_kwargs,
-                }
-                if self._max_tokens:
-                    kwargs["max_tokens"] = self._max_tokens
-                if tools:
-                    kwargs["tools"] = tools
-                    kwargs["tool_choice"] = "auto"
-                resp = await self._client.chat.completions.create(**kwargs)
+                resp = await client.chat.completions.create(
+                    **self._completion_kwargs(messages, tools)
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -1109,12 +1152,12 @@ class ChatCompletionsSummarizer(Summarizer):
         self._base_url = base_url
         self._extra = dict(extra or {})
         self._timeout = timeout
-        self._client = None  # lazy AsyncOpenAI
+        self._client: _CompletionsClient | None = None  # created on first use
 
     @classmethod
     def for_backend(
         cls,
-        backend: type,
+        backend: type[ChatCompletionsAgent],
         model: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
@@ -1134,7 +1177,7 @@ class ChatCompletionsSummarizer(Summarizer):
             )
         return cls(
             model=model or backend.DEFAULT_MODEL,
-            api_key=api_key,
+            api_key=api_key or "",
             base_url=base_url or backend.DEFAULT_BASE_URL,
             extra={**backend.EXTRA_COMPLETION_KWARGS, **(extra or {})},
             timeout=backend.REQUEST_TIMEOUT,
