@@ -44,6 +44,9 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Pull code-sandbox image
         run: docker pull -q python:3.13-slim
+      - name: Lint
+        run: python -m ruff check .
+
       - name: Check architecture (import-linter contracts)
         run: python scripts/check_architecture.py
 
