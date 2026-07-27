@@ -688,14 +688,11 @@ class ChatCompletionsAgent(Agent):
         # kept alongside (it's inserted at compaction time), but it covers
         # the OLDEST part of the conversation — rendering it before the raw
         # turns keeps the narrative in causal order.
-        for row in kept:
-            if row["role"] == "summary":
-                messages.append(
-                    {
-                        "role": "system",
-                        "content": f"[Earlier conversation summary]\n{row['content']}",
-                    }
-                )
+        messages.extend(
+            {"role": "system", "content": f"[Earlier conversation summary]\n{row['content']}"}
+            for row in kept
+            if row["role"] == "summary"
+        )
         for row in kept:
             role = row["role"]
             meta = row.get("metadata") or {}

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 #   "read_write"    -> connector active, ALL tools (including mutating ones)
 #   list[str]       -> connector active, only these tool names exposed
 #   False / missing -> connector not loaded for this persona
-EnabledValue = Union[bool, str, list[str]]
+EnabledValue = bool | str | list[str]
 
 _READ_WRITE = ("read_write", "rw", "all")
 

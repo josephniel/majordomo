@@ -33,6 +33,7 @@ __all__ = [
     "BudgetConnector",
     "ClickUpConnector",
     "Connector",
+    "ConnectorEntry",
     "ContextInjector",
     "Faculty",
     "GatedToolProvider",

@@ -464,11 +464,9 @@ class PersonaRuntime:
 
     def _validate_required_env(self, *required_lists: list[str]) -> None:
         """Fail fast if any declared REQUIRED_ENV name is unset/empty."""
-        missing: list[str] = []
-        for required in required_lists:
-            for var in required:
-                if not os.environ.get(var):
-                    missing.append(var)
+        missing: list[str] = [
+            var for required in required_lists for var in required if not os.environ.get(var)
+        ]
         if missing:
             raise SystemExit(
                 f"persona {self.persona.id!r}: required env var(s) missing or empty in "
@@ -1154,9 +1152,9 @@ class PersonaRuntime:
             sources.append(ScheduleSource(schedule_conn))
         if self.heartbeat_source is not None:
             sources.append(self.heartbeat_source)
-        for watch in (self.mail_watch_source, self.splitwise_watch_source):
-            if watch is not None:
-                sources.append(watch)
+        sources.extend(
+            w for w in (self.mail_watch_source, self.splitwise_watch_source) if w is not None
+        )
         if self.webhook_server is not None:
             sources.append(WebhookSource(self.webhook_server))
         if self.retention_job is not None:

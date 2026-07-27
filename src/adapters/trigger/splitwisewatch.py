@@ -193,8 +193,7 @@ class SplitwiseWatcher:
                 my_id = await client.current_user_id()
             except Exception:
                 log.debug("splitwise_watch: could not resolve own user id", exc_info=True)
-            for e in fresh[:MAX_NEW_PER_PROFILE]:
-                lines.append(_format_expense(e, my_id))
+            lines.extend(_format_expense(e, my_id) for e in fresh[:MAX_NEW_PER_PROFILE])
             if len(fresh) > MAX_NEW_PER_PROFILE:
                 lines.append(f"- … and {len(fresh) - MAX_NEW_PER_PROFILE} more")
 

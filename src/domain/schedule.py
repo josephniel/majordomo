@@ -9,7 +9,6 @@ import contextlib
 import inspect
 import json
 import logging
-import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
@@ -37,7 +36,8 @@ def _is_async_callable(fn: Any) -> bool:
     """
     if inspect.iscoroutinefunction(fn):
         return True
-    call = getattr(fn, "__call__", None)
+    # Not a callability test: we need the __call__ object itself to inspect it.
+    call = getattr(fn, "__call__", None)  # noqa: B004
     return call is not None and inspect.iscoroutinefunction(call)
 
 
@@ -101,7 +101,9 @@ class ScheduleEngine:
 
         Always comparable with _parse_when output.
         """
-        return datetime.now(self._tz) if self._tz is not None else datetime.now()
+        # A naive host-local 'now' is the documented fallback when no schedule
+        # timezone is configured, and _parse_when produces naive values to match.
+        return datetime.now(self._tz) if self._tz is not None else datetime.now()  # noqa: DTZ005
 
     def _localize(self, dt: datetime) -> datetime:
         """Attach the schedule timezone to naive datetimes.
@@ -190,7 +192,7 @@ class ScheduleEngine:
         try:
             CronTrigger.from_crontab(cron)
         except Exception as e:
-            raise ValueError(f"invalid cron expression {cron!r}: {e}")
+            raise ValueError(f"invalid cron expression {cron!r}: {e}") from e
         entry = ScheduledTask(
             name=name,
             cron=cron,
@@ -307,7 +309,7 @@ class ScheduleEngine:
             raw.append(d)
         tmp = self.store_file.with_suffix(self.store_file.suffix + ".tmp")
         tmp.write_text(json.dumps(raw), encoding="utf-8")
-        os.replace(tmp, self.store_file)
+        tmp.replace(self.store_file)
 
     def _job_id(self, name: str) -> str:
         return f"sched:{name}"

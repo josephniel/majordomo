@@ -181,10 +181,10 @@ class RecallReport:
         elif self.misses:
             lines.append("")
             lines.append(f"  misses ({len(self.misses)}):")
-            for r in self.misses:
-                lines.append(
-                    f"    {r.case.query!r} — want {r.case.expect}, got {r.ranked_keys[:K_AUTO]}"
-                )
+            lines.extend(
+                f"    {r.case.query!r} — want {r.case.expect}, got {r.ranked_keys[:K_AUTO]}"
+                for r in self.misses
+            )
         lines.append("")
         return "\n".join(lines)
 

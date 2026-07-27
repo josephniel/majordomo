@@ -165,9 +165,7 @@ async def _sdk_one_shot(prompt: str, model: str) -> str:
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 actual_model = getattr(msg, "model", None) or actual_model
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        chunks.append(block.text)
+                chunks.extend(b.text for b in msg.content if isinstance(b, TextBlock))
             elif isinstance(msg, ResultMessage):
                 actual_model = getattr(msg, "model", None) or actual_model
                 usage = getattr(msg, "usage", None)
@@ -322,9 +320,11 @@ class AnthropicOptionsBuilder:
                 "args": i.args,
                 "env": i.env,
             }
-            for tool_name in i.allowed_tools:
-                if allowed_for_c is None or tool_name in allowed_for_c:
-                    allowed_tools.append(f"mcp__{i.name}__{tool_name}")
+            allowed_tools.extend(
+                f"mcp__{i.name}__{tool_name}"
+                for tool_name in i.allowed_tools
+                if allowed_for_c is None or tool_name in allowed_for_c
+            )
 
         # The CLI reads its output cap from the environment; env here is
         # additive to the inherited subprocess environment.

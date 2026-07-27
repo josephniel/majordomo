@@ -16,7 +16,6 @@ the host providing `_trigger_sources` and `_run_trigger()`.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 

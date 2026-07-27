@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -136,6 +135,6 @@ class VendorHealthBoard:
                 json.dumps({"cooldown_until": self._cooldown_until}),
                 encoding="utf-8",
             )
-            os.replace(tmp, self._store_file)
+            tmp.replace(self._store_file)
         except Exception:
             log.exception("could not persist vendor health store (continuing)")

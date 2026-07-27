@@ -6,8 +6,6 @@ by name — callers should not reach into _REGISTRY directly.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from .base import (
     ChatPlatform,
     CommandEvent,
@@ -43,6 +41,7 @@ __all__ = [
     "OnLifecycle",
     "OnMessage",
     "PlatformConfig",
+    "StatusTracker",
     "TelegramPlatform",
     "get_platform_cls",
     "registered_platform_names",

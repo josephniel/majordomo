@@ -43,6 +43,7 @@ from .history import ConversationHistory, EphemeralConversationHistory
 __all__ = [
     "Agent",
     "AnthropicAgent",
+    "AnthropicOptionsBuilder",
     "Attachment",
     "CascadingAgent",
     "ChatCompletionsSummarizer",
@@ -55,7 +56,10 @@ __all__ = [
     "GroqAgent",
     "OllamaAgent",
     "OpenAIAgent",
+    "SubscriptionAuthSummarizer",
     "Summarizer",
+    "ToolUseCallback",
     "UsageLimitError",
     "VendorHealthBoard",
+    "summarize_with_subscription_auth",
 ]

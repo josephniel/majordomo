@@ -251,8 +251,8 @@ def _parse_facts(raw: str) -> list[dict[str, Any]]:
         return []
     if not isinstance(arr, list):
         return []
-    out: list[dict[str, Any]] = []
-    for item in arr:
-        if isinstance(item, dict) and item.get("content") and item.get("scope"):
-            out.append(item)
-    return out
+    return [
+        item
+        for item in arr
+        if isinstance(item, dict) and item.get("content") and item.get("scope")
+    ]

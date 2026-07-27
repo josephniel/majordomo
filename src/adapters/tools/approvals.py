@@ -86,15 +86,13 @@ def format_approval_prompt(connector_name: str, tool_name: str, args: dict[str, 
     ))
     if fields:
         lines.append("")
-    shown = 0
-    for key, value in fields:
+    for shown, (key, value) in enumerate(fields):
         limit = _MAX_PRIORITY_VALUE_CHARS if key in _PRIORITY_FIELDS else _MAX_VALUE_CHARS
         line = f"• {key}: {_format_value(value, limit)}"
-        if sum(len(l) + 1 for l in lines) + len(line) > _MAX_PROMPT_CHARS:
+        if sum(len(shown_line) + 1 for shown_line in lines) + len(line) > _MAX_PROMPT_CHARS:
             lines.append(f"• … (+{len(fields) - shown} more fields NOT SHOWN — deny if unsure)")
             break
         lines.append(line)
-        shown += 1
     return "\n".join(lines)
 
 

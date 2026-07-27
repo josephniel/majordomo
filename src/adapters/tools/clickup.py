@@ -251,8 +251,8 @@ def _parse_id_csv(s: str | None) -> list[int]:
     if not s:
         return []
     out: list[int] = []
-    for part in s.split(","):
-        part = part.strip()
+    for raw_part in s.split(","):
+        part = raw_part.strip()
         if not part:
             continue
         with contextlib.suppress(ValueError):
