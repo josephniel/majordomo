@@ -119,82 +119,110 @@ class CommandsMixin:
         """Operator introspection, in one screen.
 
         Active vendor, chain health, memory, schedules, proactive subsystems,
-        today's usage.
+        today's usage. Each section answers for itself and returns nothing when
+        it has nothing to say, so a persona without a subsystem omits it rather
+        than reporting an absence.
         """
         lines: list[str] = [f"Persona: {self._persona_id}"]
+        lines += self._vendor_lines(chat_id)
+        lines += await self._connector_lines()
+        lines += self._schedule_lines(chat_id)
+        lines += await self._history_lines(chat_id)
+        lines.append(self._proactive_line())
+        await self._platform.send_text(chat_id, "\n".join(lines), reply_to=reply_to)
 
+    def _vendor_lines(self, chat_id: ConversationRef) -> list[str]:
+        """Report which vendor serves this chat, and the chain behind it."""
         agent = self._agents.get(chat_id)
-        if isinstance(agent, VendorIntrospectable):
-            model = agent.model_name or ""
-            lines.append(f"Vendor: {agent.active_vendor}" + (f" ({model})" if model else ""))
-            lines.append("Chain: " + " -> ".join(agent.vendor_names))
-            health = agent.health
-            if health:
-                cooling = ", ".join(f"{v} ({int(s)}s)" for v, s in health.items())
-                lines.append(f"Cooling down: {cooling}")
-            canary = agent.canary
-            if canary:
-                marks = ", ".join(
-                    f"{v} {'OK' if r.get('ok') else 'FAIL'}" for v, r in canary.items()
-                )
-                lines.append(f"Tool-calling: {marks}")
-        elif agent is None:
-            lines.append("Vendor: (no active conversation yet)")
+        if agent is None:
+            return ["Vendor: (no active conversation yet)"]
+        if not isinstance(agent, VendorIntrospectable):
+            return []
+        model = agent.model_name or ""
+        out = [
+            f"Vendor: {agent.active_vendor}" + (f" ({model})" if model else ""),
+            "Chain: " + " -> ".join(agent.vendor_names),
+        ]
+        if agent.health:
+            cooling = ", ".join(f"{v} ({int(s)}s)" for v, s in agent.health.items())
+            out.append(f"Cooling down: {cooling}")
+        if agent.canary:
+            marks = ", ".join(
+                f"{v} {'OK' if r.get('ok') else 'FAIL'}" for v, r in agent.canary.items()
+            )
+            out.append(f"Tool-calling: {marks}")
+        return out
 
-        # Connectors report their own state (status_line) — the command
-        # layer doesn't reach into anyone's internals.
+    async def _connector_lines(self) -> list[str]:
+        """Collect what each connector says about itself; reach into none of them."""
+        out: list[str] = []
         for c in self._connectors:
             try:
                 line = await c.status_line()
             except Exception:
-                line = None
+                log.debug("connector %r could not report status", c, exc_info=True)
+                continue
             if line:
-                lines.append(line)
+                out.append(line)
+        return out
 
-        # The schedule faculty is already in self._connectors; find it there
-        # rather than holding a second reference to it on the orchestrator.
-        # Its count is per-chat, which is why it can't ride status_line().
+    def _schedule_lines(self, chat_id: ConversationRef) -> list[str]:
+        """Count this chat's schedules.
+
+        The schedule faculty is already in self._connectors, so it is found
+        there rather than held as a second reference on the orchestrator. The
+        count is per-chat, which is why it cannot ride status_line().
+        """
         scheduler = next((c for c in self._connectors if hasattr(c, "schedules_for_chat")), None)
-        if scheduler is not None:
-            try:
-                scheds = scheduler.schedules_for_chat(chat_id)
-                on = sum(1 for s in scheds if s.enabled)
-                lines.append(f"Schedules: {len(scheds)} ({on} enabled)")
-            except Exception:
-                log.debug("scheduler could not report schedules for /status", exc_info=True)
+        if scheduler is None:
+            return []
+        try:
+            scheds = scheduler.schedules_for_chat(chat_id)
+        except Exception:
+            log.debug("scheduler could not report schedules for /status", exc_info=True)
+            return []
+        on = sum(1 for s in scheds if s.enabled)
+        return [f"Schedules: {len(scheds)} ({on} enabled)"]
 
-        if self._conversation_history is not None:
-            try:
-                chars = await self._conversation_history.total_chars(self._persona_id, chat_id)
-                lines.append(f"Active history: ~{chars // 4} tokens mirrored")
-                stats = await self._conversation_history.turn_stats(self._persona_id, chat_id)
-                today = stats.get("today") or {}
-                if today.get("turns"):
-                    lines.append(
-                        f"Today: {today['turns']} turns, "
-                        f"{today.get('input_tokens', 0)} in / "
-                        f"{today.get('output_tokens', 0)} out tokens, "
-                        f"{today.get('failovers', 0)} failovers"
-                    )
-                last = stats.get("last")
-                if last:
-                    lines.append(
-                        f"Last turn: {last['vendor']} {last['status']} in {last['latency_ms']}ms"
-                    )
-                approvals = await self._conversation_history.approval_stats_today(
-                    self._persona_id,
+    async def _history_lines(self, chat_id: ConversationRef) -> list[str]:
+        """Report mirrored history size, today's usage, and today's write approvals."""
+        history = self._conversation_history
+        if history is None:
+            return []
+        out: list[str] = []
+        try:
+            chars = await history.total_chars(self._persona_id, chat_id)
+            out.append(f"Active history: ~{chars // 4} tokens mirrored")
+            stats = await history.turn_stats(self._persona_id, chat_id)
+            today = stats.get("today") or {}
+            if today.get("turns"):
+                out.append(
+                    f"Today: {today['turns']} turns, "
+                    f"{today.get('input_tokens', 0)} in / "
+                    f"{today.get('output_tokens', 0)} out tokens, "
+                    f"{today.get('failovers', 0)} failovers"
                 )
-                if approvals:
-                    detail = ", ".join(f"{k}: {v}" for k, v in sorted(approvals.items()))
-                    lines.append(f"Write approvals today: {detail}")
-            except Exception:
-                log.debug("status stats unavailable", exc_info=True)
+            last = stats.get("last")
+            if last:
+                out.append(
+                    f"Last turn: {last['vendor']} {last['status']} in {last['latency_ms']}ms"
+                )
+            approvals = await history.approval_stats_today(self._persona_id)
+            if approvals:
+                detail = ", ".join(f"{k}: {v}" for k, v in sorted(approvals.items()))
+                out.append(f"Write approvals today: {detail}")
+        except Exception:
+            log.debug("status stats unavailable", exc_info=True)
+        return out
 
-        # Proactive subsystems — the operator must be able to see these are
-        # alive without grepping logs. Each source describes itself, so a new
-        # trigger type shows up here without this command being edited (it
-        # used to enumerate heartbeat/watches/webhooks from three hardcoded
-        # branches, and anything else was simply invisible).
+    def _proactive_line(self) -> str:
+        """Name what can wake this bot without the user typing.
+
+        Each source describes itself, so a new trigger type appears here
+        without this command being edited — it used to enumerate
+        heartbeat/watches/webhooks from three hardcoded branches, and anything
+        else was simply invisible.
+        """
         proactive: list[str] = []
         for source in self._trigger_sources:
             try:
@@ -203,6 +231,4 @@ class CommandsMixin:
                 desc = f"{source.name} (unavailable)"
             if desc:
                 proactive.append(desc)
-        lines.append("Proactive: " + (", ".join(proactive) if proactive else "(none)"))
-
-        await self._platform.send_text(chat_id, "\n".join(lines), reply_to=reply_to)
+        return "Proactive: " + (", ".join(proactive) if proactive else "(none)")
