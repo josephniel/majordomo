@@ -510,7 +510,9 @@ def _imap_search(
 ) -> list[Any]:
     m = _open(env, mailbox)
     try:
-        typ, data = m.uid("SEARCH", None, *criteria) if criteria else m.uid("SEARCH", None, "ALL")
+        # No charset argument: imaplib drops a None arg on the floor anyway
+        # (see IMAP4._command), so this is the same bytes on the wire.
+        typ, data = m.uid("SEARCH", *criteria) if criteria else m.uid("SEARCH", "ALL")
         if typ != "OK":
             raise RuntimeError(f"SEARCH failed: {data!r}")
         uids = (data[0] or b"").split()

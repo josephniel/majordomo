@@ -19,7 +19,7 @@ import httpx
 
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
-from ._failures import HTTP_NO_CONTENT, api_errors
+from ._failures import api_errors, json_object
 from ._google_oauth import (
     CredentialStore,
     GoogleOAuthClient,
@@ -61,9 +61,7 @@ class CalendarClient:
                 json=json_body,
             )
             r.raise_for_status()
-            if r.status_code == HTTP_NO_CONTENT or not r.text:
-                return {}
-            return r.json()
+            return json_object(r)
 
     async def list_calendars(self) -> dict[str, Any]:
         return await self._request("GET", "/users/me/calendarList")

@@ -21,7 +21,7 @@ import httpx
 
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
-from ._failures import HTTP_NO_CONTENT, api_errors
+from ._failures import api_errors, json_object
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -65,9 +65,7 @@ class SplitwiseClient:
                 data=form if form is not None else None,
             )
             r.raise_for_status()
-            if r.status_code == HTTP_NO_CONTENT or not r.text:
-                return {}
-            return r.json()
+            return json_object(r)
 
     async def get_current_user(self) -> dict[str, Any]:
         return await self._request("GET", "/get_current_user")
@@ -112,7 +110,7 @@ def _money(amount: Any, currency: str = "") -> str:
     return f"{currency} {n:,.2f}".strip()
 
 
-def _nonzero_balances(balances: list[dict]) -> str:
+def _nonzero_balances(balances: list[dict[str, Any]]) -> str:
     items = []
     for b in balances or []:
         try:
@@ -209,7 +207,7 @@ def _to_form(d: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _flatten_users_to_form(users_list: list[dict]) -> dict[str, str]:
+def _flatten_users_to_form(users_list: list[dict[str, Any]]) -> dict[str, str]:
     """Convert share dicts into Splitwise's indexed form-key pattern.
 
     [{user_id, paid_share, owed_share}, ...] becomes users__0__user_id,

@@ -218,6 +218,7 @@ module = [
     "adapters.chat.*",
     "adapters.comms.*",
     "adapters.store.*",
+    "adapters.tools.*",
     "adapters.trigger.*",
 ]
 strict = true

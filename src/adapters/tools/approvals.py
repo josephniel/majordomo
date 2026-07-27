@@ -35,6 +35,9 @@ from ports import ConversationRef, ToolContext, ToolResult, ToolSpec
 
 log = logging.getLogger(__name__)
 
+# Enough of the arguments to recognise the call in an audit row.
+_PREVIEW_CHARS = 500
+
 # confirmer(chat_id, prompt_text) -> approved?
 Confirmer = Callable[[ConversationRef, str], Awaitable[bool]]
 
@@ -159,11 +162,14 @@ class WriteApprovalGate:
         self, chat_id: ConversationRef | None, connector: str, tool: str,
         args: dict[str, Any], decision: str, reason: str,
     ) -> None:
-        if self._auditor is None:
+        if self._auditor is None or chat_id is None:
+            # No conversation, nothing to attribute the decision to. The gate
+            # already refuses in that case (decision="no_chat"), so there is no
+            # approval to record — `chat_id or 0` used to invent one.
             return
         try:
-            preview = json.dumps(args, ensure_ascii=False, default=str)[:500]
-            await self._auditor(chat_id or 0, connector, tool, preview, decision, reason)
+            preview = json.dumps(args, ensure_ascii=False, default=str)[:_PREVIEW_CHARS]
+            await self._auditor(chat_id, connector, tool, preview, decision, reason)
         except Exception:
             log.debug("approval audit failed (continuing)", exc_info=True)
 
