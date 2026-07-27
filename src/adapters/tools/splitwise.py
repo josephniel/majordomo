@@ -597,7 +597,10 @@ class SplitwiseConnector(Connector):
                 except json.JSONDecodeError as e:
                     return ToolResult.error(f"shares is not valid JSON: {e}")
                 if not isinstance(shares_list, list) or not shares_list:
-                    return ToolResult.error("shares must be a non-empty JSON array of {user_id, paid_share, owed_share}")
+                    return ToolResult.error(
+                        "shares must be a non-empty JSON array of "
+                        "{user_id, paid_share, owed_share}"
+                    )
 
                 # Validate that share sums match cost (within 1¢ tolerance).
                 try:

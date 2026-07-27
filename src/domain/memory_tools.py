@@ -106,17 +106,28 @@ def build_memory_tools(
                 "scope": {
                     "type": "string",
                     "enum": list(VALID_SCOPES),
-                    "description": "user = about the operator; agent = about you; domain = about an external system; reference = pointer to a URL/doc/resource",
+                    "description": (
+                        "user = about the operator; agent = about you; "
+                        "domain = about an external system; "
+                        "reference = pointer to a URL/doc/resource"
+                    ),
                 },
                 "content": {"type": "string", "description": "The fact, in one sentence."},
                 "domain_key": {
                     "type": "string",
-                    "description": "Required when scope='domain': gmail, google_calendar, clickup, splitwise, yahoo, schedule, …",
+                    "description": (
+                        "Required when scope='domain': gmail, google_calendar, clickup, "
+                        "splitwise, yahoo, schedule, …"
+                    ),
                 },
                 "title": {"type": "string", "description": "Short label (optional)."},
                 "volatile": {
                     "type": "boolean",
-                    "description": "true if the fact can drift (cites a file path, flag, commit, version, config value) — it'll be flagged for re-verification when it ages.",
+                    "description": (
+                        "true if the fact can drift (cites a file path, flag, commit, "
+                        "version, config value) — it'll be flagged for re-verification "
+                        "when it ages."
+                    ),
                 },
             },
             "required": ["scope", "content"],
@@ -263,7 +274,10 @@ def build_memory_tools(
                 },
                 "deep": {
                     "type": "boolean",
-                    "description": "true = use a more capable model for tricky reconciliation (default false = cheap fast model).",
+                    "description": (
+                        "true = use a more capable model for tricky reconciliation "
+                        "(default false = cheap fast model)."
+                    ),
                 },
             },
             "required": ["scope"],

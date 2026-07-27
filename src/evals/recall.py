@@ -175,7 +175,8 @@ class RecallReport:
                 lines.append(
                     f"  [{mark}] {r.case.query!r}\n"
                     f"         want {r.case.expect}  rank={rank}\n"
-                    f"         got  {list(zip(r.ranked_keys[:5], [round(s, 4) for s in r.scores[:5]], strict=False))}"
+                    f"         got  "
+                    f"{list(zip(r.ranked_keys[:5], [round(s, 4) for s in r.scores[:5]], strict=False))}"  # noqa: E501 — an f-string placeholder cannot be wrapped
                 )
         elif self.misses:
             lines.append("")

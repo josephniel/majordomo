@@ -128,7 +128,10 @@ Prefer doc_search over asking the user to re-send anything."""
         except Exception:
             log.exception("attachment ingestion failed")
             return None
-        return f"[saved to documents: {filename or 'attachment'!r} (doc #{doc_id}, {num_chunks} chunks)]"
+        return (
+            f"[saved to documents: {filename or 'attachment'!r} "
+            f"(doc #{doc_id}, {num_chunks} chunks)]"
+        )
 
     # ---- tools ----
 

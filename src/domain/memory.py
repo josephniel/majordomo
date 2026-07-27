@@ -627,7 +627,10 @@ Three principles:
             chunks.append(f"[{label}]\n{body}")
         text = "\n\n".join(chunks)
         if len(text) > MEMORY_CONTEXT_CHAR_LIMIT:
-            text = text[:MEMORY_CONTEXT_CHAR_LIMIT].rstrip() + "\n\n[…truncated; call memory_recall for specifics]"
+            text = (
+                text[:MEMORY_CONTEXT_CHAR_LIMIT].rstrip()
+                + "\n\n[…truncated; call memory_recall for specifics]"
+            )
         return text
 
     # ---- compaction ----

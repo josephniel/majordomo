@@ -265,7 +265,9 @@ class ClickUpConnector(Connector):
     TRIGGER_KEYWORDS = ("task", "todo", "to-do", "ticket", "clickup",
                         "project", "assign", "due", "backlog", "sprint",
                         "status")
-    WRITE_TOOLS = frozenset({"update_task", "set_assignees", "add_task_to_list", "remove_task_from_list"})
+    WRITE_TOOLS = frozenset(
+        {"update_task", "set_assignees", "add_task_to_list", "remove_task_from_list"}
+    )
 
     TOOL_NAMES: ClassVar[list[str]] = [
         # read

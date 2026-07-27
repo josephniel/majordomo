@@ -669,7 +669,8 @@ class PersonaRuntime:
         if not available:
             raise RuntimeError(
                 f"persona {self.persona.id!r}: no LLM backend configured. Set a vendor "
-                f"API key (GROQ_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) and/or "
+                "API key (GROQ_API_KEY / GEMINI_API_KEY / OPENAI_API_KEY / DEEPSEEK_API_KEY) "
+                "and/or "
                 f"CLAUDE_ENABLED=1 / OLLAMA_ENABLED=1, plus PRIMARY_LLM, in the instance .env."
             )
 

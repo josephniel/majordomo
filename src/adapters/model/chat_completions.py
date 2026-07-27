@@ -427,7 +427,10 @@ class ChatCompletionsAgent(Agent):
                 raise
             msg = resp.choices[0].message if resp.choices else None
             called = bool(getattr(msg, "tool_calls", None))
-            return (called, "called ping" if called else "no tool_call returned (hallucination risk)")
+            return (
+                called,
+                "called ping" if called else "no tool_call returned (hallucination risk)",
+            )
         except Exception as e:
             return (False, str(e)[:140])
 

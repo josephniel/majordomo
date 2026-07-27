@@ -245,7 +245,9 @@ class SkillsLibrary(Faculty):
                     },
                     "always": {
                         "type": "boolean",
-                        "description": "inline into the system prompt on every turn (use sparingly)",
+                        "description": (
+                            "inline into the system prompt on every turn (use sparingly)"
+                        ),
                     },
                 },
                 "required": ["name", "body"],

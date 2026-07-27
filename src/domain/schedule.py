@@ -470,7 +470,8 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
                     description=args.get("description", ""),
                 )
                 return ToolResult.ok(
-                    f"created schedule {entry.name!r} ({entry.cron}) — {entry.description or '(no description)'}"
+                    f"created schedule {entry.name!r} ({entry.cron}) — "
+                    f"{entry.description or '(no description)'}"
                 )
             except (ValueError, KeyError) as e:
                 return ToolResult.error(f"error: {e}")
@@ -498,7 +499,8 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
                     description=args.get("description", ""),
                 )
                 return ToolResult.ok(
-                    f"one-shot reminder {entry.name!r} set for {entry.run_at} — {entry.description or '(no description)'}"
+                    f"one-shot reminder {entry.name!r} set for {entry.run_at} — "
+                    f"{entry.description or '(no description)'}"
                 )
             except (ValueError, KeyError) as e:
                 return ToolResult.error(f"error: {e}")

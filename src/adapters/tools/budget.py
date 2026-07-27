@@ -115,7 +115,10 @@ def _format_http_error(e: httpx.HTTPStatusError) -> str:
 
 def _format_account(a: dict[str, Any]) -> str:
     archived = " (archived)" if a.get("archived_at") else ""
-    return f"- [{a.get('id', '?')}] {a.get('name', '(unnamed)')} — {a.get('type', '?')}, {a.get('currency', '?')}{archived}"
+    return (
+        f"- [{a.get('id', '?')}] {a.get('name', '(unnamed)')} — "
+        f"{a.get('type', '?')}, {a.get('currency', '?')}{archived}"
+    )
 
 
 def _format_tags(tags: list[dict], indent: str = "") -> list[str]:
@@ -127,7 +130,8 @@ def _format_tags(tags: list[dict], indent: str = "") -> list[str]:
         if t.get("allow_credit"):
             kinds.append("credit")
         lines.append(
-            f"{indent}- [{t.get('id', '?')}] {t.get('name', '(unnamed)')} ({'/'.join(kinds) or 'none'})"
+            f"{indent}- [{t.get('id', '?')}] {t.get('name', '(unnamed)')} "
+            f"({'/'.join(kinds) or 'none'})"
         )
         if t.get("children"):
             lines.extend(_format_tags(t["children"], indent + "  "))

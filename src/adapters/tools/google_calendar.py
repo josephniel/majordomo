@@ -319,7 +319,8 @@ class GoogleCalendarConnector(Connector):
         except KeyError:
             print(
                 f"error: google_calendar / {email} not found.\n"
-                f"  use `python cli.py add google_calendar {email} --oauth-keys <path>` to add it first.",
+                f"  use `python cli.py add google_calendar {email} --oauth-keys <path>` "
+                "to add it first.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -502,7 +503,8 @@ class GoogleCalendarConnector(Connector):
                     return ToolResult.error("error: start and end are required")
                 ev = await client.create_event(args.get("calendar_id") or "primary", body)
                 return ToolResult.ok(
-                    f"created event [{ev.get('id', '?')}] {ev.get('summary', '')} — {_event_when(ev)}"
+                    f"created event [{ev.get('id', '?')}] {ev.get('summary', '')} "
+                    f"— {_event_when(ev)}"
                 )
             except httpx.HTTPStatusError as e:
                 return ToolResult.error(_format_http_error(e))
@@ -536,7 +538,8 @@ class GoogleCalendarConnector(Connector):
                     args.get("calendar_id") or "primary", args["event_id"], body
                 )
                 return ToolResult.ok(
-                    f"updated event [{ev.get('id', '?')}] {ev.get('summary', '')} — {_event_when(ev)}"
+                    f"updated event [{ev.get('id', '?')}] {ev.get('summary', '')} "
+                    f"— {_event_when(ev)}"
                 )
             except httpx.HTTPStatusError as e:
                 return ToolResult.error(_format_http_error(e))

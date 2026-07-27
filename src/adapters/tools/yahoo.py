@@ -617,7 +617,10 @@ def _imap_attachments(env: dict[str, Any], mailbox: str, uid: str) -> list[Any]:
 
 
 def _format_msg(r: dict[str, Any], full: bool) -> str:
-    line = f"[{r['uid']}] {r.get('from', '')} | {r.get('subject') or '(no subject)'} — {r.get('date', '')}"
+    line = (
+        f"[{r['uid']}] {r.get('from', '')} | "
+        f"{r.get('subject') or '(no subject)'} — {r.get('date', '')}"
+    )
     if full and r.get("body"):
         line += "\n" + r["body"]
     return line

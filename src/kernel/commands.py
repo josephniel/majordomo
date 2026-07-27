@@ -111,7 +111,9 @@ class CommandsMixin:
         if await self._cancel_chat(chat_id):
             await self._platform.send_text(chat_id, "Cancelled.", reply_to=reply_to)
         else:
-            await self._platform.send_text(chat_id, "Nothing to cancel right now.", reply_to=reply_to)
+            await self._platform.send_text(
+                chat_id, "Nothing to cancel right now.", reply_to=reply_to
+            )
 
     async def _cmd_status(self, chat_id: ConversationRef, *, reply_to: int | None = None) -> None:
         """Operator introspection, in one screen.
@@ -170,7 +172,8 @@ class CommandsMixin:
                 if today.get("turns"):
                     lines.append(
                         f"Today: {today['turns']} turns, "
-                        f"{today.get('input_tokens', 0)} in / {today.get('output_tokens', 0)} out tokens, "
+                        f"{today.get('input_tokens', 0)} in / "
+                        f"{today.get('output_tokens', 0)} out tokens, "
                         f"{today.get('failovers', 0)} failovers"
                     )
                 last = stats.get("last")

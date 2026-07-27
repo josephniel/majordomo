@@ -336,7 +336,8 @@ class GmailConnector(Connector):
         except GoogleOAuthError as e:
             print(f"\nauth failed: {e}", file=sys.stderr)
             print(
-                f"the YAML block is in place but disabled. re-run: python cli.py auth gmail {email}",
+                "the YAML block is in place but disabled. "
+                f"re-run: python cli.py auth gmail {email}",
                 file=sys.stderr,
             )
             sys.exit(1)

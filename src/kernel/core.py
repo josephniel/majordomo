@@ -400,7 +400,9 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             await self._recover_missed_schedule(chat_id, reply, agent)
             await self._recover_missed_send(chat_id, reply, agent)
 
-    async def _ingest_attachments(self, chat_id: ConversationRef, text: str, msg: InboundMessage) -> str:
+    async def _ingest_attachments(
+        self, chat_id: ConversationRef, text: str, msg: InboundMessage
+    ) -> str:
         return await ingest_attachments(self._connectors, chat_id, text, msg)
 
     # ---- trigger fire ----
