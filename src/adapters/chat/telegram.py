@@ -328,7 +328,7 @@ class TelegramPlatform(ChatPlatform):
         ]])
         try:
             msg = await self._app.bot.send_message(
-                chat_id, text, reply_markup=keyboard
+                native_id, text, reply_markup=keyboard
             )
         except Exception:
             log.exception("could not deliver approval prompt; denying")
@@ -346,7 +346,7 @@ class TelegramPlatform(ChatPlatform):
             try:
                 await self._app.bot.edit_message_text(
                     f"{text}\n\n🚫 Cancelled",
-                    chat_id=chat_id, message_id=msg.message_id,
+                    chat_id=native_id, message_id=msg.message_id,
                 )
             except Exception:
                 log.debug("could not edit cancelled approval", exc_info=True)
@@ -357,7 +357,7 @@ class TelegramPlatform(ChatPlatform):
         try:
             await self._app.bot.edit_message_text(
                 f"{text}\n\n{outcome}",
-                chat_id=chat_id,
+                chat_id=native_id,
                 message_id=msg.message_id,
             )
         except Exception:
