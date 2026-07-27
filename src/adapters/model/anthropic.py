@@ -44,6 +44,7 @@ from .base import (
     Agent,
     Attachment,
     ContextBuilder,
+    PartialReplyCallback,
     PersonaLike,
     Summarizer,
     ToolOutcomeCallback,
@@ -503,10 +504,16 @@ class AnthropicAgent(Agent):
         attachments: list[Attachment] | None = None,
         current_row_id: int | None = None,
         on_tool_outcome: ToolOutcomeCallback | None = None,
+        on_partial_reply: PartialReplyCallback | None = None,
     ) -> str:
         # This vendor keeps history server-side, so there is no mirror row to
         # exclude. The parameter exists for parity with the Agent contract.
-        del current_row_id
+        #
+        # on_partial_reply is accepted and ignored: the SDK hands back whole
+        # AssistantMessage blocks rather than token deltas, and Claude serves
+        # a turn in ~3.9s p50 anyway. Silence here is the contract working —
+        # a caller must never read "no partials" as "no reply".
+        del current_row_id, on_partial_reply
         if self._client is None:
             await self.start()
         if self._client is None:  # start() always sets it; this keeps mypy honest

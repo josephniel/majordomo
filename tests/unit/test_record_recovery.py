@@ -308,7 +308,8 @@ class DenyingVendor:
     async def interrupt(self) -> None: ...
 
     async def send(self, text, on_tool_use=None, attachments=None,
-                   current_row_id=None, on_tool_outcome=None):
+                   current_row_id=None, on_tool_outcome=None,
+                   on_partial_reply=None):
         await on_tool_use("mcp__budget__record_transaction", {"amount": 500})
         await on_tool_outcome("mcp__budget__record_transaction", True)
         return "Done — I've recorded ₱500."

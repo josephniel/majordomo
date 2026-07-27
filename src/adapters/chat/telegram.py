@@ -40,6 +40,7 @@ from .base import (
     OnCommand,
     OnLifecycle,
     OnMessage,
+    ReplyStream,
     StatusTracker,
 )
 from .transcription import CascadingTranscriber, filename_for_mime
@@ -262,6 +263,20 @@ class TelegramPlatform(ChatPlatform):
         if self._app is None:
             raise RuntimeError("TelegramPlatform.status_tracker called before run()")
         return _TelegramStatusTracker(self._app.bot, _native(chat_id), friendly_status)
+
+    def reply_stream(
+        self,
+        chat_id: ConversationRef,
+        reply_to: int | None = None,
+    ) -> AbstractAsyncContextManager[ReplyStream] | None:
+        if self._app is None:
+            raise RuntimeError("TelegramPlatform.reply_stream called before run()")
+        return _TelegramReplyStream(
+            self._app.bot,
+            _native(chat_id),
+            reply_to,
+            self.max_message_length,
+        )
 
     async def send_file(
         self,
@@ -813,3 +828,135 @@ class _TelegramStatusTracker:
             await self._bot.delete_message(self._chat_id, self._message_id)
         except Exception:
             log.debug("status cleanup failed", exc_info=True)
+
+
+# ---- streamed reply ----
+
+# Telegram rate-limits edits to a message; roughly one per second per chat is
+# safe, and exceeding it earns a 429 that stalls the very thing this exists to
+# speed up. Slower than the eye wants, faster than the API allows.
+_STREAM_EDIT_INTERVAL = 1.2
+
+# Don't open a message until the reply is at least this long OR it stops
+# growing. Two reasons, and the second is the important one:
+#
+#   * A one-word reply arrives complete before the first edit would fire, so
+#     opening early just makes it flicker.
+#   * The agent may answer with the literal "<silent>" sentinel, which means
+#     "say nothing" — group and control-room turns rely on it. Painting the
+#     first few tokens would show the sentinel to the room before anyone knew
+#     it was one. Holding until the text is longer than the sentinel means a
+#     silent turn is never rendered at all.
+_STREAM_MIN_CHARS = 40
+
+_SILENT_SENTINEL = "<silent>"
+
+
+class _TelegramReplyStream:
+    """Writes a reply into one Telegram message as the model generates it.
+
+    Takes DISPLAY-READY text. Markdown stripping belongs to the caller (the
+    kernel already owns it, for chunking), and reaching up for it from here
+    would invert the layering — import-linter says so out loud.
+
+    Local decode runs at ~30 tok/s, so an average reply is ~15 seconds during
+    which the chat previously showed nothing but a typing indicator.
+
+    Everything here is best-effort. A failed edit is logged and dropped: the
+    caller still holds the complete text and `finish()` reports how much
+    actually landed, so a stream that never worked degrades to a normal send
+    rather than losing the reply.
+    """
+
+    def __init__(
+        self,
+        bot: Bot,
+        chat_id: int,  # internal: already converted by reply_stream()
+        reply_to: int | None,
+        max_length: int,
+    ) -> None:
+        self._bot = bot
+        self._chat_id = chat_id
+        self._reply_to = reply_to
+        self._max_length = max_length
+        self._message_id: int | None = None
+        self._shown = ""
+        self._last_edit_at = 0.0
+
+    async def __aenter__(self) -> _TelegramReplyStream:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        # A turn that raised or was cancelled leaves a half-written reply on
+        # screen. Withdraw it — a truncated answer the user might act on is
+        # worse than no answer, and the orchestrator reports the error itself.
+        if exc is not None:
+            await self._withdraw()
+
+    async def push(self, text: str) -> None:
+        body = text.strip()
+        if len(body) < _STREAM_MIN_CHARS and self._message_id is None:
+            return
+        now = time.monotonic()
+        if now - self._last_edit_at < _STREAM_EDIT_INTERVAL:
+            return
+        await self._paint(body)
+
+    async def finish(self, text: str) -> int:
+        body = text.strip()
+        if not body or body.lower() == _SILENT_SENTINEL:
+            await self._withdraw()
+            return 0
+        await self._paint(body, force=True)
+        head = body[: self._max_length]
+        if self._shown != head:
+            # The final paint didn't land, so what's on screen is a stale
+            # partial. Withdraw it and report nothing delivered: the caller
+            # then sends the whole reply normally, and the user sees one
+            # complete answer instead of a truncated one above a full one.
+            await self._withdraw()
+            return 0
+        return len(self._shown)
+
+    async def _paint(self, body: str, force: bool = False) -> None:
+        if not body:
+            return
+        # Only the first message's worth lives here; the caller sends the rest
+        # as follow-ups, which is also why finish() returns what landed.
+        head = body[: self._max_length]
+        if head == self._shown and not force:
+            return
+        self._last_edit_at = time.monotonic()
+        try:
+            if self._message_id is None:
+                kwargs: dict[str, Any] = {}
+                if self._reply_to is not None:
+                    kwargs["reply_to_message_id"] = self._reply_to
+                    kwargs["allow_sending_without_reply"] = True
+                msg = await self._bot.send_message(self._chat_id, head, **kwargs)
+                self._message_id = msg.message_id
+            elif head != self._shown:
+                await self._bot.edit_message_text(
+                    head, chat_id=self._chat_id, message_id=self._message_id
+                )
+            self._shown = head
+        except Exception:
+            # Includes the 429 this throttle exists to avoid. Whatever was
+            # already painted stays; _shown is left alone so the next attempt
+            # still sees a diff.
+            log.debug("reply stream paint failed", exc_info=True)
+
+    async def _withdraw(self) -> None:
+        if self._message_id is None:
+            return
+        try:
+            await self._bot.delete_message(self._chat_id, self._message_id)
+        except Exception:
+            log.debug("could not withdraw streamed reply", exc_info=True)
+        self._message_id = None
+        self._shown = ""

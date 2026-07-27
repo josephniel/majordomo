@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from ports.llm import (
     Agent,
+    PartialReplyCallback,
     PersonaLike,
     Summarizer,
     ToolOutcomeCallback,
@@ -31,6 +32,7 @@ __all__ = [
     "Agent",
     "Attachment",
     "ContextBuilder",
+    "PartialReplyCallback",
     "PersonaLike",
     "Summarizer",
     "ToolOutcomeCallback",

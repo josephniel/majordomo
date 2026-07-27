@@ -44,6 +44,7 @@ from ports import ConversationMirror, ConversationRef, SessionResettable, ToolCa
 from .base import (
     Agent,
     Attachment,
+    PartialReplyCallback,
     Summarizer,
     ToolOutcomeCallback,
     ToolUseCallback,
@@ -449,6 +450,7 @@ class CascadingAgent(Agent):
         attachments: list[Attachment] | None = None,
         current_row_id: int | None = None,
         on_tool_outcome: ToolOutcomeCallback | None = None,
+        on_partial_reply: PartialReplyCallback | None = None,
     ) -> str:
         # Recomputed below per delegated vendor; accepted for contract parity.
         # on_tool_outcome likewise: this agent feeds its OWN trace from the
@@ -488,6 +490,7 @@ class CascadingAgent(Agent):
                 reply = await agent.send(
                     outgoing, on_tool_use=_mirror_tool_use, attachments=attachments,
                     current_row_id=user_row_id, on_tool_outcome=_mirror_tool_outcome,
+                    on_partial_reply=on_partial_reply,
                 )
             except asyncio.CancelledError:
                 self._spawn_bg(self._log_turn_safe(

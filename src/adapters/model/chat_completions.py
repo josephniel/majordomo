@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+from openai.lib.streaming.chat import ChatCompletionStreamState
+
 from ports import (
     ConversationMirror,
     ConversationRef,
@@ -41,6 +43,7 @@ from .base import (
     Agent,
     Attachment,
     ContextBuilder,
+    PartialReplyCallback,
     PersonaLike,
     Summarizer,
     ToolOutcomeCallback,
@@ -322,6 +325,18 @@ class ChatCompletionsAgent(Agent):
     # relevant tools per turn (see _select_tools) instead of the full set.
     SUBSET_TOOLS: bool = False
 
+    # Emit the reply as it is generated, so the user reads it while the model
+    # is still writing. Off by default and enabled per vendor.
+    #
+    # This is worth real risk only where decode is slow: measured at 30.7
+    # tok/s locally, an average 447-token reply is ~15s of silence, while the
+    # hosted vendors finish whole turns in 1-8s. It also runs the tool loop
+    # through a different SDK entry point, and the two hairiest quirks in that
+    # loop -- Gemini's thought_signature echo and Groq's malformed-tool-call
+    # recovery -- belong to vendors that gain nothing here. So it stays off
+    # for them.
+    STREAM_REPLIES: bool = False
+
     def __init__(
         self,
         context_builder: ContextBuilder,
@@ -599,6 +614,7 @@ class ChatCompletionsAgent(Agent):
         attachments: list[Attachment] | None = None,
         current_row_id: int | None = None,
         on_tool_outcome: ToolOutcomeCallback | None = None,
+        on_partial_reply: PartialReplyCallback | None = None,
     ) -> str:
         """Send `text` as the current user message, mirrored history behind it.
 
@@ -641,7 +657,7 @@ class ChatCompletionsAgent(Agent):
         self.last_turn_usage = {}
         try:
             return await self._run_tool_loop(
-                messages, on_tool_use, tools, on_tool_outcome,
+                messages, on_tool_use, tools, on_tool_outcome, on_partial_reply,
             )
         finally:
             self._current_task = None
@@ -841,12 +857,68 @@ class ChatCompletionsAgent(Agent):
             kwargs["tool_choice"] = "auto"
         return kwargs
 
+    async def _complete(
+        self,
+        client: _CompletionsClient,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        on_partial_reply: PartialReplyCallback | None,
+    ) -> Any:
+        """One completion, streamed when this vendor and this caller both want it.
+
+        Returns the same ChatCompletion shape either way, which matters more
+        than it looks: the caller does `msg.model_dump(exclude_none=True)` to
+        echo back vendor extras (Gemini's thought_signature) and reads
+        `msg.tool_calls` to drive the loop. A streaming path that hand-rolled
+        a message would drop fields the next request needs and have to
+        reassemble index-keyed tool-call deltas by hand.
+
+        So the accumulation is delegated to the SDK's own
+        ChatCompletionStreamState, but the request is a plain `stream=True`
+        create() rather than `client.chat.completions.stream()`. Both of that
+        helper's conveniences are traps here, and both were caught only by
+        running it against a live Ollama:
+
+          * it validates tools up front and rejects any without
+            `strict: true`, which is all of ours — it would have raised
+            ValueError on every turn that carries a tool;
+          * its get_final_completion() raises LengthFinishReasonError when the
+            reply hit max_tokens, turning "long answer got truncated" (which
+            the non-streaming path returns fine) into a failed turn that fails
+            over to the next vendor.
+
+        current_completion_snapshot has neither behaviour: a truncated reply
+        comes back as content with finish_reason="length", exactly as before.
+        """
+        kwargs = self._completion_kwargs(messages, tools)
+        if not (self.STREAM_REPLIES and on_partial_reply is not None):
+            return await client.chat.completions.create(**kwargs)
+
+        # No input_tools/response_format: both default to Omit, and passing
+        # our tools would re-enable the strict-schema validation that makes
+        # the .stream() helper unusable here.
+        state = ChatCompletionStreamState()
+        stream = await client.chat.completions.create(**kwargs, stream=True)
+        text = ""
+        async for chunk in stream:
+            state.handle_chunk(chunk)
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content
+            if delta:
+                text += delta
+                # PartialReplyCallback takes the full text so far, never a
+                # delta — see its docstring on why.
+                await on_partial_reply(text)
+        return state.current_completion_snapshot
+
     async def _run_tool_loop(
         self,
         messages: list[dict[str, Any]],
         on_tool_use: ToolUseCallback | None,
         tools: list[dict[str, Any]] | None = None,
         on_tool_outcome: ToolOutcomeCallback | None = None,
+        on_partial_reply: PartialReplyCallback | None = None,
     ) -> str:
         client = self._client
         if client is None:
@@ -857,8 +929,8 @@ class ChatCompletionsAgent(Agent):
         total_out = 0
         for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
             try:
-                resp = await client.chat.completions.create(
-                    **self._completion_kwargs(messages, tools)
+                resp = await self._complete(
+                    client, messages, tools, on_partial_reply,
                 )
             except asyncio.CancelledError:
                 raise
@@ -1126,6 +1198,11 @@ class OllamaAgent(ChatCompletionsAgent):
     # STABLE full tool list is prefilled once and then reused for free. The
     # extra schema costs one cold turn; the varying list costs every turn.
     SUBSET_TOOLS = False
+    # ON here and nowhere else. Decode measures 30.7 tok/s on gemma4:12b-mlx,
+    # so an average 447-token reply is ~15 seconds during which the old code
+    # showed nothing at all. The hosted vendors finish entire turns in 1-8s
+    # and carry the tool-loop quirks streaming would have to tiptoe around.
+    STREAM_REPLIES = True
     # Thinking is left at the MODEL'S DEFAULT and is deliberately NOT disabled
     # here, because the right answer differs per model and getting it wrong
     # breaks the bot in opposite directions:
