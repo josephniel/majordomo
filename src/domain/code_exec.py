@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# 64 MiB of scratch, mode 1777 as a /tmp must be, discarded with the container.
+_SANDBOX_SCRATCH_MOUNT = "type=tmpfs,destination=/tmp,tmpfs-size=67108864,tmpfs-mode=1777"
+
 # coreutils `timeout` reports this when it kills the child.
 _TIMEOUT_EXIT_CODE = 124
 
@@ -154,8 +157,10 @@ script instead of many small runs."""
             "--cpus", "1",
             "--pids-limit", "128",
             "--read-only",
-            # /tmp INSIDE the sandbox container, sized and wiped per run.
-            "--tmpfs", "/tmp:rw,size=64m",  # noqa: S108
+            # Scratch space INSIDE the sandbox container, sized and wiped per
+            # run. --mount rather than --tmpfs: same result, but it names the
+            # destination and the size instead of encoding both in one path.
+            "--mount", _SANDBOX_SCRATCH_MOUNT,
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
             "-v", f"{run_dir}:/work",

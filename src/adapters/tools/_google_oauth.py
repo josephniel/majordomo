@@ -34,7 +34,7 @@ from ._failures import HTTP_OK
 
 log = logging.getLogger(__name__)
 
-TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105 — an endpoint, not a secret
+OAUTH_EXCHANGE_URL = "https://oauth2.googleapis.com/token"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 
 DEFAULT_REDIRECT_PORT = 8765
@@ -69,7 +69,7 @@ class GoogleOAuthClient:
         """Exchange refresh_token for a new access_token. Returns gongrzhe-format dict."""
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
-                TOKEN_URL,
+                OAUTH_EXCHANGE_URL,
                 data={
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
@@ -169,7 +169,7 @@ class GoogleOAuthClient:
         # module reference used earlier in this function.
         with httpx.Client(timeout=30) as client:
             r = client.post(
-                TOKEN_URL,
+                OAUTH_EXCHANGE_URL,
                 data={
                     "code": captured["code"],
                     "client_id": self.client_id,

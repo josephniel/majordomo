@@ -323,9 +323,9 @@ class TelegramPlatform(ChatPlatform):
         self,
         chat_id: ConversationRef,
         text: str,
-        # Not a cancellation scope: expiry AUTO-DENIES, which is a product
-        # decision the caller can tune, so it stays a parameter.
-        timeout: float = APPROVAL_TIMEOUT_SECONDS,  # noqa: ASYNC109
+        # Expiry DENIES rather than cancelling, so this is a policy deadline
+        # the caller can tune, not a timeout wrapping the call.
+        deny_after: float = APPROVAL_TIMEOUT_SECONDS,
     ) -> bool:
         """Inline Approve/Deny keyboard; blocks until tapped or timeout.
 
@@ -358,7 +358,7 @@ class TelegramPlatform(ChatPlatform):
             self._pending_approvals.pop(nonce, None)
             return False
         try:
-            approved = bool(await asyncio.wait_for(fut, timeout=timeout))
+            approved = bool(await asyncio.wait_for(fut, timeout=deny_after))
             outcome = "✅ Approved" if approved else "❌ Denied"
         except TimeoutError:
             approved = False

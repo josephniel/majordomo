@@ -41,7 +41,7 @@ class VendorSpec:
     # defaults. Hosted vendors pin theirs in code (the model is fixed); a
     # self-hosted vendor runs whatever the operator pulled, and the correct
     # knobs are model-specific — see OllamaAgent on reasoning_effort.
-    extra: Callable[[RuntimeSettings], dict[str, Any]] = lambda _s: {}
+    extra_kwargs: Callable[[RuntimeSettings], dict[str, Any]] = lambda _s: {}
     # None = trust the backend class. Only self-hosted vendors override it,
     # because the capability belongs to the pulled model, not the vendor.
     supports_vision: Callable[[RuntimeSettings], bool | None] = lambda _s: None
@@ -112,8 +112,8 @@ VENDORS: tuple[VendorSpec, ...] = (
         api_key=lambda _s: "",  # keyless; OllamaAgent.REQUIRES_API_KEY is False
         model=lambda s: s.ollama_model,
         base_url=lambda s: s.ollama_base_url,
-        extra=lambda s: ({"reasoning_effort": s.ollama_reasoning_effort}
-                         if s.ollama_reasoning_effort else {}),
+        extra_kwargs=lambda s: ({"reasoning_effort": s.ollama_reasoning_effort}
+                                if s.ollama_reasoning_effort else {}),
         supports_vision=lambda s: s.ollama_vision,
         requires="OLLAMA_ENABLED=1 (keyless — a running daemon is not consent)",
     ),

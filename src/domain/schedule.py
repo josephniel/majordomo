@@ -11,7 +11,7 @@ import json
 import logging
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
 from zoneinfo import ZoneInfo
 
@@ -36,9 +36,9 @@ def _is_async_callable(fn: Any) -> bool:
     """
     if inspect.iscoroutinefunction(fn):
         return True
-    # Not a callability test: we need the __call__ object itself to inspect it.
-    call = getattr(fn, "__call__", None)  # noqa: B004
-    return call is not None and inspect.iscoroutinefunction(call)
+    # A callable object whose __call__ is itself async: `callable` answers
+    # whether __call__ exists, and inspecting it answers whether it awaits.
+    return callable(fn) and inspect.iscoroutinefunction(fn.__call__)
 
 
 @dataclass
@@ -101,9 +101,11 @@ class ScheduleEngine:
 
         Always comparable with _parse_when output.
         """
-        # A naive host-local 'now' is the documented fallback when no schedule
-        # timezone is configured, and _parse_when produces naive values to match.
-        return datetime.now(self._tz) if self._tz is not None else datetime.now()  # noqa: DTZ005
+        if self._tz is not None:
+            return datetime.now(self._tz)
+        # No schedule timezone configured: host-local, and NAIVE, because
+        # _parse_when produces naive values and the two get compared.
+        return datetime.now(UTC).astimezone().replace(tzinfo=None)
 
     def _localize(self, dt: datetime) -> datetime:
         """Attach the schedule timezone to naive datetimes.

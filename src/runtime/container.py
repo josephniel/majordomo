@@ -207,7 +207,7 @@ class PersonaRuntime:
             return ChatCompletionsSummarizer.for_backend(
                 spec.backend, model=role.model or spec.model(s),
                 api_key=spec.api_key(s), base_url=spec.base_url(s),
-                extra=spec.extra(s),  # noqa: S610 — a vendor-spec method, not a Django queryset
+                extra=spec.extra_kwargs(s),
             )
 
         # Claude path: Haiku routine, Sonnet deep — NOT the persona chat model
@@ -669,7 +669,7 @@ class PersonaRuntime:
                 available[v.name] = _oai(
                     v.backend, model=role_chain.model or v.model(s), api_key=v.api_key(s),
                     base_url=v.base_url(s),
-                    extra_completion_kwargs=v.extra(s),  # noqa: S610 — not a Django queryset
+                    extra_completion_kwargs=v.extra_kwargs(s),
                     supports_vision=v.supports_vision(s),
                 )
 

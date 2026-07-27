@@ -279,13 +279,13 @@ class TestTelegramApproval:
 
     async def test_timeout_denies(self):
         p = self._platform()
-        assert await p.request_approval(42, "🔐 Approve?", timeout=0.05) is False
+        assert await p.request_approval(42, "🔐 Approve?", deny_after=0.05) is False
         assert any("Timed out" in e for e in p._app.bot.edits)
         assert p._pending_approvals == {}
 
     async def test_unauthorized_user_cannot_approve(self):
         p = self._platform()
-        task = asyncio.create_task(p.request_approval(42, "🔐 Approve?", timeout=0.3))
+        task = asyncio.create_task(p.request_approval(42, "🔐 Approve?", deny_after=0.3))
         query = await self._answer(p, "y", user_id=666)
         assert "not allowed" in query.answers[0][0][0]
         assert await task is False  # nobody legit answered -> timeout deny

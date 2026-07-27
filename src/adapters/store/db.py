@@ -929,6 +929,20 @@ LIMIT ${len(params)}
         async with self._acquire() as conn:
             return await conn.fetch(sql, *args)
 
+    async def purge_persona(self, persona_id: str) -> int:
+        """Delete every entry belonging to one persona. Returns the count.
+
+        Destructive and deliberately so: the recall eval seeds a scratch
+        persona and has to leave the database as it found it. Nothing in the
+        running bot calls this — retirement goes through forget/supersede,
+        which keep the row.
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                "DELETE FROM memory_entries WHERE persona_id = $1 RETURNING id", persona_id
+            )
+        return len(rows)
+
     # ---- internals ----
 
     def _acquire(self) -> asyncpg.pool.PoolAcquireContext:

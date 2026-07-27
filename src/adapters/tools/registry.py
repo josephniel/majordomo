@@ -104,17 +104,19 @@ class ServiceRegistry:
     def expand_env(self, raw: dict[str, Any]) -> dict[str, str]:
         out: dict[str, str] = {}
         for k, v in raw.items():
-            # os.path, not Path: these are env VALUES, and most of them are not
-            # paths. Path() would silently normalize the ones that aren't.
-            s = os.path.expandvars(os.path.expanduser(str(v)))  # noqa: PTH111
+            # These are env VALUES; most are not paths, and Path() would
+            # normalize the ones that aren't. Only a leading ~ means a home dir.
+            s = os.path.expandvars(str(v))
+            if s.startswith("~"):
+                s = str(Path(s).expanduser())
             if s.startswith(("./", "../")):
                 s = str((self.project_root / s).resolve())
             out[k] = s
         return out
 
     def _resolve_path(self, path_str: str) -> Path:
-        # expandvars has no Path equivalent, so the pair stays on os.path.
-        s = os.path.expandvars(os.path.expanduser(path_str))  # noqa: PTH111
+        # expandvars has no Path equivalent; the home-dir half does.
+        s = str(Path(os.path.expandvars(path_str)).expanduser())
         if s.startswith(("./", "../")):
             s = str((self.project_root / s).resolve())
         return Path(s)
