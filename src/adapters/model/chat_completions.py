@@ -1109,6 +1109,9 @@ class ChatCompletionsSummarizer(Summarizer):
         )
 
     async def summarize(self, prompt: str, *, deep: bool = False) -> str:
+        # One model per vendor here; `deep` only means something to the Claude
+        # summarizer, which swaps Haiku for Sonnet. Accepted for parity.
+        del deep
         if self._client is None:
             from openai import AsyncOpenAI
 

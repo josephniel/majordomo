@@ -129,7 +129,7 @@ def audit(
     _check_shadowed(report, shell, dotenv)
     _check_chain(report, resolver)
     _check_shared_database(report, project_root, persona_id, resolver, shell)
-    _check_duplication(report, project_root, shell)
+    _check_duplication(report, project_root)
     return report
 
 
@@ -326,8 +326,7 @@ def _check_shared_database(report: Report, root: Path, persona_id: str | None,
     report.add(OK, "database", f"embedding model agrees across personas ({mine})")
 
 
-def _check_duplication(report: Report, root: Path,
-                       shell: Mapping[str, str]) -> None:
+def _check_duplication(report: Report, root: Path) -> None:
     """Find settings written identically in every persona's .env.
 
     Not broken — but every copy is a chance to drift, and the drift is

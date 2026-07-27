@@ -203,8 +203,10 @@ class CascadingAgent(Agent):
         text: str,
         on_tool_use: ToolUseCallback | None = None,
         attachments: list[Attachment] | None = None,
-        current_row_id: int | None = None,  # computed here; param for contract parity
+        current_row_id: int | None = None,
     ) -> str:
+        # Recomputed below per delegated vendor; accepted for contract parity.
+        del current_row_id
         started_at = time.monotonic()
 
         # Peek at recent history BEFORE mirroring this turn: if our last

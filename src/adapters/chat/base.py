@@ -176,7 +176,10 @@ class ChatPlatform(ABC):
         Default: unsupported (False) — platforms with a file affordance
         override. Callers own access control; the platform just ships bytes.
         """
-        log.warning("platform %s cannot send files", self.name)
+        log.warning(
+            "platform %s cannot send files: dropping %s to %s (caption=%r)",
+            self.name, path, chat_id, caption,
+        )
         return False
 
     async def request_approval(self, chat_id: ConversationRef, text: str) -> bool:
@@ -190,7 +193,8 @@ class ChatPlatform(ABC):
         in persona.yaml to opt that persona out of gating entirely.
         """
         log.warning(
-            "platform %s has no approval UI; denying write action", self.name
+            "platform %s has no approval UI; denying for %s: %.80s",
+            self.name, chat_id, text,
         )
         return False
 

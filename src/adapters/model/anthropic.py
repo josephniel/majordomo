@@ -454,8 +454,11 @@ class AnthropicAgent(Agent):
         text: str,
         on_tool_use: ToolUseCallback | None = None,
         attachments: list[Attachment] | None = None,
-        current_row_id: int | None = None,  # server-side history: unused
+        current_row_id: int | None = None,
     ) -> str:
+        # This vendor keeps history server-side, so there is no mirror row to
+        # exclude. The parameter exists for parity with the Agent contract.
+        del current_row_id
         if self._client is None:
             await self.start()
         if self._client is None:  # start() always sets it; this keeps mypy honest

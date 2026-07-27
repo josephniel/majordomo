@@ -39,14 +39,16 @@ import os
 import statistics
 import time
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from adapters.store.db import MemoryDatabase, redact_dsn
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 DEFAULT_CASES = Path(__file__).resolve().parents[2] / "evals" / "recall_cases.yaml"
 

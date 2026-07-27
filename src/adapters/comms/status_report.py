@@ -27,14 +27,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Coroutine
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 
 def _now_iso() -> str:
     return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
 
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
 
 log = logging.getLogger(__name__)
 
