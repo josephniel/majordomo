@@ -31,7 +31,7 @@ class TestBackgroundIsNoLongerClaudeOnly:
     def test_background_override_applies_on_any_vendor(self):
         """The actual fix: a background model is honoured whatever leads."""
         r = roles(llm_chain=("gemini", "claude"),
-                  background_llm_chain="ollama", background_model="gemma4:12b")
+                  background_llm_chain=("ollama",), background_model="gemma4:12b")
         bg = r[ModelRole.BACKGROUND]
         assert bg.chain == ("ollama",)
         assert bg.model == "gemma4:12b"
@@ -71,10 +71,61 @@ class TestRoleShape:
     def test_ideate_defaults_to_chat_not_background(self):
         """Ideation invents candidate facts from existing memory — it wants
         the strongest model available, not the cheapest."""
-        r = roles(llm_chain=("claude", "gemini"), background_llm_chain="ollama")
+        r = roles(llm_chain=("claude", "gemini"), background_llm_chain=("ollama",))
         assert r[ModelRole.IDEATE].chain == ("claude", "gemini")
         assert r[ModelRole.BACKGROUND].chain == ("ollama",)
 
     def test_primary_llm_alone_still_works(self):
         """Older .env files set PRIMARY_LLM and no chain."""
         assert roles(primary_llm="groq")[ModelRole.CHAT].chain == ("groq",)
+
+
+class TestRoleChainsAcceptTheSameFormsAsLlmChain:
+    """`llm.chain` takes a YAML list; the role chains silently did not.
+
+    They coerced with as_lower and were comma-split downstream, so a list —
+    the form llm.chain documents and every operator copies — stringified to
+    "['gemini', 'groq']" and split into three garbage vendor names. Unknown
+    vendors are dropped, so the role quietly fell back to the chat chain: the
+    operator sets it, sees no complaint, and believes it took effect.
+
+    These assert on the COERCER ATTACHED TO THE SETTING, not on a coercer
+    called directly — the bug was never in as_csv, it was in which parser the
+    role settings were wired to.
+    """
+
+    ROLE_CHAIN_FIELDS = ("background_llm_chain", "compaction_llm", "ideate_llm")
+
+    @staticmethod
+    def _coerce(field, value):
+        from runtime.config import SETTINGS_BY_FIELD
+        return SETTINGS_BY_FIELD[field].coerce(value)
+
+    @pytest.mark.parametrize("field", ROLE_CHAIN_FIELDS)
+    def test_a_yaml_list_survives(self, field):
+        assert self._coerce(field, ["gemini", "groq"]) == ("gemini", "groq")
+
+    @pytest.mark.parametrize("field", ROLE_CHAIN_FIELDS)
+    def test_a_bare_string_still_works(self, field):
+        assert self._coerce(field, "gemini") == ("gemini",)
+
+    @pytest.mark.parametrize("field", ROLE_CHAIN_FIELDS)
+    def test_the_env_var_comma_form_still_works(self, field):
+        assert self._coerce(field, "gemini, groq") == ("gemini", "groq")
+
+    @pytest.mark.parametrize("field", ROLE_CHAIN_FIELDS)
+    def test_a_list_never_becomes_bracket_garbage(self, field):
+        got = self._coerce(field, ["gemini", "groq"])
+        assert not any("[" in v or "\'" in v for v in got)
+
+    @pytest.mark.parametrize("field", ROLE_CHAIN_FIELDS)
+    def test_they_agree_with_llm_chain(self, field):
+        """The whole point: one form, every chain setting."""
+        for value in (["gemini", "groq"], "gemini,groq", "gemini"):
+            assert self._coerce(field, value) == self._coerce("llm_chain", value)
+
+    def test_resolved_end_to_end_from_a_list(self):
+        r = roles(llm_chain=("ollama", "gemini"),
+                  background_llm_chain=self._coerce("background_llm_chain",
+                                                    ["gemini", "groq"]))
+        assert r[ModelRole.BACKGROUND].chain == ("gemini", "groq")

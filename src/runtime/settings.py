@@ -72,13 +72,13 @@ class RuntimeSettings:
 
     # ---- model roles (see runtime/model_roles.py) ----
     # Per-role chains. Empty = inherit the chat chain, failover included.
-    background_llm_chain: str = ""
+    background_llm_chain: tuple[str, ...] = ()
     background_model: str = ""
-    ideate_llm: str = ""
+    ideate_llm: tuple[str, ...] = ()
     ideate_model: str = ""
 
     # ---- background summarization ----
-    compaction_llm: str = ""            # falls back to primary_llm
+    compaction_llm: tuple[str, ...] = ()  # falls back to primary_llm
     compaction_model: str = "claude-haiku-4-5"
     compaction_deep_model: str = "claude-sonnet-5"
 

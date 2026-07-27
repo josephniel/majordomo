@@ -379,3 +379,114 @@ class TestDedicatedAgent:
             )
         )
         assert orch._session_ids.get(CHAT) == "real-chat-session"
+
+
+class TestBackgroundFireRestoresTheChatPromptCache:
+    """A background fire runs a different system prompt.
+
+    On a local backend holding ONE prompt-cache slot (ollama defaults to
+    OLLAMA_NUM_PARALLEL=1), that evicts the chat conversation's cached prefix
+    and the USER pays for it on their next message — measured on
+    gemma4:12b-mlx, an ~8.5k-token prompt goes from effectively free to ~80s,
+    because cold prefill runs at ~106 tok/s.
+
+    Routing background to another vendor avoids the eviction outright, but
+    that has to stay opt-in: a local-only setup must never have its data sent
+    to a hosted vendor to make things faster. So the fire re-warms instead.
+    """
+
+    class WarmableAgent(FakeAgent):
+        def __init__(self, reply="done!"):
+            super().__init__(reply)
+            self.prewarms = 0
+
+        async def prewarm(self):
+            self.prewarms += 1
+            return True
+
+    def _orch_with(self, tmp_path, agent, **kw):
+        platform = FakePlatform()
+        o = ConversationOrchestrator(
+            platform=platform,
+            agent_factory=lambda **k: agent,
+            session_store=SessionStore(tmp_path / "s.json"),
+            config=SimpleNamespace(get_mtime=lambda: 0.0),
+            connectors_list=[],
+            persona_id="t",
+            optional=OptionalSubsystems(**kw),
+        )
+        return o, platform
+
+    async def _fire(self, orch, agent=TriggerAgent.CONVERSATION):
+        await orch._run_trigger(TriggerEvent(
+            source="mail_watch",
+            conversation=CHAT,
+            prompt="new mail",
+            agent=agent,
+        ))
+        await asyncio.sleep(0)  # let the fire-and-forget prewarm run
+        await asyncio.sleep(0)
+
+    async def test_the_chat_prefix_is_rewarmed_after_a_fire(self, tmp_path):
+        agent = self.WarmableAgent()
+        orch, _ = self._orch_with(tmp_path, agent)
+        orch._agents[CHAT] = agent  # this chat is live
+
+        await self._fire(orch)
+
+        assert agent.prewarms == 1
+
+    async def test_a_dedicated_fire_does_not_build_a_chat_agent_just_to_warm_it(
+        self, tmp_path,
+    ):
+        """A DEDICATED fire runs on a throwaway agent and may touch a chat
+        that has none. Warming there would build an agent for a conversation
+        nobody is having, purely to populate a cache nobody will read."""
+        chat_agent = self.WarmableAgent()
+        bg_agent = FakeAgent("done!")
+        orch, _ = self._orch_with(
+            tmp_path, chat_agent, background_agent_factory=lambda c: bg_agent,
+        )
+        # deliberately NOT registering chat_agent in orch._agents
+
+        await self._fire(orch, agent=TriggerAgent.DEDICATED)
+
+        assert chat_agent.prewarms == 0
+        assert orch._agents == {}
+
+    async def test_a_dedicated_fire_rewarms_a_live_chat(self, tmp_path):
+        """The eviction is worst here — a dedicated agent has its own
+        reduced-tool prompt, so it definitely displaces the chat prefix."""
+        chat_agent = self.WarmableAgent()
+        orch, _ = self._orch_with(
+            tmp_path, chat_agent,
+            background_agent_factory=lambda c: FakeAgent("done!"),
+        )
+        orch._agents[CHAT] = chat_agent
+
+        await self._fire(orch, agent=TriggerAgent.DEDICATED)
+
+        assert chat_agent.prewarms == 1
+
+    async def test_a_vendor_without_prewarm_is_skipped(self, tmp_path):
+        """Hosted vendors don't implement it; that must not raise."""
+        agent = FakeAgent("done!")
+        orch, platform = self._orch_with(tmp_path, agent)
+        orch._agents[CHAT] = agent
+
+        await self._fire(orch)
+
+        assert platform.sent == [(CHAT, "done!")]
+
+    async def test_a_failing_prewarm_never_breaks_the_fire(self, tmp_path):
+        class Exploding(self.WarmableAgent):
+            async def prewarm(self):
+                raise RuntimeError("ollama is down")
+
+        agent = Exploding()
+        orch, platform = self._orch_with(tmp_path, agent)
+        orch._agents[CHAT] = agent
+
+        await self._fire(orch)
+
+        assert platform.sent == [(CHAT, "done!")], "the fire still delivered"
