@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 
 import asyncpg
 
-from ports import MemoryCoreEntry, MemoryEntry, Neighbor, Scored
+from ports import FactCandidate, MemoryCoreEntry, MemoryEntry, Neighbor, Scored
 
 from .embeddings import Embedder
 from .embeddings import to_pgvector as _to_pgvector
@@ -352,18 +352,11 @@ class MemoryDatabase:
     async def save_entry(
         self,
         persona_id: str,
-        scope: str,
-        content: str,
+        fact: FactCandidate,
         *,
-        domain_key: str = "",
-        title: str = "",
         metadata: dict[str, Any] | None = None,
-        volatile: bool = False,
-        provenance: str = "chat",
-        confidence: float = 1.0,
-        valid_from: datetime | None = None,
-        valid_to: datetime | None = None,
     ) -> MemoryEntry:
+        scope, content, title = fact.scope, fact.content, fact.title
         emb = await _embed_pg(self._embed, f"{title}\n{content}" if title else content)
         async with self._acquire() as conn:
             row = await conn.fetchrow(
@@ -376,9 +369,9 @@ class MemoryDatabase:
                         $10, $11, COALESCE($12, NOW()), $13)
                 RETURNING *
                 """,
-                persona_id, scope, domain_key, title, content, metadata or {},
-                emb, self._embed.model_name if emb else "", volatile,
-                provenance, confidence, valid_from, valid_to,
+                persona_id, scope, fact.domain_key, title, content, metadata or {},
+                emb, self._embed.model_name if emb else "", fact.volatile,
+                fact.provenance, fact.confidence, fact.valid_from, fact.valid_to,
             )
         return _entry(row)
 

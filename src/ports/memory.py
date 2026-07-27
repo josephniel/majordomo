@@ -249,22 +249,15 @@ class MemoryStore(Protocol):
     async def close(self) -> None: ...
 
     # ---- writing ----
-    # A memory row has this many columns; a params object here would just be the
-    # row spelled twice, so the width is the schema, not a missing abstraction.
-    async def save_entry(  # noqa: PLR0913
+    # A FactCandidate is exactly "a fact someone wants written", which is what
+    # this takes. It was eleven parameters spelling the same thing, and callers
+    # holding a candidate had to take it apart to pass it.
+    async def save_entry(
         self,
         persona_id: str,
-        scope: str,
-        content: str,
+        fact: FactCandidate,
         *,
-        domain_key: str = "",
-        title: str = "",
         metadata: dict[str, Any] | None = None,
-        volatile: bool = False,
-        provenance: str = "chat",
-        confidence: float = 1.0,
-        valid_from: datetime | None = None,
-        valid_to: datetime | None = None,
     ) -> MemoryEntry: ...
 
     async def find_similar(

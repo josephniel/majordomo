@@ -58,7 +58,7 @@ def candidate(content, scope="user", **kw):
 
 class TestTheContradictionThisFixes:
     async def test_a_changed_fact_supersedes_instead_of_piling_up(self, mem, store):
-        _, old = await mem.save_fact("user", "the user lives in Manila")
+        _, old = await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
         model = Scripted(verdict_json("update", old.id, "the user has moved"))
         r = Reconciler(mem, model)
 
@@ -73,12 +73,12 @@ class TestTheContradictionThisFixes:
         """Pins the premise: these two facts are NOT near-duplicates, so the
         dedup threshold alone would have let both through. If this ever fails,
         dedup got stricter and the test above is measuring the wrong thing."""
-        await mem.save_fact("user", "the user lives in Manila")
-        _msg, entry = await mem.save_fact("user", "the user moved to Cebu last month")
+        await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
+        _msg, entry = await mem.save_fact(FactCandidate('user', 'the user moved to Cebu last month'))
         assert entry is not None, "dedup does not catch a changed fact"
 
     async def test_restating_a_known_fact_is_a_noop(self, mem):
-        await mem.save_fact("user", "the user prefers dark mode")
+        await mem.save_fact(FactCandidate('user', 'the user prefers dark mode'))
         model = Scripted(verdict_json("noop", reason="already known"))
         r = Reconciler(mem, model)
         decision = await r.ingest(candidate("the user likes dark mode"))
@@ -88,7 +88,7 @@ class TestTheContradictionThisFixes:
     async def test_a_cancelled_plan_is_expired_not_deleted(self, mem, store):
         """DELETE expires rather than tombstones: the fact WAS true, and
         "what did I have on last August?" should still answer."""
-        _, e = await mem.save_fact("user", "the user is flying to Tokyo on the 14th")
+        _, e = await mem.save_fact(FactCandidate('user', 'the user is flying to Tokyo on the 14th'))
         model = Scripted(verdict_json("delete", e.id, "the trip was cancelled"))
         r = Reconciler(mem, model)
         await r.ingest(candidate("the user cancelled the Tokyo trip"))
@@ -106,13 +106,13 @@ class TestFailuresBiasTowardAdd:
     already overwritten the value it was judging."""
 
     async def test_unparseable_reply_adds(self, mem):
-        await mem.save_fact("user", "the user lives in Manila")
+        await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
         r = Reconciler(mem, Scripted("I think you should update the Manila one!"))
         decision = await r.decide(candidate("the user moved to Cebu"))
         assert decision.verdict is MemoryVerdict.ADD
 
     async def test_unknown_verdict_word_adds(self, mem):
-        await mem.save_fact("user", "the user lives in Manila")
+        await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
         r = Reconciler(mem, Scripted(json.dumps({"verdict": "merge"})))
         assert (await r.decide(candidate("the user moved to Cebu"))).verdict is \
             MemoryVerdict.ADD
@@ -122,7 +122,7 @@ class TestFailuresBiasTowardAdd:
             async def summarize(self, prompt, deep=False):
                 raise RuntimeError("vendor down")
 
-        await mem.save_fact("user", "the user lives in Manila")
+        await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
         decision = await Reconciler(mem, Broken()).decide(
             candidate("the user moved to Cebu")
         )
@@ -130,7 +130,7 @@ class TestFailuresBiasTowardAdd:
         assert "unavailable" in decision.reason
 
     async def test_recall_failure_adds(self, mem, store):
-        await mem.save_fact("user", "the user lives in Manila")
+        await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
         store.fail_recall = True
         decision = await Reconciler(mem, Scripted()).decide(
             candidate("the user moved to Cebu")
@@ -139,7 +139,7 @@ class TestFailuresBiasTowardAdd:
 
     async def test_update_with_no_target_adds(self, mem):
         """Guessing which fact was meant is exactly how data gets lost."""
-        await mem.save_fact("user", "the user lives in Manila")
+        await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
         r = Reconciler(mem, Scripted(verdict_json("update", None)))
         decision = await r.decide(candidate("the user moved to Cebu"))
         assert decision.verdict is MemoryVerdict.ADD
@@ -149,8 +149,8 @@ class TestFailuresBiasTowardAdd:
         """The model can only legitimately name a fact it was shown. An id
         from anywhere else is invented — and acting on it would destroy an
         unrelated fact."""
-        _, shown = await mem.save_fact("user", "the user lives in Manila")
-        _, unrelated = await mem.save_fact("agent", "the assistant speaks English")
+        _, shown = await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
+        _, unrelated = await mem.save_fact(FactCandidate('agent', 'the assistant speaks English'))
         invented = uuid.uuid4()
         r = Reconciler(mem, Scripted(verdict_json("update", invented)))
 
@@ -163,8 +163,8 @@ class TestFailuresBiasTowardAdd:
     async def test_delete_targeting_an_unshown_id_adds(self, mem, store):
         """Same guard on the other destructive verb — the one where the
         original fact would be gone with no replacement."""
-        _, other = await mem.save_fact("agent", "the assistant speaks English")
-        await mem.save_fact("user", "the user lives in Manila")
+        _, other = await mem.save_fact(FactCandidate('agent', 'the assistant speaks English'))
+        await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
         # `other` is in a different scope, so it is not in the candidate's
         # neighbourhood — naming it is out of bounds.
         r = Reconciler(mem, Scripted(verdict_json("delete", other.id)))
@@ -183,8 +183,8 @@ class TestCostControl:
         assert model.prompts == [], "no model was consulted"
 
     async def test_the_prompt_shows_only_the_neighbourhood(self, mem):
-        await mem.save_fact("user", "the user lives in Manila")
-        await mem.save_fact("agent", "the assistant replies in English")
+        await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
+        await mem.save_fact(FactCandidate('agent', 'the assistant replies in English'))
         model = Scripted(verdict_json("noop"))
         await Reconciler(mem, model).decide(candidate("the user moved to Cebu"))
         (prompt,) = model.prompts

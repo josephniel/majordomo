@@ -65,36 +65,28 @@ class FakeMemoryStore:
     async def save_entry(
         self,
         persona_id: str,
-        scope: str,
-        content: str,
+        fact,
         *,
-        domain_key: str = "",
-        title: str = "",
         metadata: dict[str, Any] | None = None,
-        volatile: bool = False,
-        provenance: str = "chat",
-        confidence: float = 1.0,
-        valid_from: datetime | None = None,
-        valid_to: datetime | None = None,
     ):
         from ports import MemoryEntry
 
         entry = MemoryEntry(
             id=uuid.uuid4(),
             persona_id=persona_id,
-            scope=scope,
-            domain_key=domain_key,
-            title=title,
-            content=content,
+            scope=fact.scope,
+            domain_key=fact.domain_key,
+            title=fact.title,
+            content=fact.content,
             metadata=dict(metadata or {}),
             created_at=_now(),
             updated_at=_now(),
             verified_at=_now(),
-            volatile=volatile,
-            provenance=provenance,
-            confidence=confidence,
-            valid_from=valid_from or _now(),
-            valid_to=valid_to,
+            volatile=fact.volatile,
+            provenance=fact.provenance,
+            confidence=fact.confidence,
+            valid_from=fact.valid_from or _now(),
+            valid_to=fact.valid_to,
         )
         self.entries[entry.id] = entry
         return entry

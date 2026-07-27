@@ -237,17 +237,9 @@ class Reconciler:
             return None
 
         if decision.verdict is MemoryVerdict.ADD:
-            _, entry = await self._memory.save_fact(
-                scope=c.scope,
-                content=c.content,
-                domain_key=c.domain_key,
-                title=c.title,
-                source=c.provenance,
-                volatile=c.volatile,
-                confidence=c.confidence,
-                valid_from=c.valid_from,
-                valid_to=c.valid_to,
-            )
+            # The candidate goes through whole: this used to take it apart
+            # field by field so save_fact could put it back together.
+            _, entry = await self._memory.save_fact(c)
             return entry
 
         if decision.verdict is MemoryVerdict.UPDATE:

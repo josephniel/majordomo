@@ -31,6 +31,7 @@ from uuid import UUID
 from ports import (
     LINK_RELATIONS,
     VALID_SCOPES,
+    FactCandidate,
     MemoryEntry,
     ToolContext,
     ToolResult,
@@ -133,14 +134,14 @@ def _capture_tools(mem: LongTermMemory) -> list[ToolSpec]:
     )
     async def memory_save_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         try:
-            msg, entry = await mem.save_fact(
+            msg, entry = await mem.save_fact(FactCandidate(
                 scope=args.get("scope") or "",
                 content=args.get("content") or "",
                 domain_key=args.get("domain_key") or "",
                 title=args.get("title") or "",
-                source="chat",
+                provenance="chat",
                 volatile=bool(args.get("volatile")),
-            )
+            ))
             # A rejected near-duplicate is a successful outcome, not an error:
             # the fact IS remembered, and flagging it as a failure invites the
             # model to retry the save in a loop.

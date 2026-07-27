@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from adapters.store.db import MemoryDatabase, redact_dsn
+from ports import FactCandidate
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -220,13 +221,12 @@ async def seed(db: MemoryDatabase, persona_id: str, facts: list[dict[str, Any]])
     """Insert the corpus; return {fact_key: entry_id_str}."""
     key_by_id: dict[str, str] = {}
     for f in facts:
-        entry = await db.save_entry(
-            persona_id=persona_id,
+        entry = await db.save_entry(persona_id, FactCandidate(
             scope=str(f["scope"]),
             content=str(f["content"]),
             domain_key=str(f.get("domain_key") or ""),
             title=str(f.get("title") or ""),
-        )
+        ))
         key_by_id[str(entry.id)] = str(f["key"])
     return key_by_id
 

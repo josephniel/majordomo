@@ -38,12 +38,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ports import (
     VALID_SCOPES,
+    FactCandidate,
     Faculty,
     MemoryCoreEntry,
     MemoryEntry,
@@ -240,18 +242,7 @@ class LongTermMemory(Faculty):
 
     # ---- shared write path (tool + reflection engine) ----
 
-    async def save_fact(
-        self,
-        scope: str,
-        content: str,
-        domain_key: str = "",
-        title: str = "",
-        source: str = "chat",
-        volatile: bool = False,
-        confidence: float = 1.0,
-        valid_from: datetime | None = None,
-        valid_to: datetime | None = None,
-    ) -> tuple[str, MemoryEntry | None]:
+    async def save_fact(self, fact: FactCandidate) -> tuple[str, MemoryEntry | None]:
         """Validate → dedup → insert → schedule auto-compaction.
 
         Returns (human-readable outcome, entry-or-None).
@@ -262,13 +253,18 @@ class LongTermMemory(Faculty):
         where "is this already known, or does it CHANGE something known?" is
         the whole question, go through `reconcile`.
         """
-        scope = (scope or "").strip().lower()
+        fact = replace(
+            fact,
+            scope=(fact.scope or "").strip().lower(),
+            domain_key=(fact.domain_key or "").strip().lower(),
+            title=(fact.title or "").strip(),
+            content=(fact.content or "").strip(),
+        )
+        scope, domain_key, content = fact.scope, fact.domain_key, fact.content
         if scope not in VALID_SCOPES:
             return (f"invalid scope {scope!r}; must be one of {'/'.join(VALID_SCOPES)}", None)
-        domain_key = (domain_key or "").strip().lower()
         if scope == "domain" and not domain_key:
             return ("scope='domain' requires a non-empty domain_key", None)
-        content = (content or "").strip()
         if not content:
             return ("content is empty", None)
 
@@ -290,20 +286,12 @@ class LongTermMemory(Faculty):
             )
 
         entry = await self._db.save_entry(
-            persona_id=self._persona_id,
-            scope=scope,
-            domain_key=domain_key,
-            title=(title or "").strip(),
-            content=content,
-            # `source` stays in metadata as well as going to the provenance
-            # column: older rows only have the metadata copy, and the /status
-            # and CLI paths still read it.
-            metadata={"source": source},
-            volatile=volatile,
-            provenance=source,
-            confidence=confidence,
-            valid_from=valid_from,
-            valid_to=valid_to,
+            self._persona_id,
+            fact,
+            # Provenance stays in metadata as well as going to its own column:
+            # older rows only have the metadata copy, and the /status and CLI
+            # paths still read it.
+            metadata={"source": fact.provenance},
         )
         self._spawn_bg(self._maybe_auto_compact(scope, domain_key))
         return (

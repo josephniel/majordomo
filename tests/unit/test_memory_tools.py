@@ -5,6 +5,7 @@ applied only where a handler remembered to invoke it. The tests here pin the
 handlers to the faculty's public operations — most importantly the ownership
 check, which several id-taking tools used to skip entirely.
 """
+from ports import FactCandidate
 import uuid
 
 import pytest
@@ -80,7 +81,7 @@ class TestOwnershipIsEnforcedAtEveryIdTakingTool:
 
     @pytest.fixture
     async def theirs(self, store):
-        return await store.save_entry("p2", "user", "their private fact")
+        return await store.save_entry('p2', FactCandidate('user', 'their private fact'))
 
     @pytest.mark.parametrize(
         "tool_name", ["memory_forget", "memory_pin", "memory_unpin", "memory_verify"]
@@ -120,8 +121,8 @@ class TestUnlinkIsDeliberatelyLenient:
         superseded entry. Requiring both ends to be active would lock the
         model out of exactly the mess it needs to clean up — and removing an
         edge cannot lose a fact."""
-        _, a = await mem.save_fact("user", "the user lives in Manila")
-        _, b = await mem.save_fact("user", "the office is in Makati")
+        _, a = await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
+        _, b = await mem.save_fact(FactCandidate('user', 'the office is in Makati'))
         await mem.link(a.id, b.id)
         superseded = await mem.update_fact(b.id, "the office moved to BGC")
 
@@ -130,8 +131,8 @@ class TestUnlinkIsDeliberatelyLenient:
         assert not res.is_error
 
     async def test_unlink_reports_a_missing_edge(self, tools, mem):
-        _, a = await mem.save_fact("user", "the user lives in Manila")
-        _, b = await mem.save_fact("user", "the office is in Makati")
+        _, a = await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
+        _, b = await mem.save_fact(FactCandidate('user', 'the office is in Makati'))
         res = await call(tools, "memory_unlink", from_id=str(a.id), to_id=str(b.id))
         assert res.is_error
         assert "no such link" in res.text
@@ -139,22 +140,22 @@ class TestUnlinkIsDeliberatelyLenient:
 
 class TestLink:
     async def test_self_link_rejected(self, tools, mem):
-        _, a = await mem.save_fact("user", "the user lives in Manila")
+        _, a = await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
         res = await call(tools, "memory_link", from_id=str(a.id), to_id=str(a.id))
         assert res.is_error
         assert "itself" in res.text
 
     async def test_unknown_relation_rejected(self, tools, mem):
-        _, a = await mem.save_fact("user", "the user lives in Manila")
-        _, b = await mem.save_fact("user", "the office is in Makati")
+        _, a = await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
+        _, b = await mem.save_fact(FactCandidate('user', 'the office is in Makati'))
         res = await call(tools, "memory_link", from_id=str(a.id),
                          to_id=str(b.id), relation="haunts")
         assert res.is_error
         assert "relation must be" in res.text
 
     async def test_relinking_is_idempotent_and_says_so(self, tools, mem):
-        _, a = await mem.save_fact("user", "the user lives in Manila")
-        _, b = await mem.save_fact("user", "the office is in Makati")
+        _, a = await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
+        _, b = await mem.save_fact(FactCandidate('user', 'the office is in Makati'))
         assert not (await call(tools, "memory_link",
                                from_id=str(a.id), to_id=str(b.id))).is_error
         again = await call(tools, "memory_link", from_id=str(a.id), to_id=str(b.id))
@@ -166,13 +167,13 @@ class TestRecallRendering:
     async def test_ids_are_surfaced_so_the_model_can_act(self, tools, mem):
         """Every mutating tool needs an id, and recall is the only place the
         model gets one."""
-        _, a = await mem.save_fact("user", "the user's cat is called Biscuit")
+        _, a = await mem.save_fact(FactCandidate('user', "the user's cat is called Biscuit"))
         res = await call(tools, "memory_recall", query="cat called Biscuit")
         assert f"id={a.id}" in res.text
 
     async def test_linked_facts_travel_together(self, tools, mem):
-        _, a = await mem.save_fact("user", "the user's cat is called Biscuit")
-        _, b = await mem.save_fact("user", "Biscuit needs medication daily")
+        _, a = await mem.save_fact(FactCandidate('user', "the user's cat is called Biscuit"))
+        _, b = await mem.save_fact(FactCandidate('user', 'Biscuit needs medication daily'))
         await mem.link(a.id, b.id, "relates_to")
         res = await call(tools, "memory_recall", query="cat called Biscuit")
         assert "related (relates_to" in res.text
@@ -180,7 +181,7 @@ class TestRecallRendering:
     async def test_a_broken_graph_read_does_not_lose_the_results(self, tools, mem, store):
         """A neighbours lookup failing must not cost the caller the recall
         hits it already has."""
-        await mem.save_fact("user", "the user's cat is called Biscuit")
+        await mem.save_fact(FactCandidate('user', "the user's cat is called Biscuit"))
 
         async def boom(_id):
             raise RuntimeError("graph is down")
