@@ -1,11 +1,25 @@
-"""Hallucination detection & recovery (Layers 3 / 3b).
+"""Hallucination detection & recovery (Layers 3 / 3b / 3c / 3d).
 
 Weak vendors sometimes SAY they did something without calling the tool.
-The two claim kinds recover differently (see docs/ARCHITECTURE-NOTES.md):
+The claim kinds recover differently (see docs/ARCHITECTURE-NOTES.md):
 a missed memory save is re-extractable later (trigger reflection early); a
-missed schedule is not — the user walks away trusting a reminder that
-doesn't exist — so it gets an immediate corrective turn and, failing that,
-an honest deterministic correction.
+missed schedule, send or record is not — the user walks away trusting a
+reminder, an email or a ledger entry that doesn't exist — so those get an
+immediate corrective turn and, failing that, an honest deterministic
+correction.
+
+    Layer 3   memory save   -> trigger reflection
+    Layer 3b  schedule set  -> corrective turn, else correct the user
+    Layer 3c  message sent  -> corrective turn, else correct the user
+    Layer 3d  record written-> corrective turn, else correct the user
+
+Every layer asks the same question, via `_classify_claim`: did a tool that
+can satisfy this claim actually SUCCEED? Not "was one called" — a write the
+operator denied is a tool call that changed nothing, and treating invocation
+as proof is what let "Done — I've recorded ₱500" stand on a denied write.
+That distinction also decides the response: a claim with no call at all is a
+hallucination worth retrying, while a claim on a FAILED call must not be
+retried, because the usual cause is the operator having just said no.
 
 RecoveryMixin is a context module of ConversationOrchestrator. It relies on
 the host providing: _reflection, _schedule_connector, _stale_agent_stops,
@@ -16,9 +30,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from ports import ConversationRef, ToolTraceReporting
+from ports import ConversationRef, ToolOutcomeReporting, ToolTraceReporting
 
 from .formatting import chunk_for_platform
 
@@ -116,6 +131,130 @@ _SEND_RECOVERY_FAILED_TEXT = (
     "address before I retry."
 )
 
+# Said when the tool DID run and refused (denied, or it errored). Distinct from
+# the *_RECOVERY_FAILED_TEXT above, which follows a hallucination and invites a
+# retry: here the most likely cause is the operator tapping Deny, and telling
+# them to "ask me again" would be nonsense.
+_SEND_NOT_EXECUTED_TEXT = (
+    "⚠️ Correction: my last message said that was sent — it wasn't. The send "
+    "was declined or failed, so nothing left your mailbox. Tell me to retry if "
+    "you did mean to send it."
+)
+
+_SCHEDULE_NOT_EXECUTED_TEXT = (
+    "⚠️ Correction: my last message said a reminder was set — it wasn't. The "
+    "request was declined or failed, so no reminder exists. Tell me to retry if "
+    "you did want it."
+)
+
+# Layer 3d: phrases where the assistant claims it WROTE something to an
+# external system of record — an expense, a transaction, a task, an entry.
+#
+# This layer exists because a denied `record_transaction` was reported to the
+# user as "Done — recorded ₱500", and no detector fired: "recorded" matched no
+# claim regex, and no provider had declared a claim-tool set for writes. The
+# user only found out because the ledger was empty later.
+#
+# Past-tense completions and passive confirmations only. Offers ("want me to
+# record that?"), questions, and reports about EXISTING entries ("you spent
+# ₱500 on lunch") must not match.
+_CLAIMS_RECORDED = re.compile(
+    r"\b(i(?:'ve| have) (?:recorded|logged|added|saved|created|entered|tracked)\b"
+    r"(?! (?:that )?to (?:my )?memory)|"
+    r"(?:it|that|the (?:expense|transaction|entry|task|record))"
+    r"(?: has| was|'s)? (?:been )?(?:recorded|logged|added|created|saved)|"
+    r"i (?:just )?(?:recorded|logged|added|entered) (?:it|that|the)|"
+    r"(?:successfully )?(?:recorded|logged) (?:it|that|your))\b",
+    re.IGNORECASE,
+)
+
+_RECORD_RECOVERY_PROMPT = (
+    "[integrity check — automated, not from the user] Your previous reply told "
+    "the user something was recorded, logged or created, but you did not call "
+    "any tool that writes a record this turn, so NOTHING was saved. If your "
+    "last reply claimed a record was created, call the correct recording tool "
+    "RIGHT NOW with exactly the details you described, then confirm in one "
+    "short sentence. If your last reply did not actually claim a record was "
+    "created, reply exactly <silent>."
+)
+
+_RECORD_RECOVERY_FAILED_TEXT = (
+    "⚠️ Correction: my last message said that was recorded, but it was NOT "
+    "saved anywhere. Please ask me again."
+)
+
+_RECORD_NOT_EXECUTED_TEXT = (
+    "⚠️ Correction: my last message said that was recorded — it wasn't. The "
+    "write was declined or failed, so nothing was saved. Tell me to retry if "
+    "you did want it recorded."
+)
+
+
+class ClaimBacking(Enum):
+    """How well a turn's tool calls back a success claim in its reply.
+
+    The three cases need genuinely different handling, which is why this is an
+    enum and not a bool. Collapsing FAILED into SATISFIED — counting any
+    invocation as backing — is the bug that let "I've recorded ₱500" through
+    while the write sat denied.
+    """
+
+    SATISFIED = "satisfied"
+    """A qualifying tool ran and did not report an error. Nothing to do."""
+
+    ABSENT = "absent"
+    """No qualifying tool ran at all — a classic hallucination.
+
+    Recoverable: the model may simply have forgotten, so ask it to call the
+    tool now.
+    """
+
+    FAILED = "failed"
+    """A qualifying tool ran and came back an error — denied, or it raised.
+
+    NOT recoverable by retrying, and retrying is actively wrong. The most
+    common cause is the operator tapping Deny, and re-issuing the call would
+    re-prompt them for something they just refused. The action really did not
+    happen, so the user is told plainly and once.
+    """
+
+
+def _classify_claim(
+    agent: Agent, claim_tools: tuple[str, ...],
+) -> ClaimBacking:
+    """Decide whether this turn's tools back a claim satisfied by `claim_tools`.
+
+    Substring matching throughout: vendors report different name forms
+    ("mcp__schedule__schedule_once" vs "schedule_once").
+    """
+    if not isinstance(agent, ToolTraceReporting):
+        # No trace: we cannot tell claim from fact, so assume the best rather
+        # than correcting a user who was told the truth.
+        return ClaimBacking.SATISFIED
+    def _qualifies(name: str) -> bool:
+        return any(sat in name for sat in claim_tools)
+
+    calls = sum(1 for name in agent.last_turn_tool_names if _qualifies(name))
+    if not calls:
+        return ClaimBacking.ABSENT
+    # Optional capability — an agent that can't report outcomes keeps
+    # invocation-only evidence rather than losing detection entirely.
+    failures = (
+        sum(1 for name in agent.last_turn_failed_tools if _qualifies(name))
+        if isinstance(agent, ToolOutcomeReporting)
+        else 0
+    )
+    # COUNTS, not set membership. A tool name is not unique within a turn: a
+    # model that retries a denied write emits `record_transaction` twice, and
+    # the second one succeeding means the record exists. Comparing sets would
+    # see the name in both collections and call the whole claim failed.
+    #
+    # Fewer failures than calls => at least one qualifying call came back
+    # clean, and the user was told the truth.
+    if failures < calls:
+        return ClaimBacking.SATISFIED
+    return ClaimBacking.FAILED
+
 
 class RecoveryMixin:
     """Hallucination-recovery context of the orchestrator."""
@@ -133,6 +272,7 @@ class RecoveryMixin:
         _reflection: ReflectionEngine | None
         _schedule_claim_tools: tuple[str, ...]
         _send_claim_tools: tuple[str, ...]
+        _record_claim_tools: tuple[str, ...]
         _stale_agent_stops: set[asyncio.Task[Any]]
 
         async def _send_safe(self, chat_id: ConversationRef, text: str) -> None: ...
@@ -175,22 +315,18 @@ class RecoveryMixin:
 
     # ---- Layer 3c: hallucinated send ----
 
-    def _detect_missed_send(self, reply: str, agent: Agent) -> bool:
-        """Detect a reply claiming an email/message was sent when no sending tool ran.
+    def _detect_missed_send(self, reply: str, agent: Agent) -> ClaimBacking:
+        """Classify a reply claiming an email/message was sent.
 
-        Mirrors _detect_missed_schedule.
+        Mirrors _detect_missed_schedule. SATISFIED also covers "there was no
+        claim" and "no provider here can send anyway" — both mean this layer
+        has nothing to say.
         """
         if not self._send_claim_tools:
-            return False  # no enabled provider can send anyway
-        if not isinstance(agent, ToolTraceReporting):
-            return False
+            return ClaimBacking.SATISFIED  # no enabled provider can send anyway
         if not _CLAIMS_SENT.search(reply or ""):
-            return False
-        return not any(
-            sat in name
-            for name in agent.last_turn_tool_names
-            for sat in self._send_claim_tools
-        )
+            return ClaimBacking.SATISFIED
+        return _classify_claim(agent, self._send_claim_tools)
 
     async def _recover_missed_send(
         self, chat_id: ConversationRef, reply: str, agent: Agent,
@@ -201,7 +337,17 @@ class RecoveryMixin:
         was sent is a silent, compounding failure, and the model's own reply must not be relayed
         because it tends to repeat the false claim.
         """
-        if not self._detect_missed_send(reply, agent):
+        backing = self._detect_missed_send(reply, agent)
+        if backing is ClaimBacking.SATISFIED:
+            return
+        if backing is ClaimBacking.FAILED:
+            # The send tool DID run and refused. Retrying would re-prompt the
+            # operator for a write they just denied, so correct and stop.
+            log.warning(
+                "chat %s: reply claims a send, but the sending tool errored or "
+                "was denied; correcting user without retrying", chat_id,
+            )
+            await self._send_safe(chat_id, _SEND_NOT_EXECUTED_TEXT)
             return
         log.warning(
             "chat %s: reply claims an email/message was sent but no sending "
@@ -218,14 +364,10 @@ class RecoveryMixin:
             await self._send_safe(chat_id, _SEND_RECOVERY_FAILED_TEXT)
             return
 
-        tool_names = (
-            agent.last_turn_tool_names
-            if isinstance(agent, ToolTraceReporting) else ()
-        )
-        recovered = any(
-            sat in name for name in tool_names for sat in self._send_claim_tools
-        )
-        if recovered:
+        # Success, not just invocation — a corrective turn whose send was
+        # denied has recovered nothing, and reporting it as recovered would
+        # relay the model's "sent it!" reply on top of a write that failed.
+        if _classify_claim(agent, self._send_claim_tools) is ClaimBacking.SATISFIED:
             log.info("chat %s: send recovered on corrective turn", chat_id)
             self._persist_session_id(chat_id, agent)
             if retry_reply.strip().lower() != "<silent>":
@@ -242,23 +384,18 @@ class RecoveryMixin:
 
     # ---- Layer 3b: hallucinated schedule ----
 
-    def _detect_missed_schedule(self, reply: str, agent: Agent) -> bool:
-        """Detect a reply claiming a reminder when no scheduling tool ran.
+    def _detect_missed_schedule(self, reply: str, agent: Agent) -> ClaimBacking:
+        """Classify a reply claiming a reminder was created.
 
-        Requires a ToolTraceReporting agent (CascadingAgent is one); agents
-        without the trace are skipped — we can't tell claim from fact blind.
+        Agents without a tool trace classify SATISFIED — we can't tell claim
+        from fact blind, and correcting a truthful reply is worse than missing
+        a false one.
         """
         if not self._schedule_claim_tools:
-            return False  # no enabled provider can satisfy the claim anyway
-        if not isinstance(agent, ToolTraceReporting):
-            return False
+            return ClaimBacking.SATISFIED  # no provider can satisfy the claim anyway
         if not _CLAIMS_SCHEDULE_SET.search(reply or ""):
-            return False
-        return not any(
-            sat in name
-            for name in agent.last_turn_tool_names
-            for sat in self._schedule_claim_tools
-        )
+            return ClaimBacking.SATISFIED
+        return _classify_claim(agent, self._schedule_claim_tools)
 
     async def _recover_missed_schedule(
         self, chat_id: ConversationRef, reply: str, agent: Agent,
@@ -280,7 +417,17 @@ class RecoveryMixin:
         faculty can genuinely set a reminder, and that guard silently
         suppressed the recovery for it.
         """
-        if not self._detect_missed_schedule(reply, agent):
+        backing = self._detect_missed_schedule(reply, agent)
+        if backing is ClaimBacking.SATISFIED:
+            return
+        if backing is ClaimBacking.FAILED:
+            # The scheduling tool ran and refused. Retrying re-prompts the
+            # operator for a write they just denied.
+            log.warning(
+                "chat %s: reply claims a reminder, but the scheduling tool "
+                "errored or was denied; correcting user without retrying", chat_id,
+            )
+            await self._send_safe(chat_id, _SCHEDULE_NOT_EXECUTED_TEXT)
             return
         log.warning(
             "chat %s: reply claims a schedule/reminder but no scheduling tool "
@@ -297,14 +444,8 @@ class RecoveryMixin:
             await self._send_safe(chat_id, _SCHEDULE_RECOVERY_FAILED_TEXT)
             return
 
-        tool_names = (
-            agent.last_turn_tool_names
-            if isinstance(agent, ToolTraceReporting) else ()
-        )
-        recovered = any(
-            sat in name for name in tool_names for sat in self._schedule_claim_tools
-        )
-        if recovered:
+        # Success, not just invocation — see the send path.
+        if _classify_claim(agent, self._schedule_claim_tools) is ClaimBacking.SATISFIED:
             log.info("chat %s: schedule recovered on corrective turn", chat_id)
             self._persist_session_id(chat_id, agent)
             if retry_reply.strip().lower() != "<silent>":
@@ -322,3 +463,67 @@ class RecoveryMixin:
         # may repeat the hallucination) — send our own deterministic correction.
         log.warning("chat %s: schedule recovery failed; correcting user", chat_id)
         await self._send_safe(chat_id, _SCHEDULE_RECOVERY_FAILED_TEXT)
+
+    # ---- Layer 3d: hallucinated record ----
+
+    def _detect_missed_record(self, reply: str, agent: Agent) -> ClaimBacking:
+        """Classify a reply claiming something was written to a system of record.
+
+        Same shape as the send and schedule layers. The FAILED case is the one
+        that motivated this layer: a denied `record_transaction` still counts
+        as a tool call, so invocation-only evidence called the claim backed.
+        """
+        if not self._record_claim_tools:
+            return ClaimBacking.SATISFIED  # no provider here writes records
+        if not _CLAIMS_RECORDED.search(reply or ""):
+            return ClaimBacking.SATISFIED
+        return _classify_claim(agent, self._record_claim_tools)
+
+    async def _recover_missed_record(
+        self, chat_id: ConversationRef, reply: str, agent: Agent,
+    ) -> None:
+        """One-shot recovery for a hallucinated record write.
+
+        A silently-missing ledger entry is the same class of failure as an
+        unsent email: the user walks away believing a durable record exists,
+        and only discovers otherwise when they go looking for it.
+        """
+        backing = self._detect_missed_record(reply, agent)
+        if backing is ClaimBacking.SATISFIED:
+            return
+        if backing is ClaimBacking.FAILED:
+            log.warning(
+                "chat %s: reply claims a record was written, but the tool "
+                "errored or was denied; correcting user without retrying", chat_id,
+            )
+            await self._send_safe(chat_id, _RECORD_NOT_EXECUTED_TEXT)
+            return
+        log.warning(
+            "chat %s: reply claims a record was written but no recording tool "
+            "was called; sending corrective turn", chat_id,
+        )
+        try:
+            retry_reply = await self._execute_agent_turn(
+                chat_id, agent, _RECORD_RECOVERY_PROMPT, typing=False,
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.exception("chat %s: record-recovery turn failed", chat_id)
+            await self._send_safe(chat_id, _RECORD_RECOVERY_FAILED_TEXT)
+            return
+
+        if _classify_claim(agent, self._record_claim_tools) is ClaimBacking.SATISFIED:
+            log.info("chat %s: record recovered on corrective turn", chat_id)
+            self._persist_session_id(chat_id, agent)
+            if retry_reply.strip().lower() != "<silent>":
+                for chunk in chunk_for_platform(
+                    retry_reply, self._platform.max_message_length,
+                ):
+                    await self._send_safe(chat_id, chunk)
+            return
+        if retry_reply.strip().lower() == "<silent>":
+            log.info("chat %s: record-recovery declined as false positive", chat_id)
+            return
+        log.warning("chat %s: record recovery failed; correcting user", chat_id)
+        await self._send_safe(chat_id, _RECORD_RECOVERY_FAILED_TEXT)

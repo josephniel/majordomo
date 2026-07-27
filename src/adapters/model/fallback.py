@@ -41,7 +41,14 @@ from zoneinfo import ZoneInfo
 
 from ports import ConversationMirror, ConversationRef, SessionResettable, ToolCallProbe
 
-from .base import Agent, Attachment, Summarizer, ToolUseCallback, UsageLimitError
+from .base import (
+    Agent,
+    Attachment,
+    Summarizer,
+    ToolOutcomeCallback,
+    ToolUseCallback,
+    UsageLimitError,
+)
 from .health import VendorHealthBoard
 from .history import TurnRecord
 
@@ -120,6 +127,18 @@ class _ToolTrace:
         self._on_tool_use = on_tool_use
         self.calls = 0
         self.names: list[str] = []
+        self.failed: list[str] = []
+
+    async def record_outcome(self, tool_name: str, is_error: bool) -> None:
+        """Note that a tool RETURNED, and whether it failed.
+
+        Only failures are kept. A success adds nothing the name list doesn't
+        already say, and recording both would invite a reader to infer "not in
+        succeeded => failed", which is wrong for vendors that never report
+        outcomes at all.
+        """
+        if is_error:
+            self.failed.append(tool_name)
 
     async def record(self, tool_name: str, args: dict[str, Any]) -> None:
         self.calls += 1
@@ -193,6 +212,9 @@ class CascadingAgent(Agent):
         # schema name), so consumers match by substring.
         self.last_turn_tool_calls: int = 0
         self.last_turn_tool_names: tuple[str, ...] = ()
+        # Subset of the above whose result came back an error — see
+        # ToolTraceReporting. Empty means "all fine OR this vendor doesn't say".
+        self.last_turn_failed_tools: tuple[str, ...] = ()
 
     # ---- Agent contract ----
 
@@ -389,6 +411,7 @@ class CascadingAgent(Agent):
 
         self.last_turn_tool_calls = trace.calls
         self.last_turn_tool_names = tuple(trace.names)
+        self.last_turn_failed_tools = tuple(trace.failed)
         self._spawn_bg(self._log_turn_safe(
             vendor, agent, "ok", started_at, trace.calls, failovers,
         ))
@@ -425,9 +448,13 @@ class CascadingAgent(Agent):
         on_tool_use: ToolUseCallback | None = None,
         attachments: list[Attachment] | None = None,
         current_row_id: int | None = None,
+        on_tool_outcome: ToolOutcomeCallback | None = None,
     ) -> str:
         # Recomputed below per delegated vendor; accepted for contract parity.
-        del current_row_id
+        # on_tool_outcome likewise: this agent feeds its OWN trace from the
+        # delegated vendor and republishes it as last_turn_failed_tools, so a
+        # caller-supplied hook would double-report.
+        del current_row_id, on_tool_outcome
         started_at = time.monotonic()
 
         plan = await self._plan_turn(text, attachments)
@@ -440,6 +467,7 @@ class CascadingAgent(Agent):
 
         trace = _ToolTrace(self._history, self._persona_id, self._chat_id, on_tool_use)
         _mirror_tool_use = trace.record
+        _mirror_tool_outcome = trace.record_outcome
 
         last_exc: BaseException | None = None
         failovers = 0
@@ -459,7 +487,7 @@ class CascadingAgent(Agent):
                 )
                 reply = await agent.send(
                     outgoing, on_tool_use=_mirror_tool_use, attachments=attachments,
-                    current_row_id=user_row_id,
+                    current_row_id=user_row_id, on_tool_outcome=_mirror_tool_outcome,
                 )
             except asyncio.CancelledError:
                 self._spawn_bg(self._log_turn_safe(

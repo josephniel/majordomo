@@ -23,6 +23,7 @@ from claude_agent_sdk import (
     ProcessError,
     ResultMessage,
     TextBlock,
+    ToolResultBlock,
     ToolUseBlock,
     create_sdk_mcp_server,
 )
@@ -45,6 +46,7 @@ from .base import (
     ContextBuilder,
     PersonaLike,
     Summarizer,
+    ToolOutcomeCallback,
     ToolUseCallback,
     UsageLimitError,
 )
@@ -452,27 +454,46 @@ class AnthropicAgent(Agent):
         with contextlib.suppress(Exception):
             await self._client.interrupt()
 
-    async def _collect_reply(self, client: Any, on_tool_use: ToolUseCallback | None) -> str:
+    async def _collect_reply(
+        self,
+        client: Any,
+        on_tool_use: ToolUseCallback | None,
+        on_tool_outcome: ToolOutcomeCallback | None = None,
+    ) -> str:
         """Drain the SDK's response stream into the reply, noting tool calls as they pass.
 
         Returns the empty string for a blank turn rather than a placeholder —
         same contract as the chat-completions agents, because CascadingAgent's
         empty-reply failover has to be able to see it.
+
+        Tool RESULTS arrive later than the calls, on UserMessage rather than
+        AssistantMessage, and identify themselves only by tool_use_id — so the
+        id->name map below is what lets an outcome be attributed to a tool
+        name at all.
         """
         parts: list[str] = []
+        tool_names: dict[str, str] = {}
         async for msg in client.receive_response():
             if isinstance(msg, ResultMessage):
                 self._session_id = msg.session_id
                 self._capture_usage(msg)
                 continue
+            for block in getattr(msg, "content", None) or ():
+                if isinstance(block, ToolResultBlock):
+                    name = tool_names.get(block.tool_use_id)
+                    if name is not None and on_tool_outcome is not None:
+                        with contextlib.suppress(Exception):
+                            await on_tool_outcome(name, bool(block.is_error))
             if not isinstance(msg, AssistantMessage):
                 continue
             for block in msg.content:
                 if isinstance(block, TextBlock):
                     parts.append(block.text)
-                elif isinstance(block, ToolUseBlock) and on_tool_use is not None:
-                    with contextlib.suppress(Exception):
-                        await on_tool_use(block.name, dict(block.input or {}))
+                elif isinstance(block, ToolUseBlock):
+                    tool_names[block.id] = block.name
+                    if on_tool_use is not None:
+                        with contextlib.suppress(Exception):
+                            await on_tool_use(block.name, dict(block.input or {}))
         return "".join(parts).strip()
 
     async def send(
@@ -481,6 +502,7 @@ class AnthropicAgent(Agent):
         on_tool_use: ToolUseCallback | None = None,
         attachments: list[Attachment] | None = None,
         current_row_id: int | None = None,
+        on_tool_outcome: ToolOutcomeCallback | None = None,
     ) -> str:
         # This vendor keeps history server-side, so there is no mirror row to
         # exclude. The parameter exists for parity with the Agent contract.
@@ -496,7 +518,9 @@ class AnthropicAgent(Agent):
             else:
                 await self._client.query(text)
             self.last_turn_usage = {}
-            return await self._collect_reply(self._client, on_tool_use)
+            return await self._collect_reply(
+                self._client, on_tool_use, on_tool_outcome,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as e:

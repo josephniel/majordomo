@@ -133,11 +133,42 @@ class VendorIntrospectable(Protocol):
 class ToolTraceReporting(Protocol):
     """An agent that records which tools ran during its last turn.
 
-    The hallucination detectors (Layers 3/3b) read these.
+    The hallucination detectors (Layers 3/3b/3c/3d) read these.
     """
 
     last_turn_tool_calls: int
     last_turn_tool_names: tuple[str, ...]
+
+
+@runtime_checkable
+class ToolOutcomeReporting(Protocol):
+    """An agent that also records which of its tools FAILED.
+
+    Deliberately separate from ToolTraceReporting rather than another
+    attribute on it. Both are runtime_checkable, and `isinstance` against a
+    Protocol is an attribute-presence test — so widening ToolTraceReporting
+    would silently make every existing implementer stop matching it. The
+    detectors gate on that isinstance, so the effect would be to turn
+    hallucination detection OFF for any agent not updated in lockstep, which
+    is the opposite of what adding outcome tracking is for.
+
+    As its own protocol, outcome reporting is an optional capability: an agent
+    that reports names but not outcomes keeps full Layer 3 detection and only
+    loses the denied-vs-never-called distinction.
+    """
+
+    # Names from last_turn_tool_names whose result came back an ERROR — a
+    # denied write, a raising handler, an unknown tool.
+    #
+    # A name in BOTH collections means the model asked for the tool and the
+    # tool refused. Detectors must not count that as backing a success claim:
+    # "the tool ran" and "the thing happened" are different facts, and only
+    # the first was ever recorded.
+    #
+    # Empty means "nothing failed" ONLY for an agent that implements this
+    # protocol. For one that doesn't, absence says nothing at all — which is
+    # why detectors use this to DISQUALIFY evidence, never to manufacture it.
+    last_turn_failed_tools: tuple[str, ...]
 
 
 @runtime_checkable
