@@ -231,7 +231,7 @@ def _revise_tools(mem: LongTermMemory) -> list[ToolSpec]:
     )
     async def memory_update_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         eid, err = await _resolve(mem, args.get("id"))
-        if err:
+        if eid is None:
             return _err(err)
         content = (args.get("content") or "").strip()
         if not content:
@@ -257,7 +257,7 @@ def _revise_tools(mem: LongTermMemory) -> list[ToolSpec]:
     )
     async def memory_forget_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         eid, err = await _resolve(mem, args.get("id"))
-        if err:
+        if eid is None:
             return _err(err)
         try:
             ok = await mem.forget_fact(eid)
@@ -315,10 +315,10 @@ async def _resolve_pair(
 ) -> tuple[UUID | None, UUID | None, str]:
     """Resolve both ends of an edge; (None, None, reason) on the first failure."""
     from_id, err = await _resolve(mem, args.get("from_id"))
-    if err:
+    if from_id is None:
         return None, None, err
     to_id, err = await _resolve(mem, args.get("to_id"))
-    if err:
+    if to_id is None:
         return None, None, err
     return from_id, to_id, ""
 
@@ -350,7 +350,7 @@ def _link_tools(mem: LongTermMemory) -> list[ToolSpec]:
         if relation not in LINK_RELATIONS:
             return _err(f"relation must be one of {'/'.join(LINK_RELATIONS)}")
         from_id, to_id, err = await _resolve_pair(mem, args)
-        if err:
+        if from_id is None or to_id is None:
             return _err(err)
         if from_id == to_id:
             return _err("cannot link a memory to itself")
@@ -436,7 +436,7 @@ def _flag_tools(mem: LongTermMemory) -> list[ToolSpec]:
 
     async def _set_pinned(raw_id: Any, pinned: bool, verb: str) -> ToolResult:
         eid, err = await _resolve(mem, raw_id)
-        if err:
+        if eid is None:
             return _err(err)
         try:
             ok = await mem.set_pinned(eid, pinned)
@@ -459,7 +459,7 @@ def _flag_tools(mem: LongTermMemory) -> list[ToolSpec]:
     )
     async def memory_verify_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         eid, err = await _resolve(mem, args.get("id"))
-        if err:
+        if eid is None:
             return _err(err)
         try:
             ok = await mem.verify(eid)

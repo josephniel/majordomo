@@ -125,3 +125,40 @@ class TestOneShot:
         assert ScheduledTask(name="x", cron="", chat_id=1, prompt="p",
                              run_at="2030-01-01T00:00:00").is_one_shot
         assert not ScheduledTask(name="x", cron="0 8 * * *", chat_id=1, prompt="p").is_one_shot
+
+
+class TestReadingTheStoreWithoutStarting:
+    """`./manage schedules` inspects a persona that is not running.
+
+    all_schedules belongs on the engine that owns the JSON store. It briefly
+    lived on TaskScheduler — the faculty — where self._load() and
+    self._schedules do not exist, so the CLI command raised AttributeError and
+    nothing here noticed.
+    """
+
+    def test_all_schedules_reads_the_store(self, engine):
+        engine.add("b_job", "0 8 * * *", chat_id=1, prompt="p")
+        engine.add("a_job", "0 9 * * *", chat_id=1, prompt="p")
+        fresh = ScheduleEngine(store_file=engine.store_file)
+        assert [s.name for s in fresh.all_schedules()] == ["a_job", "b_job"]
+
+    def test_all_schedules_on_an_empty_store(self, tmp_path):
+        assert ScheduleEngine(store_file=tmp_path / "none.json").all_schedules() == []
+
+
+class TestTheFacultyExposesItsTools:
+    """The faculty must be able to BUILD its tools, not just declare them.
+
+    _build_tools reached for self._legacy_platform on the faculty, where it
+    does not exist — it belongs to the engine. builtin_tools() raised
+    AttributeError, so the schedule faculty contributed no tools at all and
+    the bot could not set a reminder. Nothing here called builtin_tools().
+    """
+
+    def test_builtin_tools_are_constructible(self, engine):
+        from domain.schedule import TaskScheduler
+        names = [t.name for t in TaskScheduler(runtime=engine).builtin_tools()]
+        assert names == [
+            "schedule_create", "schedule_once", "schedule_list",
+            "schedule_remove", "schedule_set_enabled",
+        ]

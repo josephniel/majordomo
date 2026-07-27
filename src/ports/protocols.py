@@ -47,6 +47,10 @@ class ServiceCatalog(Protocol):
 
     def load_enabled(self) -> Sequence[EnabledService]: ...
 
+    def get_mtime(self) -> float:
+        """When the backing config last changed, so callers can reload on it."""
+        ...
+
 
 @runtime_checkable
 class AttachmentIngestor(Protocol):

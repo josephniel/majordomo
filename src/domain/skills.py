@@ -266,7 +266,7 @@ class SkillsLibrary(Faculty):
             keywords = [
                 str(k).strip().lower() for k in (args.get("keywords") or []) if str(k).strip()
             ]
-            fm = {"description": str(args.get("description") or "").strip()}
+            fm: dict[str, Any] = {"description": str(args.get("description") or "").strip()}
             if keywords:
                 fm["keywords"] = keywords
             if args.get("always"):

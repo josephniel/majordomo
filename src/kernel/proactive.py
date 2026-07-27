@@ -73,7 +73,7 @@ class ProactiveMixin:
                 log.exception("trigger source %r failed to start", source.name)
                 continue
             if source is registrar:
-                add_cron = source.add_cron
+                add_cron = registrar.add_cron
 
     async def _stop_trigger_sources(self) -> None:
         """Stop every source, in reverse.

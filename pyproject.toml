@@ -214,6 +214,8 @@ warn_unused_configs = true
 # clean cannot quietly stop being clean.
 [[tool.mypy.overrides]]
 module = [
+    "domain.*",
+    "kernel.*",
     "ports.*",
     "adapters.chat.*",
     "adapters.model.*",
