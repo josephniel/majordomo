@@ -209,6 +209,15 @@ explicit_package_bases = true
 ignore_missing_imports = true
 warn_unused_configs = true
 
+# The ratchet. A package joins this list the day it reaches zero under
+# --strict, and CI checks the whole list on every PR — so a package that is
+# clean cannot quietly stop being clean.
 [[tool.mypy.overrides]]
-module = ["ports.*"]
+module = [
+    "ports.*",
+    "adapters.chat.*",
+    "adapters.comms.*",
+    "adapters.store.*",
+    "adapters.trigger.*",
+]
 strict = true

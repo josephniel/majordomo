@@ -154,7 +154,7 @@ class CommsLog:
         metadata: dict[str, Any] | None = None,
     ) -> int:
         async with self._acquire() as conn:
-            return await conn.fetchval(
+            row_id = await conn.fetchval(
                 """
                 INSERT INTO comms_log
                     (instance, direction, text, chat_id, message_id,
@@ -165,6 +165,7 @@ class CommsLog:
                 instance, direction, text, chat_key(chat_id), message_id,
                 from_user, from_username, metadata or {},
             )
+        return int(row_id)
 
     # ---- read ----
 
@@ -220,7 +221,8 @@ class CommsLog:
             except Exception:
                 log.debug("remove_listener failed", exc_info=True)
             try:
-                await self._pool.release(self._listener_conn)
+                if self._pool is not None:
+                    await self._pool.release(self._listener_conn)
             except Exception:
                 log.debug("listener release failed", exc_info=True)
             self._listener_conn = None

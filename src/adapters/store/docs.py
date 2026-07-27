@@ -224,7 +224,7 @@ class DocumentStore:
         # Embed off the event loop, one pass (the model batches internally).
         vectors = await asyncio.to_thread(
             lambda: [self._embed.embed_passage(c) for c in chunks])
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with self._acquire() as conn, conn.transaction():
             doc_id = await conn.fetchval(
                 """
                     INSERT INTO documents (persona_id, name, mime, chat_id, num_chunks, char_count)

@@ -61,8 +61,8 @@ class StatusReporter:
         self._instance = instance
         self._token = token
         self._project = project
-        self._tasks: set[asyncio.Task] = set()
-        self._heartbeat_task: asyncio.Task | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._heartbeat_task: asyncio.Task[None] | None = None
 
     # ---- heartbeat (persona liveness on the dashboard) ----
 
