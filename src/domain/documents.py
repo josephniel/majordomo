@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Any, Optional
+from typing import Any, ClassVar
 
 from ports import (
     ConversationRef,
@@ -20,6 +20,7 @@ from ports import (
     Faculty,
     ToolContext,
     ToolResult,
+    ToolSpec,
     tool,
 )
 
@@ -30,8 +31,8 @@ _TEXT_MIME_PREFIXES = ("text/",)
 _PDF_MIME = "application/pdf"
 
 
-def extract_text(mime: str, data: bytes) -> Optional[str]:
-    """Extracted text for supported types; None for unsupported (images…)."""
+def extract_text(mime: str, data: bytes) -> str | None:
+    """Extract text for supported types; None for unsupported (images…)."""
     mime = (mime or "").lower()
     if any(mime.startswith(p) for p in _TEXT_MIME_PREFIXES):
         return data.decode("utf-8", errors="replace")
@@ -51,7 +52,7 @@ class DocumentLibrary(Faculty):
     TRIGGER_KEYWORDS = ("document", "doc", "pdf", "file", "search", "saved",
                         "read", "attachment", "notes", "paper", "contract")
     WRITE_TOOLS = frozenset({"doc_delete"})
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "doc_list": "Listing saved documents",
         "doc_search": "Searching the documents",
         "doc_read": "Reading a document",
@@ -78,7 +79,7 @@ Prefer doc_search over asking the user to re-send anything."""
     def system_prompt_section(self) -> str:
         return self.SYSTEM_PROMPT_SECTION
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     async def on_chat_startup(self) -> None:
@@ -87,7 +88,7 @@ Prefer doc_search over asking the user to re-send anything."""
     async def on_chat_shutdown(self) -> None:
         await self._store.close()
 
-    async def status_line(self):
+    async def status_line(self) -> str:
         try:
             docs = await self._store.list_docs(self._persona_id)
         except Exception:
@@ -102,10 +103,12 @@ Prefer doc_search over asking the user to re-send anything."""
         filename: str,
         mime: str,
         data: bytes,
-    ) -> Optional[str]:
-        """Ingest one attachment. Returns a short note for the model
-        ('[saved to documents: …]') or None when the type isn't ingestible.
-        Never raises."""
+    ) -> str | None:
+        """Ingest one attachment.
+
+        Returns a short note for the model ('[saved to documents: …]') or None when the type isn't
+        ingestible. Never raises.
+        """
         if len(data) > MAX_INGEST_BYTES:
             return None
         # PDF parsing is CPU-bound (and adversarial PDFs are a known pypdf
@@ -125,11 +128,14 @@ Prefer doc_search over asking the user to re-send anything."""
         except Exception:
             log.exception("attachment ingestion failed")
             return None
-        return f"[saved to documents: {filename or 'attachment'!r} (doc #{doc_id}, {num_chunks} chunks)]"
+        return (
+            f"[saved to documents: {filename or 'attachment'!r} "
+            f"(doc #{doc_id}, {num_chunks} chunks)]"
+        )
 
     # ---- tools ----
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         outer = self
 
         @tool(
@@ -137,7 +143,7 @@ Prefer doc_search over asking the user to re-send anything."""
             "List the saved documents (id, name, size).",
             {},
         )
-        async def doc_list_tool(_args: dict[str, Any], _ctx: ToolContext):
+        async def doc_list_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             docs = await outer._store.list_docs(outer._persona_id)
             if not docs:
                 return ToolResult.ok("no documents saved yet")
@@ -154,9 +160,10 @@ Prefer doc_search over asking the user to re-send anything."""
             "passages with their doc ids. Args: query.",
             {"query": str},
         )
-        async def doc_search_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def doc_search_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             hits = await outer._store.search(
-                outer._persona_id, str(args.get("query") or ""),
+                outer._persona_id,
+                str(args.get("query") or ""),
             )
             if not hits:
                 return ToolResult.ok("no matching passages")
@@ -173,7 +180,7 @@ Prefer doc_search over asking the user to re-send anything."""
             "doc_id, start_chunk (optional, default 0).",
             {"doc_id": int, "start_chunk": int},
         )
-        async def doc_read_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def doc_read_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 doc_id = int(args.get("doc_id"))
             except (TypeError, ValueError):
@@ -185,15 +192,21 @@ Prefer doc_search over asking the user to re-send anything."""
             body = "\n\n".join(c["content"] for c in doc["chunks"])
             last = doc["chunks"][-1]["chunk_index"] if doc["chunks"] else start
             more = doc["num_chunks"] - last - 1
-            suffix = f"\n\n({more} more chunks; continue with start_chunk={last + 1})" if more > 0 else ""
-            return ToolResult.ok(f"{doc['name']} (chunks {start}..{last} of {doc['num_chunks']}):\n\n{body}{suffix}")
+            suffix = (
+                f"\n\n({more} more chunks; continue with start_chunk={last + 1})"
+                if more > 0
+                else ""
+            )
+            return ToolResult.ok(
+                f"{doc['name']} (chunks {start}..{last} of {doc['num_chunks']}):\n\n{body}{suffix}"
+            )
 
         @tool(
             "doc_delete",
             "Delete a saved document permanently. Args: doc_id.",
             {"doc_id": int},
         )
-        async def doc_delete_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def doc_delete_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 doc_id = int(args.get("doc_id"))
             except (TypeError, ValueError):

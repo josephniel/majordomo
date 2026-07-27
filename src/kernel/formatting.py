@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import re
 
+# "please cancel that" is four words. Longer, and the message is carrying
+# content rather than just asking to stop.
+_MAX_CANCEL_WORDS = 4
 
 # ---- markdown stripping for plain chat messages ----
 
@@ -24,16 +27,17 @@ _RE_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
 def _md_to_plain(text: str) -> str:
-    """Strip markdown markers most chat clients don't render so asterisks
-    and backticks don't appear literally. Keeps line structure and bullets.
+    """Strip markdown markers most chat clients don't render.
+
+    So asterisks and backticks don't appear literally. Keeps line structure
+    and bullets.
     """
     text = _RE_FENCED.sub(r"\1", text)
     text = _RE_INLINE_CODE.sub(r"\1", text)
     text = _RE_BOLD_STAR.sub(r"\1", text)
     text = _RE_BOLD_UNDER.sub(r"\1", text)
     text = _RE_HEADER.sub("", text)
-    text = _RE_LINK.sub(r"\1 (\2)", text)
-    return text
+    return _RE_LINK.sub(r"\1 (\2)", text)
 
 
 def chunk_for_platform(text: str, limit: int) -> list[str]:
@@ -57,12 +61,14 @@ _CANCEL_VOCAB = _CANCEL_TRIGGERS | _CANCEL_FILLER
 
 
 def is_cancel_intent(text: str) -> bool:
-    """True only for messages made up purely of cancel-ish words:
+    """Report whether a message is made up purely of cancel-ish words.
+
     'cancel', 'stop it', 'never mind', 'please cancel that', 'nvm'.
     Anything carrying real content ('cancel my subscription',
-    'stop the music') is NOT cancel intent."""
+    'stop the music') is NOT cancel intent.
+    """
     words = re.sub(r"[^\w\s]", " ", text.strip().lower()).split()
-    if not words or len(words) > 4:
+    if not words or len(words) > _MAX_CANCEL_WORDS:
         return False
     if not all(w in _CANCEL_VOCAB for w in words):
         return False

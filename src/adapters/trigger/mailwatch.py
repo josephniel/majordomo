@@ -17,8 +17,10 @@ from __future__ import annotations
 import json
 import logging
 import time
-from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ New messages:
 class MailWatcher:
     def __init__(
         self,
-        gmail_connector,  # connectors.gmail.GmailConnector
+        gmail_connector: Any,  # adapters.tools.GmailConnector — a peer adapter, so not imported
         state_file: Path,
         query: str = DEFAULT_QUERY,
     ) -> None:
@@ -77,12 +79,13 @@ class MailWatcher:
 
     # ---- polling ----
 
-    async def check(self) -> Optional[str]:
-        """Poll every Gmail profile. Returns a context block describing NEW
-        messages (caller must commit() after delivering), or None when
-        there's nothing new (state advances immediately — nothing to lose).
-        Never raises — a broken profile logs and is skipped; the others
-        still report."""
+    async def check(self) -> str | None:
+        """Poll every Gmail profile.
+
+        Returns a context block describing NEW messages (caller must commit() after delivering), or
+        None when there's nothing new (state advances immediately — nothing to lose). Never raises —
+        a broken profile logs and is skipped; the others still report.
+        """
         now = int(time.time())
         lines: list[str] = []
         pending: dict[str, dict[str, Any]] = {}
@@ -100,14 +103,16 @@ class MailWatcher:
         return "\n".join(lines)
 
     def commit(self) -> None:
-        """Apply the state staged by the last check(). Call after the alert
-        turn was delivered (or when check() reported nothing)."""
+        """Apply the state staged by the last check().
+
+        Call after the alert turn was delivered (or when check() reported nothing).
+        """
         self._state.update(self._pending)
         self._pending = {}
         self._persist()
 
     async def _check_profile(
-        self, name: str, client, now: int,
+        self, name: str, client: Any, now: int,
     ) -> tuple[list[str], dict[str, Any]]:
         state = self._state.get(name) or {}
         watermark = int(state.get("watermark") or 0)

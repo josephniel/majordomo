@@ -20,16 +20,25 @@ before changing the network).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
 import uuid
-from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from ports import Faculty, ToolContext, ToolResult, tool
+from ports import Faculty, ToolContext, ToolResult, ToolSpec, tool
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# 64 MiB of scratch, mode 1777 as a /tmp must be, discarded with the container.
+_SANDBOX_SCRATCH_MOUNT = "type=tmpfs,destination=/tmp,tmpfs-size=67108864,tmpfs-mode=1777"
+
+# coreutils `timeout` reports this when it kills the child.
+_TIMEOUT_EXIT_CODE = 124
 
 DEFAULT_IMAGE = "python:3.13-slim"
 DEFAULT_TIMEOUT_SECONDS = 60
@@ -44,13 +53,51 @@ _LANG_COMMANDS = {
 }
 
 
+def _read_request(args: dict[str, Any]) -> tuple[tuple[str, str, int] | None, str]:
+    """Validate a run_code call into (language, code, timeout), or say why not."""
+    language = str(args.get("language") or "").strip().lower()
+    code = str(args.get("code") or "")
+    if language not in _LANG_COMMANDS:
+        return None, f"unsupported language {language!r} (python or bash)"
+    if not code.strip():
+        return None, "code is empty"
+    if len(code) > MAX_CODE_CHARS:
+        return None, f"code too large ({len(code)} chars; max {MAX_CODE_CHARS})"
+    if shutil.which("docker") is None:
+        return None, "docker is not available on this host; run_code is disabled"
+    try:
+        timeout = int(args.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_TIMEOUT_SECONDS
+    return (language, code, max(1, min(timeout, MAX_TIMEOUT_SECONDS))), ""
+
+
+def _render_run(
+    *, returncode: int | None, timeout: int, out: str, err: str, artifacts: list[str]
+) -> ToolResult:
+    """Turn a finished container into the answer the model reads."""
+    parts = []
+    if returncode == _TIMEOUT_EXIT_CODE:
+        parts.append(f"execution timed out after {timeout}s (killed in-container)")
+    if out.strip():
+        parts.append(f"stdout:\n{out}")
+    if err.strip():
+        parts.append(f"stderr:\n{err}")
+    if not parts:
+        parts.append("(no output)")
+    parts.append(f"exit code: {returncode}")
+    if artifacts:
+        parts.append("files created:\n" + "\n".join(artifacts))
+    return ToolResult("\n\n".join(parts), is_error=returncode != 0)
+
+
 class CodeExecutor(Faculty):
     name = "code"
     TRIGGER_KEYWORDS = ("code", "run", "script", "python", "compute",
                         "calculate", "csv", "chart", "graph", "convert",
                         "parse", "generate")
     WRITE_TOOLS = frozenset({"run_code"})
-    STATUS = {"run_code": "Running code in the sandbox"}
+    STATUS: ClassVar[dict[str, str]] = {"run_code": "Running code in the sandbox"}
 
     SYSTEM_PROMPT_SECTION = """== Code execution ==
 
@@ -75,10 +122,10 @@ script instead of many small runs."""
     def system_prompt_section(self) -> str:
         return self.SYSTEM_PROMPT_SECTION
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         outer = self
 
         @tool(
@@ -99,43 +146,16 @@ script instead of many small runs."""
                 "required": ["language", "code"],
             },
         )
-        async def run_code_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def run_code_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             return await outer._run(args)
 
         return [run_code_tool]
 
     # ---- execution ----
 
-    async def _run(self, args: dict[str, Any]) -> ToolResult:
-        language = str(args.get("language") or "").strip().lower()
-        code = str(args.get("code") or "")
-        if language not in _LANG_COMMANDS:
-            return ToolResult.error(f"unsupported language {language!r} (python or bash)")
-        if not code.strip():
-            return ToolResult.error("code is empty")
-        if len(code) > MAX_CODE_CHARS:
-            return ToolResult.error(f"code too large ({len(code)} chars; max {MAX_CODE_CHARS})")
-        try:
-            timeout = int(args.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
-        except (TypeError, ValueError):
-            timeout = DEFAULT_TIMEOUT_SECONDS
-        timeout = max(1, min(timeout, MAX_TIMEOUT_SECONDS))
-
-        if shutil.which("docker") is None:
-            return ToolResult.error("docker is not available on this host; run_code is disabled")
-
-        run_id = uuid.uuid4().hex[:12]
-        run_dir = self._runs_dir / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        script_name, command = _LANG_COMMANDS[language]
-        (run_dir / script_name).write_text(code, encoding="utf-8")
-        # In-container `timeout` is the primary bound: it survives bot
-        # restarts/crashes, so an approved infinite loop can't keep a CPU
-        # pinned as an orphan (--rm then reaps the container itself).
-        command = ["timeout", str(timeout), *command]
-
-        container = f"tc-code-{run_id}"
-        docker_cmd = [
+    def _docker_argv(self, container: str, run_dir: Path, command: list[str]) -> list[str]:
+        """Spell out the sandbox: no network, no caps, read-only, everything capped."""
+        return [
             "docker", "run",
             "--rm",
             "--name", container,
@@ -148,7 +168,10 @@ script instead of many small runs."""
             "--cpus", "1",
             "--pids-limit", "128",
             "--read-only",
-            "--tmpfs", "/tmp:rw,size=64m",
+            # Scratch space INSIDE the sandbox container, sized and wiped per
+            # run. --mount rather than --tmpfs: same result, but it names the
+            # destination and the size instead of encoding both in one path.
+            "--mount", _SANDBOX_SCRATCH_MOUNT,
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
             "-v", f"{run_dir}:/work",
@@ -156,6 +179,25 @@ script instead of many small runs."""
             self._image,
             *command,
         ]
+
+    async def _run(self, args: dict[str, Any]) -> ToolResult:
+        request, why = _read_request(args)
+        if request is None:
+            return ToolResult.error(why)
+        language, code, timeout = request
+
+        run_id = uuid.uuid4().hex[:12]
+        run_dir = self._runs_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        script_name, command = _LANG_COMMANDS[language]
+        (run_dir / script_name).write_text(code, encoding="utf-8")
+        # In-container `timeout` is the primary bound: it survives bot
+        # restarts/crashes, so an approved infinite loop can't keep a CPU
+        # pinned as an orphan (--rm then reaps the container itself).
+        command = ["timeout", str(timeout), *command]
+
+        container = f"tc-code-{run_id}"
+        docker_cmd = self._docker_argv(container, run_dir, command)
         log.info("run_code %s: language=%s timeout=%ds dir=%s",
                  run_id, language, timeout, run_dir)
         # Container output goes to FILES, never to in-process pipes: a
@@ -173,13 +215,11 @@ script instead of many small runs."""
                     await asyncio.wait_for(
                         proc.wait(), timeout=timeout + 10,  # margin for docker startup
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Backstop — the in-container `timeout` normally fires first.
                     await self._force_remove(container)
-                    try:
+                    with contextlib.suppress(ProcessLookupError):
                         proc.kill()
-                    except ProcessLookupError:
-                        pass
                     try:
                         await proc.wait()
                     except Exception:
@@ -191,28 +231,18 @@ script instead of many small runs."""
         except Exception as e:
             return ToolResult.error(f"could not start the sandbox: {e}")
 
-        timed_out = proc.returncode == 124  # coreutils `timeout` exit code
-        out = _read_head(out_path)
-        err = _read_head(err_path)
         artifacts = sorted(
             str(p) for p in run_dir.rglob("*")
             if p.is_file() and p.name not in (script_name, "_stdout.log", "_stderr.log")
         )
         self._prune_old_runs()
-
-        parts = []
-        if timed_out:
-            parts.append(f"execution timed out after {timeout}s (killed in-container)")
-        if out.strip():
-            parts.append(f"stdout:\n{out}")
-        if err.strip():
-            parts.append(f"stderr:\n{err}")
-        if not parts:
-            parts.append("(no output)")
-        parts.append(f"exit code: {proc.returncode}")
-        if artifacts:
-            parts.append("files created:\n" + "\n".join(artifacts))
-        return ToolResult("\n\n".join(parts), is_error=proc.returncode != 0)
+        return _render_run(
+            returncode=proc.returncode,
+            timeout=timeout,
+            out=_read_head(out_path),
+            err=_read_head(err_path),
+            artifacts=artifacts,
+        )
 
     async def _force_remove(self, container: str) -> None:
         try:
@@ -226,8 +256,11 @@ script instead of many small runs."""
             log.exception("could not remove container %s", container)
 
     def _prune_old_runs(self) -> None:
-        """Keep the newest KEEP_RUN_DIRS run dirs; artifacts aren't a
-        permanent store (documents are — save anything worth keeping)."""
+        """Keep the newest KEEP_RUN_DIRS run dirs.
+
+        Artifacts aren't a permanent store (documents are — save anything
+        worth keeping).
+        """
         try:
             runs = sorted(
                 (p for p in self._runs_dir.iterdir() if p.is_dir()),
@@ -243,8 +276,10 @@ script instead of many small runs."""
 
 
 def _read_head(path: Path) -> str:
-    """First MAX_OUTPUT_CHARS of an output file, with a truncation marker —
-    without ever loading a runaway log fully into memory."""
+    """First MAX_OUTPUT_CHARS of an output file, with a truncation marker.
+
+    Never loads a runaway log fully into memory.
+    """
     try:
         size = path.stat().st_size
         with path.open("rb") as fh:

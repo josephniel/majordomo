@@ -53,8 +53,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from ports import (
@@ -84,38 +85,9 @@ NEIGHBOURHOOD = 5
 MIN_NEIGHBOUR_SCORE = 0.10
 
 
-_VERDICT_PROMPT = """You are the memory reconciliation step of a personal \
-assistant. A new candidate fact has been extracted. Decide what it means for \
-the facts already stored.
-
-EXISTING FACTS (id, then content):
-{existing}
-
-CANDIDATE FACT:
-{candidate}
-
-Choose exactly one verdict:
-  "noop"   — the candidate says nothing the existing facts don't already say.
-             Prefer this. Restating known facts is the most common case.
-  "add"    — genuinely new information that does not conflict with any existing fact.
-  "update" — the candidate is the SAME underlying fact with a CHANGED value
-             (the user moved, changed jobs, changed their mind). Give the id
-             of the fact it replaces.
-  "delete" — an existing fact is now false and the candidate does NOT replace
-             it (a plan was cancelled, not rescheduled). Give the id to remove.
-
-Rules:
-- "update" and "delete" DESTROY the current value. Only choose them when the
-  candidate genuinely contradicts a specific existing fact. If in doubt, "add".
-- Two facts about different things are not a contradiction. The user having a
-  new phone does not invalidate their address.
-- A fact that is more SPECIFIC than an existing one ("the user's flight is at
-  6am" vs "the user is flying on Tuesday") is "update" only if they conflict;
-  otherwise "add".
-
-Output STRICT JSON, one object, no prose and no code fences:
-  {{"verdict": "noop"|"add"|"update"|"delete", "target_id": "<uuid or null>", "reason": "<one short sentence>"}}
-"""
+_VERDICT_PROMPT = (
+    Path(__file__).parent / "prompts/reconcile_verdict.md"
+).read_text(encoding="utf-8")
 
 
 def _render_existing(neighbours: list[MemoryEntry]) -> str:
@@ -126,7 +98,43 @@ def _render_existing(neighbours: list[MemoryEntry]) -> str:
     return "\n".join(lines)
 
 
-def _parse_verdict(raw: str) -> tuple[Optional[MemoryVerdict], Optional[UUID], str]:
+def _first_json_object(raw: str) -> tuple[dict[str, Any] | None, str]:
+    """Pull the first {...} object out of a model reply, fences and preamble and all."""
+    text = (raw or "").strip()
+    if not text:
+        return None, "empty reply"
+    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return None, "no JSON object in reply"
+    try:
+        obj = json.loads(match.group(0))
+    except (ValueError, TypeError):
+        return None, "unparseable JSON"
+    if not isinstance(obj, dict):
+        return None, "JSON was not an object"
+    return obj, ""
+
+
+def _untrustworthy_target(
+    verdict: MemoryVerdict, target: UUID | None, neighbours: list[MemoryEntry]
+) -> str:
+    """Why a destructive verdict cannot be acted on, or "" if it can.
+
+    A verdict with no target is not actionable, and guessing which fact was
+    meant is exactly the improvisation that loses data. A target the model was
+    never shown is invented, and acting on it would destroy an unrelated fact.
+    """
+    if verdict not in (MemoryVerdict.UPDATE, MemoryVerdict.DELETE):
+        return ""
+    if target is None:
+        return f"{verdict} named no target"
+    if target not in {e.id for e in neighbours}:
+        return f"{verdict} targeted id={target}, which was not in the candidate set"
+    return ""
+
+
+def _parse_verdict(raw: str) -> tuple[MemoryVerdict | None, UUID | None, str]:
     """Pull a verdict out of a model's reply.
 
     Defensive in the same way the extraction parser is, and for the same
@@ -135,27 +143,16 @@ def _parse_verdict(raw: str) -> tuple[Optional[MemoryVerdict], Optional[UUID], s
     (None, ...) and the caller falls back to ADD — never to a destructive
     verdict.
     """
-    text = (raw or "").strip()
-    if not text:
-        return None, None, "empty reply"
-    # Strip code fences, then take the first {...} block.
-    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
-    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if not match:
-        return None, None, "no JSON object in reply"
-    try:
-        obj = json.loads(match.group(0))
-    except (ValueError, TypeError):
-        return None, None, "unparseable JSON"
-    if not isinstance(obj, dict):
-        return None, None, "JSON was not an object"
+    obj, why = _first_json_object(raw)
+    if obj is None:
+        return None, None, why
 
     try:
         verdict = MemoryVerdict(str(obj.get("verdict", "")).strip().lower())
     except ValueError:
         return None, None, f"unknown verdict {obj.get('verdict')!r}"
 
-    target: Optional[UUID] = None
+    target: UUID | None = None
     raw_target = obj.get("target_id")
     if raw_target not in (None, "", "null"):
         try:
@@ -171,12 +168,12 @@ def _parse_verdict(raw: str) -> tuple[Optional[MemoryVerdict], Optional[UUID], s
 class Reconciler:
     """Turns candidate facts into decisions about existing memory."""
 
-    def __init__(self, memory: "LongTermMemory", summarizer: Summarizer) -> None:
+    def __init__(self, memory: LongTermMemory, summarizer: Summarizer) -> None:
         self._memory = memory
         self._summarizer = summarizer
 
     async def decide(self, candidate: FactCandidate) -> Reconciliation:
-        """What should happen to this candidate. Never raises.
+        """Decide what should happen to this candidate. Never raises.
 
         A failure anywhere — retrieval down, model down, garbage reply —
         resolves to ADD. That is the non-destructive direction: the worst
@@ -220,29 +217,14 @@ class Reconciler:
             return Reconciliation(MemoryVerdict.ADD, candidate,
                                   reason=f"unusable verdict ({reason})")
 
-        if verdict in (MemoryVerdict.UPDATE, MemoryVerdict.DELETE):
-            known = {e.id for e in neighbours}
-            if target is None:
-                # A destructive verdict with no target is not actionable, and
-                # guessing which fact was meant is exactly the kind of
-                # improvisation that loses data.
-                log.warning("reconcile: %s verdict with no target_id; adding", verdict)
-                return Reconciliation(MemoryVerdict.ADD, candidate,
-                                      reason=f"{verdict} named no target")
-            if target not in known:
-                # Hallucinated id. The model can only legitimately name a fact
-                # it was shown, so anything else is invented — and acting on
-                # an invented id would destroy an unrelated fact.
-                log.warning(
-                    "reconcile: %s verdict targets id=%s which was not in the "
-                    "candidate set; adding instead", verdict, target,
-                )
-                return Reconciliation(MemoryVerdict.ADD, candidate,
-                                      reason=f"{verdict} targeted an unknown id")
+        untrustworthy = _untrustworthy_target(verdict, target, neighbours)
+        if untrustworthy:
+            log.warning("reconcile: %s; adding instead", untrustworthy)
+            return Reconciliation(MemoryVerdict.ADD, candidate, reason=untrustworthy)
 
         return Reconciliation(verdict, candidate, target_id=target, reason=reason)
 
-    async def apply(self, decision: Reconciliation) -> Optional[MemoryEntry]:
+    async def apply(self, decision: Reconciliation) -> MemoryEntry | None:
         """Carry out a decision. Returns the affected entry, if any.
 
         Logged at INFO for anything that changes memory. These run unattended
@@ -255,17 +237,9 @@ class Reconciler:
             return None
 
         if decision.verdict is MemoryVerdict.ADD:
-            _, entry = await self._memory.save_fact(
-                scope=c.scope,
-                content=c.content,
-                domain_key=c.domain_key,
-                title=c.title,
-                source=c.provenance,
-                volatile=c.volatile,
-                confidence=c.confidence,
-                valid_from=c.valid_from,
-                valid_to=c.valid_to,
-            )
+            # The candidate goes through whole: this used to take it apart
+            # field by field so save_fact could put it back together.
+            _, entry = await self._memory.save_fact(c)
             return entry
 
         if decision.verdict is MemoryVerdict.UPDATE:
@@ -286,15 +260,15 @@ class Reconciler:
         return None
 
     async def ingest(self, candidate: FactCandidate) -> Reconciliation:
-        """decide + apply. The entry point extraction and ideation both use."""
+        """Decide + apply. The entry point extraction and ideation both use."""
         decision = await self.decide(candidate)
         await self.apply(decision)
         return decision
 
 
 def candidate_from_extraction(
-    fact: dict, *, provenance: str, volatile: bool = False, confidence: float = 1.0,
-) -> Optional[FactCandidate]:
+    fact: dict[str, Any], *, provenance: str, volatile: bool = False, confidence: float = 1.0,
+) -> FactCandidate | None:
     """Validate one extracted JSON object into a candidate, or None.
 
     The validation is the same shape `save_fact` applies, done here so an
@@ -321,8 +295,8 @@ def candidate_from_extraction(
     )
 
 
-def _parse_valid_to(raw) -> Optional[datetime]:
-    """An extracted end date, if the model supplied a usable one.
+def _parse_valid_to(raw: Any) -> datetime | None:
+    """Extract an end date, if the model supplied a usable one.
 
     Optional by design. Most facts have no end and asking a small background
     model to invent one produces confident nonsense, so an unparseable value
@@ -335,4 +309,4 @@ def _parse_valid_to(raw) -> Optional[datetime]:
         dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)

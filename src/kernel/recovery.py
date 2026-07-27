@@ -16,11 +16,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from typing import TYPE_CHECKING
 
-from adapters.model import Agent
 from ports import ConversationRef, ToolTraceReporting
 
 from .formatting import chunk_for_platform
+
+if TYPE_CHECKING:
+    from adapters.chat import ChatPlatform
+    from adapters.model import Agent
+    from domain import ReflectionEngine
+    from ports import Attachment, ToolUseCallback
 
 log = logging.getLogger(__name__)
 
@@ -114,14 +120,44 @@ _SEND_RECOVERY_FAILED_TEXT = (
 class RecoveryMixin:
     """Hallucination-recovery context of the orchestrator."""
 
+    # ---- supplied by the host (ConversationOrchestrator) ----
+    #
+    # These were a docstring promise. A mixin that reads `self._platform`
+    # without declaring it is only correct as long as every host happens to
+    # define it, which no tool was checking — ARCHITECTURE-NOTES flagged this
+    # coupling as "documented only in prose", and prose does not fail a
+    # build. Declared under TYPE_CHECKING so they stay annotations: the host
+    # owns the real attributes, this block only states what is required.
+    if TYPE_CHECKING:
+        _platform: ChatPlatform
+        _reflection: ReflectionEngine | None
+        _schedule_claim_tools: tuple[str, ...]
+        _send_claim_tools: tuple[str, ...]
+        _stale_agent_stops: set[asyncio.Task[None]]
+
+        async def _send_safe(self, chat_id: ConversationRef, text: str) -> None: ...
+        def _persist_session_id(self, chat_id: ConversationRef, agent: Agent) -> None: ...
+        async def _execute_agent_turn(
+            self,
+            chat_id: ConversationRef,
+            agent: Agent,
+            text: str,
+            *,
+            on_tool_use: ToolUseCallback | None = ...,
+            attachments: list[Attachment] | None = ...,
+            typing: bool = ...,
+        ) -> str: ...
+
     # ---- Layer 3: hallucinated memory save ----
 
     def _detect_missed_save(self, chat_id: ConversationRef, reply: str, agent: Agent) -> None:
-        """If the model's reply CLAIMS it saved something to memory but it
-        never actually called a tool this turn, run reflection immediately
-        instead of waiting for the idle timer — turning a hallucinated save
-        into a self-healing extraction. Cheap: reflection dedups, so a false
-        positive just costs one summarizer call."""
+        """Turn a hallucinated memory save into a self-healing extraction.
+
+        If the model's reply CLAIMS it saved something but it never actually
+        called a tool this turn, run reflection immediately instead of waiting
+        for the idle timer. Cheap: reflection dedups, so a false
+        positive just costs one summarizer call.
+        """
         if not isinstance(agent, ToolTraceReporting) or agent.last_turn_tool_calls > 0:
             return
         if not _CLAIMS_MEMORY_SAVE.search(reply or ""):
@@ -137,8 +173,10 @@ class RecoveryMixin:
     # ---- Layer 3c: hallucinated send ----
 
     def _detect_missed_send(self, reply: str, agent: Agent) -> bool:
-        """True when the reply claims an email/message was sent but no sending
-        tool ran this turn. Mirrors _detect_missed_schedule."""
+        """Detect a reply claiming an email/message was sent when no sending tool ran.
+
+        Mirrors _detect_missed_schedule.
+        """
         if not self._send_claim_tools:
             return False  # no enabled provider can send anyway
         if not isinstance(agent, ToolTraceReporting):
@@ -154,10 +192,12 @@ class RecoveryMixin:
     async def _recover_missed_send(
         self, chat_id: ConversationRef, reply: str, agent: Agent,
     ) -> None:
-        """One-shot recovery for a hallucinated send. If the retry still sends
-        nothing, tell the user plainly — an unsent email the user believes was
-        sent is a silent, compounding failure, and the model's own reply must
-        not be relayed because it tends to repeat the false claim."""
+        """One-shot recovery for a hallucinated send.
+
+        If the retry still sends nothing, tell the user plainly — an unsent email the user believes
+        was sent is a silent, compounding failure, and the model's own reply must not be relayed
+        because it tends to repeat the false claim.
+        """
         if not self._detect_missed_send(reply, agent):
             return
         log.warning(
@@ -200,10 +240,11 @@ class RecoveryMixin:
     # ---- Layer 3b: hallucinated schedule ----
 
     def _detect_missed_schedule(self, reply: str, agent: Agent) -> bool:
-        """True when the reply claims a reminder/schedule was created but no
-        schedule-creating tool ran this turn. Requires a ToolTraceReporting
-        agent (CascadingAgent is one); agents without the trace are skipped —
-        we can't tell claim from fact blind."""
+        """Detect a reply claiming a reminder when no scheduling tool ran.
+
+        Requires a ToolTraceReporting agent (CascadingAgent is one); agents
+        without the trace are skipped — we can't tell claim from fact blind.
+        """
         if not self._schedule_claim_tools:
             return False  # no enabled provider can satisfy the claim anyway
         if not isinstance(agent, ToolTraceReporting):
@@ -219,10 +260,12 @@ class RecoveryMixin:
     async def _recover_missed_schedule(
         self, chat_id: ConversationRef, reply: str, agent: Agent,
     ) -> None:
-        """One-shot recovery for a hallucinated schedule: re-prompt the agent
-        to actually make the tool call it claimed. If even the retry produces
-        no scheduling call, tell the user plainly that nothing was scheduled —
-        a false 'reminder set' is the one failure mode this bot must never
+        """One-shot recovery for a hallucinated schedule.
+
+        Re-prompts the agent to actually make the tool call it claimed. If even
+        the retry produces no scheduling call, tell the user plainly that
+        nothing was scheduled — a false 'reminder set' is the one failure mode
+        this bot must never
         leave standing. Never raises: the user's turn already succeeded.
 
         "Does this persona even have a scheduler?" is answered by
@@ -232,7 +275,8 @@ class RecoveryMixin:
         guard here on a separate scheduler handle, which could disagree with
         the first: a persona with a calendar connector but no schedule
         faculty can genuinely set a reminder, and that guard silently
-        suppressed the recovery for it."""
+        suppressed the recovery for it.
+        """
         if not self._detect_missed_schedule(reply, agent):
             return
         log.warning(

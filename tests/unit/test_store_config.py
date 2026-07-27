@@ -133,8 +133,10 @@ class TestPersonasSharingADatabaseMustAgree:
         with pytest.raises(SystemExit) as exc:
             rt._assert_embedding_model_is_host_wide(dsn)
         msg = str(exc.value)
-        assert "alice" in msg and "bob" in msg
-        assert "bge-base-en-v1.5" in msg and "bge-small-en-v1.5" in msg
+        assert "alice" in msg
+        assert "bob" in msg
+        assert "bge-base-en-v1.5" in msg
+        assert "bge-small-en-v1.5" in msg
 
     def test_the_refusal_does_not_leak_the_password(self, tmp_path, monkeypatch):
         monkeypatch.delenv("EMBEDDING_MODEL", raising=False)

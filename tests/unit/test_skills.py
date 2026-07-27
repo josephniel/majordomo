@@ -139,7 +139,7 @@ class TestSelfWrittenSkills:
     so they ride the Layer 5 approval gate like any other mutation."""
 
     def test_save_and_delete_are_write_tools(self):
-        assert SkillsLibrary.WRITE_TOOLS == {"skill_save", "skill_delete"}
+        assert {"skill_save", "skill_delete"} == SkillsLibrary.WRITE_TOOLS
 
     def test_read_only_grant_excludes_saving(self, tmp_path):
         from runtime.persona import Persona
@@ -163,7 +163,7 @@ class TestSelfWrittenSkills:
         }, ToolContext())
         assert not result.is_error
         lib = SkillsLibrary(skills_dir=d)
-        (skill,) = lib._scan()
+        (skill,) = lib.all_skills()
         assert skill.name == "expense_filing"
         assert skill.description == "How to file expenses"
         assert skill.keywords == ("expense", "gastos")
@@ -174,7 +174,7 @@ class TestSelfWrittenSkills:
         d = tmp_path / "skills"
         spec = _tool_by_name(d, "skill_save")
         await spec.handler({"name": "style", "body": "Be terse.", "always": True}, ToolContext())
-        (skill,) = SkillsLibrary(skills_dir=d)._scan()
+        (skill,) = SkillsLibrary(skills_dir=d).all_skills()
         assert skill.always is True
 
     async def test_save_overwrites_existing(self, tmp_path):
@@ -183,7 +183,7 @@ class TestSelfWrittenSkills:
         await spec.handler({"name": "myskill", "body": "v1"}, ToolContext())
         result = await spec.handler({"name": "myskill", "body": "v2"}, ToolContext())
         assert "updated" in result.text
-        (skill,) = SkillsLibrary(skills_dir=d)._scan()
+        (skill,) = SkillsLibrary(skills_dir=d).all_skills()
         assert skill.body == "v2"
 
     @pytest.mark.parametrize("bad", ["", "Bad Name", "_hidden", "a", "x" * 70, "../evil"])
@@ -205,7 +205,7 @@ class TestSelfWrittenSkills:
         spec = _tool_by_name(d, "skill_delete")
         result = await spec.handler({"name": "old_habit"}, ToolContext())
         assert not result.is_error
-        assert SkillsLibrary(skills_dir=d)._scan() == []
+        assert SkillsLibrary(skills_dir=d).all_skills() == []
 
     async def test_delete_unknown_errors(self, tmp_path):
         d = tmp_path / "skills"

@@ -21,17 +21,22 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, fields
-from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any
 
 from adapters.chat.transcription import (
     DEFAULT_VENDOR_ORDER as DEFAULT_TRANSCRIPTION_ORDER,
+)
+from adapters.chat.transcription import (
     TranscriptionConfig,
 )
 from adapters.store.reranking import RerankConfig
 from adapters.trigger.retention import RetentionPolicy
 
 from .config import SETTINGS, ConfigResolver, Resolved
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -47,23 +52,23 @@ class RuntimeSettings:
     # Default Claude chat model when the persona doesn't pin one.
     claude_model: str = "claude-sonnet-5"
     groq_api_key: str = ""
-    groq_model: Optional[str] = None
+    groq_model: str | None = None
     gemini_api_key: str = ""
-    gemini_model: Optional[str] = None
+    gemini_model: str | None = None
     openai_api_key: str = ""
     deepseek_api_key: str = ""
     # Local models via Ollama — keyless, so it opts in like Claude does
     # (OLLAMA_ENABLED, an explicit OLLAMA_MODEL, or PRIMARY_LLM=ollama).
     ollama_enabled: bool = False
-    ollama_model: Optional[str] = None
-    ollama_base_url: Optional[str] = None
+    ollama_model: str | None = None
+    ollama_base_url: str | None = None
     # Per-model: "none" disables thinking (right for gemma-family, which
     # wastes ~16x tokens on it); leave UNSET for models that need reasoning to
     # pick tools (qwen3.5 returns empty content without it).
-    ollama_reasoning_effort: Optional[str] = None
+    ollama_reasoning_effort: str | None = None
     # Whether the pulled model can see images. Model-specific: gemma4's e4b
     # builds cannot, its 12b and qwen3.5 can. Unset = trust the class default.
-    ollama_vision: Optional[bool] = None
+    ollama_vision: bool | None = None
 
     # ---- model roles (see runtime/model_roles.py) ----
     # Per-role chains. Empty = inherit the chat chain, failover included.
@@ -78,7 +83,7 @@ class RuntimeSettings:
     compaction_deep_model: str = "claude-sonnet-5"
 
     # ---- schedules / proactivity ----
-    schedule_timezone: Optional[str] = None
+    schedule_timezone: str | None = None
     webhook_token: str = ""
     # Heartbeats are background work — keep them on cheap Haiku, decoupled
     # from the chat chain (same reasoning as COMPACTION_MODEL).
@@ -93,8 +98,8 @@ class RuntimeSettings:
     claude_max_output_tokens: int = 16000
 
     # ---- sandboxed code execution ----
-    code_exec_image: Optional[str] = None
-    code_exec_network: Optional[str] = None
+    code_exec_image: str | None = None
+    code_exec_network: str | None = None
 
     # ---- status dashboard push ----
     status_push_url: str = ""
@@ -120,9 +125,11 @@ class RuntimeSettings:
     retention: RetentionPolicy = field(default_factory=RetentionPolicy)
 
     def transcription(self) -> TranscriptionConfig:
-        """Assemble the transcription adapter's config, resolving the vendor
-        keys from the LLM credentials so they are configured in exactly one
-        place."""
+        """Assemble the transcription adapter's config.
+
+        Resolves the vendor keys from the LLM credentials, so they are
+        configured in exactly one place.
+        """
         return TranscriptionConfig(
             chain=self.transcription_chain,
             model=self.transcription_model,
@@ -143,9 +150,9 @@ class RuntimeSettings:
     def load(
         cls,
         project_root: Path,
-        persona_dir: Optional[Path] = None,
-        env: Optional[Mapping[str, str]] = None,
-    ) -> "RuntimeSettings":
+        persona_dir: Path | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> RuntimeSettings:
         """Resolve config.yaml + persona.yaml + environment into one object.
 
         This is what the composition root calls. `persona_dir` is optional so
@@ -157,7 +164,7 @@ class RuntimeSettings:
         )
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] = os.environ) -> "RuntimeSettings":
+    def from_env(cls, env: Mapping[str, str] = os.environ) -> RuntimeSettings:
         """Resolve from the environment alone — no config files.
 
         Kept for tooling and tests that have no project root, and because the
@@ -167,11 +174,11 @@ class RuntimeSettings:
         return cls.from_resolver(ConfigResolver(env=env))
 
     @classmethod
-    def from_resolver(cls, resolver: ConfigResolver) -> "RuntimeSettings":
+    def from_resolver(cls, resolver: ConfigResolver) -> RuntimeSettings:
         return cls.from_resolved(resolver.resolve_all())
 
     @classmethod
-    def from_resolved(cls, resolved: Mapping[str, Resolved]) -> "RuntimeSettings":
+    def from_resolved(cls, resolved: Mapping[str, Resolved]) -> RuntimeSettings:
         """Assemble from already-resolved values.
 
         Split out from `from_resolver` so `doctor` can resolve once and then

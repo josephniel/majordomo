@@ -29,20 +29,35 @@ retrying every turn.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any, ClassVar
 from zoneinfo import ZoneInfo
 
 from ports import ConversationRef, SessionResettable, ToolCallProbe
 
 from .base import Agent, Attachment, Summarizer, ToolUseCallback, UsageLimitError
 from .health import VendorHealthBoard
-from .history import ConversationHistory
+
+if TYPE_CHECKING:
+    from .history import ConversationHistory
+
+from .history import TurnRecord
 
 log = logging.getLogger(__name__)
+
+# A mirrored tool call is a breadcrumb, not a record: enough argument text to
+# recognise the call, not enough to bloat the replayed history.
+_MAX_TOOL_ARG_PREVIEW = 300
+
+# The quoted question in a cold-handoff anchor. Long enough to be unambiguous,
+# short enough that it doesn't dominate the turn.
+_MAX_ANCHORED_QUESTION = 500
 
 # Trigger compaction when (persona, chat) history exceeds this many chars.
 HISTORY_COMPACTION_CHAR_THRESHOLD = 20_000  # ≈ 5k tokens
@@ -75,10 +90,66 @@ COMPACTION_FETCH_LIMIT = 5_000
 MemoryRecaller = Callable[[str], Awaitable[str]]
 
 
+@dataclass(frozen=True)
+class _TurnPlan:
+    """Everything decided before a single vendor is asked to serve the turn."""
+
+    memory_block: str
+    user_row_id: int | None
+    mirror_ok: bool
+    candidates: list[tuple[str, Agent]]
+    anchor: str
+    cold_tail_after_id: int | None
+
+
+class _ToolTrace:
+    """Counts this turn's tool calls, and mirrors each one into history.
+
+    Every tool CALL lands between the user row and the assistant row, so the
+    mirror reads chronologically. Held as an object rather than a closure over
+    two nonlocals because the counts outlive the callback: the orchestrator's
+    hallucination detectors read them after the turn.
+    """
+
+    def __init__(
+        self,
+        history: ConversationHistory,
+        persona_id: str,
+        chat_id: ConversationRef,
+        on_tool_use: ToolUseCallback | None,
+    ) -> None:
+        self._history = history
+        self._persona_id = persona_id
+        self._chat_id = chat_id
+        self._on_tool_use = on_tool_use
+        self.calls = 0
+        self.names: list[str] = []
+
+    async def record(self, tool_name: str, args: dict[str, Any]) -> None:
+        self.calls += 1
+        self.names.append(tool_name)
+        if self._on_tool_use is not None:
+            with contextlib.suppress(Exception):
+                await self._on_tool_use(tool_name, dict(args))
+        try:
+            arg_str = json.dumps(args, default=str)
+            if len(arg_str) > _MAX_TOOL_ARG_PREVIEW:
+                arg_str = arg_str[:_MAX_TOOL_ARG_PREVIEW] + "…"
+            await self._history.append(
+                persona_id=self._persona_id,
+                chat_id=self._chat_id,
+                role="system",
+                content=f"[tool] {tool_name} {arg_str}",
+                metadata={"tool_use": tool_name},
+            )
+        except Exception:
+            log.debug("could not mirror tool use", exc_info=True)
+
+
 class CascadingAgent(Agent):
     """Composes a chain of named Agents. Public surface stays Agent-shaped."""
 
-    REQUIRED_ENV: list[str] = []
+    REQUIRED_ENV: ClassVar[list[str]] = []
 
     def __init__(
         self,
@@ -87,9 +158,9 @@ class CascadingAgent(Agent):
         persona_id: str,
         chat_id: ConversationRef,
         summarizer: Summarizer,
-        health_board: Optional[VendorHealthBoard] = None,
-        memory_recaller: Optional[MemoryRecaller] = None,
-        timezone_name: Optional[str] = None,
+        health_board: VendorHealthBoard | None = None,
+        memory_recaller: MemoryRecaller | None = None,
+        timezone_name: str | None = None,
     ) -> None:
         if not chain:
             raise ValueError("CascadingAgent requires at least one agent in the chain")
@@ -130,7 +201,7 @@ class CascadingAgent(Agent):
     # ---- Agent contract ----
 
     @property
-    def session_id(self) -> Optional[str]:
+    def session_id(self) -> str | None:
         # The resumable session belongs to the server-side-history vendor
         # (Claude). Report it regardless of which vendor served the last
         # turn, so SessionStore keeps a valid resume id across failovers.
@@ -155,12 +226,12 @@ class CascadingAgent(Agent):
 
     @property
     def health(self) -> dict[str, float]:
-        """vendor -> cooldown seconds remaining (only unhealthy vendors)."""
+        """Vendor -> cooldown seconds remaining (only unhealthy vendors)."""
         return self._board.snapshot()
 
     @property
-    def canary(self) -> dict[str, dict]:
-        """vendor -> {ok, detail} from the last tool-calling canary."""
+    def canary(self) -> dict[str, dict[str, Any]]:
+        """Vendor -> {ok, detail} from the last tool-calling canary."""
         return self._board.canary_summary()
 
     async def start(self) -> None:
@@ -191,37 +262,30 @@ class CascadingAgent(Agent):
         # Forward to whichever agent served last (it's the one mid-turn).
         agent = self._agent_by_name(self._active_vendor)
         if agent is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await agent.interrupt()
-            except Exception:
-                pass
 
-    async def send(
-        self,
-        text: str,
-        on_tool_use: Optional[ToolUseCallback] = None,
-        attachments: Optional[list[Attachment]] = None,
-        current_row_id: Optional[int] = None,  # computed here; param for contract parity
-    ) -> str:
-        started_at = time.monotonic()
+    async def _plan_turn(self, text: str, attachments: list[Attachment] | None) -> _TurnPlan:
+        """Everything that must be settled before any vendor is asked to serve.
 
-        # Peek at recent history BEFORE mirroring this turn: if our last
-        # message asked a question and this reply is short, it's the ANSWER to
-        # that question. That fact drives three defenses against the
-        # cross-vendor cold-handoff misattribution (a brief reply getting
-        # rebound to an earlier, similar-shaped item after a failover):
-        # anchoring the reply (Fix 1b), skipping auto-RAG (Fix 3), and keeping
-        # the answer on the vendor that asked (Fix 4).
+        Peeks at recent history BEFORE mirroring this turn: if our last message
+        asked a question and this reply is short, it is the ANSWER to that
+        question. That one fact drives three defenses against cross-vendor
+        cold-handoff misattribution (a brief reply getting rebound to an
+        earlier, similar-shaped item after a failover): anchoring the reply
+        (Fix 1b), skipping auto-RAG (Fix 3), and keeping the answer on the
+        vendor that asked (Fix 4).
+        """
         prior_rows = await self._recent_safe(PRIOR_PEEK_ROWS)
         open_q = self._prior_open_assistant(prior_rows)
         answering_open_q = open_q is not None and self._is_short_answer(text, attachments)
 
-        # Auto-RAG: fetch relevant long-term memories for THIS message before
-        # anything is mirrored (recall runs on the raw user text). Skipped for
-        # a bare answer to an open question — recall on a one-liner like "Maya
-        # credit card" pulls loosely-related memories that can re-anchor the
-        # reply to the wrong transaction (Fix 3); the open question already
-        # carries the context that matters.
+        # Auto-RAG: relevant long-term memories for THIS message, fetched
+        # before anything is mirrored (recall runs on the raw user text).
+        # Skipped for a bare answer to an open question — recall on a one-liner
+        # like "Maya credit card" pulls loosely-related memories that can
+        # re-anchor the reply to the wrong transaction (Fix 3); the open
+        # question already carries the context that matters.
         memory_block = ""
         if self._memory_recaller is not None and not answering_open_q:
             try:
@@ -236,7 +300,7 @@ class CascadingAgent(Agent):
         # (Postgres blip), client-side-history vendors must not serve — they
         # assemble their entire context, including THIS message, from the
         # mirror, and would answer blind without any user-facing signal.
-        user_row_id: Optional[int] = None
+        user_row_id: int | None = None
         mirror_ok = True
         try:
             user_row_id = await self._history.append(
@@ -249,34 +313,6 @@ class CascadingAgent(Agent):
             mirror_ok = False
             log.exception("could not mirror user turn to chat_history")
 
-        # Wrap the tool-use callback so every tool CALL lands in the mirror
-        # (between the user row and the assistant row — chronological).
-        tool_calls = 0
-        tool_names: list[str] = []
-
-        async def _mirror_tool_use(tool_name: str, args: dict[str, Any]) -> None:
-            nonlocal tool_calls
-            tool_calls += 1
-            tool_names.append(tool_name)
-            if on_tool_use is not None:
-                try:
-                    await on_tool_use(tool_name, dict(args))
-                except Exception:
-                    pass
-            try:
-                arg_str = json.dumps(args, default=str)
-                if len(arg_str) > 300:
-                    arg_str = arg_str[:300] + "…"
-                await self._history.append(
-                    persona_id=self._persona_id,
-                    chat_id=self._chat_id,
-                    role="system",
-                    content=f"[tool] {tool_name} {arg_str}",
-                    metadata={"tool_use": tool_name},
-                )
-            except Exception:
-                log.debug("could not mirror tool use", exc_info=True)
-
         # Vendors in configured order, healthy ones first. If the board says
         # everyone is down, try the full chain anyway — a stale cooldown must
         # never brick the bot.
@@ -287,25 +323,129 @@ class CascadingAgent(Agent):
 
         # Fix 4 — sticky vendor: an answer to an open question is best resolved
         # by the vendor that asked it (it holds that turn in-session / built it
-        # from the same mirror view). Bias it to the front when it's available;
-        # if it's down, the chain falls through as usual and the anchor +
-        # cold-session digest below carry the context to whoever serves.
-        if answering_open_q:
-            sticky = (open_q.get("metadata") or {}).get("vendor")
-            candidates = self._prefer_vendor(candidates, sticky)
+        # from the same mirror view). Bias it to the front when available; if
+        # it is down the chain falls through as usual, and the anchor plus the
+        # cold-session digest carry the context to whoever serves.
+        if answering_open_q and open_q is not None:
+            candidates = self._prefer_vendor(
+                candidates, (open_q.get("metadata") or {}).get("vendor")
+            )
 
         # Fix 1b — anchor: name the exact open question this reply answers, so
         # no serving vendor (cold session or not) can rebind it to an earlier
-        # topic. Seed watermark for a server-side vendor with no high-water
-        # mark (Fix 1a — cold session after a restart): give it a bounded
-        # recent tail so the open exchange is present even though its resumed
-        # session predates these turns.
-        anchor = self._active_exchange_anchor(open_q) if answering_open_q else ""
-        cold_tail_after_id = (
-            prior_rows[0]["id"] - 1 if prior_rows else None
+        # topic. The tail seeds a server-side vendor with no high-water mark
+        # (Fix 1a — cold session after a restart) with a bounded recent slice,
+        # so the open exchange is present even though its resumed session
+        # predates these turns.
+        return _TurnPlan(
+            memory_block=memory_block,
+            user_row_id=user_row_id,
+            mirror_ok=mirror_ok,
+            candidates=candidates,
+            anchor=(
+                self._active_exchange_anchor(open_q)
+                if answering_open_q and open_q is not None else ""
+            ),
+            cold_tail_after_id=prior_rows[0]["id"] - 1 if prior_rows else None,
         )
 
-        last_exc: Optional[BaseException] = None
+    async def _rotate_if_pending(self, vendor: str, agent: Agent) -> None:
+        """Start a fresh session for a vendor whose history was compacted underneath it."""
+        if vendor not in self._pending_rotation:
+            return
+        if isinstance(agent, SessionResettable):
+            await agent.reset_session()
+            # Watermark 0 makes the digest replay the whole post-compaction
+            # mirror (summary row + kept tail) into the fresh session's first
+            # turn — seeded exactly once, since success bumps the watermark.
+            self._last_seen_row_id[vendor] = 0
+            log.info("%s: session rotated after compaction", vendor)
+        self._pending_rotation.discard(vendor)
+
+    async def _accept(
+        self,
+        vendor: str,
+        agent: Agent,
+        reply: str,
+        trace: _ToolTrace,
+        started_at: float,
+        failovers: int,
+    ) -> None:
+        """Record a turn that worked: who served it, that they are healthy, and the reply."""
+        if vendor != self._active_vendor:
+            log.warning("active vendor: %s → %s", self._active_vendor, vendor)
+        self._active_vendor = vendor
+        self._board.mark_healthy(vendor)
+
+        assistant_row_id: int | None = None
+        try:
+            assistant_row_id = await self._history.append(
+                persona_id=self._persona_id,
+                chat_id=self._chat_id,
+                role="assistant",
+                content=reply,
+                metadata={"vendor": vendor, "agent": agent.__class__.__name__},
+            )
+        except Exception:
+            log.exception("could not mirror assistant turn to chat_history")
+        if assistant_row_id is not None:
+            self._last_seen_row_id[vendor] = assistant_row_id
+
+        self.last_turn_tool_calls = trace.calls
+        self.last_turn_tool_names = tuple(trace.names)
+        self._spawn_bg(self._log_turn_safe(
+            vendor, agent, "ok", started_at, trace.calls, failovers,
+        ))
+        self._spawn_bg(self._maybe_compact())
+
+    def _all_failed(
+        self,
+        candidates: list[tuple[str, Agent]],
+        mirror_ok: bool,
+        last_exc: BaseException | None,
+        trace: _ToolTrace,
+        started_at: float,
+        failovers: int,
+    ) -> UsageLimitError:
+        """Log the dead turn and build the error that explains it."""
+        self._spawn_bg(self._log_turn_safe(
+            self._active_vendor, self._agent_by_name(self._active_vendor),
+            "error", started_at, trace.calls, failovers,
+            error=str(last_exc or "unknown"),
+        ))
+        detail = f"all {len(candidates)} vendor(s) failed for this turn"
+        if not mirror_ok:
+            detail += (
+                " (the conversation mirror is unavailable — is Postgres up? — "
+                "so vendors that rebuild context from it were skipped)"
+            )
+        error = UsageLimitError(detail)
+        error.__cause__ = last_exc
+        return error
+
+    async def send(
+        self,
+        text: str,
+        on_tool_use: ToolUseCallback | None = None,
+        attachments: list[Attachment] | None = None,
+        current_row_id: int | None = None,
+    ) -> str:
+        # Recomputed below per delegated vendor; accepted for contract parity.
+        del current_row_id
+        started_at = time.monotonic()
+
+        plan = await self._plan_turn(text, attachments)
+        memory_block = plan.memory_block
+        user_row_id = plan.user_row_id
+        mirror_ok = plan.mirror_ok
+        candidates = plan.candidates
+        anchor = plan.anchor
+        cold_tail_after_id = plan.cold_tail_after_id
+
+        trace = _ToolTrace(self._history, self._persona_id, self._chat_id, on_tool_use)
+        _mirror_tool_use = trace.record
+
+        last_exc: BaseException | None = None
         failovers = 0
         for vendor, agent in candidates:
             if not mirror_ok and not agent.USES_SERVER_SIDE_HISTORY:
@@ -316,16 +456,7 @@ class CascadingAgent(Agent):
                 continue
             try:
                 await self._ensure_started(vendor)
-                if vendor in self._pending_rotation:
-                    if isinstance(agent, SessionResettable):
-                        await agent.reset_session()
-                        # Watermark 0 makes the digest below replay the whole
-                        # post-compaction mirror (summary row + kept tail)
-                        # into the fresh session's first turn — seeded exactly
-                        # once, since success bumps the watermark.
-                        self._last_seen_row_id[vendor] = 0
-                        log.info("%s: session rotated after compaction", vendor)
-                    self._pending_rotation.discard(vendor)
+                await self._rotate_if_pending(vendor, agent)
                 outgoing = await self._compose_outgoing(
                     vendor, agent, text, memory_block, user_row_id,
                     anchor=anchor, cold_tail_after_id=cold_tail_after_id,
@@ -336,7 +467,7 @@ class CascadingAgent(Agent):
                 )
             except asyncio.CancelledError:
                 self._spawn_bg(self._log_turn_safe(
-                    vendor, agent, "cancelled", started_at, tool_calls, failovers,
+                    vendor, agent, "cancelled", started_at, trace.calls, failovers,
                 ))
                 raise
             except UsageLimitError as e:
@@ -377,60 +508,25 @@ class CascadingAgent(Agent):
                 self._board.mark_failed(vendor)
                 log.warning("%s returned an empty reply; advancing chain", vendor)
                 self._spawn_bg(self._log_turn_safe(
-                    vendor, agent, "error", started_at, tool_calls, failovers,
+                    vendor, agent, "error", started_at, trace.calls, failovers,
                 ))
                 continue
 
-            # ---- success ----
-            if vendor != self._active_vendor:
-                log.warning("active vendor: %s → %s", self._active_vendor, vendor)
-            self._active_vendor = vendor
-            self._board.mark_healthy(vendor)
-
-            assistant_row_id: Optional[int] = None
-            try:
-                assistant_row_id = await self._history.append(
-                    persona_id=self._persona_id,
-                    chat_id=self._chat_id,
-                    role="assistant",
-                    content=reply,
-                    metadata={"vendor": vendor, "agent": agent.__class__.__name__},
-                )
-            except Exception:
-                log.exception("could not mirror assistant turn to chat_history")
-            if assistant_row_id is not None:
-                self._last_seen_row_id[vendor] = assistant_row_id
-
-            self.last_turn_tool_calls = tool_calls
-            self.last_turn_tool_names = tuple(tool_names)
-            self._spawn_bg(self._log_turn_safe(
-                vendor, agent, "ok", started_at, tool_calls, failovers,
-            ))
-            self._spawn_bg(self._maybe_compact())
+            await self._accept(vendor, agent, reply, trace, started_at, failovers)
             return reply
 
-        # All candidates failed.
-        self._spawn_bg(self._log_turn_safe(
-            self._active_vendor, self._agent_by_name(self._active_vendor),
-            "error", started_at, tool_calls, failovers,
-            error=str(last_exc or "unknown"),
-        ))
-        detail = f"all {len(candidates)} vendor(s) failed for this turn"
-        if not mirror_ok:
-            detail += (
-                " (the conversation mirror is unavailable — is Postgres up? — "
-                "so vendors that rebuild context from it were skipped)"
-            )
-        raise UsageLimitError(detail) from last_exc
+        raise self._all_failed(candidates, mirror_ok, last_exc, trace, started_at, failovers)
 
     # ---- Layer 4: tool-calling canary ----
 
     async def run_canary(self) -> dict[str, tuple[bool, str]]:
-        """Probe each vendor that supports probing (chat-completions backends)
-        to confirm it actually calls tools, recording results on the shared
-        health board so /status can surface a silently-regressed vendor.
+        """Probe each vendor that supports it, to confirm it still calls tools.
+
+        Chat-completions backends only. Records results on the shared health
+        board so /status can surface a silently-regressed vendor.
         Claude/native agents are assumed capable (they're the reliable
-        fallback) and skipped."""
+        fallback) and skipped.
+        """
         results: dict[str, tuple[bool, str]] = {}
         for name, agent in self._chain:
             if not isinstance(agent, ToolCallProbe):
@@ -445,11 +541,12 @@ class CascadingAgent(Agent):
         return results
 
     async def prewarm(self) -> None:
-        """Warm each backend's prompt cache off the hot path (see
-        ChatCompletionsAgent.prewarm). Runs at startup alongside the canary,
-        so the first real turn after a restart isn't the one that pays the
-        cold prefill. Vendors that don't implement it are skipped — hosted
-        ones have nothing to gain."""
+        """Warm each backend's prompt cache off the hot path (see ChatCompletionsAgent.prewarm).
+
+        Runs at startup alongside the canary, so the first real turn after a restart isn't the one
+        that pays the cold prefill. Vendors that don't implement it are skipped — hosted ones have
+        nothing to gain.
+        """
         for name, agent in self._chain:
             warm = getattr(agent, "prewarm", None)
             if warm is None:
@@ -463,22 +560,27 @@ class CascadingAgent(Agent):
     # ---- reset hook (called by the orchestrator's /reset) ----
 
     async def reset_history(self) -> int:
-        """Archive the chat's mirror so client-side vendors start clean too
-        (B4). The orchestrator also drops the Claude session id."""
+        """Archive the chat's mirror so client-side vendors start clean too (B4).
+
+        The orchestrator also drops the Claude session id.
+        """
         self._last_seen_row_id.clear()
         return await self._history.reset(self._persona_id, self._chat_id)
 
     # ---- internals ----
 
-    def _agent_by_name(self, name: str) -> Optional[Agent]:
+    def _agent_by_name(self, name: str) -> Agent | None:
         for n, a in self._chain:
             if n == name:
                 return a
         return None
 
     async def _recent_safe(self, limit: int) -> list[dict[str, Any]]:
-        """Recent active rows, chronological; [] on any read failure (a mirror
-        blip must never break a turn — the callers all degrade gracefully)."""
+        """Recent active rows, chronological; [] on any read failure.
+
+        A mirror blip must never break a turn — the callers all degrade
+        gracefully.
+        """
         try:
             return await self._history.recent(
                 self._persona_id, self._chat_id, limit=limit,
@@ -490,12 +592,15 @@ class CascadingAgent(Agent):
     @staticmethod
     def _prior_open_assistant(
         rows: list[dict[str, Any]],
-    ) -> Optional[dict[str, Any]]:
-        """The most recent non-system row, if it's an assistant turn that asked
-        something (an open question awaiting the user's answer). System rows
-        (mirrored tool calls) are skipped — they sit between the assistant's
+    ) -> dict[str, Any] | None:
+        """Find the open question the last assistant turn left hanging.
+
+        The most recent non-system row, if it's an assistant turn that asked
+        something. System rows (mirrored tool calls) are skipped — they sit
+        between the assistant's
         reply and the next user message. Returns None if the last real turn was
-        the user's own, a summary, or an assistant statement with no question."""
+        the user's own, a summary, or an assistant statement with no question.
+        """
         for r in reversed(rows):
             if r.get("role") == "system":
                 continue
@@ -505,9 +610,11 @@ class CascadingAgent(Agent):
         return None
 
     @staticmethod
-    def _is_short_answer(text: str, attachments: Optional[list] = None) -> bool:
-        """A brief, topicless reply that answers rather than opens. Messages
-        carrying attachments are new content, never a bare answer."""
+    def _is_short_answer(text: str, attachments: list[Any] | None = None) -> bool:
+        """Report whether this is a brief, topicless reply that answers rather than opens.
+
+        Messages carrying attachments are new content, never a bare answer.
+        """
         if attachments:
             return False
         t = (text or "").strip()
@@ -519,8 +626,8 @@ class CascadingAgent(Agent):
     @staticmethod
     def _active_exchange_anchor(open_q: dict[str, Any]) -> str:
         q = (open_q.get("content") or "").strip()
-        if len(q) > 500:
-            q = q[:500] + "…"
+        if len(q) > _MAX_ANCHORED_QUESTION:
+            q = q[:_MAX_ANCHORED_QUESTION] + "…"
         return (
             "[You just asked the user this — their message below is the answer "
             "to THIS specific question. Do not re-interpret it as being about "
@@ -530,7 +637,7 @@ class CascadingAgent(Agent):
 
     @staticmethod
     def _prefer_vendor(
-        candidates: list[tuple[str, Agent]], vendor: Optional[str],
+        candidates: list[tuple[str, Agent]], vendor: str | None,
     ) -> list[tuple[str, Agent]]:
         """Move `vendor` to the front if it's among the candidates."""
         if not vendor:
@@ -548,7 +655,7 @@ class CascadingAgent(Agent):
         self._started[vendor] = True
 
     def _now_line(self) -> str:
-        """The wall-clock time, stamped on every outgoing turn.
+        """Render the wall-clock time that gets stamped on every outgoing turn.
 
         WITHOUT this the model has no clock at all — it answers "what time is
         it" from training data and insists its time "doesn't update live",
@@ -587,20 +694,23 @@ class CascadingAgent(Agent):
         agent: Agent,
         text: str,
         memory_block: str,
-        user_row_id: Optional[int],
+        user_row_id: int | None,
         anchor: str = "",
-        cold_tail_after_id: Optional[int] = None,
+        cold_tail_after_id: int | None = None,
     ) -> str:
-        """Prefix the outgoing text with (a) a missed-turns digest when this
-        vendor keeps server-side history and either has a high-water mark OR
-        is cold (fresh process, resumed-but-stale session — Fix 1a), and
+        """Prefix the outgoing text with a missed-turns digest and recalled memory.
+
+        (a) The digest goes on when this vendor keeps server-side history and
+        either has a high-water mark OR is cold (fresh process,
+        resumed-but-stale session — Fix 1a), and
         (b) the auto-recalled memory block. `anchor`, when set, names the open
-        question this reply answers and sits immediately above the user text."""
+        question this reply answers and sits immediately above the user text.
+        """
         body = f"{anchor}\n\n{text}" if anchor else text
         body = f"{self._now_line()}\n\n{body}"
         if agent.USES_SERVER_SIDE_HISTORY:
             if vendor in self._last_seen_row_id:
-                after_id: Optional[int] = self._last_seen_row_id[vendor]
+                after_id: int | None = self._last_seen_row_id[vendor]
             elif cold_tail_after_id is not None:
                 # No watermark yet: its resumed session may be behind the
                 # mirror (turns served by other vendors never reached it).
@@ -619,8 +729,8 @@ class CascadingAgent(Agent):
         vendor: str,
         text: str,
         memory_block: str,
-        user_row_id: Optional[int],
-        after_id: Optional[int] = None,
+        user_row_id: int | None,
+        after_id: int | None = None,
     ) -> str:
         start_id = after_id if after_id is not None else self._last_seen_row_id[vendor]
         try:
@@ -681,9 +791,11 @@ class CascadingAgent(Agent):
             f"{memory_block}\n]\n\n{text}"
         )
 
-    def _spawn_bg(self, coro) -> None:
-        """Fire-and-forget with a held reference (a bare create_task can be
-        garbage-collected mid-flight)."""
+    def _spawn_bg(self, coro: Coroutine[Any, Any, Any]) -> None:
+        """Fire-and-forget with a held reference.
+
+        A bare create_task can be garbage-collected mid-flight.
+        """
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
@@ -691,7 +803,7 @@ class CascadingAgent(Agent):
     async def _log_turn_safe(
         self,
         vendor: str,
-        agent: Optional[Agent],
+        agent: Agent | None,
         status: str,
         started_at: float,
         tool_calls: int,
@@ -701,17 +813,19 @@ class CascadingAgent(Agent):
         usage = dict(getattr(agent, "last_turn_usage", None) or {})
         try:
             await self._history.log_turn(
-                persona_id=self._persona_id,
-                chat_id=self._chat_id,
-                vendor=vendor,
-                model=(agent.model_name if agent else ""),
-                status=status,
-                latency_ms=int((time.monotonic() - started_at) * 1000),
-                input_tokens=usage.get("input_tokens"),
-                output_tokens=usage.get("output_tokens"),
-                tool_calls=tool_calls,
-                failovers=failovers,
-                error=error,
+                self._persona_id,
+                self._chat_id,
+                TurnRecord(
+                    vendor=vendor,
+                    model=(agent.model_name if agent else ""),
+                    status=status,
+                    latency_ms=int((time.monotonic() - started_at) * 1000),
+                    input_tokens=usage.get("input_tokens"),
+                    output_tokens=usage.get("output_tokens"),
+                    tool_calls=tool_calls,
+                    failovers=failovers,
+                    error=error,
+                ),
             )
         except Exception:
             log.debug("turn_log write failed", exc_info=True)

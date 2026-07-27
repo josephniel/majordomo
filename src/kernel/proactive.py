@@ -17,14 +17,31 @@ the host providing `_trigger_sources` and `_run_trigger()`.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-from ports import TriggerContext, TriggerEvent
+from ports import TriggerContext
+
+if TYPE_CHECKING:
+    from ports import TriggerEvent, TriggerSource
 
 log = logging.getLogger(__name__)
 
 
 class ProactiveMixin:
     """Trigger-source lifecycle for the orchestrator."""
+
+    # ---- supplied by the host (ConversationOrchestrator) ----
+    #
+    # These were a docstring promise. A mixin that reads `self._platform`
+    # without declaring it is only correct as long as every host happens to
+    # define it, which no tool was checking — ARCHITECTURE-NOTES flagged this
+    # coupling as "documented only in prose", and prose does not fail a
+    # build. Declared under TYPE_CHECKING so they stay annotations: the host
+    # owns the real attributes, this block only states what is required.
+    if TYPE_CHECKING:
+        _trigger_sources: list[TriggerSource]
+
+        async def _run_trigger(self, event: TriggerEvent) -> bool: ...
 
     async def _start_trigger_sources(self) -> None:
         """Start every configured source.
@@ -59,8 +76,10 @@ class ProactiveMixin:
                 add_cron = source.add_cron
 
     async def _stop_trigger_sources(self) -> None:
-        """Stop every source, in reverse. Each failure is isolated: shutdown
-        is the one path where giving up early strands resources."""
+        """Stop every source, in reverse.
+
+        Each failure is isolated: shutdown is the one path where giving up early strands resources.
+        """
         for source in reversed(list(self._trigger_sources)):
             try:
                 await source.stop()
@@ -68,6 +87,8 @@ class ProactiveMixin:
                 log.exception("trigger source %r failed to stop", source.name)
 
     def _describe_triggers(self) -> list[str]:
-        """Source names, for /status and boot logs. Previously unanswerable
-        without knowing the four attribute names by heart."""
+        """Source names, for /status and boot logs.
+
+        Previously unanswerable without knowing the four attribute names by heart.
+        """
         return [s.name for s in self._trigger_sources]

@@ -1,4 +1,4 @@
-"""Eval harness: does vendor X still call the right tool for prompt Y?
+"""Eval harness — whether vendor X still calls the right tool for prompt Y.
 
 The reliability layers (subsetting, hallucination detectors, recovery) all
 exist because free-tier vendors are flaky tool-callers — and vendor/model
@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 
@@ -59,9 +60,9 @@ EVAL_SYSTEM_PROMPT = (
 class EvalCase:
     name: str
     prompt: str
-    expect_tool: Optional[str] = None   # substring of a called tool name
+    expect_tool: str | None = None   # substring of a called tool name
     expect_no_tool: bool = False
-    reply_matches: Optional[str] = None  # regex over the reply
+    reply_matches: str | None = None  # regex over the reply
     # Prior turns, oldest first, as (role, content) with role user|assistant.
     # Seeded into the conversation mirror before `prompt` is sent, so a case
     # can reproduce a CONTEXT-DEPENDENT failure — the class of bug that
@@ -82,7 +83,7 @@ class CaseResult:
 class _EvalRegistry:
     """ServiceRegistry stand-in: no external profiles exist in evals."""
 
-    def load_enabled(self):
+    def load_enabled(self) -> list[Any]:
         return []
 
 
@@ -92,7 +93,7 @@ class _EvalPersona:
     model = None
     system_prompt = EVAL_SYSTEM_PROMPT
 
-    def allowed_tool_names(self, _connector):
+    def allowed_tool_names(self, _connector: Any) -> list[str] | None:
         return None  # all tools
 
 
@@ -118,6 +119,10 @@ def load_cases(path: Path) -> list[EvalCase]:
             history=history,
         ))
     return cases
+
+
+# One retry for a per-minute cap; a second failure is a real vendor finding.
+_TPM_RETRIES = 2
 
 
 async def run_case(vendor: str, case: EvalCase) -> CaseResult:
@@ -163,17 +168,15 @@ async def run_case(vendor: str, case: EvalCase) -> CaseResult:
                 # finding: fail fast, that's the signal this harness exists
                 # to surface.
                 transient = "tokens per minute" in msg or "TPM" in msg
-                if attempt < 2 and transient:
+                if attempt < _TPM_RETRIES and transient:
                     print(f"       {vendor}: TPM limited; waiting 20s…")
                     await asyncio.sleep(20)
                     continue
-                short = msg.split("Please retry")[0][:200]
+                short = msg.split("Please retry", maxsplit=1)[0][:200]
                 return CaseResult(vendor, case, False, f"vendor error: {short}")
     finally:
-        try:
+        with contextlib.suppress(Exception):
             await agent.stop()
-        except Exception:
-            pass
 
     called = [name for f in fakes for name, _ in f.calls]
     passed, detail = judge(case, called, reply)
@@ -214,7 +217,7 @@ async def run_evals(vendors: list[str], cases: list[EvalCase]) -> list[CaseResul
     return results
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     import os
     parser = argparse.ArgumentParser(description="Vendor tool-calling evals.")
     parser.add_argument("--persona", default=None,

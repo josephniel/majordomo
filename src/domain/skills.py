@@ -38,15 +38,20 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import yaml
 
-from ports import Faculty, ToolContext, ToolResult, tool
+from ports import Faculty, ToolContext, ToolResult, ToolSpec, tool
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# "---", front matter, body: a well-formed header splits into three.
+_FRONTMATTER_PARTS = 3
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 
@@ -64,7 +69,7 @@ class Skill:
     always: bool = False
 
 
-def _parse_skill(path: Path) -> Optional[Skill]:
+def _parse_skill(path: Path) -> Skill | None:
     try:
         text = path.read_text(encoding="utf-8")
     except Exception:
@@ -74,7 +79,7 @@ def _parse_skill(path: Path) -> Optional[Skill]:
     body = text.strip()
     if text.startswith("---"):
         parts = text.split("---", 2)
-        if len(parts) >= 3:
+        if len(parts) >= _FRONTMATTER_PARTS:
             try:
                 meta = yaml.safe_load(parts[1]) or {}
                 if not isinstance(meta, dict):
@@ -89,15 +94,25 @@ def _parse_skill(path: Path) -> Optional[Skill]:
         name=path.stem,
         description=str(meta.get("description") or "").strip(),
         body=body,
-        keywords=tuple(str(k).strip().lower() for k in (meta.get("keywords") or []) if str(k).strip()),
+        keywords=tuple(
+            str(k).strip().lower() for k in (meta.get("keywords") or []) if str(k).strip()
+        ),
         always=bool(meta.get("always")),
     )
 
 
 class SkillsLibrary(Faculty):
     name = "skills"
-    TRIGGER_KEYWORDS = ("skill", "always", "never", "remember how",
-                        "from now on", "procedure", "instructions", "teach")
+    TRIGGER_KEYWORDS = (
+        "skill",
+        "always",
+        "never",
+        "remember how",
+        "from now on",
+        "procedure",
+        "instructions",
+        "teach",
+    )
     # Self-written skills mutate the agent's own standing instructions —
     # that's a write to the most privileged surface there is. Gate them.
     WRITE_TOOLS = frozenset({"skill_save", "skill_delete"})
@@ -106,7 +121,7 @@ class SkillsLibrary(Faculty):
     # from `context_version` (which tracks note mtimes) being overridden
     # below — there is no separate flag to keep in sync. See
     # ToolProvider.has_mutable_prompt_section.
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "skill_read": "Reading a skill note",
         "skill_save": "Saving a skill note",
         "skill_delete": "Deleting a skill note",
@@ -117,7 +132,7 @@ class SkillsLibrary(Faculty):
 
     # ---- scanning ----
 
-    def _scan(self) -> list[Skill]:
+    def all_skills(self) -> list[Skill]:
         if not self._dir.is_dir():
             return []
         skills = []
@@ -132,9 +147,11 @@ class SkillsLibrary(Faculty):
     # ---- Connector contract ----
 
     def context_version(self) -> int:
-        """Sum of file mtimes: any edit/add/remove moves the number, which
-        makes the orchestrator rebuild stale agents (same mechanism memory
-        recompaction uses)."""
+        """Sum of file mtimes: any edit/add/remove moves the number.
+
+        That makes the orchestrator rebuild stale agents (the same mechanism
+        memory recompaction uses).
+        """
         if not self._dir.is_dir():
             return 0
         total = 0
@@ -148,24 +165,28 @@ class SkillsLibrary(Faculty):
         return total
 
     def system_prompt_section(self) -> str:
-        skills = self._scan()
+        skills = self.all_skills()
         lines = [
             "== Skills ==",
             "",
-            "Instruction notes that persist across conversations. Ones "
-            "relevant to the current message are attached to it "
-            "automatically; you can read any other with the skill_read tool "
-            "when its topic comes up.",
+            (
+                "Instruction notes that persist across conversations. Ones "
+                "relevant to the current message are attached to it "
+                "automatically; you can read any other with the skill_read tool "
+                "when its topic comes up."
+            ),
             "",
-            "Learning loop: when the user corrects you for the second time "
-            "on the same thing, teaches you a procedure, or says "
-            "'always'/'never' do something, offer to save it as a skill via "
-            "skill_save (if that tool is available to you) so future "
-            "conversations get it right. The save asks the user for approval "
-            "— never claim a skill is saved unless the tool call succeeded.",
+            (
+                "Learning loop: when the user corrects you for the second time "
+                "on the same thing, teaches you a procedure, or says "
+                "'always'/'never' do something, offer to save it as a skill via "
+                "skill_save (if that tool is available to you) so future "
+                "conversations get it right. The save asks the user for approval "
+                "— never claim a skill is saved unless the tool call succeeded."
+            ),
         ]
         if not skills:
-            return "\n".join(lines + ["", "No skills saved yet."])
+            return "\n".join([*lines, "", "No skills saved yet."])
         lines += [
             "",
             "Available skills:",
@@ -178,7 +199,7 @@ class SkillsLibrary(Faculty):
             lines += ["", f"--- skill: {s.name} (always active) ---", s.body]
         return "\n".join(lines)
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         outer = self
 
         @tool(
@@ -188,14 +209,13 @@ class SkillsLibrary(Faculty):
             "'Skills').",
             {"name": str},
         )
-        async def skill_read_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def skill_read_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             wanted = str(args.get("name") or "").strip()
-            skills = {s.name: s for s in outer._scan()}
+            skills = {s.name: s for s in outer.all_skills()}
             skill = skills.get(wanted)
             if skill is None:
                 return ToolResult.error(
-                    f"no skill named {wanted!r}. Available: "
-                    f"{', '.join(sorted(skills)) or '(none)'}"
+                    f"no skill named {wanted!r}. Available: {', '.join(sorted(skills)) or '(none)'}"
                 )
             return ToolResult.ok(skill.body)
 
@@ -228,24 +248,23 @@ class SkillsLibrary(Faculty):
                     },
                     "always": {
                         "type": "boolean",
-                        "description": "inline into the system prompt on every turn (use sparingly)",
+                        "description": (
+                            "inline into the system prompt on every turn (use sparingly)"
+                        ),
                     },
                 },
                 "required": ["name", "body"],
             },
         )
-        async def skill_save_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def skill_save_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             name = str(args.get("name") or "").strip().lower()
             body = str(args.get("body") or "").strip()
             if not _NAME_RE.match(name):
-                return ToolResult.error(
-                    f"invalid skill name {name!r} (snake_case, 2-64 chars)"
-                )
+                return ToolResult.error(f"invalid skill name {name!r} (snake_case, 2-64 chars)")
             if not body:
                 return ToolResult.error("skill body is empty")
             keywords = [
-                str(k).strip().lower()
-                for k in (args.get("keywords") or []) if str(k).strip()
+                str(k).strip().lower() for k in (args.get("keywords") or []) if str(k).strip()
             ]
             fm = {"description": str(args.get("description") or "").strip()}
             if keywords:
@@ -268,7 +287,7 @@ class SkillsLibrary(Faculty):
             "Delete one of your skill notes by name.",
             {"name": str},
         )
-        async def skill_delete_tool(args: dict[str, Any], _ctx: ToolContext):
+        async def skill_delete_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             name = str(args.get("name") or "").strip().lower()
             path = outer._dir / f"{name}.md"
             if not _NAME_RE.match(name) or not path.exists():
@@ -281,7 +300,7 @@ class SkillsLibrary(Faculty):
 
         return [skill_read_tool, skill_save_tool, skill_delete_tool]
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     # ---- per-turn injection (rides the CascadingAgent recaller hook) ----
@@ -291,14 +310,15 @@ class SkillsLibrary(Faculty):
         return await self.auto_inject(text)
 
     async def auto_inject(self, text: str) -> str:
-        """Skills whose keywords appear in the user's message, formatted as a
-        context block. `always` skills are excluded — they already live in
-        the system prompt."""
+        """Skills whose keywords appear in the user's message, formatted as a context block.
+
+        `always` skills are excluded — they already live in the system prompt.
+        """
         haystack = (text or "").lower()
         if not haystack:
             return ""
         picked: list[Skill] = []
-        for skill in self._scan():
+        for skill in self.all_skills():
             if skill.always or not skill.keywords:
                 continue
             if any(k in haystack for k in skill.keywords):

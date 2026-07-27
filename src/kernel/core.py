@@ -18,14 +18,15 @@ ambient state.)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections import deque
-from typing import Any, Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
-from adapters.model import Agent, ConversationHistory
+from adapters.chat import ChatPlatform, InboundMessage
 from adapters.comms import CommsLog, CommsRelay
-from adapters.tools import ServiceRegistry
 from ports import (
     CanaryRunner,
     Connector,
@@ -34,23 +35,66 @@ from ports import (
     TriggerEvent,
     TriggerSource,
 )
-from domain import ReflectionEngine
-from adapters.chat import ChatPlatform, InboundMessage
 
 from .commands import CommandsMixin
 from .formatting import chunk_for_platform, is_cancel_intent
 from .ingestion import ingest_attachments
 from .proactive import ProactiveMixin
 from .recovery import RecoveryMixin
-from .sessions import SessionStore
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from adapters.comms.status_report import StatusReporter
+    from adapters.model import Agent, Attachment, ConversationHistory, ToolUseCallback
+    from adapters.tools import ServiceRegistry, WriteApprovalGate
+    from domain import ReflectionEngine
+
+    from .sessions import SessionStore
 
 log = logging.getLogger(__name__)
+
+# "mcp__<server>__<tool>" — anything shorter is not a namespaced tool name.
+_MCP_NAME_PARTS = 3
 
 # Flood control: max user-initiated turns per chat per window. Generous for a
 # personal bot; the point is stopping runaway loops (forwarded-message storms,
 # a peer bot gone chatty), not throttling a human.
 RATE_LIMIT_MAX_TURNS = 15
 RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+
+@dataclass(frozen=True)
+class OptionalSubsystems:
+    """Everything a persona can run without.
+
+    Grouped rather than listed as seven defaulted constructor parameters, so
+    that what the orchestrator REQUIRES stays visible: a platform, a way to
+    build agents, somewhere to keep sessions, a registry, connectors, and an
+    identity. Everything here is absent on some persona, and every use of it
+    is already guarded.
+    """
+
+    comms_log: CommsLog | None = None
+    conversation_history: ConversationHistory | None = None
+    reflection: ReflectionEngine | None = None
+    status_reporter: StatusReporter | None = None
+
+    # Every way this agent can be woken without the user typing. The
+    # orchestrator knows only the contract — not that heartbeats, webhooks or
+    # mail watches exist.
+    trigger_sources: list[TriggerSource] = field(default_factory=list)
+
+    # Resolves TriggerAgent.DEDICATED. Injected rather than derived so the
+    # orchestrator never has to know which model background work runs on —
+    # that is the composition root's call (see ModelRole.BACKGROUND). Falls
+    # back to the chat agent when absent, which keeps triggers working
+    # (expensively) rather than failing shut.
+    background_agent_factory: Callable[[ConversationRef], Agent] | None = None
+
+    # Read-only, and only to tell a WAITING turn from a WORKING one — see
+    # _pending_approval_notice. The orchestrator never approves anything.
+    approval_gate: WriteApprovalGate | None = None
 
 
 class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
@@ -65,19 +109,16 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
     def __init__(
         self,
         platform: ChatPlatform,
-        agent_factory,
+        # Keyword-called with (chat_id, session_id?) — see create_agent, whose
+        # other parameters carry defaults the orchestrator never sets.
+        agent_factory: Callable[..., Agent],
         session_store: SessionStore,
         config: ServiceRegistry,
         connectors_list: list[Connector],
         persona_id: str,
-        comms_log: Optional[CommsLog] = None,
-        conversation_history: Optional[ConversationHistory] = None,
-        reflection: Optional[ReflectionEngine] = None,
-        status_reporter=None,  # comms.status_report.StatusReporter | None
-        trigger_sources: Optional[list[TriggerSource]] = None,
-        background_agent_factory=None,  # (ConversationRef) -> Agent
-        approval_gate=None,  # adapters.tools.WriteApprovalGate | None
+        optional: OptionalSubsystems | None = None,
     ) -> None:
+        optional = optional or OptionalSubsystems()
         self._platform = platform
         # agent_factory(chat_id, session_id) -> Agent
         self._agent_factory = agent_factory
@@ -85,46 +126,36 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._config = config
         self._connectors = connectors_list
         self._persona_id = persona_id
-        self._comms_log = comms_log
-        self._conversation_history = conversation_history
-        self._reflection = reflection
-        self._status_reporter = status_reporter
-        # Every way this agent can be woken without the user typing. The
-        # orchestrator knows only the contract — not that heartbeats,
-        # webhooks or mail watches exist.
-        self._trigger_sources: list[TriggerSource] = list(trigger_sources or [])
-        # Resolves TriggerAgent.DEDICATED. Injected rather than derived so
-        # the orchestrator never has to know which model background work runs
-        # on — that is the composition root's call (see ModelRole.BACKGROUND).
-        # Falls back to the chat agent when absent, which keeps triggers
-        # working (expensively) rather than failing shut.
-        self._bg_agent_factory = background_agent_factory
-        # Read-only, and only to tell a WAITING turn from a WORKING one — see
-        # _pending_approval_notice. The orchestrator never approves anything.
-        self._approval_gate = approval_gate
-        self._relay: Optional[CommsRelay] = (
-            CommsRelay(comms_log, persona_id, self._on_peer_message)
-            if comms_log is not None else None
+        self._comms_log = optional.comms_log
+        self._conversation_history = optional.conversation_history
+        self._reflection = optional.reflection
+        self._status_reporter = optional.status_reporter
+        self._trigger_sources: list[TriggerSource] = list(optional.trigger_sources)
+        self._bg_agent_factory = optional.background_agent_factory
+        self._approval_gate = optional.approval_gate
+        self._relay: CommsRelay | None = (
+            CommsRelay(optional.comms_log, persona_id, self._on_peer_message)
+            if optional.comms_log is not None else None
         )
 
         # per-instance state
-        self._agents: dict[int, Agent] = {}
-        self._session_ids: dict[int, str] = session_store.load()
+        self._agents: dict[ConversationRef, Agent] = {}
+        self._session_ids: dict[ConversationRef, str] = session_store.load()
         # chat_id -> (task, agent actually serving it). The agent rides
         # along so /cancel can interrupt the RIGHT agent — an ephemeral
         # heartbeat agent is not self._agents[chat_id].
-        self._pending_turns: dict[int, tuple[asyncio.Task, Agent]] = {}
+        self._pending_turns: dict[ConversationRef, tuple[asyncio.Task[str], Agent]] = {}
         # Per-chat lock serializes turn processing so back-to-back messages
         # don't race the shared ClaudeSDKClient (which couples query() and
         # receive_response() and would deadlock under concurrent calls).
         # Message 2 waits for message 1's reply to be delivered, then runs
         # with full context including that reply.
-        self._per_chat_locks: dict[int, asyncio.Lock] = {}
+        self._per_chat_locks: dict[ConversationRef, asyncio.Lock] = {}
         self._config_mtime: float = 0.0
         # Connector-context version each chat's agent was built against —
         # when a connector's system-prompt contribution changes (memory
         # recompaction), stale agents rebuild with the session preserved.
-        self._agent_ctx_versions: dict[int, int] = {}
+        self._agent_ctx_versions: dict[ConversationRef, int] = {}
         # Flood control: recent turn timestamps + "already warned" flag.
         self._turn_times: dict[int, deque[float]] = {}
         self._rate_warned_at: dict[int, float] = {}
@@ -219,10 +250,8 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
     async def _on_shutdown(self) -> None:
         await self._stop_trigger_sources()
         if self._status_reporter is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._status_reporter.stop()
-            except Exception:
-                pass
         if self._reflection is not None:
             self._reflection.shutdown()
         if self._relay is not None:
@@ -252,13 +281,15 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self,
         chat_id: ConversationRef,
         text: str,
-        original_message_id: Optional[int],
+        original_message_id: int | None,
     ) -> None:
-        """Bridge a peer instance's message (delivered via the comms log
-        relay) into the normal message flow. The text already arrives
-        prefixed with the originating sender's [@username]: by the source
-        instance's platform, so the agent sees the same shape it would for a
-        real platform update."""
+        """Bridge a peer instance's message into the normal message flow.
+
+        Delivered via the comms log relay. The text already arrives prefixed
+        with the originating sender's [@username]: by the source instance's
+        platform, so the agent sees the same shape it would for a
+        real platform update.
+        """
         msg = InboundMessage(
             chat_id=chat_id,
             sender_id=0,  # synthetic — relay messages have no platform user
@@ -276,13 +307,15 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         agent: Agent,
         text: str,
         *,
-        on_tool_use=None,
-        attachments=None,
+        on_tool_use: ToolUseCallback | None = None,
+        attachments: list[Attachment] | None = None,
         typing: bool = True,
     ) -> str:
-        """THE single place an agent turn runs. Registers the task in
-        _pending_turns so /cancel reaches user, scheduled, AND recovery
-        turns. Caller holds the chat lock and owns exception handling."""
+        """Run an agent turn — THE single place that happens.
+
+        Registers the task in _pending_turns so /cancel reaches user, scheduled, AND recovery turns.
+        Caller holds the chat lock and owns exception handling.
+        """
         async def _run() -> str:
             if typing:
                 async with self._platform.keep_typing(chat_id):
@@ -394,7 +427,9 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             await self._recover_missed_schedule(chat_id, reply, agent)
             await self._recover_missed_send(chat_id, reply, agent)
 
-    async def _ingest_attachments(self, chat_id: ConversationRef, text: str, msg: InboundMessage) -> str:
+    async def _ingest_attachments(
+        self, chat_id: ConversationRef, text: str, msg: InboundMessage
+    ) -> str:
         return await ingest_attachments(self._connectors, chat_id, text, msg)
 
     # ---- trigger fire ----
@@ -423,7 +458,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             # user turns do — a heartbeat-only chat must not run on a stale
             # system prompt forever.
             await self._reload_if_config_changed()
-            agent: Optional[Agent] = None
+            agent: Agent | None = None
             try:
                 if dedicated and self._bg_agent_factory is not None:
                     agent = self._bg_agent_factory(chat_id)
@@ -489,10 +524,12 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         return sum(c.context_version() for c in self._connectors)
 
     def _refresh_agent_if_stale(self, chat_id: ConversationRef) -> None:
-        """Drop this chat's agent if a connector's system-prompt contribution
-        changed since it was built (e.g. memory core recompacted). The Claude
-        session id survives — the rebuilt agent resumes it, so only the baked
-        system prompt refreshes, not the conversation (gap A2)."""
+        """Drop this chat's agent when a connector's prompt contribution moved.
+
+        E.g. the memory core recompacted. The Claude session id survives — the
+        rebuilt agent resumes it, so only the baked system prompt refreshes,
+        not the conversation (gap A2).
+        """
         agent = self._agents.get(chat_id)
         if agent is None:
             return
@@ -500,8 +537,8 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         if self._agent_ctx_versions.get(chat_id) == current:
             return
         log.info(
-            "connector context changed; rebuilding agent for chat %s "
-            "(session preserved)", chat_id,
+            "connector context changed; rebuilding agent for chat %s (session preserved)",
+            chat_id,
         )
         self._persist_session_id(chat_id, agent)
         self._spawn_agent_stop(agent)
@@ -513,6 +550,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 await agent.stop()
             except Exception:
                 log.exception("error stopping stale agent")
+
         # Hold a reference — a bare create_task can be GC'd mid-flight.
         task = asyncio.create_task(_stop())
         self._stale_agent_stops.add(task)
@@ -534,9 +572,10 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             self._per_chat_locks[chat_id] = asyncio.Lock()
         return self._per_chat_locks[chat_id]
 
-    def _pending_approval_notice(self, chat_id: ConversationRef) -> Optional[str]:
-        """What to say to a message that arrived while this chat is blocked
-        on an operator approval — or None when it isn't.
+    def _pending_approval_notice(self, chat_id: ConversationRef) -> str | None:
+        """Say what to a message that landed while an approval is blocking.
+
+        None when this chat isn't blocked.
 
         Deliberately says the tool name and how to get out. "Please wait" is
         no better than the silence it replaces; what the user needs is which
@@ -572,11 +611,12 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
 
     async def _reload_if_config_changed(self) -> None:
         """Mark every chat's agent stale when connectors.yaml changes.
-        Each chat then swaps its own agent under its OWN lock on its next
-        turn (via _refresh_agent_if_stale) — stopping all agents from here
-        would yank a client out from under another chat's in-flight turn
-        (we run with concurrent_updates, so chat B can be mid-send while
-        chat A holds only its own lock). Session ids survive the swap."""
+
+        Each chat then swaps its own agent under its OWN lock on its next turn (via
+        _refresh_agent_if_stale) — stopping all agents from here would yank a client out from under
+        another chat's in-flight turn (we run with concurrent_updates, so chat B can be mid-send
+        while chat A holds only its own lock). Session ids survive the swap.
+        """
         current = self._config.get_mtime()
         if self._config_mtime == 0.0:
             self._config_mtime = current
@@ -601,10 +641,8 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         except Exception:
             log.exception("agent.interrupt() failed")
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
-        except (asyncio.CancelledError, Exception):
-            pass
         # Identity-guarded: interrupt() may have let the turn finish
         # normally, its finally popped the entry, and a queued turn may
         # have registered since — never deregister someone else's turn.
@@ -620,11 +658,13 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             log.exception("could not deliver message to chat %s", chat_id)
 
     def _format_tool_status(self, tool_name: str, args: dict[str, Any]) -> str:
-        """Connector-registry-driven status text. Falls back to a generic
-        'Working on <server>/<tool>' for unknown tools."""
+        """Connector-registry-driven status text.
+
+        Falls back to a generic 'Working on <server>/<tool>' for unknown tools.
+        """
         if tool_name.startswith("mcp__"):
             parts = tool_name.split("__", 2)
-            if len(parts) >= 3:
+            if len(parts) >= _MCP_NAME_PARTS:
                 connector_name, local_name = parts[1], parts[2]
                 for c in self._connectors:
                     s = c.tool_status(connector_name, local_name, args)

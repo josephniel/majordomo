@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
-from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -25,13 +26,15 @@ FAILURE_COOLDOWN_SECONDS = 120       # other errors: retry sooner
 
 
 class VendorHealthBoard:
-    """Tracks per-vendor "don't retry until" timestamps. Thread-unsafe by
-    design — everything runs on one asyncio loop."""
+    """Tracks per-vendor "don't retry until" timestamps.
+
+    Thread-unsafe by design — everything runs on one asyncio loop.
+    """
 
     def __init__(
         self,
-        store_file: Optional[Path] = None,
-        on_change: Optional[callable] = None,
+        store_file: Path | None = None,
+        on_change: callable | None = None,
     ) -> None:
         self._store_file = store_file
         # Called with snapshot() after every state change — used to push
@@ -41,7 +44,7 @@ class VendorHealthBoard:
         self._cooldown_until: dict[str, float] = {}
         # vendor -> {"ok": bool, "detail": str} from the last tool-calling
         # canary (Layer 4). In-memory only; surfaced by /status.
-        self._canary: dict[str, dict] = {}
+        self._canary: dict[str, dict[str, Any]] = {}
         self._load()
 
     # ---- queries ----
@@ -53,7 +56,7 @@ class VendorHealthBoard:
         return max(0.0, self._cooldown_until.get(vendor, 0.0) - time.time())
 
     def snapshot(self) -> dict[str, float]:
-        """vendor -> seconds of cooldown remaining (only vendors cooling down)."""
+        """Vendor -> seconds of cooldown remaining (only vendors cooling down)."""
         now = time.time()
         return {
             v: round(until - now, 1)
@@ -90,7 +93,7 @@ class VendorHealthBoard:
         if not ok:
             log.warning("tool-calling canary FAILED for %s: %s", vendor, detail)
 
-    def canary_summary(self) -> dict[str, dict]:
+    def canary_summary(self) -> dict[str, dict[str, Any]]:
         return dict(self._canary)
 
     def _notify(self) -> None:
@@ -132,6 +135,6 @@ class VendorHealthBoard:
                 json.dumps({"cooldown_until": self._cooldown_until}),
                 encoding="utf-8",
             )
-            os.replace(tmp, self._store_file)
+            tmp.replace(self._store_file)
         except Exception:
             log.exception("could not persist vendor health store (continuing)")

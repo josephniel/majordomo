@@ -23,31 +23,44 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
-from uuid import UUID
 
 import asyncpg
 
-from ports import MemoryCoreEntry, MemoryEntry, Neighbor, Scored
+from ports import FactCandidate, MemoryCoreEntry, MemoryEntry, Neighbor, Scored
 
-from .embeddings import Embedder, to_pgvector as _to_pgvector
+from .embeddings import Embedder
+from .embeddings import to_pgvector as _to_pgvector
 from .reranking import Reranker
+
+if TYPE_CHECKING:
+    from datetime import datetime
+    from uuid import UUID
 
 log = logging.getLogger(__name__)
 
+# What backfill_embeddings re-embeds: everything missing an embedding, or --
+# with force -- everything not embedded by the model named in $1.
+_UNEMBEDDED = "SELECT id, title, content FROM memory_entries WHERE embedding IS NULL"
+_UNEMBEDDED_FOR_MODEL = (
+    "SELECT id, title, content FROM memory_entries "
+    "WHERE embedding IS NULL OR embedding_model IS DISTINCT FROM $1"
+)
+
 
 def redact_dsn(dsn: str) -> str:
-    """A DSN without its password, for error messages an operator may paste
-    into a chat or an issue."""
+    """Strip the password out of a DSN.
+
+    For error messages an operator may paste into a chat or an issue.
+    """
     return re.sub(r"://([^:/@]+):[^@]*@", r"://\1:***@", dsn)
 
 
 async def _embed_pg(
     embedder: Embedder, text: str, *, is_query: bool = False
-) -> Optional[str]:
+) -> str | None:
     """Compute a pgvector literal for `text` off the event loop; None on failure.
 
     `is_query` picks the query-side encoder. Retrieval is asymmetric — a short
@@ -155,18 +168,96 @@ def _entry(row: asyncpg.Record) -> MemoryEntry:
         updated_at=row["updated_at"],
         pinned=bool(row["pinned"]) if "pinned" in row else False,
         volatile=bool(row["volatile"]) if "volatile" in row else False,
-        verified_at=row["verified_at"] if "verified_at" in row else None,
+        verified_at=row.get("verified_at", None),
         # `in row` guards throughout: several read paths SELECT a projection
         # rather than *, and a KeyError here would take out recall entirely
         # over a column that has a sensible default.
-        valid_from=row["valid_from"] if "valid_from" in row else None,
-        valid_to=row["valid_to"] if "valid_to" in row else None,
-        provenance=(row["provenance"] if "provenance" in row else None) or "chat",
+        valid_from=row.get("valid_from", None),
+        valid_to=row.get("valid_to", None),
+        provenance=(row.get("provenance", None)) or "chat",
         confidence=(
             float(row["confidence"]) if "confidence" in row
             and row["confidence"] is not None else 1.0
         ),
     )
+
+
+
+# The recall query, whole. Three ranked arms over one candidate base, fused with
+# weighted RRF and nudged by recency.
+#
+# An arm switches off by having its parameter bound to NULL, which is why this
+# can be one static statement rather than a string assembled per call: the
+# planner sees the same text every time, and so does anyone reading it.
+_RECALL_SQL = """
+WITH base AS (
+    SELECT * FROM memory_entries
+    WHERE persona_id = $1 AND superseded_by IS NULL
+      -- Bi-temporal gate. All three arms rank the same `base`, so putting
+      -- expiry here covers every retrieval path at once rather than needing
+      -- the predicate repeated (and eventually forgotten) in one of them.
+      --
+      -- valid_to is NULL for almost every fact — "no known end" — and the
+      -- partial index makes the exception cheap. What this stops is the case
+      -- write-time reasoning gets wrong: "the user is on leave 12-19 Aug" is
+      -- the freshest un-superseded fact on 25 Aug, so without this it is
+      -- still recalled, still injected, and still acted on.
+      AND (valid_to IS NULL OR valid_to > NOW())
+      AND (valid_from IS NULL OR valid_from <= NOW())
+      AND ($4::text IS NULL OR scope = $4)
+      AND ($5::text IS NULL OR domain_key = $5)
+),
+-- Every tuning parameter is cast explicitly: left to infer, Postgres reads
+-- them from the bigint rank arithmetic around them and silently truncates
+-- max_rrf (~0.0098) to zero.
+--
+-- ROW_NUMBER then filter: a bare LIMIT would truncate before the window
+-- function has ordered anything.
+fts AS (
+    SELECT id, rnk FROM (
+        SELECT id, ROW_NUMBER() OVER (
+            ORDER BY ts_rank(content_tsv, to_tsquery('english', $3)) DESC, id
+        ) AS rnk
+        FROM base
+        WHERE $3::text IS NOT NULL AND content_tsv @@ to_tsquery('english', $3)
+    ) x WHERE rnk <= $9::bigint
+),
+trg AS (
+    SELECT id, rnk FROM (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY similarity(content, $2) DESC, id) AS rnk
+        FROM base WHERE content % $2
+    ) x WHERE rnk <= $9::bigint
+),
+vec AS (
+    SELECT id, rnk FROM (
+        SELECT id, ROW_NUMBER() OVER (
+            ORDER BY (1 - (embedding <=> $6::vector)) DESC, id
+        ) AS rnk
+        FROM base
+        WHERE $6::vector IS NOT NULL
+          AND embedding IS NOT NULL
+          AND embedding_model = $7
+          AND (1 - (embedding <=> $6::vector)) > $8::float8
+    ) x WHERE rnk <= $9::bigint
+),
+ids AS (
+    SELECT id FROM fts UNION SELECT id FROM trg UNION SELECT id FROM vec
+)
+SELECT m.*, LEAST(
+    1.0,
+    (COALESCE($11::float8 / ($10::float8 + fts.rnk), 0)
+     + COALESCE($12::float8 / ($10::float8 + trg.rnk), 0)
+     + COALESCE($13::float8 / ($10::float8 + vec.rnk), 0)) / $14::float8
+    + $15::float8 * EXP(-EXTRACT(EPOCH FROM (NOW() - m.created_at)) / ($16::float8 * 86400.0))
+) AS match_score
+FROM ids
+JOIN base m USING (id)
+LEFT JOIN fts ON fts.id = ids.id
+LEFT JOIN trg ON trg.id = ids.id
+LEFT JOIN vec ON vec.id = ids.id
+ORDER BY match_score DESC, m.created_at DESC
+LIMIT $17::bigint
+"""
 
 
 class MemoryDatabase:
@@ -198,8 +289,8 @@ class MemoryDatabase:
         dsn: str,
         *,
         migrate: bool = True,
-        embedder: Optional[Embedder] = None,
-        reranker: Optional[Reranker] = None,
+        embedder: Embedder | None = None,
+        reranker: Reranker | None = None,
     ) -> None:
         self._dsn = dsn
         self._migrate = migrate
@@ -210,12 +301,14 @@ class MemoryDatabase:
         # what the operator configured.
         self._embed = embedder or Embedder()
         self._rerank = reranker or Reranker()
-        self._pool: Optional[asyncpg.Pool] = None
+        self._pool: asyncpg.Pool | None = None
 
     @property
     def embedder(self) -> Embedder:
-        """Which model this store writes vectors with. Read by the
-        shared-database guard in the composition root."""
+        """Which model this store writes vectors with.
+
+        Read by the shared-database guard in the composition root.
+        """
         return self._embed
 
     async def connect(self) -> None:
@@ -243,10 +336,11 @@ class MemoryDatabase:
             self._pool = None
 
     async def init_schema(self) -> None:
-        """Apply the idempotent schema, templated with the current embedding
-        width. `{{EMBED_DIM}}` is substituted rather than hardcoded so that
-        changing EMBEDDING_MODEL migrates the column instead of failing every
-        insert with a dimension mismatch."""
+        """Apply the idempotent schema, templated with the current embedding width.
+
+        `{{EMBED_DIM}}` is substituted rather than hardcoded so that changing EMBEDDING_MODEL
+        migrates the column instead of failing every insert with a dimension mismatch.
+        """
         sql = _SCHEMA_PATH.read_text(encoding="utf-8").replace(
             "{{EMBED_DIM}}", str(self._embed.dim)
         )
@@ -258,17 +352,11 @@ class MemoryDatabase:
     async def save_entry(
         self,
         persona_id: str,
-        scope: str,
-        content: str,
-        domain_key: str = "",
-        title: str = "",
-        metadata: Optional[dict[str, Any]] = None,
-        volatile: bool = False,
-        provenance: str = "chat",
-        confidence: float = 1.0,
-        valid_from: Optional[datetime] = None,
-        valid_to: Optional[datetime] = None,
+        fact: FactCandidate,
+        *,
+        metadata: dict[str, Any] | None = None,
     ) -> MemoryEntry:
+        scope, content, title = fact.scope, fact.content, fact.title
         emb = await _embed_pg(self._embed, f"{title}\n{content}" if title else content)
         async with self._acquire() as conn:
             row = await conn.fetchrow(
@@ -281,9 +369,9 @@ class MemoryDatabase:
                         $10, $11, COALESCE($12, NOW()), $13)
                 RETURNING *
                 """,
-                persona_id, scope, domain_key, title, content, metadata or {},
-                emb, self._embed.model_name if emb else "", volatile,
-                provenance, confidence, valid_from, valid_to,
+                persona_id, scope, fact.domain_key, title, content, metadata or {},
+                emb, self._embed.model_name if emb else "", fact.volatile,
+                fact.provenance, fact.confidence, fact.valid_from, fact.valid_to,
             )
         return _entry(row)
 
@@ -314,12 +402,14 @@ class MemoryDatabase:
         domain_key: str,
         content: str,
         threshold: float = 0.90,
-    ) -> Optional[tuple[MemoryEntry, float]]:
-        """Nearest active entry in the same compartment by embedding cosine
-        similarity, if it clears `threshold`. Used to dedup near-identical
+    ) -> tuple[MemoryEntry, float] | None:
+        """Nearest active entry in the same compartment, by cosine similarity.
+
+        Returned only if it clears `threshold`. Used to dedup near-identical
         saves (the model re-learning the same fact) before they accumulate.
         Returns (entry, similarity) or None. Trigram fallback when the
-        embedding isn't available."""
+        embedding isn't available.
+        """
         qpg = await _embed_pg(self._embed, content)
         async with self._acquire() as conn:
             if qpg:
@@ -351,7 +441,7 @@ class MemoryDatabase:
             return None
         return _entry(row), float(row["sim"])
 
-    async def get_entry(self, entry_id: UUID) -> Optional[MemoryEntry]:
+    async def get_entry(self, entry_id: UUID) -> MemoryEntry | None:
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM memory_entries WHERE id = $1", entry_id
@@ -362,26 +452,27 @@ class MemoryDatabase:
         self,
         old_id: UUID,
         new_content: str,
-    ) -> Optional[MemoryEntry]:
-        """Insert a new active entry that replaces `old_id`. Marks the old
-        row's `superseded_by` to the new id. Returns the new entry, or None
-        if the old id wasn't found / already superseded."""
-        async with self._acquire() as conn:
-            async with conn.transaction():
-                old = await conn.fetchrow(
-                    """
+    ) -> MemoryEntry | None:
+        """Insert a new active entry that replaces `old_id`.
+
+        Marks the old row's `superseded_by` to the new id. Returns the new entry, or None if the old
+        id wasn't found / already superseded.
+        """
+        async with self._acquire() as conn, conn.transaction():
+            old = await conn.fetchrow(
+                """
                     SELECT * FROM memory_entries
                     WHERE id = $1 AND superseded_by IS NULL
                     """,
-                    old_id,
-                )
-                if old is None:
-                    return None
-                emb = await _embed_pg(
-                    self._embed,
-                    f"{old['title']}\n{new_content}" if old["title"] else new_content)
-                new = await conn.fetchrow(
-                    """
+                old_id,
+            )
+            if old is None:
+                return None
+            emb = await _embed_pg(
+                self._embed,
+                f"{old['title']}\n{new_content}" if old["title"] else new_content)
+            new = await conn.fetchrow(
+                """
                     INSERT INTO memory_entries
                         (persona_id, scope, domain_key, title, content, metadata,
                          embedding, embedding_model, pinned, volatile, verified_at,
@@ -390,41 +481,41 @@ class MemoryDatabase:
                             $11, $12, NOW())
                     RETURNING *
                     """,
-                    old["persona_id"], old["scope"], old["domain_key"],
-                    old["title"], new_content, dict(old["metadata"] or {}),
-                    emb, self._embed.model_name if emb else "", old["pinned"], old["volatile"],
-                    # Provenance is inherited but validity is NOT: the
-                    # replacement starts being true now, whereas the old row
-                    # keeps the window it actually covered. Copying valid_from
-                    # forward would claim the corrected value had been true
-                    # all along, which is exactly the history this table is
-                    # supposed to preserve.
-                    old["provenance"], old["confidence"],
-                )
-                # Close the old row's validity window at the moment it was
-                # replaced, so "what did I believe last Tuesday?" answers with
-                # the value that was current then.
-                await conn.execute(
-                    "UPDATE memory_entries SET valid_to = COALESCE(valid_to, NOW()) "
-                    "WHERE id = $1",
-                    old["id"],
-                )
-                await conn.execute(
-                    "UPDATE memory_entries SET superseded_by = $1, updated_at = NOW() WHERE id = $2",
-                    new["id"], old["id"],
-                )
-                # Carry the old entry's graph edges onto its replacement so a
-                # correction doesn't orphan the fact's relationships. The new
-                # row was just inserted and has no edges of its own, so no PK
-                # collision is possible here.
-                await conn.execute(
-                    "UPDATE memory_links SET from_id = $1 WHERE from_id = $2",
-                    new["id"], old["id"],
-                )
-                await conn.execute(
-                    "UPDATE memory_links SET to_id = $1 WHERE to_id = $2",
-                    new["id"], old["id"],
-                )
+                old["persona_id"], old["scope"], old["domain_key"],
+                old["title"], new_content, dict(old["metadata"] or {}),
+                emb, self._embed.model_name if emb else "", old["pinned"], old["volatile"],
+                # Provenance is inherited but validity is NOT: the
+                # replacement starts being true now, whereas the old row
+                # keeps the window it actually covered. Copying valid_from
+                # forward would claim the corrected value had been true
+                # all along, which is exactly the history this table is
+                # supposed to preserve.
+                old["provenance"], old["confidence"],
+            )
+            # Close the old row's validity window at the moment it was
+            # replaced, so "what did I believe last Tuesday?" answers with
+            # the value that was current then.
+            await conn.execute(
+                "UPDATE memory_entries SET valid_to = COALESCE(valid_to, NOW()) "
+                "WHERE id = $1",
+                old["id"],
+            )
+            await conn.execute(
+                "UPDATE memory_entries SET superseded_by = $1, updated_at = NOW() WHERE id = $2",
+                new["id"], old["id"],
+            )
+            # Carry the old entry's graph edges onto its replacement so a
+            # correction doesn't orphan the fact's relationships. The new
+            # row was just inserted and has no edges of its own, so no PK
+            # collision is possible here.
+            await conn.execute(
+                "UPDATE memory_links SET from_id = $1 WHERE from_id = $2",
+                new["id"], old["id"],
+            )
+            await conn.execute(
+                "UPDATE memory_links SET to_id = $1 WHERE to_id = $2",
+                new["id"], old["id"],
+            )
         return _entry(new)
 
     # ---- links (typed edges between entries) ----
@@ -435,8 +526,10 @@ class MemoryDatabase:
         to_id: UUID,
         relation: str = "relates_to",
     ) -> bool:
-        """Create a directional edge from_id --relation--> to_id. Idempotent:
-        returns True if a new edge was created, False if it already existed."""
+        """Create a directional edge from_id --relation--> to_id.
+
+        Idempotent: returns True if a new edge was created, False if it already existed.
+        """
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 """
@@ -453,11 +546,13 @@ class MemoryDatabase:
         self,
         from_id: UUID,
         to_id: UUID,
-        relation: Optional[str] = None,
+        relation: str | None = None,
     ) -> bool:
-        """Delete the edge(s) between two entries. With `relation`, only that
-        edge; without it, every edge from_id->to_id. Returns True if anything
-        was deleted."""
+        """Delete the edge(s) between two entries.
+
+        With `relation`, only that edge; without it, every edge from_id->to_id. Returns True if
+        anything was deleted.
+        """
         async with self._acquire() as conn:
             if relation is not None:
                 result = await conn.execute(
@@ -475,10 +570,12 @@ class MemoryDatabase:
         self,
         entry_id: UUID,
     ) -> list[Neighbor]:
-        """Directly-linked ACTIVE entries. Returns (neighbor, relation,
-        direction) where direction is 'out' (entry_id --rel--> neighbor) or
-        'in' (neighbor --rel--> entry_id). Superseded/forgotten neighbors are
-        excluded so recall never surfaces stale links."""
+        """Directly-linked ACTIVE entries.
+
+        Returns (neighbor, relation, direction) where direction is 'out' (entry_id --rel-->
+        neighbor) or 'in' (neighbor --rel--> entry_id). Superseded/forgotten neighbors are excluded
+        so recall never surfaces stale links.
+        """
         async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -519,8 +616,11 @@ class MemoryDatabase:
         return result.split()[-1] != "0"
 
     async def set_pinned(self, entry_id: UUID, pinned: bool) -> bool:
-        """Pin/unpin an active entry. Pinned entries render verbatim in the
-        always-injected context. Returns True if a row was updated."""
+        """Pin/unpin an active entry.
+
+        Pinned entries render verbatim in the always-injected context. Returns True if a row was
+        updated.
+        """
         async with self._acquire() as conn:
             result = await conn.execute(
                 """
@@ -532,11 +632,14 @@ class MemoryDatabase:
         return result.split()[-1] != "0"
 
     async def mark_verified(self, entry_id: UUID) -> bool:
-        """Record that a fact was just confirmed to still hold. Resets its
-        staleness clock. Returns True if a row was updated."""
+        """Record that a fact was just confirmed to still hold.
+
+        Resets its staleness clock. Returns True if a row was updated.
+        """
         async with self._acquire() as conn:
             result = await conn.execute(
-                "UPDATE memory_entries SET verified_at = NOW() WHERE id = $1 AND superseded_by IS NULL",
+                "UPDATE memory_entries SET verified_at = NOW() WHERE id = $1 AND superseded_by IS "
+                "NULL",
                 entry_id,
             )
         return result.split()[-1] != "0"
@@ -559,8 +662,8 @@ class MemoryDatabase:
     async def list_active(
         self,
         persona_id: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 200,
     ) -> list[MemoryEntry]:
         sql = [
@@ -585,8 +688,8 @@ class MemoryDatabase:
         self,
         persona_id: str,
         query: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 8,
     ) -> list[MemoryEntry]:
         scored = await self.recall_scored(
@@ -598,8 +701,8 @@ class MemoryDatabase:
         self,
         persona_id: str,
         query: str,
-        scope: Optional[str] = None,
-        domain_key: Optional[str] = None,
+        scope: str | None = None,
+        domain_key: str | None = None,
         limit: int = 8,
     ) -> list[Scored]:
         """Hybrid search over active entries, fused with Reciprocal Rank Fusion.
@@ -632,118 +735,51 @@ class MemoryDatabase:
         tokens = re.findall(r"\w+", query, flags=re.UNICODE)[:12]
         or_query = " | ".join(tokens) if tokens else ""
 
-        params: list[Any] = [persona_id, query, or_query]
+        # One statement, always the same shape. Everything that varies between
+        # calls is a bound parameter -- including which arms can fire, which is
+        # expressed as "this parameter is NULL" rather than as absent SQL.
+        #
+        # The arms were assembled from fragments before. That made the text a
+        # different string per call, which costs a plan every time and puts the
+        # statement the database runs somewhere no reader can see it whole.
+        fts_query = or_query or None
+        vector = qpg or None
 
-        # Compartment filters apply to the shared candidate base, so every arm
-        # ranks the same population.
-        base_filters = ""
-        if scope is not None:
-            params.append(scope)
-            base_filters += f"\n  AND scope = ${len(params)}"
-        if domain_key is not None:
-            params.append(domain_key)
-            base_filters += f"\n  AND domain_key = ${len(params)}"
-
-        vec_idx: Optional[int] = None
-        if qpg:
-            params.append(qpg)
-            vec_idx = len(params)
-
-        # Which arms can fire at all. Fixed up front (not "which arms returned
-        # rows") so the normalizer is deterministic and scores stay comparable
-        # between queries run under the same configuration.
-        fts_on = bool(or_query)
-        trg_on = True
-        vec_on = vec_idx is not None
+        # Which arms can fire. Fixed up front (not "which arms returned rows")
+        # so the normalizer is deterministic and scores stay comparable between
+        # queries run under the same configuration.
         active_weight = (
-            (RRF_WEIGHT_FTS if fts_on else 0.0)
-            + (RRF_WEIGHT_TRG if trg_on else 0.0)
-            + (RRF_WEIGHT_VEC if vec_on else 0.0)
+            (RRF_WEIGHT_FTS if fts_query else 0.0)
+            + RRF_WEIGHT_TRG
+            + (RRF_WEIGHT_VEC if vector else 0.0)
         )
         max_rrf = (active_weight or 1.0) * (1.0 / (RRF_K + 1))
-
-        def _arm(name: str, order_by: str, where: str, enabled: bool) -> str:
-            """One ranked candidate arm. Disabled arms still exist as empty
-            relations so the fusion join below stays a single static shape."""
-            if not enabled:
-                return (
-                    f"{name} AS (SELECT NULL::uuid AS id, NULL::bigint AS rnk "
-                    f"WHERE false)"
-                )
-            # ROW_NUMBER then filter: a bare LIMIT would truncate before the
-            # window function has ordered anything.
-            return (
-                f"{name} AS ("
-                f"SELECT id, rnk FROM ("
-                f"SELECT id, ROW_NUMBER() OVER (ORDER BY {order_by}, id) AS rnk "
-                f"FROM base WHERE {where}"
-                f") x WHERE rnk <= {RRF_CANDIDATES})"
-            )
-
-        vec_sim = f"(1 - (embedding <=> ${vec_idx}::vector))" if vec_on else "0"
-        arms = [
-            _arm(
-                "fts",
-                "ts_rank(content_tsv, to_tsquery('english', $3)) DESC",
-                "content_tsv @@ to_tsquery('english', $3)",
-                fts_on,
-            ),
-            _arm("trg", "similarity(content, $2) DESC", "content % $2", trg_on),
-            _arm(
-                "vec",
-                f"{vec_sim} DESC",
-                f"embedding IS NOT NULL AND embedding_model = '{self._embed.model_name}' "
-                f"AND {vec_sim} > {VEC_MIN_SIMILARITY}",
-                vec_on,
-            ),
-        ]
-
-        recency = (
-            f"{RECENCY_BOOST_MAX} * EXP(-EXTRACT(EPOCH FROM (NOW() - m.created_at))"
-            f" / ({RECENCY_HALFLIFE_DAYS} * 86400.0))"
-        )
-        rrf = (
-            f"(COALESCE({RRF_WEIGHT_FTS} / ({RRF_K} + fts.rnk), 0)"
-            f" + COALESCE({RRF_WEIGHT_TRG} / ({RRF_K} + trg.rnk), 0)"
-            f" + COALESCE({RRF_WEIGHT_VEC} / ({RRF_K} + vec.rnk), 0)) / {max_rrf}"
-        )
 
         # Pull a deeper slice than the caller asked for when a reranker will
         # re-sort it — fusion only has to get the right answer into the pool,
         # the cross-encoder decides the final order.
         fetch_n = max(limit, self._rerank.candidates) if self._rerank.available() else limit
-        params.append(fetch_n)
-        sql = f"""
-WITH base AS (
-    SELECT * FROM memory_entries
-    WHERE persona_id = $1 AND superseded_by IS NULL
-      -- Bi-temporal gate. All three arms rank the same `base`, so putting
-      -- expiry here covers every retrieval path at once rather than needing
-      -- the predicate repeated (and eventually forgotten) in one of them.
-      --
-      -- valid_to is NULL for almost every fact — "no known end" — and the
-      -- partial index makes the exception cheap. What this stops is the case
-      -- write-time reasoning gets wrong: "the user is on leave 12-19 Aug" is
-      -- the freshest un-superseded fact on 25 Aug, so without this it is
-      -- still recalled, still injected, and still acted on.
-      AND (valid_to IS NULL OR valid_to > NOW())
-      AND (valid_from IS NULL OR valid_from <= NOW()){base_filters}
-),
-{arms[0]},
-{arms[1]},
-{arms[2]},
-ids AS (
-    SELECT id FROM fts UNION SELECT id FROM trg UNION SELECT id FROM vec
-)
-SELECT m.*, LEAST(1.0, {rrf} + {recency}) AS match_score
-FROM ids
-JOIN base m USING (id)
-LEFT JOIN fts ON fts.id = ids.id
-LEFT JOIN trg ON trg.id = ids.id
-LEFT JOIN vec ON vec.id = ids.id
-ORDER BY match_score DESC, m.created_at DESC
-LIMIT ${len(params)}
-"""
+
+        params: list[Any] = [
+            persona_id,             # $1
+            query,                  # $2  trigram probe
+            fts_query,              # $3  OR-of-tokens tsquery, NULL to skip the arm
+            scope,                  # $4  NULL = no compartment filter
+            domain_key,             # $5
+            vector,                 # $6  NULL to skip the vector arm
+            self._embed.model_name,  # $7
+            VEC_MIN_SIMILARITY,     # $8
+            RRF_CANDIDATES,         # $9
+            RRF_K,                  # $10
+            RRF_WEIGHT_FTS,         # $11
+            RRF_WEIGHT_TRG,         # $12
+            RRF_WEIGHT_VEC,         # $13
+            max_rrf,                # $14
+            RECENCY_BOOST_MAX,      # $15
+            RECENCY_HALFLIFE_DAYS,  # $16
+            fetch_n,                # $17
+        ]
+        sql = _RECALL_SQL
         async with self._acquire() as conn:
             rows = await conn.fetch(sql, *params)
 
@@ -772,25 +808,25 @@ LIMIT ${len(params)}
         rescored = await asyncio.to_thread(self._rerank.rerank, query, texts)
         if rescored is None:
             return scored[:limit]
-        pairs = [(entry, score) for (entry, _), score in zip(scored, rescored)]
+        pairs = [(entry, score) for (entry, _), score in zip(scored, rescored, strict=False)]
         pairs.sort(key=lambda p: p[1], reverse=True)
         return pairs[:limit]
 
     async def backfill_embeddings(self, force: bool = False) -> int:
-        """Compute + store embeddings for entries missing them (or, with
-        force=True, every entry not embedded by the CURRENT model — run this
-        once after an embedding-model change: `cli.py memory reembed`).
-        Returns the count re-embedded."""
+        """Compute and store embeddings for entries missing them.
+
+        With force=True, for every entry not embedded by the CURRENT model —
+        run this once after an embedding-model change: `cli.py memory reembed`.
+        Returns the count re-embedded.
+        """
         if force:
-            where = "embedding IS NULL OR embedding_model IS DISTINCT FROM $1"
-            args: tuple = (self._embed.model_name,)
+            sql = _UNEMBEDDED_FOR_MODEL
+            args: tuple[Any, ...] = (self._embed.model_name,)
         else:
-            where = "embedding IS NULL"
+            sql = _UNEMBEDDED
             args = ()
         async with self._acquire() as conn:
-            rows = await conn.fetch(
-                f"SELECT id, title, content FROM memory_entries WHERE {where}", *args
-            )
+            rows = await conn.fetch(sql, *args)
         done = 0
         for r in rows:
             text = f"{r['title']}\n{r['content']}" if r["title"] else r["content"]
@@ -874,7 +910,9 @@ LIMIT ${len(params)}
         async with self._acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO memory_core (persona_id, scope, domain_key, summary, last_source_count, last_compacted_at)
+                INSERT INTO memory_core
+                    (persona_id, scope, domain_key, summary,
+                     last_source_count, last_compacted_at)
                 VALUES ($1, $2, $3, $4, $5, NOW())
                 ON CONFLICT (persona_id, scope, domain_key)
                 DO UPDATE SET
@@ -885,14 +923,28 @@ LIMIT ${len(params)}
                 persona_id, scope, domain_key, summary, source_count,
             )
 
-    async def fetch(self, sql: str, *args):
+    async def fetch(self, sql: str, *args: Any) -> list[asyncpg.Record]:
         """Execute a SELECT and return all rows. For ad-hoc inspection only."""
         async with self._acquire() as conn:
             return await conn.fetch(sql, *args)
 
+    async def purge_persona(self, persona_id: str) -> int:
+        """Delete every entry belonging to one persona. Returns the count.
+
+        Destructive and deliberately so: the recall eval seeds a scratch
+        persona and has to leave the database as it found it. Nothing in the
+        running bot calls this — retirement goes through forget/supersede,
+        which keep the row.
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                "DELETE FROM memory_entries WHERE persona_id = $1 RETURNING id", persona_id
+            )
+        return len(rows)
+
     # ---- internals ----
 
-    def _acquire(self):
+    def _acquire(self) -> asyncpg.pool.PoolAcquireContext:
         if self._pool is None:
             raise RuntimeError("MemoryDatabase.connect() not called yet")
         return self._pool.acquire()
@@ -908,7 +960,9 @@ def _jsonb_decoder(raw: str) -> Any:
 
 def _dsn_host(dsn: str) -> str:
     """Just the hostname, for a log line that shouldn't carry a whole DSN.
-    Use `redact_dsn` when the operator needs to recognise WHICH database."""
+
+    Use `redact_dsn` when the operator needs to recognise WHICH database.
+    """
     try:
         return urlparse(dsn).hostname or "?"
     except Exception:

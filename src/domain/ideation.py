@@ -49,9 +49,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
-from ports import FactCandidate, MemoryVerdict, Reconciliation, Summarizer
+from ports import MemoryVerdict, Reconciliation, Summarizer
 
 from .reconcile import Reconciler, candidate_from_extraction
 
@@ -59,6 +59,10 @@ if TYPE_CHECKING:
     from .memory import LongTermMemory
 
 log = logging.getLogger(__name__)
+
+# Inference needs facts to sit BETWEEN. Below this a model just paraphrases the
+# one fact it was handed and calls it an insight.
+_MIN_FACTS_TO_INFER = 3
 
 # How many existing facts one ideation pass reads.
 MAX_SOURCE_FACTS = 120
@@ -113,8 +117,10 @@ Output ONLY the JSON array. No prose, no code fences.
 
 
 def _parse_proposals(raw: str) -> list[dict[str, Any]]:
-    """Extract the JSON array from a model reply. Same defensiveness as the
-    extraction and verdict parsers: fences and preamble are routine."""
+    """Extract the JSON array from a model reply.
+
+    Same defensiveness as the extraction and verdict parsers: fences and preamble are routine.
+    """
     text = (raw or "").strip()
     if not text:
         return []
@@ -135,9 +141,9 @@ class Ideator:
 
     def __init__(
         self,
-        memory: "LongTermMemory",
+        memory: LongTermMemory,
         summarizer: Summarizer,
-        reconciler: Optional[Reconciler] = None,
+        reconciler: Reconciler | None = None,
     ) -> None:
         self._memory = memory
         self._summarizer = summarizer
@@ -148,9 +154,19 @@ class Ideator:
         self._reconciler = reconciler or Reconciler(memory, summarizer)
 
     async def run(
-        self, scope: Optional[str] = None, domain_key: Optional[str] = None,
+        self,
+        scope: str | None = None,
+        domain_key: str | None = None,
+        *,
+        dry_run: bool = False,
     ) -> list[Reconciliation]:
         """One ideation pass. Returns the decision for each proposal.
+
+        `dry_run` decides everything and writes nothing, which is how an
+        operator should be able to see what their model proposes before it goes
+        near their memory. It is a parameter rather than something the caller
+        arranges, because arranging it meant reaching in and swapping the
+        reconciler's apply out from under this method.
 
         Never raises: this runs unattended or from a CLI, and a bad model
         reply must not be an incident.
@@ -162,7 +178,7 @@ class Ideator:
         except Exception:
             log.exception("ideation: could not read memory")
             return []
-        if len(facts) < 3:
+        if len(facts) < _MIN_FACTS_TO_INFER:
             # Nothing to cross-reference. Inference needs at least a couple of
             # facts to sit between; below that a model will "infer" a
             # paraphrase of the single fact it was given.
@@ -205,7 +221,7 @@ class Ideator:
                         MemoryVerdict.ADD, candidate,
                         reason="inference may not retract an observed fact",
                     )
-                entry = await self._reconciler.apply(decision)
+                entry = None if dry_run else await self._reconciler.apply(decision)
             except Exception:
                 log.exception("ideation: could not reconcile proposal")
                 continue

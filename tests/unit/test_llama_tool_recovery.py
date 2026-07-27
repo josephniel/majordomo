@@ -18,8 +18,8 @@ class TestParseLlamaToolCalls:
     def test_real_failed_generation(self):
         calls = _parse_llama_tool_calls(REAL_FG)
         assert calls == [("memory__memory_save",
-                          '{"scope": "agent", "content": "I am now using LLaMA", '
-                          '"title": "Current AI model"}')]
+                          ('{"scope": "agent", "content": "I am now using LLaMA", '
+                          '"title": "Current AI model"}'))]
 
     def test_multiple_calls_with_surrounding_text(self):
         calls = _parse_llama_tool_calls('ok <function=a {"x": 1}> then <function=b {"y": 2}>!')
@@ -40,14 +40,14 @@ class TestParseLlamaToolCalls:
 
 
 class TestRecoverFailedToolCalls:
-    class FakeBadRequest(Exception):
+    class FakeBadRequestError(Exception):
         def __init__(self, fg, code="tool_use_failed"):
             super().__init__(f"400 tool_use_failed: {fg}")
             self.code = code
             self.body = {"error": {"code": code, "failed_generation": fg}}
 
     def test_recovers_from_body(self):
-        calls = _recover_failed_tool_calls(self.FakeBadRequest(REAL_FG))
+        calls = _recover_failed_tool_calls(self.FakeBadRequestError(REAL_FG))
         assert calls[0][0] == "memory__memory_save"
 
     def test_recovers_from_stringified_exception(self):
@@ -58,11 +58,12 @@ class TestRecoverFailedToolCalls:
             "\"content\": \"x\"}>'}}"
         )
         calls = _recover_failed_tool_calls(exc)
-        assert calls and calls[0][0] == "memory__memory_save"
+        assert calls
+        assert calls[0][0] == "memory__memory_save"
 
     def test_ignores_non_tool_errors(self):
         assert _recover_failed_tool_calls(RuntimeError("429 rate limit")) == []
         assert _recover_failed_tool_calls(ValueError("bad input")) == []
 
     def test_tool_use_failed_with_no_generation_returns_empty(self):
-        assert _recover_failed_tool_calls(self.FakeBadRequest("")) == []
+        assert _recover_failed_tool_calls(self.FakeBadRequestError("")) == []

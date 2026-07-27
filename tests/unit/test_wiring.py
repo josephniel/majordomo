@@ -2,19 +2,19 @@
 the orchestrator, /status proactive block, and container assembly."""
 import inspect
 from contextlib import asynccontextmanager
-from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
-from adapters.model.base import Attachment
-from domain.documents import DocumentLibrary
-from adapters.trigger.webhook import WebhookTrigger
-from ports import ConversationRef, TriggerContext
-from domain.triggers import HeartbeatSource, WatchSource, WebhookSource
-from kernel.core import ConversationOrchestrator
-from kernel.sessions import SessionStore
 from adapters.chat.base import InboundMessage
+from adapters.model.base import Attachment
+from adapters.trigger.webhook import WebhookTrigger
+from domain.documents import DocumentLibrary
+from domain.triggers import HeartbeatSource, WatchSource, WebhookSource
+from kernel.core import ConversationOrchestrator, OptionalSubsystems
+from kernel.sessions import SessionStore
+from ports import TriggerContext
 
 
 class FakePlatform:
@@ -45,7 +45,8 @@ class FakeAgent:
         return self._reply
 
 
-def _orch(tmp_path, *, reply="ok", error=None, connectors=(), **kwargs):
+def _orch(tmp_path, *, reply="ok", error=None, connectors=(), **optional_kw):
+    """An orchestrator wired to fakes; extra kwargs configure the optionals."""
     platform = FakePlatform()
     agent = FakeAgent(reply, error)
     o = ConversationOrchestrator(
@@ -55,7 +56,7 @@ def _orch(tmp_path, *, reply="ok", error=None, connectors=(), **kwargs):
         config=SimpleNamespace(get_mtime=lambda: 0.0),
         connectors_list=list(connectors),
         persona_id="t",
-        **kwargs,
+        optional=OptionalSubsystems(**optional_kw),
     )
     return o, platform, agent
 
@@ -124,7 +125,7 @@ class TestIngestAttachments:
 
 class FakeWebhookServer:
     port = 18790
-    trigger_names = ["alert"]
+    trigger_names: ClassVar[list[str]] = ["alert"]
 
     def __init__(self):
         self.fire = None
@@ -222,7 +223,8 @@ class TestMailWatchBridge:
         watcher = Broken()
         source, _, agent = await self._wired(tmp_path, watcher)
         await source._fire()
-        assert agent.prompts == [] and watcher.commits == 0
+        assert agent.prompts == []
+        assert watcher.commits == 0
 
     async def test_nothing_new_skips_llm(self, tmp_path):
         watcher = FakeWatcher(block=None)

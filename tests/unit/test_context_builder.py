@@ -7,9 +7,8 @@ used to be a separate VOLATILE_PROMPT_SECTION boolean and a fake could set
 it without being versioned at all — passing tests for a combination that
 cannot occur in production.
 """
-from ports import ToolProvider
-
 from adapters.model.base import ContextBuilder
+from ports import ToolProvider
 
 
 class _Enabled:
@@ -49,7 +48,7 @@ class _Volatile(_Stable):
         return 7
 
 
-def _Provider(name, section, volatile=False):
+def _provider(name, section, volatile=False):
     return (_Volatile if volatile else _Stable)(name, section)
 
 
@@ -74,8 +73,8 @@ class TestOrdering:
 
     def test_volatile_section_goes_after_stable_ones(self):
         out = build([
-            _Provider("memory", "MEMORY-WHAT-YOU-KNOW", volatile=True),
-            _Provider("budget", "BUDGET-RULES"),
+            _provider("memory", "MEMORY-WHAT-YOU-KNOW", volatile=True),
+            _provider("budget", "BUDGET-RULES"),
         ])
         # Declaration order puts memory FIRST; the builder must still emit it last.
         assert out.index("BUDGET-RULES") < out.index("MEMORY-WHAT-YOU-KNOW")
@@ -84,25 +83,25 @@ class TestOrdering:
         """The connector/tool listing is stable, so it must stay inside the
         cacheable prefix — ahead of anything volatile."""
         out = build(
-            [_Provider("memory", "MEMORY-WHAT-YOU-KNOW", volatile=True)],
+            [_provider("memory", "MEMORY-WHAT-YOU-KNOW", volatile=True)],
             enabled=[_Enabled("gmail", ["gmail__send"])],
         )
         assert out.index("== Connectors ==") < out.index("MEMORY-WHAT-YOU-KNOW")
 
     def test_multiple_volatile_sections_keep_relative_order(self):
         out = build([
-            _Provider("memory", "MEM-SECTION", volatile=True),
-            _Provider("skills", "SKILLS-SECTION", volatile=True),
+            _provider("memory", "MEM-SECTION", volatile=True),
+            _provider("skills", "SKILLS-SECTION", volatile=True),
         ])
         assert out.index("MEM-SECTION") < out.index("SKILLS-SECTION")
 
     def test_stable_prefix_is_byte_identical_when_only_volatile_changes(self):
         """The whole point: a memory write must not perturb one byte of the
         text ahead of it, or the local KV cache is thrown away."""
-        stable = _Provider("budget", "BUDGET-RULES")
-        before = build([stable, _Provider("memory", "FACTS: v1", volatile=True)],
+        stable = _provider("budget", "BUDGET-RULES")
+        before = build([stable, _provider("memory", "FACTS: v1", volatile=True)],
                        enabled=[_Enabled("gmail", ["gmail__send"])])
-        after = build([stable, _Provider("memory", "FACTS: v2 much longer now", volatile=True)],
+        after = build([stable, _provider("memory", "FACTS: v2 much longer now", volatile=True)],
                       enabled=[_Enabled("gmail", ["gmail__send"])])
         common = before.index("FACTS: v1")
         assert before[:common] == after[:common]
@@ -116,13 +115,13 @@ class TestOrdering:
             def owns_profile(self, _n):
                 return False
 
-        out = build([_Legacy(), _Provider("memory", "MEM", volatile=True)])
+        out = build([_Legacy(), _provider("memory", "MEM", volatile=True)])
         assert out.index("LEGACY-SECTION") < out.index("MEM")
 
 
 class TestContent:
     def test_empty_sections_are_dropped(self):
-        out = build([_Provider("quiet", "")])
+        out = build([_provider("quiet", "")])
         assert "\n\n\n" not in out
 
     def test_no_connectors_says_so(self):

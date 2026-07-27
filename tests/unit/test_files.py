@@ -38,7 +38,9 @@ class TestChatSendFile:
         )
         assert not result.is_error
         ((chat_id, path, caption),) = sender.calls
-        assert chat_id == 42 and path == str(f.resolve()) and caption == "your report"
+        assert chat_id == 42
+        assert path == str(f.resolve())
+        assert caption == "your report"
 
     async def test_refuses_paths_outside_data_dir(self, tmp_path):
         sender = RecordingSender()
@@ -112,8 +114,10 @@ class TestTelegramSendFile:
         f.write_text("payload")
         assert await p.send_file(5, str(f), caption="hi") is True
         ((chat_id, data, filename, caption),) = p._app.bot.docs
-        assert chat_id == 5 and data == b"payload"
-        assert filename == "hello.txt" and caption == "hi"
+        assert chat_id == 5
+        assert data == b"payload"
+        assert filename == "hello.txt"
+        assert caption == "hi"
 
     async def test_missing_file_returns_false(self, tmp_path):
         p = self._platform()

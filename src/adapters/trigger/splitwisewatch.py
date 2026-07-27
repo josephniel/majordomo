@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -46,10 +48,10 @@ New Splitwise activity:
 
 
 def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+    return dt.astimezone(UTC).isoformat(timespec="seconds")
 
 
-def _format_expense(e: dict[str, Any], my_id: Optional[int]) -> str:
+def _format_expense(e: dict[str, Any], my_id: int | None) -> str:
     def name(u: dict[str, Any]) -> str:
         user = u.get("user") or {}
         if my_id is not None and user.get("id") == my_id:
@@ -82,7 +84,7 @@ def _format_expense(e: dict[str, Any], my_id: Optional[int]) -> str:
 class SplitwiseWatcher:
     def __init__(
         self,
-        splitwise_connector,  # narrow surface: build_clients() -> {name: client}
+        splitwise_connector: Any,  # narrow surface: build_clients() -> {name: client}
         state_file: Path,
     ) -> None:
         self._splitwise = splitwise_connector
@@ -115,12 +117,14 @@ class SplitwiseWatcher:
 
     # ---- polling ----
 
-    async def check(self) -> Optional[str]:
-        """Poll every Splitwise profile. Returns a context block describing
-        NEW/EDITED expenses (caller must commit() after delivering), or None
-        when there's nothing new. Never raises — a broken profile logs and
-        is skipped; the others still report."""
-        now = datetime.now(timezone.utc)
+    async def check(self) -> str | None:
+        """Poll every Splitwise profile.
+
+        Returns a context block describing NEW/EDITED expenses (caller must commit() after
+        delivering), or None when there's nothing new. Never raises — a broken profile logs and is
+        skipped; the others still report.
+        """
+        now = datetime.now(UTC)
         lines: list[str] = []
         pending: dict[str, dict[str, Any]] = {}
         for name, client in self._splitwise.build_clients().items():
@@ -137,14 +141,16 @@ class SplitwiseWatcher:
         return "\n".join(lines)
 
     def commit(self) -> None:
-        """Apply the state staged by the last check(). Call after the turn
-        was delivered (or when check() reported nothing)."""
+        """Apply the state staged by the last check().
+
+        Call after the turn was delivered (or when check() reported nothing).
+        """
         self._state.update(self._pending)
         self._pending = {}
         self._persist()
 
     async def _check_profile(
-        self, name: str, client, now: datetime,
+        self, name: str, client: Any, now: datetime,
     ) -> tuple[list[str], dict[str, Any]]:
         state = self._state.get(name) or {}
         seen: dict[str, str] = dict(state.get("seen") or {})
@@ -182,13 +188,12 @@ class SplitwiseWatcher:
 
         lines: list[str] = []
         if fresh:
-            my_id: Optional[int] = None
+            my_id: int | None = None
             try:
                 my_id = await client.current_user_id()
             except Exception:
                 log.debug("splitwise_watch: could not resolve own user id", exc_info=True)
-            for e in fresh[:MAX_NEW_PER_PROFILE]:
-                lines.append(_format_expense(e, my_id))
+            lines.extend(_format_expense(e, my_id) for e in fresh[:MAX_NEW_PER_PROFILE])
             if len(fresh) > MAX_NEW_PER_PROFILE:
                 lines.append(f"- … and {len(fresh) - MAX_NEW_PER_PROFILE} more")
 

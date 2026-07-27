@@ -13,19 +13,21 @@ import logging
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
-from ports import ToolContext, ToolResult, tool
 
-from .registry import ServiceRegistry
+from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
+from ._failures import HTTP_NO_CONTENT, api_errors
 from ._google_oauth import (
     CredentialStore,
     GoogleOAuthClient,
     GoogleOAuthError,
 )
-from ports import Connector
+
+if TYPE_CHECKING:
+    from .registry import ServiceRegistry
 
 log = logging.getLogger(__name__)
 
@@ -47,8 +49,8 @@ class CalendarClient:
     def __init__(self, store: CredentialStore) -> None:
         self._store = store
 
-    async def _request(self, method: str, path: str, params: Optional[dict] = None,
-                       json_body: Optional[dict] = None) -> dict:
+    async def _request(self, method: str, path: str, params: dict[str, Any] | None = None,
+                       json_body: dict[str, Any] | None = None) -> dict[str, Any]:
         token = await self._store.access_token()
         async with httpx.AsyncClient(timeout=self.TIMEOUT) as http:
             r = await http.request(
@@ -59,30 +61,34 @@ class CalendarClient:
                 json=json_body,
             )
             r.raise_for_status()
-            if r.status_code == 204 or not r.text:
+            if r.status_code == HTTP_NO_CONTENT or not r.text:
                 return {}
             return r.json()
 
-    async def list_calendars(self) -> dict:
+    async def list_calendars(self) -> dict[str, Any]:
         return await self._request("GET", "/users/me/calendarList")
 
-    async def create_event(self, calendar_id: str, body: dict) -> dict:
+    async def create_event(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", f"/calendars/{calendar_id}/events", json_body=body)
 
-    async def update_event(self, calendar_id: str, event_id: str, body: dict) -> dict:
-        return await self._request("PATCH", f"/calendars/{calendar_id}/events/{event_id}", json_body=body)
+    async def update_event(
+        self, calendar_id: str, event_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._request(
+            "PATCH", f"/calendars/{calendar_id}/events/{event_id}", json_body=body
+        )
 
-    async def delete_event(self, calendar_id: str, event_id: str) -> dict:
+    async def delete_event(self, calendar_id: str, event_id: str) -> dict[str, Any]:
         return await self._request("DELETE", f"/calendars/{calendar_id}/events/{event_id}")
 
     async def list_events(
         self,
         calendar_id: str = "primary",
         max_results: int = 25,
-        time_min: Optional[str] = None,
-        time_max: Optional[str] = None,
-        query: Optional[str] = None,
-    ) -> dict:
+        time_min: str | None = None,
+        time_max: str | None = None,
+        query: str | None = None,
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "maxResults": max_results,
             "singleEvents": "true",
@@ -96,13 +102,14 @@ class CalendarClient:
             params["q"] = query
         return await self._request("GET", f"/calendars/{calendar_id}/events", params)
 
-    async def get_event(self, calendar_id: str, event_id: str) -> dict:
+    async def get_event(self, calendar_id: str, event_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/calendars/{calendar_id}/events/{event_id}")
 
 
 # ---- formatting helpers ----
 
-def _event_when(ev: dict) -> str:
+
+def _event_when(ev: dict[str, Any]) -> str:
     start = ev.get("start") or {}
     end = ev.get("end") or {}
     if "dateTime" in start:
@@ -113,7 +120,7 @@ def _event_when(ev: dict) -> str:
     return ""
 
 
-def _format_event_summary(ev: dict) -> str:
+def _format_event_summary(ev: dict[str, Any]) -> str:
     summary = ev.get("summary", "(no title)")
     when = _event_when(ev)
     eid = ev.get("id", "?")
@@ -126,7 +133,7 @@ def _format_event_summary(ev: dict) -> str:
     return line
 
 
-def _format_event_full(ev: dict) -> str:
+def _format_event_full(ev: dict[str, Any]) -> str:
     summary = ev.get("summary", "(no title)")
     when = _event_when(ev)
     location = ev.get("location", "")
@@ -149,20 +156,212 @@ def _format_event_full(ev: dict) -> str:
     return "\n".join(parts)
 
 
-def _format_http_error(e: httpx.HTTPStatusError) -> str:
-    return f"Calendar API error {e.response.status_code}: {(e.response.text or '')[:300]}"
+_VENDOR = "Calendar"
+
+# Every handler below whose failure story is just "the API said no" wears this.
+_guarded = api_errors(_VENDOR)
+
+
+def _read_tools(client: CalendarClient) -> list[ToolSpec]:
+    """Read-only views: the calendar list, a window of events, and one event."""
+    @tool(
+        "list_calendars",
+        "List all calendars the authenticated user has access to. Returns "
+        "calendar IDs (use these with list_events) and names. The user's "
+        "primary calendar always has id 'primary'.",
+        {},
+    )
+    @_guarded
+    async def list_calendars_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        resp = await client.list_calendars()
+        items = resp.get("items", [])
+        if not items:
+            return ToolResult.ok("No calendars.")
+        lines = []
+        for c in items:
+            cid = c.get("id", "?")
+            name = c.get("summary", "(unnamed)")
+            primary = " (primary)" if c.get("primary") else ""
+            lines.append(f"- [{cid}] {name}{primary}")
+        return ToolResult.ok("\n".join(lines))
+
+    @tool(
+        "list_events",
+        "List or search events on a Google Calendar. Defaults to the primary "
+        "calendar. Args: calendar_id (default 'primary'; get IDs from "
+        "list_calendars), max_results (default 25), time_min and time_max "
+        "(RFC3339 timestamps like '2026-05-15T00:00:00Z'; both optional — "
+        "if omitted, returns upcoming events), query (free-text search; "
+        "matches event title, description, location, attendees).",
+        {
+            "calendar_id": str,
+            "max_results": int,
+            "time_min": str,
+            "time_max": str,
+            "query": str,
+        },
+    )
+    @_guarded
+    async def list_events_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        resp = await client.list_events(
+            calendar_id=args.get("calendar_id") or "primary",
+            max_results=max(1, min(int(args.get("max_results", 25) or 25), 250)),
+            time_min=args.get("time_min") or None,
+            time_max=args.get("time_max") or None,
+            query=args.get("query") or None,
+        )
+        items = resp.get("items", [])
+        if not items:
+            return ToolResult.ok("No events found.")
+        text = "\n".join(_format_event_summary(ev) for ev in items)
+        return ToolResult.ok(text)
+
+    @tool(
+        "get_event",
+        "Get full details of a single calendar event (description, attendees, "
+        "host, etc.). Args: calendar_id (default 'primary'), event_id (from "
+        "list_events).",
+        {"calendar_id": str, "event_id": str},
+    )
+    @_guarded
+    async def get_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        ev = await client.get_event(
+            calendar_id=args.get("calendar_id") or "primary",
+            event_id=args["event_id"],
+        )
+        return ToolResult.ok(_format_event_full(ev))
+
+    return [list_calendars_tool, list_events_tool, get_event_tool]
+
+
+# "2026-07-27" — a bare ISO date, which Google reads as an all-day event.
+_ISO_DATE_LEN = 10
+
+
+def _when(v: str, default_timezone: str) -> dict[str, Any]:
+    """Render one endpoint of an event: all-day for a bare date, else timed."""
+    v = (v or "").strip()
+    if len(v) == _ISO_DATE_LEN and v[4] == "-" and v[7] == "-":
+        return {"date": v}
+    return {"dateTime": v, "timeZone": default_timezone}
+
+
+def _event_body(args: dict[str, Any], default_timezone: str) -> dict[str, Any]:
+    """Shape tool arguments into Google's event resource, omitting what's absent."""
+    body: dict[str, Any] = {}
+    for field in ("summary", "description", "location"):
+        if args.get(field):
+            body[field] = args[field]
+    for field in ("start", "end"):
+        if args.get(field):
+            body[field] = _when(args[field], default_timezone)
+    if args.get("attendees"):
+        body["attendees"] = [
+            {"email": e.strip()} for e in str(args["attendees"]).split(",") if e.strip()
+        ]
+    return body
+
+
+def _write_tools(client: CalendarClient, default_timezone: str) -> list[ToolSpec]:
+    """Create, move and cancel events — the gated tools."""
+    @tool(
+        "create_event",
+        "Create a calendar event. Args: summary (title), start (ISO datetime "
+        "like '2026-07-22T15:00:00' for a timed event, or 'YYYY-MM-DD' for "
+        "all-day), end (same format), description (optional), location "
+        "(optional), attendees (optional, comma-separated emails), calendar_id "
+        "(default 'primary'), timezone (optional IANA tz; defaults to the "
+        f"user's, {default_timezone!r}). Confirm the created event to the user.",
+        {
+            "summary": str,
+            "start": str,
+            "end": str,
+            "description": str,
+            "location": str,
+            "attendees": str,
+            "calendar_id": str,
+            "timezone": str,
+        },
+    )
+    @_guarded
+    async def create_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        body = _event_body(args, default_timezone)
+        if not body.get("start") or not body.get("end"):
+            return ToolResult.error("error: start and end are required")
+        ev = await client.create_event(args.get("calendar_id") or "primary", body)
+        return ToolResult.ok(
+            f"created event [{ev.get('id', '?')}] {ev.get('summary', '')} "
+            f"— {_event_when(ev)}"
+        )
+
+    @tool(
+        "update_event",
+        "Update fields of an existing calendar event (partial — only the "
+        "fields you pass change). Args: event_id (required), calendar_id "
+        "(default 'primary'), plus any of summary/start/end/description/"
+        "location/attendees/timezone (same formats as create_event).",
+        {
+            "event_id": str,
+            "calendar_id": str,
+            "summary": str,
+            "start": str,
+            "end": str,
+            "description": str,
+            "location": str,
+            "attendees": str,
+            "timezone": str,
+        },
+    )
+    @_guarded
+    async def update_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        body = _event_body(args, default_timezone)
+        if not body:
+            return ToolResult.error("error: nothing to update")
+        ev = await client.update_event(
+            args.get("calendar_id") or "primary", args["event_id"], body
+        )
+        return ToolResult.ok(
+            f"updated event [{ev.get('id', '?')}] {ev.get('summary', '')} "
+            f"— {_event_when(ev)}"
+        )
+
+    @tool(
+        "delete_event",
+        "Delete a calendar event. Args: event_id (required), calendar_id "
+        "(default 'primary'). This is irreversible — only do it when the user "
+        "clearly asked to delete/cancel the event.",
+        {"event_id": str, "calendar_id": str},
+    )
+    @_guarded
+    async def delete_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        await client.delete_event(args.get("calendar_id") or "primary", args["event_id"])
+        return ToolResult.ok(f"deleted event {args['event_id']}")
+
+    return [create_event_tool, update_event_tool, delete_event_tool]
 
 
 class GoogleCalendarConnector(Connector):
     name = "google_calendar"
-    TRIGGER_KEYWORDS = ("calendar", "event", "meeting", "appointment",
-                        "invite", "schedule", "free", "busy", "availab",
-                        "reschedule", "tomorrow", "today", "agenda")
+    TRIGGER_KEYWORDS = (
+        "calendar",
+        "event",
+        "meeting",
+        "appointment",
+        "invite",
+        "schedule",
+        "free",
+        "busy",
+        "availab",
+        "reschedule",
+        "tomorrow",
+        "today",
+        "agenda",
+    )
     # create_event satisfies an "I've set a reminder" claim (chat Layer 3b).
     SCHEDULE_CLAIM_TOOLS = frozenset({"create_event"})
     WRITE_TOOLS = frozenset({"create_event", "update_event", "delete_event"})
 
-    TOOL_NAMES = [
+    TOOL_NAMES: ClassVar[list[str]] = [
         "list_calendars",
         "list_events",
         "get_event",
@@ -171,7 +370,7 @@ class GoogleCalendarConnector(Connector):
         "delete_event",
     ]
 
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "list_calendars": "Listing calendars",
         "list_events": "Checking your calendar",
         "get_event": "Reading the event",
@@ -193,8 +392,8 @@ class GoogleCalendarConnector(Connector):
 
     # ---- Connector contract ----
 
-    def builtin_servers(self) -> dict[str, list]:
-        servers: dict[str, list] = {}
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
+        servers: dict[str, list[ToolSpec]] = {}
         for profile in self._config.load_all():
             if not profile.enabled or not self.owns_profile(profile.name):
                 continue
@@ -217,7 +416,7 @@ class GoogleCalendarConnector(Connector):
             servers[profile.name] = self._build_tools_for_profile(client)
         return servers
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     # ---- CLI ----
@@ -229,8 +428,8 @@ class GoogleCalendarConnector(Connector):
             metavar="PATH",
             required=True,
             help="path to a Google OAuth client JSON (Desktop app type). Can be "
-                 "the same gcp-oauth.keys.json you used for Gmail — same client "
-                 "works, just different scopes.",
+            "the same gcp-oauth.keys.json you used for Gmail — same client "
+            "works, just different scopes.",
         )
         p.add_argument(
             "--reauth",
@@ -301,7 +500,8 @@ class GoogleCalendarConnector(Connector):
         except KeyError:
             print(
                 f"error: google_calendar / {email} not found.\n"
-                f"  use `python cli.py add google_calendar {email} --oauth-keys <path>` to add it first.",
+                f"  use `python cli.py add google_calendar {email} --oauth-keys <path>` "
+                "to add it first.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -353,168 +553,8 @@ class GoogleCalendarConnector(Connector):
 
     # ---- tool builder ----
 
-    def _build_tools_for_profile(self, client: CalendarClient) -> list:
-        @tool(
-            "list_calendars",
-            "List all calendars the authenticated user has access to. Returns "
-            "calendar IDs (use these with list_events) and names. The user's "
-            "primary calendar always has id 'primary'.",
-            {},
-        )
-        async def list_calendars_tool(_args: dict[str, Any], _ctx: ToolContext):
-            try:
-                resp = await client.list_calendars()
-                items = resp.get("items", [])
-                if not items:
-                    return ToolResult.ok("No calendars.")
-                lines = []
-                for c in items:
-                    cid = c.get("id", "?")
-                    name = c.get("summary", "(unnamed)")
-                    primary = " (primary)" if c.get("primary") else ""
-                    lines.append(f"- [{cid}] {name}{primary}")
-                return ToolResult.ok("\n".join(lines))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "list_events",
-            "List or search events on a Google Calendar. Defaults to the primary "
-            "calendar. Args: calendar_id (default 'primary'; get IDs from "
-            "list_calendars), max_results (default 25), time_min and time_max "
-            "(RFC3339 timestamps like '2026-05-15T00:00:00Z'; both optional — "
-            "if omitted, returns upcoming events), query (free-text search; "
-            "matches event title, description, location, attendees).",
-            {
-                "calendar_id": str,
-                "max_results": int,
-                "time_min": str,
-                "time_max": str,
-                "query": str,
-            },
-        )
-        async def list_events_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                resp = await client.list_events(
-                    calendar_id=args.get("calendar_id") or "primary",
-                    max_results=max(1, min(int(args.get("max_results", 25) or 25), 250)),
-                    time_min=args.get("time_min") or None,
-                    time_max=args.get("time_max") or None,
-                    query=args.get("query") or None,
-                )
-                items = resp.get("items", [])
-                if not items:
-                    return ToolResult.ok("No events found.")
-                text = "\n".join(_format_event_summary(ev) for ev in items)
-                return ToolResult.ok(text)
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "get_event",
-            "Get full details of a single calendar event (description, attendees, "
-            "host, etc.). Args: calendar_id (default 'primary'), event_id (from "
-            "list_events).",
-            {"calendar_id": str, "event_id": str},
-        )
-        async def get_event_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                ev = await client.get_event(
-                    calendar_id=args.get("calendar_id") or "primary",
-                    event_id=args["event_id"],
-                )
-                return ToolResult.ok(_format_event_full(ev))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        def _when(v: str) -> dict:
-            v = (v or "").strip()
-            # Bare date (YYYY-MM-DD) → all-day; otherwise a timed event.
-            if len(v) == 10 and v[4] == "-" and v[7] == "-":
-                return {"date": v}
-            return {"dateTime": v, "timeZone": self._default_timezone}
-
-        def _event_body(args: dict[str, Any]) -> dict:
-            body: dict[str, Any] = {}
-            if args.get("summary"):
-                body["summary"] = args["summary"]
-            if args.get("description"):
-                body["description"] = args["description"]
-            if args.get("location"):
-                body["location"] = args["location"]
-            if args.get("start"):
-                body["start"] = _when(args["start"])
-            if args.get("end"):
-                body["end"] = _when(args["end"])
-            if args.get("attendees"):
-                body["attendees"] = [{"email": e.strip()} for e in str(args["attendees"]).split(",") if e.strip()]
-            return body
-
-        @tool(
-            "create_event",
-            "Create a calendar event. Args: summary (title), start (ISO datetime "
-            "like '2026-07-22T15:00:00' for a timed event, or 'YYYY-MM-DD' for "
-            "all-day), end (same format), description (optional), location "
-            "(optional), attendees (optional, comma-separated emails), calendar_id "
-            "(default 'primary'), timezone (optional IANA tz; defaults to the "
-            f"user's, {self._default_timezone!r}). Confirm the created event to the user.",
-            {"summary": str, "start": str, "end": str, "description": str,
-             "location": str, "attendees": str, "calendar_id": str, "timezone": str},
-        )
-        async def create_event_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                body = _event_body(args)
-                if not body.get("start") or not body.get("end"):
-                    return ToolResult.error("error: start and end are required")
-                ev = await client.create_event(args.get("calendar_id") or "primary", body)
-                return ToolResult.ok(f"created event [{ev.get('id','?')}] {ev.get('summary','')} — {_event_when(ev)}")
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "update_event",
-            "Update fields of an existing calendar event (partial — only the "
-            "fields you pass change). Args: event_id (required), calendar_id "
-            "(default 'primary'), plus any of summary/start/end/description/"
-            "location/attendees/timezone (same formats as create_event).",
-            {"event_id": str, "calendar_id": str, "summary": str, "start": str,
-             "end": str, "description": str, "location": str, "attendees": str, "timezone": str},
-        )
-        async def update_event_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                body = _event_body(args)
-                if not body:
-                    return ToolResult.error("error: nothing to update")
-                ev = await client.update_event(args.get("calendar_id") or "primary", args["event_id"], body)
-                return ToolResult.ok(f"updated event [{ev.get('id','?')}] {ev.get('summary','')} — {_event_when(ev)}")
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "delete_event",
-            "Delete a calendar event. Args: event_id (required), calendar_id "
-            "(default 'primary'). This is irreversible — only do it when the user "
-            "clearly asked to delete/cancel the event.",
-            {"event_id": str, "calendar_id": str},
-        )
-        async def delete_event_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                await client.delete_event(args.get("calendar_id") or "primary", args["event_id"])
-                return ToolResult.ok(f"deleted event {args['event_id']}")
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        return [list_calendars_tool, list_events_tool, get_event_tool,
-                create_event_tool, update_event_tool, delete_event_tool]
+    def _build_tools_for_profile(self, client: CalendarClient) -> list[Any]:
+        return [
+            *_read_tools(client),
+            *_write_tools(client, self._default_timezone),
+        ]

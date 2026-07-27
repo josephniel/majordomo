@@ -1,5 +1,4 @@
 """comms.relay — addressing rules + the bot-to-bot loop guard."""
-import pytest
 
 from adapters.comms.relay import MAX_BOT_HOPS_WITHOUT_HUMAN, CommsRelay
 

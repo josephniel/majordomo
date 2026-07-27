@@ -1,5 +1,4 @@
 """services.splitwisewatch — polling watcher (Splitwise has no webhooks)."""
-import pytest
 
 from adapters.trigger.splitwisewatch import MAX_NEW_PER_PROFILE, SplitwiseWatcher
 
@@ -16,7 +15,11 @@ def _expense(eid=1, updated="2026-07-23T10:00:00Z", cost="1385.0", deleted=False
         "deleted_at": "2026-07-23T11:00:00Z" if deleted else None,
         "payment": payment,
         "users": [
-            {"user": {"id": 7, "first_name": "Joseph"}, "paid_share": "1385.0", "owed_share": "600.0"},
+            {
+                "user": {"id": 7, "first_name": "Joseph"},
+                "paid_share": "1385.0",
+                "owed_share": "600.0",
+            },
             {"user": {"id": 8, "first_name": "Paul"}, "paid_share": "0.0", "owed_share": "785.0"},
         ],
     }
@@ -58,9 +61,11 @@ class TestCheck:
         w = make_watcher(tmp_path, {"splitwise": FakeClient([_expense()])})
         block = await w.check()
         assert block is not None
-        assert "Army Navy" in block and "1385.0 PHP" in block
+        assert "Army Navy" in block
+        assert "1385.0 PHP" in block
         assert "paid by You" in block
-        assert "You 600.0" in block and "Paul 785.0" in block
+        assert "You 600.0" in block
+        assert "Paul 785.0" in block
 
     async def test_nothing_new_returns_none_and_commits(self, tmp_path):
         w = make_watcher(tmp_path, {"splitwise": FakeClient([])})
@@ -88,9 +93,14 @@ class TestCheck:
         assert await w.check() is not None
 
     async def test_deleted_and_payment_flags(self, tmp_path):
-        w = make_watcher(tmp_path, {"splitwise": FakeClient(
-            [_expense(eid=1, deleted=True), _expense(eid=2, payment=True)]
-        )})
+        w = make_watcher(
+            tmp_path,
+            {
+                "splitwise": FakeClient(
+                    [_expense(eid=1, deleted=True), _expense(eid=2, payment=True)]
+                )
+            },
+        )
         block = await w.check()
         assert "DELETED" in block
         assert "settle-up payment" in block
@@ -106,7 +116,7 @@ class TestCheck:
         client = FakeClient(many)
         w = make_watcher(tmp_path, {"splitwise": client})
         block = await w.check()
-        assert f"and 3 more" in block
+        assert "and 3 more" in block
         w.commit()
         # Everything (including the summarized tail) is seen now.
         assert await w.check() is None
@@ -117,10 +127,12 @@ class TestCheck:
         good = FakeClient([_expense()])
         w = make_watcher(tmp_path, {"broken": bad, "ok": good})
         block = await w.check()
-        assert block is not None and "Army Navy" in block
+        assert block is not None
+        assert "Army Navy" in block
 
     async def test_fresh_poll_logs_observability_line(self, tmp_path, caplog):
         import logging
+
         w = make_watcher(tmp_path, {"splitwise": FakeClient([_expense()])})
         with caplog.at_level(logging.INFO):
             await w.check()

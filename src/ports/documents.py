@@ -28,9 +28,10 @@ implementation ever needs them structurally, that is the moment to type them
 """
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from .conversation import ConversationRef
+if TYPE_CHECKING:
+    from .conversation import ConversationRef
 
 
 @runtime_checkable
@@ -49,7 +50,7 @@ class DocumentStore(Protocol):
         name: str,
         mime: str,
         text: str,
-        chat_id: Optional[ConversationRef] = None,
+        chat_id: ConversationRef | None = None,
     ) -> tuple[int, int]:
         """Chunk, embed and store one document. Returns (doc_id, num_chunks).
 
@@ -65,8 +66,10 @@ class DocumentStore(Protocol):
     async def delete(self, persona_id: str, doc_id: int) -> bool: ...
 
     async def prune(self, persona_id: str, older_than_days: int) -> int:
-        """Drop documents older than N days. Returns the count removed;
-        `older_than_days <= 0` means "never prune" and removes nothing."""
+        """Drop documents older than N days.
+
+        Returns the count removed; `older_than_days <= 0` means "never prune" and removes nothing.
+        """
         ...
 
     # ---- reads ----
@@ -82,14 +85,19 @@ class DocumentStore(Protocol):
         doc_id: int,
         start_chunk: int = 0,
         max_chunks: int = 4,
-    ) -> Optional[dict[str, Any]]:
-        """Paged read. Keys: name, num_chunks, chunks[{chunk_index, content}].
-        None when the document doesn't exist for this persona."""
+    ) -> dict[str, Any] | None:
+        """Paged read.
+
+        Keys: name, num_chunks, chunks[{chunk_index, content}]. None when the document doesn't exist
+        for this persona.
+        """
         ...
 
     async def search(
         self, persona_id: str, query: str, limit: int = 5
     ) -> list[dict[str, Any]]:
-        """Relevant chunks, best-first. Keys: doc_id, doc_name, chunk_index,
-        content, score."""
+        """Relevant chunks, best-first.
+
+        Keys: doc_id, doc_name, chunk_index, content, score.
+        """
         ...

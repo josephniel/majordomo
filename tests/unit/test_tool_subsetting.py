@@ -5,6 +5,7 @@ the agent holds no per-service keyword tables.
 """
 import pytest
 
+from adapters.model import VendorEndpoint
 from adapters.model.chat_completions import (
     ChatCompletionsAgent,
     DeepSeekAgent,
@@ -46,8 +47,15 @@ def make_agent(cls=GroqAgent):
         FakeConnector("yahoo", ["get_quote"],
                       keywords=("stock", "ticker")),
     ]
-    return cls(context_builder=None, history=None, persona_id="p", chat_id=1,
-               connectors=connectors, persona=None, api_key="k")
+    return cls(
+        context_builder=None,
+        history=None,
+        persona_id="p",
+        chat_id=1,
+        connectors=connectors,
+        persona=None,
+        endpoint=VendorEndpoint(api_key="k"),
+    )
 
 
 def selected_connectors(agent, text):
@@ -60,9 +68,7 @@ ALWAYS_ON = {"memory", "schedule"}
 
 
 class TestSubsetting:
-    @pytest.mark.parametrize(
-        "cls", [GroqAgent, GeminiAgent, OpenAIAgent, DeepSeekAgent]
-    )
+    @pytest.mark.parametrize("cls", [GroqAgent, GeminiAgent, OpenAIAgent, DeepSeekAgent])
     def test_every_vendor_subsets(self, cls):
         # The full ~60-tool schema is billed on every turn, so all vendors
         # subset — free tiers for quota, paid tiers for cost.
@@ -77,15 +83,16 @@ class TestSubsetting:
     def test_always_attach_present_for_generic_message(self):
         agent = make_agent()
         conns = selected_connectors(agent, "what should I eat for breakfast?")
-        assert ALWAYS_ON <= conns
+        assert conns >= ALWAYS_ON
         # no keyword-routed tools for an unrelated message
-        assert "gmail" not in conns and "splitwise" not in conns
+        assert "gmail" not in conns
+        assert "splitwise" not in conns
 
     def test_email_message_pulls_gmail(self):
         agent = make_agent()
         conns = selected_connectors(agent, "any new email in my inbox?")
         assert "gmail" in conns
-        assert ALWAYS_ON <= conns
+        assert conns >= ALWAYS_ON
 
     def test_calendar_keywords(self):
         agent = make_agent()

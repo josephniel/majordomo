@@ -1,7 +1,8 @@
 """Persona — a chat instance's identity, skills, and personality.
 
 A persona is a directory under instances/ that contains:
-  persona.yaml         — identity (name, system_prompt, faculties:/connectors: enablement, optional model)
+  persona.yaml         — identity (name, system_prompt, optional model, and the
+                         faculties:/connectors: enablement)
   platform.yaml        — one platform-named config block (e.g. telegram: {...})
   .env                 — secrets (TELEGRAM_TOKEN, API keys, DATABASE_URL, …)
   connectors.yaml      — per-profile config for enabled connectors
@@ -17,18 +18,24 @@ DI factory that turns one Persona into a running ConversationOrchestrator.
 """
 from __future__ import annotations
 
+import contextlib
+import logging
 from dataclasses import dataclass, field, replace
-from pathlib import Path
-from typing import Optional, Union
+from typing import TYPE_CHECKING, Any
 
 import yaml
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # enabled_connectors map values:
 #   True            -> connector active, READ-ONLY (all tools minus WRITE_TOOLS)
 #   "read_write"    -> connector active, ALL tools (including mutating ones)
 #   list[str]       -> connector active, only these tool names exposed
 #   False / missing -> connector not loaded for this persona
-EnabledValue = Union[bool, str, list[str]]
+EnabledValue = bool | str | list[str]
 
 _READ_WRITE = ("read_write", "rw", "all")
 
@@ -42,7 +49,7 @@ class Persona:
     name: str
     system_prompt: str
     enabled_connectors: dict[str, EnabledValue] = field(default_factory=dict)
-    model: Optional[str] = None
+    model: str | None = None
     # Layer 5: write tools require an in-chat operator approval per call.
     # Opting out (write_approval: false) restores unattended writes — only
     # sane for personas whose write surface is already trusted end-to-end.
@@ -50,25 +57,25 @@ class Persona:
     # Proactive check-in: {cron: "0 8,13,18 * * *", chat_id: <optional int>,
     # prompt: "..."}. chat_id defaults to the platform's first allowed user
     # (their DM). The prompt is re-read from persona.yaml per fire.
-    heartbeat: Optional[dict] = None
+    heartbeat: dict[str, Any] | None = None
     # Inbound webhook triggers: {port: 18790, triggers: {name: {prompt: ...}}}.
     # Requires WEBHOOK_TOKEN in the instance .env. See adapters/trigger/webhook.py.
-    webhooks: Optional[dict] = None
+    webhooks: dict[str, Any] | None = None
     # Push-style mail alerts: {every_minutes: 3, chat_id: <optional>}.
     # Needs the gmail connector enabled. See adapters/trigger/mailwatch.py.
-    mail_watch: Optional[dict] = None
+    mail_watch: dict[str, Any] | None = None
     # Splitwise expense mirroring into the budget ledger: {every_minutes: 10,
     # chat_id: <optional>}. Needs splitwise AND budget connectors enabled.
     # Polling — Splitwise's API has no webhooks. See adapters/trigger/splitwisewatch.py.
-    splitwise_watch: Optional[dict] = None
+    splitwise_watch: dict[str, Any] | None = None
     # Enablement map for BACKGROUND agents (heartbeat, mail-watch) — same
     # grammar as faculties:/connectors:. When unset, the chat map is used
     # downgraded to read-only. Background fires are unattended and pay the
     # full tool-schema token cost per fire, so keep this minimal.
-    background_tools: Optional[dict[str, EnabledValue]] = None
+    background_tools: dict[str, EnabledValue] | None = None
 
     @classmethod
-    def load(cls, persona_id: str, project_root: Path) -> "Persona":
+    def load(cls, persona_id: str, project_root: Path) -> Persona:
         persona_dir = project_root / "instances" / persona_id
         config_path = persona_dir / "persona.yaml"
         if not config_path.exists():
@@ -104,23 +111,25 @@ class Persona:
         )
 
     @staticmethod
-    def _merge_enablement(cfg: dict, config_path: Path) -> dict:
-        """Merge legacy enabled_connectors + faculties: + connectors: into
-        one policy map (names are globally unique). Collisions are almost
-        certainly migration mistakes — warn loudly, last block wins."""
-        import logging
+    def _merge_enablement(cfg: dict[str, Any], config_path: Path) -> dict[str, EnabledValue]:
+        """Merge the legacy and current enablement blocks into one policy map.
+
+        enabled_connectors + faculties: + connectors:; names are globally
+        unique. Collisions are almost certainly migration mistakes — warn
+        loudly, last block wins.
+        """
         blocks = [
             ("enabled_connectors", dict(cfg.get("enabled_connectors")
                                         or cfg.get("enabled_services") or {})),
             ("faculties", dict(cfg.get("faculties") or {})),
             ("connectors", dict(cfg.get("connectors") or {})),
         ]
-        merged: dict = {}
+        merged: dict[str, EnabledValue] = {}
         seen: dict[str, str] = {}
         for block_name, block in blocks:
             for name, value in block.items():
                 if name in seen:
-                    logging.getLogger(__name__).warning(
+                    log.warning(
                         "%s: %r appears in both %r and %r blocks — using the "
                         "%r value", config_path, name, seen[name], block_name,
                         block_name,
@@ -163,8 +172,8 @@ class Persona:
 
     # ---- enablement queries ----
 
-    def background_view(self) -> "Persona":
-        """This persona as seen by background agents (heartbeat, mail-watch).
+    def background_view(self) -> Persona:
+        """Narrow this persona to what background agents see (heartbeat, mail-watch).
 
         Uses `background_tools:` when set; otherwise downgrades the chat
         enablement to read-only ("read_write" -> True; True/lists kept).
@@ -191,8 +200,9 @@ class Persona:
             return len(v) > 0
         return False
 
-    def allowed_tool_names(self, connector) -> Optional[list[str]]:
+    def allowed_tool_names(self, connector: Any) -> list[str] | None:
         """Resolve which of a connector's tools this persona may use.
+
         Returns None = all tools, a list = only those, [] = disabled.
 
         Takes the connector OBJECT (not just a name) so it can read the
@@ -213,8 +223,7 @@ class Persona:
                 # Can't enumerate this provider's tools, so we can't compute
                 # "everything except writes". FAIL CLOSED: a read-only grant
                 # must never silently become read-write.
-                import logging
-                logging.getLogger(__name__).warning(
+                log.warning(
                     "connector %r: tools not enumerable; read-only grant "
                     "resolves to NO tools (fail-closed)", name,
                 )
@@ -225,16 +234,14 @@ class Persona:
         return []  # disabled
 
     @staticmethod
-    def _connector_tool_names(connector) -> set[str]:
+    def _connector_tool_names(connector: Any) -> set[str]:
         names: set[str] = set()
         try:
             for specs in connector.builtin_servers().values():
                 names |= {s.name for s in specs}
         except Exception:
-            pass
-        try:
+            log.debug("connector %r has no readable builtin_servers", connector, exc_info=True)
+        with contextlib.suppress(Exception):
             names |= {t.name for t in connector.builtin_tools()}
-        except Exception:
-            pass
         return names
 

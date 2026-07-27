@@ -16,20 +16,24 @@ credentials/clickup/<slug>/secrets.json.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import json
 import logging
 import sys
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
-from ports import ToolContext, ToolResult, tool
 
-from .registry import ServiceRegistry
+from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
-from ports import Connector
+from ._failures import HTTP_NO_CONTENT, api_errors
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from .registry import ServiceRegistry
 
 log = logging.getLogger(__name__)
 
@@ -52,9 +56,9 @@ class ClickUpClient:
         self,
         method: str,
         path: str,
-        params: Optional[dict] = None,
-        body: Optional[dict] = None,
-    ) -> dict:
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.TIMEOUT) as http:
             response = await http.request(
                 method,
@@ -67,25 +71,25 @@ class ClickUpClient:
                 json=body,
             )
             response.raise_for_status()
-            if response.status_code == 204 or not response.text:
+            if response.status_code == HTTP_NO_CONTENT or not response.text:
                 return {}
             return response.json()
 
-    async def _get(self, path: str, params: Optional[dict] = None) -> dict:
+    async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self._request("GET", path, params=params)
 
-    async def _put(self, path: str, body: dict) -> dict:
+    async def _put(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._request("PUT", path, body=body)
 
-    async def _post(self, path: str, body: Optional[dict] = None) -> dict:
+    async def _post(self, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self._request("POST", path, body=body or {})
 
-    async def _delete(self, path: str) -> dict:
+    async def _delete(self, path: str) -> dict[str, Any]:
         return await self._request("DELETE", path)
 
     # ---- read ----
 
-    async def get_authorized_user(self) -> dict:
+    async def get_authorized_user(self) -> dict[str, Any]:
         return await self._get("/user")
 
     async def list_tasks(
@@ -93,7 +97,7 @@ class ClickUpClient:
         include_closed: bool = False,
         page: int = 0,
         include_subtasks: bool = True,
-    ) -> dict:
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "include_closed": str(bool(include_closed)).lower(),
             "page": page,
@@ -102,13 +106,13 @@ class ClickUpClient:
             params["subtasks"] = "true"
         return await self._get(f"/team/{self._team_id}/task", params)
 
-    async def get_task(self, task_id: str, include_subtasks: bool = True) -> dict:
+    async def get_task(self, task_id: str, include_subtasks: bool = True) -> dict[str, Any]:
         params: dict[str, Any] = {}
         if include_subtasks:
             params["include_subtasks"] = "true"
         return await self._get(f"/task/{task_id}", params)
 
-    async def list_spaces(self) -> dict:
+    async def list_spaces(self) -> dict[str, Any]:
         return await self._get(f"/team/{self._team_id}/space")
 
     async def list_tasks_for_user(
@@ -117,7 +121,7 @@ class ClickUpClient:
         include_closed: bool = False,
         page: int = 0,
         include_subtasks: bool = True,
-    ) -> dict:
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "assignees[]": user_id,
             "include_closed": str(bool(include_closed)).lower(),
@@ -135,25 +139,25 @@ class ClickUpClient:
                 return team.get("members", [])
         return []
 
-    async def list_folders(self, space_id: str) -> dict:
+    async def list_folders(self, space_id: str) -> dict[str, Any]:
         return await self._get(f"/space/{space_id}/folder")
 
-    async def list_lists_in_folder(self, folder_id: str) -> dict:
+    async def list_lists_in_folder(self, folder_id: str) -> dict[str, Any]:
         return await self._get(f"/folder/{folder_id}/list")
 
     # ---- write ----
 
-    async def update_task(self, task_id: str, body: dict) -> dict:
+    async def update_task(self, task_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._put(f"/task/{task_id}", body)
 
-    async def add_task_to_list(self, task_id: str, list_id: str) -> dict:
+    async def add_task_to_list(self, task_id: str, list_id: str) -> dict[str, Any]:
         return await self._post(f"/list/{list_id}/task/{task_id}")
 
-    async def remove_task_from_list(self, task_id: str, list_id: str) -> dict:
+    async def remove_task_from_list(self, task_id: str, list_id: str) -> dict[str, Any]:
         return await self._delete(f"/list/{list_id}/task/{task_id}")
 
 
-def _format_task_line(task: dict, prefix: str = "- ") -> str:
+def _format_task_line(task: dict[str, Any], prefix: str = "- ") -> str:
     name = task.get("name", "(no name)")
     status = (task.get("status") or {}).get("status", "unknown")
     task_id = task.get("id", "?")
@@ -161,14 +165,36 @@ def _format_task_line(task: dict, prefix: str = "- ") -> str:
     suffix = f" ({status})"
     if due:
         try:
-            due_str = datetime.fromtimestamp(int(due) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            due_str = datetime.fromtimestamp(int(due) / 1000, tz=UTC).strftime("%Y-%m-%d")
             suffix = f" ({status}, due {due_str})"
         except Exception:
-            pass
+            log.debug("unparseable due_date %r; omitting it", due, exc_info=True)
     return f"{prefix}[{task_id}] {name}{suffix}"
 
 
-def _summarize_tasks_response(resp: dict) -> str:
+def _parent_index(
+    tasks: list[dict[str, Any]],
+) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
+    """Group a flat task list by parent id, and pick out the roots.
+
+    Roots are tasks whose parent is missing entirely OR whose parent isn't in
+    this result set (orphan subtasks from a different page).
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    children_by_parent: dict[str, list[dict[str, Any]]] = {}
+    for t in tasks:
+        tid = t.get("id")
+        if tid is not None:
+            by_id[str(tid)] = t
+        parent = t.get("parent")
+        if parent:
+            children_by_parent.setdefault(str(parent), []).append(t)
+
+    roots = [t for t in tasks if not t.get("parent") or str(t.get("parent")) not in by_id]
+    return children_by_parent, roots
+
+
+def _summarize_tasks_response(resp: dict[str, Any]) -> str:
     """Render tasks with subtasks nested under their parent at any depth.
 
     ClickUp returns subtasks flat in the same list when subtasks=true, with a
@@ -180,27 +206,12 @@ def _summarize_tasks_response(resp: dict) -> str:
     if not tasks:
         return "No tasks found."
 
-    by_id: dict[str, dict] = {}
-    children_by_parent: dict[str, list[dict]] = {}
-    for t in tasks:
-        tid = t.get("id")
-        if tid is not None:
-            by_id[str(tid)] = t
-        parent = t.get("parent")
-        if parent:
-            children_by_parent.setdefault(str(parent), []).append(t)
-
-    # Roots = tasks whose parent is missing entirely OR whose parent isn't in
-    # this result set (orphan subtasks from a different page).
-    roots = [
-        t for t in tasks
-        if not t.get("parent") or str(t.get("parent")) not in by_id
-    ]
+    children_by_parent, roots = _parent_index(tasks)
 
     lines: list[str] = []
     visited: set[str] = set()
 
-    def walk(task: dict, depth: int) -> None:
+    def walk(task: dict[str, Any], depth: int) -> None:
         tid = str(task.get("id"))
         if tid in visited:  # cycle guard
             return
@@ -236,28 +247,251 @@ def _summarize_tasks_response(resp: dict) -> str:
     return "\n".join(lines)
 
 
-def _format_http_error(e: httpx.HTTPStatusError) -> str:
-    body = e.response.text or ""
-    return (
-        f"ClickUp API error {e.response.status_code}: "
-        f"{body[:300]}"
-    )
+_VENDOR = "ClickUp"
+
+# Every handler below whose failure story is just "the API said no" wears this.
+_guarded = api_errors(_VENDOR)
 
 
-def _parse_id_csv(s: Optional[str]) -> list[int]:
+def _parse_id_csv(s: str | None) -> list[int]:
     """Parse '123, 456, 789' into [123, 456, 789]. Empty input -> []."""
     if not s:
         return []
     out: list[int] = []
-    for part in s.split(","):
-        part = part.strip()
+    for raw_part in s.split(","):
+        part = raw_part.strip()
         if not part:
             continue
-        try:
+        with contextlib.suppress(ValueError):
             out.append(int(part))
-        except ValueError:
-            pass
     return out
+
+
+def _task_read_tools(client: ClickUpClient) -> list[ToolSpec]:
+    """Read tasks: the workspace list, one task, and your own queue."""
+    # ---- READ TOOLS ----
+
+    @tool(
+        "search_tasks",
+        "List ClickUp tasks in this workspace. Returns a short summary per "
+        "task with subtasks nested under their parent (indicated by ↳). "
+        "Args: include_closed (default false), include_subtasks (default "
+        "true — set false for a top-level-only view), page (default 0; "
+        "ClickUp paginates 100 per page). If you need to filter by keyword, "
+        "fetch tasks and filter the result yourself.",
+        {"include_closed": bool, "include_subtasks": bool, "page": int},
+    )
+    @_guarded
+    async def search_tasks_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        resp = await client.list_tasks(
+            include_closed=bool(args.get("include_closed", False)),
+            page=int(args.get("page", 0)),
+            include_subtasks=bool(args.get("include_subtasks", True)),
+        )
+        return ToolResult.ok(_summarize_tasks_response(resp))
+
+    @tool(
+        "get_task",
+        "Get full details of one ClickUp task by ID (the value in [brackets] "
+        "from search_tasks output, e.g. '8c123abcd'). Args: task_id, "
+        "include_subtasks (default true — subtasks come nested in the "
+        "response under the `subtasks` field).",
+        {"task_id": str, "include_subtasks": bool},
+    )
+    @_guarded
+    async def get_task_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        resp = await client.get_task(
+            args["task_id"],
+            include_subtasks=bool(args.get("include_subtasks", True)),
+        )
+        return ToolResult.ok(json.dumps(resp, indent=2)[:4000])
+
+    @tool(
+        "list_spaces",
+        "List spaces (top-level workspace groupings) in this ClickUp workspace.",
+        {},
+    )
+    @_guarded
+    async def list_spaces_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        resp = await client.list_spaces()
+        spaces = resp.get("spaces", [])
+        if not spaces:
+            return ToolResult.ok("No spaces found.")
+        lines = [f"- [{s.get('id', '?')}] {s.get('name', '(unnamed)')}" for s in spaces]
+        return ToolResult.ok("\n".join(lines))
+
+    @tool(
+        "get_my_tasks",
+        "List ClickUp tasks assigned to the user authenticated by this "
+        "workspace's API token. Subtasks are nested under their parent "
+        "(indicated by ↳). Args: include_closed (default false), "
+        "include_subtasks (default true), page (default 0).",
+        {"include_closed": bool, "include_subtasks": bool, "page": int},
+    )
+    @_guarded
+    async def get_my_tasks_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        user_resp = await client.get_authorized_user()
+        user_id = user_resp.get("user", {}).get("id")
+        if user_id is None:
+            return ToolResult.error("could not resolve current user id")
+        resp = await client.list_tasks_for_user(
+            user_id=user_id,
+            include_closed=bool(args.get("include_closed", False)),
+            page=int(args.get("page", 0)),
+            include_subtasks=bool(args.get("include_subtasks", True)),
+        )
+        return ToolResult.ok(_summarize_tasks_response(resp))
+
+    return [search_tasks_tool, get_task_tool, list_spaces_tool, get_my_tasks_tool]
+
+
+def _workspace_read_tools(client: ClickUpClient) -> list[ToolSpec]:
+    """Read the workspace itself: members, folders and lists."""
+    @tool(
+        "list_workspace_members",
+        "List members of this ClickUp workspace with their user IDs and "
+        "names. Use this to find a person's user ID before calling "
+        "set_assignees.",
+        {},
+    )
+    @_guarded
+    async def list_workspace_members_tool(
+        _args: dict[str, Any], _ctx: ToolContext
+    ) -> ToolResult:
+        members = await client.list_workspace_members()
+        if not members:
+            return ToolResult.ok("No members found.")
+        lines = []
+        for m in members:
+            user = m.get("user") or {}
+            uid = user.get("id", "?")
+            uname = user.get("username", "(unnamed)")
+            email = user.get("email", "")
+            lines.append(f"- [{uid}] {uname}{' <' + email + '>' if email else ''}")
+        return ToolResult.ok("\n".join(lines))
+
+    @tool(
+        "list_folders",
+        "List folders within a ClickUp space. Sprint Folders show up here "
+        "and contain Sprint Lists. Get space_id from list_spaces.",
+        {"space_id": str},
+    )
+    @_guarded
+    async def list_folders_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        resp = await client.list_folders(args["space_id"])
+        folders = resp.get("folders", [])
+        if not folders:
+            return ToolResult.ok("No folders in this space.")
+        lines = []
+        for f in folders:
+            fid = f.get("id", "?")
+            name = f.get("name", "(unnamed)")
+            is_sprint = f.get("sprint_folder")
+            label = " [SPRINT FOLDER]" if is_sprint else ""
+            lines.append(f"- [{fid}] {name}{label}")
+        return ToolResult.ok("\n".join(lines))
+
+    @tool(
+        "list_lists_in_folder",
+        "List the Lists inside a ClickUp folder. Sprint Lists live inside "
+        "Sprint Folders. Use the returned list IDs with add_task_to_list "
+        "to assign tasks to a sprint.",
+        {"folder_id": str},
+    )
+    @_guarded
+    async def list_lists_in_folder_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        resp = await client.list_lists_in_folder(args["folder_id"])
+        lists = resp.get("lists", [])
+        if not lists:
+            return ToolResult.ok("No lists in this folder.")
+        lines = [
+            f"- [{lst.get('id', '?')}] {lst.get('name', '(unnamed)')}" for lst in lists
+        ]
+        return ToolResult.ok("\n".join(lines))
+
+    return [list_workspace_members_tool, list_folders_tool, list_lists_in_folder_tool]
+
+
+def _write_tools(client: ClickUpClient) -> list[ToolSpec]:
+    """Everything that mutates a task — the gated ones (WRITE_TOOLS)."""
+
+    @tool(
+        "update_task",
+        "Update fields on a ClickUp task. All fields except task_id are "
+        "OPTIONAL — pass empty string for fields you don't want to change. "
+        "Use this for renaming a task, editing its description, or moving "
+        "its status. To change assignees, use set_assignees instead. "
+        "Args: task_id (required), name (new title; '' to skip), "
+        "description (new description; '' to skip), status (new status "
+        "name; '' to skip).",
+        {"task_id": str, "name": str, "description": str, "status": str},
+    )
+    @_guarded
+    async def update_task_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        body: dict[str, Any] = {}
+        if args.get("name"):
+            body["name"] = args["name"]
+        if args.get("description"):
+            body["description"] = args["description"]
+        if args.get("status"):
+            body["status"] = args["status"]
+        if not body:
+            return ToolResult.error("no fields supplied — nothing to update")
+        await client.update_task(args["task_id"], body)
+        return ToolResult.ok(f"updated task {args['task_id']}: " + ", ".join(body.keys()))
+
+    @tool(
+        "set_assignees",
+        "Add or remove assignees on a ClickUp task. User IDs come from "
+        "list_workspace_members. Pass IDs as comma-separated strings (e.g. "
+        "'123,456'); empty string means 'no change to that side'. Args: "
+        "task_id, add (CSV of user IDs to ADD), remove (CSV of user IDs "
+        "to REMOVE).",
+        {"task_id": str, "add": str, "remove": str},
+    )
+    @_guarded
+    async def set_assignees_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        add_ids = _parse_id_csv(args.get("add"))
+        rem_ids = _parse_id_csv(args.get("remove"))
+        if not add_ids and not rem_ids:
+            return ToolResult.error("nothing to add or remove")
+        body = {"assignees": {"add": add_ids, "rem": rem_ids}}
+        await client.update_task(args["task_id"], body)
+        return ToolResult.ok(
+            f"task {args['task_id']}: added {add_ids or '[]'}, removed {rem_ids or '[]'}"
+        )
+
+    @tool(
+        "add_task_to_list",
+        "Add a task to an additional ClickUp list, including a Sprint List. "
+        "The task remains in its original list — this is the standard way "
+        "to put a task in a sprint. Find list_id via list_folders + "
+        "list_lists_in_folder.",
+        {"task_id": str, "list_id": str},
+    )
+    @_guarded
+    async def add_task_to_list_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        await client.add_task_to_list(args["task_id"], args["list_id"])
+        return ToolResult.ok(f"added task {args['task_id']} to list {args['list_id']}")
+
+    @tool(
+        "remove_task_from_list",
+        "Remove a task from an additional ClickUp list (e.g. take it out "
+        "of a sprint). Does NOT delete the task — it stays in its primary "
+        "list.",
+        {"task_id": str, "list_id": str},
+    )
+    @_guarded
+    async def remove_task_from_list_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        await client.remove_task_from_list(args["task_id"], args["list_id"])
+        return ToolResult.ok(f"removed task {args['task_id']} from list {args['list_id']}")
+
+    return [
+        update_task_tool,
+        set_assignees_tool,
+        add_task_to_list_tool,
+        remove_task_from_list_tool,
+    ]
 
 
 class ClickUpConnector(Connector):
@@ -265,9 +499,11 @@ class ClickUpConnector(Connector):
     TRIGGER_KEYWORDS = ("task", "todo", "to-do", "ticket", "clickup",
                         "project", "assign", "due", "backlog", "sprint",
                         "status")
-    WRITE_TOOLS = frozenset({"update_task", "set_assignees", "add_task_to_list", "remove_task_from_list"})
+    WRITE_TOOLS = frozenset(
+        {"update_task", "set_assignees", "add_task_to_list", "remove_task_from_list"}
+    )
 
-    TOOL_NAMES = [
+    TOOL_NAMES: ClassVar[list[str]] = [
         # read
         "search_tasks",
         "get_task",
@@ -283,7 +519,7 @@ class ClickUpConnector(Connector):
         "remove_task_from_list",
     ]
 
-    STATUS = {
+    STATUS: ClassVar[dict[str, str]] = {
         "search_tasks": "Searching your ClickUp tasks",
         "get_task": "Reading the ClickUp task",
         "list_spaces": "Listing ClickUp spaces",
@@ -309,9 +545,9 @@ class ClickUpConnector(Connector):
 
     # ---- Connector contract ----
 
-    def builtin_servers(self) -> dict[str, list]:
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
         """One in-process MCP per enabled clickup_<profile> profile."""
-        servers: dict[str, list] = {}
+        servers: dict[str, list[ToolSpec]] = {}
         for profile in self._config.load_all():
             if not profile.enabled or not self.owns_profile(profile.name):
                 continue
@@ -328,7 +564,7 @@ class ClickUpConnector(Connector):
             servers[profile.name] = self._build_tools_for_profile(client)
         return servers
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
     # ---- CLI ----
@@ -339,7 +575,7 @@ class ClickUpConnector(Connector):
             "--team-id",
             required=True,
             help="ClickUp Workspace/Team ID (the 7-10 digit number in your "
-                 "ClickUp URL: app.clickup.com/<TEAM_ID>/...).",
+            "ClickUp URL: app.clickup.com/<TEAM_ID>/...).",
         )
         p.add_argument(
             "--rotate",
@@ -415,14 +651,15 @@ class ClickUpConnector(Connector):
             )
             sys.exit(1)
 
-        existing_team_id: Optional[str] = None
+        existing_team_id: str | None = None
         secrets_path = self.credentials_dir / slug / "secrets.json"
         if secrets_path.exists():
             try:
                 existing = json.loads(secrets_path.read_text(encoding="utf-8"))
                 existing_team_id = existing.get("CLICKUP_TEAM_ID")
             except Exception:
-                pass
+                log.debug("could not read %s; asking for the team id",
+                          secrets_path, exc_info=True)
 
         if existing_team_id is None:
             print(
@@ -462,273 +699,11 @@ class ClickUpConnector(Connector):
         secrets_dir = self.credentials_dir / slug
         secrets_dir.mkdir(parents=True, exist_ok=True)
         secrets_file = secrets_dir / "secrets.json"
-        payload = json.dumps(
-            {"CLICKUP_API_KEY": api_key, "CLICKUP_TEAM_ID": team_id}
-        )
+        payload = json.dumps({"CLICKUP_API_KEY": api_key, "CLICKUP_TEAM_ID": team_id})
         secrets_file.write_text(payload, encoding="utf-8")
         return secrets_file
 
     # ---- tool builder ----
 
-    def _build_tools_for_profile(self, client: ClickUpClient) -> list:
-        # ---- READ TOOLS ----
-
-        @tool(
-            "search_tasks",
-            "List ClickUp tasks in this workspace. Returns a short summary per "
-            "task with subtasks nested under their parent (indicated by ↳). "
-            "Args: include_closed (default false), include_subtasks (default "
-            "true — set false for a top-level-only view), page (default 0; "
-            "ClickUp paginates 100 per page). If you need to filter by keyword, "
-            "fetch tasks and filter the result yourself.",
-            {"include_closed": bool, "include_subtasks": bool, "page": int},
-        )
-        async def search_tasks_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                resp = await client.list_tasks(
-                    include_closed=bool(args.get("include_closed", False)),
-                    page=int(args.get("page", 0)),
-                    include_subtasks=bool(args.get("include_subtasks", True)),
-                )
-                return ToolResult.ok(_summarize_tasks_response(resp))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "get_task",
-            "Get full details of one ClickUp task by ID (the value in [brackets] "
-            "from search_tasks output, e.g. '8c123abcd'). Args: task_id, "
-            "include_subtasks (default true — subtasks come nested in the "
-            "response under the `subtasks` field).",
-            {"task_id": str, "include_subtasks": bool},
-        )
-        async def get_task_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                resp = await client.get_task(
-                    args["task_id"],
-                    include_subtasks=bool(args.get("include_subtasks", True)),
-                )
-                return ToolResult.ok(json.dumps(resp, indent=2)[:4000])
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "list_spaces",
-            "List spaces (top-level workspace groupings) in this ClickUp workspace.",
-            {},
-        )
-        async def list_spaces_tool(_args: dict[str, Any], _ctx: ToolContext):
-            try:
-                resp = await client.list_spaces()
-                spaces = resp.get("spaces", [])
-                if not spaces:
-                    return ToolResult.ok("No spaces found.")
-                lines = [f"- [{s.get('id', '?')}] {s.get('name', '(unnamed)')}" for s in spaces]
-                return ToolResult.ok("\n".join(lines))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "get_my_tasks",
-            "List ClickUp tasks assigned to the user authenticated by this "
-            "workspace's API token. Subtasks are nested under their parent "
-            "(indicated by ↳). Args: include_closed (default false), "
-            "include_subtasks (default true), page (default 0).",
-            {"include_closed": bool, "include_subtasks": bool, "page": int},
-        )
-        async def get_my_tasks_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                user_resp = await client.get_authorized_user()
-                user_id = user_resp.get("user", {}).get("id")
-                if user_id is None:
-                    return ToolResult.error("could not resolve current user id")
-                resp = await client.list_tasks_for_user(
-                    user_id=user_id,
-                    include_closed=bool(args.get("include_closed", False)),
-                    page=int(args.get("page", 0)),
-                    include_subtasks=bool(args.get("include_subtasks", True)),
-                )
-                return ToolResult.ok(_summarize_tasks_response(resp))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "list_workspace_members",
-            "List members of this ClickUp workspace with their user IDs and "
-            "names. Use this to find a person's user ID before calling "
-            "set_assignees.",
-            {},
-        )
-        async def list_workspace_members_tool(_args: dict[str, Any], _ctx: ToolContext):
-            try:
-                members = await client.list_workspace_members()
-                if not members:
-                    return ToolResult.ok("No members found.")
-                lines = []
-                for m in members:
-                    user = m.get("user") or {}
-                    uid = user.get("id", "?")
-                    uname = user.get("username", "(unnamed)")
-                    email = user.get("email", "")
-                    lines.append(f"- [{uid}] {uname}{' <' + email + '>' if email else ''}")
-                return ToolResult.ok("\n".join(lines))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "list_folders",
-            "List folders within a ClickUp space. Sprint Folders show up here "
-            "and contain Sprint Lists. Get space_id from list_spaces.",
-            {"space_id": str},
-        )
-        async def list_folders_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                resp = await client.list_folders(args["space_id"])
-                folders = resp.get("folders", [])
-                if not folders:
-                    return ToolResult.ok("No folders in this space.")
-                lines = []
-                for f in folders:
-                    fid = f.get("id", "?")
-                    name = f.get("name", "(unnamed)")
-                    is_sprint = f.get("sprint_folder")
-                    label = " [SPRINT FOLDER]" if is_sprint else ""
-                    lines.append(f"- [{fid}] {name}{label}")
-                return ToolResult.ok("\n".join(lines))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "list_lists_in_folder",
-            "List the Lists inside a ClickUp folder. Sprint Lists live inside "
-            "Sprint Folders. Use the returned list IDs with add_task_to_list "
-            "to assign tasks to a sprint.",
-            {"folder_id": str},
-        )
-        async def list_lists_in_folder_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                resp = await client.list_lists_in_folder(args["folder_id"])
-                lists = resp.get("lists", [])
-                if not lists:
-                    return ToolResult.ok("No lists in this folder.")
-                lines = [f"- [{lst.get('id', '?')}] {lst.get('name', '(unnamed)')}" for lst in lists]
-                return ToolResult.ok("\n".join(lines))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        # ---- WRITE TOOLS ----
-
-        @tool(
-            "update_task",
-            "Update fields on a ClickUp task. All fields except task_id are "
-            "OPTIONAL — pass empty string for fields you don't want to change. "
-            "Use this for renaming a task, editing its description, or moving "
-            "its status. To change assignees, use set_assignees instead. "
-            "Args: task_id (required), name (new title; '' to skip), "
-            "description (new description; '' to skip), status (new status "
-            "name; '' to skip).",
-            {"task_id": str, "name": str, "description": str, "status": str},
-        )
-        async def update_task_tool(args: dict[str, Any], _ctx: ToolContext):
-            body: dict[str, Any] = {}
-            if args.get("name"):
-                body["name"] = args["name"]
-            if args.get("description"):
-                body["description"] = args["description"]
-            if args.get("status"):
-                body["status"] = args["status"]
-            if not body:
-                return ToolResult.error("no fields supplied — nothing to update")
-            try:
-                await client.update_task(args["task_id"], body)
-                return ToolResult.ok(f"updated task {args['task_id']}: " + ", ".join(body.keys()))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "set_assignees",
-            "Add or remove assignees on a ClickUp task. User IDs come from "
-            "list_workspace_members. Pass IDs as comma-separated strings (e.g. "
-            "'123,456'); empty string means 'no change to that side'. Args: "
-            "task_id, add (CSV of user IDs to ADD), remove (CSV of user IDs "
-            "to REMOVE).",
-            {"task_id": str, "add": str, "remove": str},
-        )
-        async def set_assignees_tool(args: dict[str, Any], _ctx: ToolContext):
-            add_ids = _parse_id_csv(args.get("add"))
-            rem_ids = _parse_id_csv(args.get("remove"))
-            if not add_ids and not rem_ids:
-                return ToolResult.error("nothing to add or remove")
-            body = {"assignees": {"add": add_ids, "rem": rem_ids}}
-            try:
-                await client.update_task(args["task_id"], body)
-                return ToolResult.ok(f"task {args['task_id']}: added {add_ids or '[]'}, removed {rem_ids or '[]'}")
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "add_task_to_list",
-            "Add a task to an additional ClickUp list, including a Sprint List. "
-            "The task remains in its original list — this is the standard way "
-            "to put a task in a sprint. Find list_id via list_folders + "
-            "list_lists_in_folder.",
-            {"task_id": str, "list_id": str},
-        )
-        async def add_task_to_list_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                await client.add_task_to_list(args["task_id"], args["list_id"])
-                return ToolResult.ok(f"added task {args['task_id']} to list {args['list_id']}")
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "remove_task_from_list",
-            "Remove a task from an additional ClickUp list (e.g. take it out "
-            "of a sprint). Does NOT delete the task — it stays in its primary "
-            "list.",
-            {"task_id": str, "list_id": str},
-        )
-        async def remove_task_from_list_tool(args: dict[str, Any], _ctx: ToolContext):
-            try:
-                await client.remove_task_from_list(args["task_id"], args["list_id"])
-                return ToolResult.ok(f"removed task {args['task_id']} from list {args['list_id']}")
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        return [
-            # read
-            search_tasks_tool,
-            get_task_tool,
-            list_spaces_tool,
-            get_my_tasks_tool,
-            list_workspace_members_tool,
-            list_folders_tool,
-            list_lists_in_folder_tool,
-            # write
-            update_task_tool,
-            set_assignees_tool,
-            add_task_to_list_tool,
-            remove_task_from_list_tool,
-        ]
+    def _build_tools_for_profile(self, client: ClickUpClient) -> list[Any]:
+        return [*_task_read_tools(client), *_workspace_read_tools(client), *_write_tools(client)]

@@ -43,13 +43,14 @@ def _delegator(agent, timeout=5.0):
 class TestDelegateTask:
     async def test_returns_subagent_reply(self):
         agent = FakeSubAgent(reply="3 urgent, 2 can wait")
-        d, spec, made = _delegator(agent)
+        _d, spec, made = _delegator(agent)
         result = await spec.handler({"task": "triage my inbox"}, ToolContext(chat_id=42))
         assert not result.is_error
         assert result.text == "3 urgent, 2 can wait"
         assert made == [42]
         assert agent.prompts == ["triage my inbox"]
-        assert agent.started == 1 and agent.stopped == 1
+        assert agent.started == 1
+        assert agent.stopped == 1
 
     async def test_empty_task_rejected(self):
         agent = FakeSubAgent()

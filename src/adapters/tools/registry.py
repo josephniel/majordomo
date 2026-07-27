@@ -38,7 +38,8 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class ConnectorEntry:
-    """A flattened connector × profile ready to spawn an MCP server."""
+    """One connector and profile, flattened into an MCP server ready to spawn."""
+
     name: str
     enabled: bool
     description: str
@@ -72,7 +73,7 @@ class ServiceRegistry:
 
     @staticmethod
     def slugify_profile(profile_id: str) -> str:
-        """foo.bar@baz.com -> foo_bar_at_baz_com"""
+        """Slugify a profile id: foo.bar@baz.com -> foo_bar_at_baz_com."""
         s = profile_id.lower().strip()
         s = s.replace("@", "_at_")
         s = re.sub(r"[^a-z0-9_]", "_", s)
@@ -103,15 +104,20 @@ class ServiceRegistry:
     def expand_env(self, raw: dict[str, Any]) -> dict[str, str]:
         out: dict[str, str] = {}
         for k, v in raw.items():
-            s = os.path.expandvars(os.path.expanduser(str(v)))
-            if s.startswith("./") or s.startswith("../"):
+            # These are env VALUES; most are not paths, and Path() would
+            # normalize the ones that aren't. Only a leading ~ means a home dir.
+            s = os.path.expandvars(str(v))
+            if s.startswith("~"):
+                s = str(Path(s).expanduser())
+            if s.startswith(("./", "../")):
                 s = str((self.project_root / s).resolve())
             out[k] = s
         return out
 
     def _resolve_path(self, path_str: str) -> Path:
-        s = os.path.expandvars(os.path.expanduser(path_str))
-        if s.startswith("./") or s.startswith("../"):
+        # expandvars has no Path equivalent; the home-dir half does.
+        s = str(Path(os.path.expandvars(path_str)).expanduser())
+        if s.startswith(("./", "../")):
             s = str((self.project_root / s).resolve())
         return Path(s)
 
@@ -139,8 +145,8 @@ class ServiceRegistry:
             default_env = self.expand_env(connector.get("default_env") or {})
             profiles = connector.get("profiles") or {}
 
-            for profile_id, profile in profiles.items():
-                profile = profile or {}
+            for profile_id, raw_profile in profiles.items():
+                profile = raw_profile or {}
                 slug = self.slugify_profile(str(profile_id))
                 name = (
                     f"{connector_name}_{slug}"

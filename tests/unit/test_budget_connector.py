@@ -1,10 +1,10 @@
 """connectors.budget — budget-tracker REST connector."""
 import json
+from typing import ClassVar
 
 import httpx
-import pytest
 
-from adapters.tools.budget import BudgetClient, BudgetConnector, DEFAULT_BASE_URL
+from adapters.tools.budget import DEFAULT_BASE_URL, BudgetClient, BudgetConnector
 from ports import ToolContext
 
 CTX = ToolContext(chat_id=1)
@@ -150,7 +150,8 @@ class TestTools:
 
         tools = _connector_tools(handler)
         result = await tools["list_accounts"].handler({}, CTX)
-        assert "[1] BPI Checking" in result.text and "PHP" in result.text
+        assert "[1] BPI Checking" in result.text
+        assert "PHP" in result.text
 
     async def test_list_tags_renders_tree(self):
         def handler(request):
@@ -185,9 +186,9 @@ class TestTools:
 
 class TestContract:
     def test_write_tools_declared(self):
-        assert BudgetConnector.WRITE_TOOLS == frozenset(
+        assert frozenset(
             {"record_transaction", "record_split"}
-        )
+        ) == BudgetConnector.WRITE_TOOLS
         # Reads must never be gated.
         assert "list_accounts" not in BudgetConnector.WRITE_TOOLS
 
@@ -203,7 +204,7 @@ class TestContract:
         class FakeProfile:
             name = "budget"
             enabled = True
-            env = {}  # no BUDGET_API_KEY
+            env: ClassVar[dict[str, str]] = {}  # no BUDGET_API_KEY
 
         class FakeRegistry:
             def load_all(self):

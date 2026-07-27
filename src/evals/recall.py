@@ -36,17 +36,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import re
 import statistics
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from adapters.store.db import MemoryDatabase, redact_dsn
+from ports import FactCandidate
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 DEFAULT_CASES = Path(__file__).resolve().parents[2] / "evals" / "recall_cases.yaml"
 
@@ -77,8 +80,8 @@ AUTO_RECALL_LIMIT_PROBE = 4
 class RecallCase:
     query: str
     expect: list[str]
-    scope: Optional[str] = None
-    domain_key: Optional[str] = None
+    scope: str | None = None
+    domain_key: str | None = None
 
 
 @dataclass
@@ -89,7 +92,7 @@ class CaseResult:
     latency_ms: float
 
     @property
-    def first_expected_rank(self) -> Optional[int]:
+    def first_expected_rank(self) -> int | None:
         """1-indexed rank of the first expected key, or None if absent."""
         for i, k in enumerate(self.ranked_keys, start=1):
             if k == self.case.expect[0]:
@@ -114,14 +117,16 @@ class RecallReport:
 
     @property
     def false_inject_rate(self) -> float:
-        """Share of no-relevant-fact queries that would still inject
-        something. The counterweight to recall@k, which a system that returns
-        everything for every query would score 100% on."""
+        """Share of no-relevant-fact queries that would still inject something.
+
+        The counterweight to recall@k, which a system that returns everything for every query would
+        score 100% on.
+        """
         if not self.negatives_run:
             return 0.0
         return len(self.false_injections) / self.negatives_run
 
-    def _mean(self, fn) -> float:
+    def _mean(self, fn: Callable[[CaseResult], float]) -> float:
         return statistics.mean([fn(r) for r in self.results]) if self.results else 0.0
 
     @property
@@ -144,7 +149,7 @@ class RecallReport:
         if not self.results:
             return 0.0
         xs = sorted(r.latency_ms for r in self.results)
-        idx = min(len(xs) - 1, int(round((p / 100.0) * (len(xs) - 1))))
+        idx = min(len(xs) - 1, round((p / 100.0) * (len(xs) - 1)))
         return xs[idx]
 
     def render(self, verbose: bool = False) -> str:
@@ -156,10 +161,10 @@ class RecallReport:
             f"  recall@{K_AUTO} (auto-inject window) : {self.recall_at_auto:.1%}",
             f"  recall@{K_EXPLICIT} (explicit window)    : {self.recall_at_explicit:.1%}",
             f"  MRR                          : {self.mrr:.3f}",
-            f"  false-inject rate            : {self.false_inject_rate:.1%}"
-            f"  ({len(self.false_injections)}/{self.negatives_run} off-topic queries)",
-            f"  latency p50 / p95            : "
-            f"{self.latency_percentile(50):.0f}ms / {self.latency_percentile(95):.0f}ms",
+            (f"  false-inject rate            : {self.false_inject_rate:.1%}"
+            f"  ({len(self.false_injections)}/{self.negatives_run} off-topic queries)"),
+            (f"  latency p50 / p95            : "
+            f"{self.latency_percentile(50):.0f}ms / {self.latency_percentile(95):.0f}ms"),
         ]
         if self.false_injections:
             lines.append("")
@@ -171,19 +176,20 @@ class RecallReport:
             for r in self.results:
                 mark = "PASS" if r.hit_at(K_AUTO) else "MISS"
                 rank = r.first_expected_rank
+                top = list(zip(r.ranked_keys[:5],
+                               [round(s, 4) for s in r.scores[:5]], strict=False))
                 lines.append(
                     f"  [{mark}] {r.case.query!r}\n"
                     f"         want {r.case.expect}  rank={rank}\n"
-                    f"         got  {list(zip(r.ranked_keys[:5], [round(s, 4) for s in r.scores[:5]]))}"
+                    f"         got  {top}"
                 )
         elif self.misses:
             lines.append("")
             lines.append(f"  misses ({len(self.misses)}):")
-            for r in self.misses:
-                lines.append(
-                    f"    {r.case.query!r} — want {r.case.expect}, "
-                    f"got {r.ranked_keys[:K_AUTO]}"
-                )
+            lines.extend(
+                f"    {r.case.query!r} — want {r.case.expect}, got {r.ranked_keys[:K_AUTO]}"
+                for r in self.misses
+            )
         lines.append("")
         return "\n".join(lines)
 
@@ -215,13 +221,12 @@ async def seed(db: MemoryDatabase, persona_id: str, facts: list[dict[str, Any]])
     """Insert the corpus; return {fact_key: entry_id_str}."""
     key_by_id: dict[str, str] = {}
     for f in facts:
-        entry = await db.save_entry(
-            persona_id=persona_id,
+        entry = await db.save_entry(persona_id, FactCandidate(
             scope=str(f["scope"]),
             content=str(f["content"]),
             domain_key=str(f.get("domain_key") or ""),
             title=str(f.get("title") or ""),
-        )
+        ))
         key_by_id[str(entry.id)] = str(f["key"])
     return key_by_id
 
@@ -260,7 +265,7 @@ async def run_negatives(
     persona_id: str,
     negatives: list[str],
     key_by_id: dict[str, str],
-    report: "RecallReport",
+    report: RecallReport,
 ) -> None:
     """Record which off-topic queries would still inject a memory.
 
@@ -275,9 +280,7 @@ async def run_negatives(
         scored = await db.recall_scored(persona_id, q, limit=AUTO_RECALL_LIMIT_PROBE)
         chosen = select_for_injection(scored)
         if chosen:
-            report.false_injections.append(
-                (q, [key_by_id.get(str(e.id), "?") for e, _ in chosen])
-            )
+            report.false_injections.append((q, [key_by_id.get(str(e.id), "?") for e, _ in chosen]))
 
 
 async def _require_schema(db: MemoryDatabase, dsn: str) -> None:
@@ -344,47 +347,48 @@ async def evaluate(
         return report
     finally:
         try:
-            async with db._acquire() as conn:
-                await conn.execute(
-                    "DELETE FROM memory_entries WHERE persona_id = $1", persona_id
-                )
+            await db.purge_persona(persona_id)
         finally:
             await db.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Split out of main() so the flag defaults are testable without running
-    an eval — `--migrate` defaulting to off is a safety property, not a
-    preference, so it deserves an assertion."""
+    """Split out of main() so the flag defaults are testable without an eval.
+
+    `--migrate` defaulting to off is a safety property, not a preference, so
+    it deserves an assertion.
+    """
     ap = argparse.ArgumentParser(prog="eval-recall", description=__doc__)
-    ap.add_argument("--dsn", default=DEFAULT_DSN,
-                    help=f"Postgres DSN to seed against (default: the test "
-                         f"database, NOT a live assistant's)")
-    ap.add_argument("--migrate", action="store_true",
-                    help="create/upgrade the schema on the target first. Off "
-                         "by default: a benchmark should not be able to apply "
-                         "DDL to a database it does not own.")
+    ap.add_argument(
+        "--dsn",
+        default=DEFAULT_DSN,
+        help="Postgres DSN to seed against (default: the test database, NOT a live assistant's)",
+    )
+    ap.add_argument(
+        "--migrate",
+        action="store_true",
+        help="create/upgrade the schema on the target first. Off "
+        "by default: a benchmark should not be able to apply "
+        "DDL to a database it does not own.",
+    )
     ap.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     ap.add_argument("--verbose", "-v", action="store_true", help="per-case detail")
     ap.add_argument(
-        "--min-recall", type=float, default=None,
+        "--min-recall",
+        type=float,
+        default=None,
         help=f"exit non-zero if recall@{K_AUTO} falls below this (0-1)",
     )
     return ap
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    report = asyncio.run(
-        evaluate(dsn=args.dsn, cases_path=args.cases, migrate=args.migrate)
-    )
+    report = asyncio.run(evaluate(dsn=args.dsn, cases_path=args.cases, migrate=args.migrate))
     print(report.render(verbose=args.verbose))
     if args.min_recall is not None and report.recall_at_auto < args.min_recall:
-        print(
-            f"FAIL: recall@{K_AUTO} {report.recall_at_auto:.1%} "
-            f"< floor {args.min_recall:.1%}"
-        )
+        print(f"FAIL: recall@{K_AUTO} {report.recall_at_auto:.1%} < floor {args.min_recall:.1%}")
         return 1
     return 0
 

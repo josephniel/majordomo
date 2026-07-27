@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import TYPE_CHECKING
 
 from dotenv import dotenv_values
 
@@ -37,6 +37,12 @@ from .config import (
 from .persona import Persona
 from .settings import RuntimeSettings
 from .vendors import VENDORS_BY_NAME
+
+# Nothing to compare against with fewer than two of a thing.
+_MIN_TO_COMPARE = 2
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 OK = "ok"
 WARN = "warning"
@@ -60,7 +66,7 @@ class Finding:
 
 @dataclass
 class Report:
-    persona_id: Optional[str] = None
+    persona_id: str | None = None
     findings: list[Finding] = field(default_factory=list)
 
     def add(self, level: str, check: str, message: str, fix: str = "") -> None:
@@ -72,9 +78,11 @@ class Report:
 
     @property
     def exit_code(self) -> int:
-        """Non-zero only for errors. Warnings describe things worth fixing
-        that are not breaking anything, and a CI gate that fails on those
-        gets disabled within a week."""
+        """Non-zero only for errors.
+
+        Warnings describe things worth fixing that are not breaking anything, and a CI gate that
+        fails on those gets disabled within a week.
+        """
         return 1 if any(f.level == ERROR for f in self.findings) else 0
 
     def render(self) -> str:
@@ -91,9 +99,9 @@ class Report:
 
 def audit(
     project_root: Path,
-    persona_id: Optional[str] = None,
-    env: Optional[Mapping[str, str]] = None,
-    shell_env: Optional[Mapping[str, str]] = None,
+    persona_id: str | None = None,
+    env: Mapping[str, str] | None = None,
+    shell_env: Mapping[str, str] | None = None,
 ) -> Report:
     """Run every check.
 
@@ -124,12 +132,12 @@ def audit(
     _check_shadowed(report, shell, dotenv)
     _check_chain(report, resolver)
     _check_shared_database(report, project_root, persona_id, resolver, shell)
-    _check_duplication(report, project_root, shell)
+    _check_duplication(report, project_root)
     return report
 
 
-def _persona_env(root: Path, persona_dir: Optional[Path]) -> dict[str, str]:
-    """The .env layers as the runtime loads them.
+def _persona_env(root: Path, persona_dir: Path | None) -> dict[str, str]:
+    """Load the .env layers exactly as the runtime does.
 
     MUST mirror PersonaRuntime.load_env, including the precedence: the
     persona's own file first, then the shared one, because load_dotenv never
@@ -148,7 +156,7 @@ def _persona_env(root: Path, persona_dir: Optional[Path]) -> dict[str, str]:
     return out
 
 
-def _check_files_exist(report: Report, root: Path, persona_dir: Optional[Path]) -> None:
+def _check_files_exist(report: Report, root: Path, persona_dir: Path | None) -> None:
     host = root / "config.yaml"
     if host.exists():
         report.add(OK, "config.yaml", f"host config found at {host.name}")
@@ -178,8 +186,8 @@ def _check_scope(report: Report, resolver: ConfigResolver) -> None:
             ERROR, "scope",
             f"{s.path!r} is host-scoped and is being IGNORED in this "
             f"persona's config.yaml",
-            f"move it to the root config.yaml (it must be the same for every "
-            f"persona sharing this machine's database)",
+            "move it to the root config.yaml (it must be the same for every "
+            "persona sharing this machine's database)",
         )
 
 
@@ -228,7 +236,7 @@ def _check_dead_env(report: Report, resolver: ConfigResolver) -> None:
 
 def _check_shadowed(report: Report, shell: Mapping[str, str],
                     dotenv: Mapping[str, str]) -> None:
-    """A variable set in BOTH the shell and the .env resolves to the shell's.
+    """Flag variables set in BOTH the shell and the .env — the shell's value wins.
 
     load_dotenv never overrides an existing variable, so editing the .env
     changes nothing and the file is actively misleading. This is a fourth,
@@ -285,7 +293,7 @@ def _check_chain(report: Report, resolver: ConfigResolver) -> None:
         report.add(OK, "llm chain", f"chain resolves as written: {usable}")
 
 
-def _check_shared_database(report: Report, root: Path, persona_id: Optional[str],
+def _check_shared_database(report: Report, root: Path, persona_id: str | None,
                            resolver: ConfigResolver,
                            shell: Mapping[str, str]) -> None:
     """Personas sharing a database must agree on the embedding model.
@@ -321,16 +329,15 @@ def _check_shared_database(report: Report, root: Path, persona_id: Optional[str]
     report.add(OK, "database", f"embedding model agrees across personas ({mine})")
 
 
-def _check_duplication(report: Report, root: Path,
-                       shell: Mapping[str, str]) -> None:
-    """Settings written identically in every persona's .env.
+def _check_duplication(report: Report, root: Path) -> None:
+    """Find settings written identically in every persona's .env.
 
     Not broken — but every copy is a chance to drift, and the drift is
     invisible. This check is here because 12 of 15 keys were duplicated and
     the one that wasn't is the bug that started all of this.
     """
     personas = Persona.list_personas(root)
-    if len(personas) < 2:
+    if len(personas) < _MIN_TO_COMPARE:
         report.add(OK, "duplication", "only one persona — nothing to duplicate")
         return
 
@@ -339,7 +346,7 @@ def _check_duplication(report: Report, root: Path,
         f = root / "instances" / p / ".env"
         if f.exists():
             envs[p] = {k: v for k, v in dotenv_values(f).items() if v is not None}
-    if len(envs) < 2:
+    if len(envs) < _MIN_TO_COMPARE:
         report.add(OK, "duplication", "fewer than two .env files to compare")
         return
 
@@ -371,7 +378,7 @@ def _check_duplication(report: Report, root: Path,
 
 
 def _settings_for(root: Path, persona_id: str,
-                  shell: Mapping[str, str]) -> Optional[RuntimeSettings]:
+                  shell: Mapping[str, str]) -> RuntimeSettings | None:
     persona_dir = root / "instances" / persona_id
     try:
         return RuntimeSettings.load(
@@ -381,8 +388,8 @@ def _settings_for(root: Path, persona_id: str,
         return None
 
 
-def render_resolution(project_root: Path, persona_id: Optional[str] = None,
-                      env: Optional[Mapping[str, str]] = None,
+def render_resolution(project_root: Path, persona_id: str | None = None,
+                      env: Mapping[str, str] | None = None,
                       show_secrets: bool = False) -> str:
     """Every setting, its value, and where it came from.
 
@@ -400,11 +407,11 @@ def render_resolution(project_root: Path, persona_id: Optional[str] = None,
         value = r.value
         if s.secret and value and not show_secrets:
             value = redact_dsn(str(value)) if "://" in str(value) else "***"
-        lines.append(f"{s.field:<{width}}  {str(value):<40}  {r.source}")
+        lines.append(f"{s.field:<{width}}  {value!s:<40}  {r.source}")
     return "\n".join(lines)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """`python -m runtime.doctor [persona]`.
 
     A separate entry point from cli.py deliberately: cli.py builds the whole

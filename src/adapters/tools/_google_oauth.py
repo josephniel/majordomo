@@ -15,21 +15,26 @@ unchanged with the new in-process implementation.
 """
 from __future__ import annotations
 
+import contextlib
 import http.server
 import json
 import logging
 import socketserver
 import time
 import webbrowser
-from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+from ._failures import HTTP_OK
+
 log = logging.getLogger(__name__)
 
-TOKEN_URL = "https://oauth2.googleapis.com/token"
+OAUTH_EXCHANGE_URL = "https://oauth2.googleapis.com/token"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 
 DEFAULT_REDIRECT_PORT = 8765
@@ -60,11 +65,11 @@ class GoogleOAuthClient:
 
     # ---- token refresh ----
 
-    async def refresh(self, refresh_token: str) -> dict:
+    async def refresh(self, refresh_token: str) -> dict[str, Any]:
         """Exchange refresh_token for a new access_token. Returns gongrzhe-format dict."""
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
-                TOKEN_URL,
+                OAUTH_EXCHANGE_URL,
                 data={
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
@@ -72,7 +77,7 @@ class GoogleOAuthClient:
                     "client_secret": self.client_secret,
                 },
             )
-            if r.status_code != 200:
+            if r.status_code != HTTP_OK:
                 raise GoogleOAuthError(
                     f"token refresh failed: {r.status_code} {r.text[:300]}"
                 )
@@ -93,10 +98,12 @@ class GoogleOAuthClient:
         self,
         scopes: list[str],
         port: int = DEFAULT_REDIRECT_PORT,
-    ) -> dict:
-        """Spawn a local callback server, open a browser to Google's auth URL,
-        capture the returned code, exchange for tokens. Returns gongrzhe-format
-        credentials dict ready to save.
+    ) -> dict[str, Any]:
+        """Run the interactive OAuth dance and return saveable credentials.
+
+        Spawns a local callback server, opens a browser to Google's auth URL,
+        captures the returned code, exchanges it for tokens. Returns a
+        gongrzhe-format credentials dict ready to save.
         """
         redirect_uri = f"http://localhost:{port}/oauth2callback"
         auth_url = AUTH_URL + "?" + urlencode({
@@ -111,7 +118,7 @@ class GoogleOAuthClient:
         captured: dict[str, str] = {}
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):  # noqa: N802
+            def do_GET(self) -> None:
                 qs = parse_qs(urlparse(self.path).query)
                 if "code" in qs:
                     captured["code"] = qs["code"][0]
@@ -126,7 +133,7 @@ class GoogleOAuthClient:
                     b"</body></html>"
                 )
 
-            def log_message(self, *args, **kwargs):  # silence default access log
+            def log_message(self, *args: Any, **kwargs: Any) -> None:  # silence access log
                 pass
 
         # SO_REUSEADDR so consecutive auth flows don't get blocked by the
@@ -141,14 +148,12 @@ class GoogleOAuthClient:
                 f"could not bind to localhost:{port} for OAuth callback: {e}. "
                 "If a different process is using that port, kill it: "
                 f"`lsof -i :{port} -P -n` then `kill <pid>`."
-            )
+            ) from e
 
         try:
             print(f"\nOpen this URL in your browser to authenticate:\n  {auth_url}\n")
-            try:
+            with contextlib.suppress(Exception):
                 webbrowser.open(auth_url)
-            except Exception:
-                pass
             while not captured:
                 server.handle_request()
         finally:
@@ -164,7 +169,7 @@ class GoogleOAuthClient:
         # module reference used earlier in this function.
         with httpx.Client(timeout=30) as client:
             r = client.post(
-                TOKEN_URL,
+                OAUTH_EXCHANGE_URL,
                 data={
                     "code": captured["code"],
                     "client_id": self.client_id,
@@ -173,7 +178,7 @@ class GoogleOAuthClient:
                     "grant_type": "authorization_code",
                 },
             )
-        if r.status_code != 200:
+        if r.status_code != HTTP_OK:
             raise GoogleOAuthError(
                 f"token exchange failed: {r.status_code} {r.text[:300]}"
             )
@@ -189,23 +194,24 @@ class GoogleOAuthClient:
 
 
 class CredentialStore:
-    """Reads/writes a gongrzhe-format credentials.json with in-memory caching
-    and on-the-fly token refresh.
+    """Reads/writes a gongrzhe-format credentials.json.
+
+    In-memory caching and on-the-fly token refresh.
     """
 
     def __init__(self, oauth: GoogleOAuthClient, credentials_path: Path) -> None:
         self._oauth = oauth
         self._path = credentials_path
-        self._cache: Optional[dict] = None
+        self._cache: dict[str, Any] | None = None
 
-    def _load(self) -> dict:
+    def _load(self) -> dict[str, Any]:
         if self._cache is None:
             if not self._path.exists():
                 raise GoogleOAuthError(f"credentials file not found: {self._path}")
             self._cache = json.loads(self._path.read_text(encoding="utf-8"))
         return self._cache
 
-    def _save(self, creds: dict) -> None:
+    def _save(self, creds: dict[str, Any]) -> None:
         self._cache = creds
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._path.write_text(json.dumps(creds, indent=2), encoding="utf-8")

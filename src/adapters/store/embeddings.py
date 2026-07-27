@@ -65,7 +65,10 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Optional
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fastembed import TextEmbedding
 
 log = logging.getLogger(__name__)
 
@@ -121,10 +124,10 @@ class Embedder:
     passing the same object to the memory store and the document store.
     """
 
-    def __init__(self, model: Optional[str] = None) -> None:
+    def __init__(self, model: str | None = None) -> None:
         self.model_name = (model or "").strip() or DEFAULT_MODEL
-        self._dim: Optional[int] = None
-        self._loaded = None
+        self._dim: int | None = None
+        self._loaded: TextEmbedding | None = None
         self._lock = threading.Lock()
 
     def __repr__(self) -> str:
@@ -140,9 +143,10 @@ class Embedder:
 
     @property
     def dim(self) -> int:
-        """Width of the vector(N) column in schema.sql and docs.py. Never
-        hardcode the number anywhere else — a mismatch between this and the
-        DDL is a silent insert failure at runtime.
+        """Width of the vector(N) column in schema.sql and docs.py.
+
+        Never hardcode the number anywhere else — a mismatch between this and the DDL is a silent
+        insert failure at runtime.
 
         Resolved on demand: for a listed model it's a dict lookup, and for an
         unlisted one it pulls in fastembed, which is exactly the cost the lazy
@@ -152,7 +156,7 @@ class Embedder:
             self._dim = _resolve_dim(self.model_name)
         return self._dim
 
-    def _model(self):
+    def _model(self) -> TextEmbedding:
         if self._loaded is None:
             with self._lock:
                 if self._loaded is None:
@@ -164,8 +168,10 @@ class Embedder:
         return self._loaded
 
     def embed_query(self, text: str) -> list[float]:
-        """Embed a SEARCH QUERY (short, interrogative). Applies the model's
-        query prefix where it has one."""
+        """Embed a SEARCH QUERY (short, interrogative).
+
+        Applies the model's query prefix where it has one.
+        """
         text = (text or "").strip()
         if not text:
             return []
@@ -191,7 +197,7 @@ class Embedder:
         return self.embed_passage(text)
 
 
-def to_pgvector(vec: list[float]) -> Optional[str]:
+def to_pgvector(vec: list[float]) -> str | None:
     """Format a vector as a pgvector literal ('[f1,f2,...]'), or None if empty."""
     if not vec:
         return None

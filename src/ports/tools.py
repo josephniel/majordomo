@@ -12,8 +12,9 @@ which LLM SDK is downstream.
 """
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
 
 from .context import ToolContext
 
@@ -32,15 +33,16 @@ class ToolResult:
     the chat-completions tool loop) translates it into its own wire format.
     Tool providers never see — or build — any vendor's result shape.
     """
+
     text: str
     is_error: bool = False
 
     @staticmethod
-    def ok(text: str) -> "ToolResult":
+    def ok(text: str) -> ToolResult:
         return ToolResult(text)
 
     @staticmethod
-    def error(text: str) -> "ToolResult":
+    def error(text: str) -> ToolResult:
         return ToolResult(text, is_error=True)
 
 
@@ -94,14 +96,17 @@ class ToolSpec:
                       still accepted and normalized at the vendor edges via
                       as_tool_result.)
     """
+
     name: str
     description: str
     parameters: dict[str, Any]
     handler: Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
 
     def json_schema(self) -> dict[str, Any]:
-        """Normalize `parameters` into a full JSON Schema object. Every agent
-        vendor translates from THIS — never from raw `parameters`."""
+        """Normalize `parameters` into a full JSON Schema object.
+
+        Every agent vendor translates from THIS — never from raw `parameters`.
+        """
         p = self.parameters or {}
         if isinstance(p, dict) and ("properties" in p or p.get("type") == "object"):
             schema = dict(p)
@@ -120,12 +125,12 @@ class ToolSpec:
 def tool(
     name: str, description: str, parameters: dict[str, Any]
 ) -> Callable[[ToolHandler], ToolSpec]:
-    """Decorator — wraps an async handler as a ToolSpec.
+    """Wrap an async handler as a ToolSpec.
 
-        @tool("memory_save", "Save a fact.", {"scope": str, "content": str})
-        async def memory_save_tool(args: dict[str, Any], ctx: ToolContext):
-            ...
-            return ToolResult.ok("saved")
+    @tool("memory_save", "Save a fact.", {"scope": str, "content": str})
+    async def memory_save_tool(args: dict[str, Any], ctx: ToolContext):
+        ...
+        return ToolResult.ok("saved")
     """
     def decorator(handler: Callable[[dict[str, Any], ToolContext], Awaitable[Any]]) -> ToolSpec:
         return ToolSpec(
@@ -200,9 +205,10 @@ class ToolProvider:
     # ---- agent contributions (in-process MCPs) ----
 
     def builtin_tools(self) -> list[ToolSpec]:
-        """Single in-process MCP server worth of tools (legacy single-server
-        providers like memory and schedule). Override `builtin_servers`
-        instead for multi-server contributors.
+        """Single in-process MCP server worth of tools.
+
+        For legacy single-server providers like memory and schedule. Override
+        `builtin_servers` instead for multi-server contributors.
         """
         return []
 
@@ -222,18 +228,21 @@ class ToolProvider:
     def system_prompt_section(self) -> str:
         return ""
 
-    async def status_line(self) -> Optional[str]:
+    async def status_line(self) -> str | None:
         """One line for the /status command, or None to contribute nothing.
-        Lets providers report their own state without the command layer
-        reaching into their internals."""
+
+        Lets providers report their own state without the command layer reaching into their
+        internals.
+        """
         return None
 
     def context_version(self) -> int:
-        """Monotonic counter that bumps whenever this provider's
-        system-prompt contribution changes (e.g. memory core recompacted).
-        The orchestrator sums versions across providers and rebuilds agents
-        whose baked-in system prompt has gone stale — this is what keeps a
-        long-lived server-side session's injected memory fresh.
+        """Monotonic counter that bumps when this provider's prompt contribution changes.
+
+        (E.g. the memory core recompacted.) The orchestrator sums versions
+        across providers and rebuilds agents whose baked-in system prompt has
+        gone stale — this is what keeps a long-lived server-side session's
+        injected memory fresh.
 
         Overriding this is also the declaration that the section is MUTABLE.
         Callers that care where a section can safely sit in the prompt should
@@ -247,8 +256,9 @@ class ToolProvider:
 
     @classmethod
     def has_mutable_prompt_section(cls) -> bool:
-        """True when this provider's `system_prompt_section()` can change
-        between turns — i.e. it overrode `context_version`.
+        """Report whether this provider's prompt section can change between turns.
+
+        That is: when it overrode `context_version`.
 
         Derived rather than declared. This is a query about the provider, not
         a knob on it: a provider whose contribution is versioned is by
@@ -262,12 +272,16 @@ class ToolProvider:
     # ---- chat lifecycle hooks ----
 
     async def on_chat_startup(self) -> None:
-        """Optional async setup invoked after the platform's event loop is
-        ready (DB connections, cache priming, etc.). Default: no-op."""
+        """Set up anything that needs the platform's event loop to exist first.
+
+        DB connections, cache priming, etc. Optional hook; default: no-op.
+        """
 
     async def on_chat_shutdown(self) -> None:
-        """Optional async teardown invoked as the event loop exits.
-        Default: no-op."""
+        """Tear down whatever `on_chat_startup` set up, as the event loop exits.
+
+        Optional hook; default: no-op.
+        """
 
     # ---- friendly tool status ----
 
@@ -276,26 +290,31 @@ class ToolProvider:
         profile_name: str,
         local_tool_name: str,
         args: dict[str, Any],
-    ) -> Optional[str]:
+    ) -> str | None:
         if not self.owns_profile(profile_name):
             return None
         return self._tool_status(local_tool_name, args)
 
     def _tool_status(
-        self, local_tool_name: str, args: dict[str, Any]
-    ) -> Optional[str]:
+        self, _local_tool_name: str, _args: dict[str, Any]
+    ) -> str | None:
+        # Underscored: the default reports nothing. Overrides name them for real.
         return None
 
 
 class Faculty(ToolProvider):
-    """A first-party faculty of the agent itself. Singleton per persona; no
-    profiles, no auth flows — `./manage add <faculty>` is a category error,
-    and the type system says so."""
+    """A first-party faculty of the agent itself.
+
+    Singleton per persona; no profiles, no auth flows — `./manage add <faculty>` is a category
+    error, and the type system says so.
+    """
 
 
 class Connector(ToolProvider):
-    """An adapter to an external service. Owns credentialed, multi-account
-    profiles via ServiceRegistry and the `./manage add/auth` flows."""
+    """An adapter to an external service.
+
+    Owns credentialed, multi-account profiles via ServiceRegistry and the `./manage add/auth` flows.
+    """
 
     # ---- CLI contributions ----
 

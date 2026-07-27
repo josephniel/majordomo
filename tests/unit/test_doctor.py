@@ -4,9 +4,7 @@ Every check corresponds to something that actually happened and was silent
 at the time. So each test here reconstructs the silent state and asserts the
 audit is no longer silent about it.
 """
-from pathlib import Path
 
-import pytest
 import yaml
 
 from runtime.doctor import ERROR, OK, WARN, audit, render_resolution
@@ -51,7 +49,8 @@ class TestDroppedChainVendors:
         r = audit(root, "a")
         assert WARN in levels(r, "llm chain")
         msg = messages(r, "llm chain")
-        assert "'gemini'" in msg and "GEMINI_API_KEY" in msg
+        assert "'gemini'" in msg
+        assert "GEMINI_API_KEY" in msg
         assert "'claude', 'groq'" in msg   # what it ACTUALLY runs as
 
     def test_a_chain_that_resolves_as_written_passes(self, tmp_path):
@@ -236,7 +235,8 @@ class TestDuplication:
         })
         r = audit(root, "a")
         msg = messages(r, "duplication")
-        assert "MEMORY_DATABASE_URL" in msg and "SCHEDULE_TIMEZONE" in msg
+        assert "MEMORY_DATABASE_URL" in msg
+        assert "SCHEDULE_TIMEZONE" in msg
         assert "config.yaml" in msg
 
     def test_a_single_persona_is_not_duplication(self, tmp_path):
@@ -259,7 +259,8 @@ class TestTheReportItself:
             "MEMORY_DATABASE_URL": DSN, "LLM_CHAIN": "gemini,groq",
             "GROQ_API_KEY": "k"}}})
         r = audit(root, "a")
-        assert r.problems and r.exit_code == 0
+        assert r.problems
+        assert r.exit_code == 0
 
     def test_an_error_fails(self, tmp_path):
         root = make(tmp_path, {"a": {
@@ -300,7 +301,8 @@ class TestResolvedDump:
         out = render_resolution(root, "a", {"MEMORY_DATABASE_URL":
                                             "postgres://tc:hunter2@h/db",
                                             "GROQ_API_KEY": "sk-secret"})
-        assert "hunter2" not in out and "sk-secret" not in out
+        assert "hunter2" not in out
+        assert "sk-secret" not in out
 
     def test_secrets_can_be_shown_deliberately(self, tmp_path):
         root = make(tmp_path, {"a": {"env": {}}})

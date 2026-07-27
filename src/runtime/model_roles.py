@@ -34,11 +34,12 @@ each mapping is recorded below and can be dropped once instances migrate.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING
 
 from ports import ModelRole
 
-from .settings import RuntimeSettings
+if TYPE_CHECKING:
+    from .settings import RuntimeSettings
 
 
 @dataclass(frozen=True)
@@ -49,13 +50,16 @@ class RoleChain:
     model — override applied to whichever vendor serves this role. None means
             each vendor's own configured model.
     """
+
     role: ModelRole
     chain: tuple[str, ...]
-    model: Optional[str] = None
+    model: str | None = None
 
-    def with_fallback(self, chat: "RoleChain") -> "RoleChain":
-        """Roles left unconfigured inherit the chat chain — including its
-        failover — rather than silently collapsing to one vendor."""
+    def with_fallback(self, chat: RoleChain) -> RoleChain:
+        """Roles left unconfigured inherit the chat chain.
+
+        Including its failover — rather than silently collapsing to one vendor.
+        """
         if self.chain:
             return self
         return RoleChain(self.role, chat.chain, self.model)
@@ -65,7 +69,7 @@ def _csv(v: str) -> tuple[str, ...]:
     return tuple(x.strip().lower() for x in (v or "").split(",") if x.strip())
 
 
-def _vendor_safe_model(model: Optional[str], chain: tuple[str, ...]) -> Optional[str]:
+def _vendor_safe_model(model: str | None, chain: tuple[str, ...]) -> str | None:
     """Drop a model override that the leading vendor could not possibly serve.
 
     Several legacy defaults are Claude model NAMES (COMPACTION_MODEL and
@@ -86,7 +90,6 @@ def _vendor_safe_model(model: Optional[str], chain: tuple[str, ...]) -> Optional
 
 def resolve_roles(s: RuntimeSettings) -> dict[ModelRole, RoleChain]:
     """Build every role's chain from settings, applying legacy fallbacks."""
-
     # CHAT is the base every other role inherits from.
     chat_chain = s.llm_chain or ((s.primary_llm,) if s.primary_llm else ())
     chat = RoleChain(ModelRole.CHAT, tuple(chat_chain), None)

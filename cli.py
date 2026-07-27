@@ -20,14 +20,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import sys
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
-from adapters.tools import ServiceRegistry, Connector
+from adapters.tools import Connector, ServiceRegistry
 from runtime import Persona, PersonaRuntime
+
+# One line per fact in the exported index: a hook to recognise it by,
+# not the fact itself — the per-entry file has that.
+_INDEX_HOOK_CHARS = 80
+
+# One line per message in the comms log dump.
+_COMMS_PREVIEW_CHARS = 200
 
 
 class ConnectorCLI:
@@ -41,13 +48,14 @@ class ConnectorCLI:
         self,
         config: ServiceRegistry,
         connectors: list[Connector],
-        runtime=None,  # PersonaRuntime; needed by memory/comms inspect commands.
+        # Needed only by the memory/comms inspect commands.
+        runtime: PersonaRuntime | None = None,
     ) -> None:
         self._config = config
         self._connectors = connectors
         self._runtime = runtime
 
-    def run(self, args: Optional[list[str]] = None) -> None:
+    def run(self, args: list[str] | None = None) -> None:
         parser = self._build_parser()
         args = parser.parse_args(args)
         try:
@@ -58,7 +66,7 @@ class ConnectorCLI:
 
     # ---- command handlers ----
 
-    def _cmd_list(self, _args) -> None:
+    def _cmd_list(self, _args: argparse.Namespace) -> None:
         items = self._config.load_all()
         if not items:
             print("(no connectors configured)")
@@ -68,7 +76,7 @@ class ConnectorCLI:
             status = "ON " if i.enabled else "OFF"
             print(f"  [{status}]  {i.name:<{width}}  {i.description}")
 
-    def _cmd_add(self, args) -> None:
+    def _cmd_add(self, args: argparse.Namespace) -> None:
         c = self._find_connector(args.connector)
         try:
             c.cmd_add(args.profile, args.extra)
@@ -76,7 +84,7 @@ class ConnectorCLI:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
 
-    def _cmd_auth(self, args) -> None:
+    def _cmd_auth(self, args: argparse.Namespace) -> None:
         c = self._find_connector(args.connector)
         try:
             c.cmd_auth(args.profile, args.extra)
@@ -84,67 +92,66 @@ class ConnectorCLI:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
 
-    def _cmd_enable(self, args) -> None:
+    def _cmd_enable(self, args: argparse.Namespace) -> None:
         self._config.set_profile_enabled(args.connector, args.profile, True)
         print(f"enabled: {args.connector} / {args.profile}")
 
-    def _cmd_disable(self, args) -> None:
+    def _cmd_disable(self, args: argparse.Namespace) -> None:
         self._config.set_profile_enabled(args.connector, args.profile, False)
         print(f"disabled: {args.connector} / {args.profile}")
 
-    def _cmd_remove(self, args) -> None:
+    def _cmd_remove(self, args: argparse.Namespace) -> None:
         self._config.remove_profile(args.connector, args.profile)
         print(f"removed: {args.connector} / {args.profile}")
 
-    def _cmd_show(self, args) -> None:
+    def _cmd_show(self, args: argparse.Namespace) -> None:
         block = self._config.read_connector(args.connector)
         print(yaml.safe_dump({args.connector: block}, sort_keys=False, default_flow_style=False))
 
-    def _cmd_rename(self, args) -> None:
+    def _cmd_rename(self, args: argparse.Namespace) -> None:
         self._config.rename_connector(args.old, args.new)
         print(f"renamed: {args.old} -> {args.new}")
 
-    def _cmd_memory_inspect(self, _args) -> None:
+    def _cmd_memory_inspect(self, _args: argparse.Namespace) -> None:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
             sys.exit(1)
         asyncio.run(_inspect_memory(self._runtime))
 
-    def _cmd_memory_reembed(self, _args) -> None:
+    def _cmd_memory_reembed(self, _args: argparse.Namespace) -> None:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
             sys.exit(1)
         asyncio.run(_reembed_memory(self._runtime))
 
-    def _cmd_memory_ideate(self, args) -> None:
+    def _cmd_memory_ideate(self, args: argparse.Namespace) -> None:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
             sys.exit(1)
         asyncio.run(_ideate_memory(self._runtime, args.scope, args.domain_key,
                                    args.dry_run))
 
-    def _cmd_memory_export(self, args) -> None:
+    def _cmd_memory_export(self, args: argparse.Namespace) -> None:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
             sys.exit(1)
         asyncio.run(_export_memory(self._runtime, args.dir))
 
-    def _cmd_canary(self, _args) -> None:
+    def _cmd_canary(self, _args: argparse.Namespace) -> None:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
             sys.exit(1)
         asyncio.run(_run_canary(self._runtime))
 
-    def _cmd_comms_inspect(self, args) -> None:
+    def _cmd_comms_inspect(self, args: argparse.Namespace) -> None:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
             sys.exit(1)
         asyncio.run(_inspect_comms(self._runtime, limit=args.limit))
 
-    def _cmd_schedules(self, _args) -> None:
+    def _cmd_schedules(self, _args: argparse.Namespace) -> None:
         engine = self._runtime.schedule_runtime
-        engine._load()  # read the JSON store without starting APScheduler
-        scheds = sorted(engine._schedules.values(), key=lambda s: s.name)
+        scheds = engine.all_schedules()
         tz = engine.timezone_name or "host-local"
         print(f"=== Schedules for {self._runtime.persona.id} (timezone: {tz}) ===")
         if not scheds:
@@ -157,8 +164,8 @@ class ConnectorCLI:
             if s.description:
                 print(f"        {s.description}")
 
-    def _cmd_skills(self, _args) -> None:
-        skills = self._runtime.skills_library._scan()
+    def _cmd_skills(self, _args: argparse.Namespace) -> None:
+        skills = self._runtime.skills_library.all_skills()
         print(f"=== Skills for {self._runtime.persona.id} ===")
         if not skills:
             print("(none)")
@@ -173,10 +180,10 @@ class ConnectorCLI:
             if s.description:
                 print(f"        {s.description}")
 
-    def _cmd_documents_inspect(self, _args) -> None:
+    def _cmd_documents_inspect(self, _args: argparse.Namespace) -> None:
         asyncio.run(_inspect_documents(self._runtime))
 
-    def _cmd_prune(self, _args) -> None:
+    def _cmd_prune(self, _args: argparse.Namespace) -> None:
         asyncio.run(_run_prune(self._runtime))
 
     # ---- helpers ----
@@ -203,7 +210,12 @@ class ConnectorCLI:
             description=__doc__.strip().splitlines()[0],
         )
         sub = parser.add_subparsers(dest="cmd", required=True)
+        self._add_connector_commands(sub)
+        self._add_inspection_commands(sub)
+        return parser
 
+    def _add_connector_commands(self, sub: argparse._SubParsersAction) -> None:
+        """Register the verbs that change what a persona is wired to."""
         sub.add_parser(
             "list", help="show all connector profiles and their status"
         ).set_defaults(func=self._cmd_list)
@@ -251,6 +263,8 @@ class ConnectorCLI:
         p.add_argument("new")
         p.set_defaults(func=self._cmd_rename)
 
+    def _add_inspection_commands(self, sub: argparse._SubParsersAction) -> None:
+        """Register the verbs that only look: memory, comms, schedules, skills, docs."""
         # `memory <action>` — Phase 1 memory layer maintenance.
         p_memory = sub.add_parser("memory", help="memory layer maintenance")
         p_memory_sub = p_memory.add_subparsers(dest="memory_action", required=True)
@@ -334,10 +348,9 @@ class ConnectorCLI:
             help="run retention now (archived chat, turn_log, comms, documents)",
         ).set_defaults(func=self._cmd_prune)
 
-        return parser
 
 
-async def _run_canary(container) -> None:
+async def _run_canary(container: PersonaRuntime) -> None:
     """Probe each chain vendor's tool-calling ability and print results."""
     container.load_env()
     agent = container.create_agent(chat_id=0)
@@ -349,14 +362,12 @@ async def _run_canary(container) -> None:
     results = await run()
     for vendor, (ok, detail) in results.items():
         print(f"  [{'PASS' if ok else 'FAIL'}] {vendor}: {detail}")
-    try:
+    with contextlib.suppress(Exception):
         await agent.stop()
-    except Exception:
-        pass
 
 
-async def _export_memory(container, out_dir: str) -> int:
-    """Dump the persona's ACTIVE memory to a greppable/diffable markdown tree:
+async def _export_memory(container: PersonaRuntime, out_dir: str) -> int:
+    """Dump the persona's ACTIVE memory to a greppable/diffable markdown tree.
 
         <out_dir>/MEMORY.md            index — one line per fact
         <out_dir>/entries/<id>.md      one file per fact (frontmatter + body + links)
@@ -364,7 +375,8 @@ async def _export_memory(container, out_dir: str) -> int:
 
     One-way: this is for inspection, backup, and `git diff`, never re-imported
     (importing would reopen the dedup/supersession/embedding write path).
-    Returns the number of facts exported."""
+    Returns the number of facts exported.
+    """
     import json
     from pathlib import Path
 
@@ -395,8 +407,8 @@ async def _export_memory(container, out_dir: str) -> int:
     for e in sorted(entries, key=lambda x: (x.scope, x.domain_key, x.created_at)):
         label = e.scope if not e.domain_key else f"{e.scope}/{e.domain_key}"
         hook = (e.title or e.content).strip().replace("\n", " ")
-        if len(hook) > 80:
-            hook = hook[:80].rstrip() + "…"
+        if len(hook) > _INDEX_HOOK_CHARS:
+            hook = hook[:_INDEX_HOOK_CHARS].rstrip() + "…"
         flags = []
         if e.pinned:
             flags.append("📌")
@@ -437,9 +449,11 @@ async def _export_memory(container, out_dir: str) -> int:
     return len(entries)
 
 
-async def _reembed_memory(container) -> None:
+async def _reembed_memory(container: PersonaRuntime) -> None:
     """Re-embed every memory entry with the current local embedding model.
-    Idempotent; entries already embedded by the current model are skipped."""
+
+    Idempotent; entries already embedded by the current model are skipped.
+    """
     db = container.memory_database
     await db.connect()
     print(f"re-embedding with model: {db.embedder.model_name} "
@@ -449,7 +463,9 @@ async def _reembed_memory(container) -> None:
     await db.close()
 
 
-async def _ideate_memory(container, scope, domain_key, dry_run: bool) -> None:
+async def _ideate_memory(
+    container: PersonaRuntime, scope: str | None, domain_key: str | None, dry_run: bool
+) -> None:
     """Run one ideation pass and report what it decided.
 
     --dry-run prints the proposals without applying them. Worth having as the
@@ -463,20 +479,7 @@ async def _ideate_memory(container, scope, domain_key, dry_run: bool) -> None:
     await memory.on_chat_startup()
     try:
         ideator = Ideator(memory, container.summarizer)
-        if dry_run:
-            # Decide, print, apply nothing.
-            decisions = []
-            original_apply = ideator._reconciler.apply
-
-            async def _no_write(decision):
-                decisions.append(decision)
-                return None
-
-            ideator._reconciler.apply = _no_write
-            await ideator.run(scope=scope, domain_key=domain_key)
-            ideator._reconciler.apply = original_apply
-        else:
-            decisions = await ideator.run(scope=scope, domain_key=domain_key)
+        decisions = await ideator.run(scope=scope, domain_key=domain_key, dry_run=dry_run)
 
         if not decisions:
             print("nothing new follows from what is currently known.")
@@ -493,7 +496,7 @@ async def _ideate_memory(container, scope, domain_key, dry_run: bool) -> None:
         await memory.on_chat_shutdown()
 
 
-async def _inspect_memory(container) -> None:
+async def _inspect_memory(container: PersonaRuntime) -> None:
     """Print a snapshot of this persona's second brain.
 
     Three sections:
@@ -538,7 +541,7 @@ async def _inspect_memory(container) -> None:
         persona.id,
     )
 
-    print(f"\n-- Active entries by compartment --")
+    print("\n-- Active entries by compartment --")
     if not rows:
         print("(no active entries)")
     else:
@@ -547,10 +550,10 @@ async def _inspect_memory(container) -> None:
             label = f"{r['scope']}/{r['domain_key']}" if r["domain_key"] else r["scope"]
             print(f"  {label}: {r['n']}")
             total += r["n"]
-        print(f"  ----")
+        print("  ----")
         print(f"  total: {total}")
 
-    print(f"\n-- 5 most recent entries --")
+    print("\n-- 5 most recent entries --")
     if not recent:
         print("(none)")
     for r in recent:
@@ -564,10 +567,9 @@ async def _inspect_memory(container) -> None:
     await db.close()
 
 
-async def _inspect_documents(container) -> None:
+async def _inspect_documents(container: PersonaRuntime) -> None:
     """List the document library (name, size, age)."""
-    lib = container.document_library
-    store = lib._store
+    store = container.document_library.store
     await store.connect()
     docs = await store.list_docs(container.persona.id)
     print(f"=== Documents for {container.persona.id} ({len(docs)}) ===")
@@ -582,7 +584,7 @@ async def _inspect_documents(container) -> None:
     await store.close()
 
 
-async def _run_prune(container) -> None:
+async def _run_prune(container: PersonaRuntime) -> None:
     """Run the retention job once, with connected stores, and report."""
     job = container.retention_job
     p = job.policy
@@ -593,10 +595,7 @@ async def _run_prune(container) -> None:
         + ("d" if p.documents_days else "")
     )
     await container.conversation_history.connect()
-    if job._comms is not None:
-        await job._comms.connect()
-    if job._docs is not None:
-        await job._docs.connect()
+    await job.connect()
     deleted = await job.run()
     total = sum(deleted.values())
     for table, n in sorted(deleted.items()):
@@ -604,7 +603,7 @@ async def _run_prune(container) -> None:
     print(f"total: {total} rows pruned")
 
 
-async def _inspect_comms(container, limit: int = 20) -> None:
+async def _inspect_comms(container: PersonaRuntime, limit: int = 20) -> None:
     """Print the most recent control-room comms_log rows, oldest-first."""
     log = container.comms_log
     await log.connect()
@@ -620,8 +619,8 @@ async def _inspect_comms(container, limit: int = 20) -> None:
         else:
             speaker = r["instance"]
         text = (r["text"] or "").replace("\n", " ")
-        if len(text) > 200:
-            text = text[:200] + "…"
+        if len(text) > _COMMS_PREVIEW_CHARS:
+            text = text[:_COMMS_PREVIEW_CHARS] + "…"
         print(f"{ts}  [{r['instance']}] {arrow} {speaker}: {text}")
     await log.close()
 

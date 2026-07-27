@@ -6,8 +6,6 @@ by name — callers should not reach into _REGISTRY directly.
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from .base import (
     ChatPlatform,
     CommandEvent,
@@ -25,7 +23,7 @@ _REGISTRY: dict[str, type[ChatPlatform]] = {
 }
 
 
-def get_platform_cls(name: str) -> Optional[type[ChatPlatform]]:
+def get_platform_cls(name: str) -> type[ChatPlatform] | None:
     """Return the ChatPlatform subclass registered under *name*, or None."""
     return _REGISTRY.get(name)
 
@@ -43,6 +41,7 @@ __all__ = [
     "OnLifecycle",
     "OnMessage",
     "PlatformConfig",
+    "StatusTracker",
     "TelegramPlatform",
     "get_platform_cls",
     "registered_platform_names",

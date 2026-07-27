@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Mapping, Optional
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +81,7 @@ _MIME_TO_FILENAME = {
 }
 
 
-def filename_for_mime(mime: Optional[str]) -> str:
+def filename_for_mime(mime: str | None) -> str:
     return _MIME_TO_FILENAME.get((mime or "").lower(), "voice.ogg")
 
 
@@ -92,8 +95,10 @@ class AudioTranscriber:
         self._key = api_key
 
     async def transcribe(self, data: bytes, filename: str = "voice.ogg") -> str:
-        """Returns the transcript ('' when the audio had no speech). Raises
-        on transport/API errors — the cascade decides what happens next."""
+        """Return the transcript ('' when the audio had no speech).
+
+        Raises on transport/API errors — the cascade decides what happens next.
+        """
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 self._url,
@@ -118,7 +123,7 @@ class CascadingTranscriber:
         return [t.vendor for t in self._chain]
 
     async def transcribe(self, data: bytes, filename: str = "voice.ogg") -> str:
-        last_exc: Optional[BaseException] = None
+        last_exc: BaseException | None = None
         for t in self._chain:
             try:
                 return await t.transcribe(data, filename)
@@ -134,10 +139,12 @@ class CascadingTranscriber:
 
 
 def build_transcriber(
-    config: Optional[TranscriptionConfig] = None,
-) -> Optional[CascadingTranscriber]:
-    """None when no configured vendor has a key — the platform then keeps
-    its polite voice-notes-unsupported reply."""
+    config: TranscriptionConfig | None = None,
+) -> CascadingTranscriber | None:
+    """None when no configured vendor has a key.
+
+    The platform then keeps its polite voice-notes-unsupported reply.
+    """
     config = config or TranscriptionConfig()
     chain: list[AudioTranscriber] = []
     for vendor in config.chain or DEFAULT_VENDOR_ORDER:

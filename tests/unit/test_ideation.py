@@ -13,11 +13,10 @@ import json
 
 import pytest
 
-from ports import MemoryVerdict
 from domain.ideation import IDEATION_CONFIDENCE, Ideator
 from domain.memory import LongTermMemory
 from domain.reconcile import Reconciler
-
+from ports import FactCandidate, MemoryVerdict
 from tests.fakes.memory_store import FakeMemoryStore
 
 
@@ -54,9 +53,9 @@ async def mem(store):
 
 @pytest.fixture
 async def seeded(mem):
-    await mem.save_fact("user", "the user's manager is Rina")
-    await mem.save_fact("user", "Rina is on leave from the 12th")
-    await mem.save_fact("user", "the budget needs sign-off by the 15th")
+    await mem.save_fact(FactCandidate('user', "the user's manager is Rina"))
+    await mem.save_fact(FactCandidate('user', 'Rina is on leave from the 12th'))
+    await mem.save_fact(FactCandidate('user', 'the budget needs sign-off by the 15th'))
     return mem
 
 
@@ -155,7 +154,7 @@ class TestItRefusesToInventFromNothing:
     async def test_too_few_facts_means_no_model_call(self, mem):
         """Below a couple of facts there is nothing to cross-reference, and a
         model asked to 'infer' from one fact returns a paraphrase of it."""
-        await mem.save_fact("user", "the user lives in Manila")
+        await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
         model = Scripted(proposals({"scope": "user", "content": "invented"}))
         assert await Ideator(mem, model).run() == []
         assert model.prompts == []

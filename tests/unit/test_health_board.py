@@ -77,13 +77,15 @@ class TestOnChangeHook:
         seen = []
         b = VendorHealthBoard(on_change=lambda snap: seen.append(dict(snap)))
         b.mark_limited("gemini", 300)
-        assert len(seen) == 1 and "gemini" in seen[0]
+        assert len(seen) == 1
+        assert "gemini" in seen[0]
         b.mark_healthy("gemini")
-        assert len(seen) == 2 and seen[1] == {}
+        assert len(seen) == 2
+        assert seen[1] == {}
 
     def test_hook_not_fired_when_nothing_changes(self):
         seen = []
-        b = VendorHealthBoard(on_change=lambda snap: seen.append(snap))
+        b = VendorHealthBoard(on_change=seen.append)
         b.mark_healthy("gemini")  # was never down
         assert seen == []
 

@@ -21,7 +21,10 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 log = logging.getLogger(__name__)
 
@@ -36,7 +39,7 @@ class RetentionPolicy:
     documents_days: int = 0  # off
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] = os.environ) -> "RetentionPolicy":
+    def from_env(cls, env: Mapping[str, str] = os.environ) -> RetentionPolicy:
         def _days(var: str, default: int) -> int:
             try:
                 return max(0, int(env.get(var, default)))
@@ -56,9 +59,11 @@ class RetentionJob:
         self,
         persona_id: str,
         policy: RetentionPolicy,
-        history=None,        # agents.history.ConversationHistory | None
-        comms_log=None,      # comms.log.CommsLog | None
-        document_store=None, # storage.docs.DocumentStore | None
+        # Peer adapters, named in comments rather than imported: the layering
+        # contract keeps adapters.trigger independent of adapters.model/store.
+        history: Any = None,         # adapters.model.ConversationHistory | None
+        comms_log: Any = None,       # adapters.comms.CommsLog | None
+        document_store: Any = None,  # adapters.store.DocumentStore | None
     ) -> None:
         self._persona_id = persona_id
         self._policy = policy
@@ -70,9 +75,23 @@ class RetentionJob:
     def policy(self) -> RetentionPolicy:
         return self._policy
 
+    async def connect(self) -> None:
+        """Open whichever arms are configured.
+
+        The scheduled path runs inside a process that already connected them;
+        the CLI does not, and reaching into the arms to do it for the job was
+        the only reason they were being touched from outside.
+        """
+        for arm in (self._comms, self._docs):
+            if arm is not None:
+                await arm.connect()
+
     async def run(self) -> dict[str, int]:
-        """Prune every configured arm. Per-arm failures are isolated —
-        retention must never take the bot down. Returns table -> deleted."""
+        """Prune every configured arm.
+
+        Per-arm failures are isolated — retention must never take the bot down. Returns table ->
+        deleted.
+        """
         deleted: dict[str, int] = {}
         p = self._policy
         if self._history is not None:

@@ -33,8 +33,6 @@ traffic, and the bot loop is reached via run_coroutine_threadsafe.
 """
 from __future__ import annotations
 
-from ports import ConversationRef
-
 import asyncio
 import hmac
 import json
@@ -42,9 +40,13 @@ import logging
 import socketserver
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Awaitable, Callable, Optional
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from ports import ConversationRef
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +69,7 @@ FireCallback = Callable[[WebhookTrigger, str], Awaitable[None]]
 
 
 class _QuietHTTPServer(ThreadingHTTPServer):
-    def server_bind(self):
+    def server_bind(self) -> None:
         # HTTPServer.server_bind calls socket.getfqdn(), whose reverse-DNS
         # lookup can hang ~30s on macOS. We never use server_name — bind
         # like a plain TCPServer instead.
@@ -91,8 +93,8 @@ class WebhookServer:
         self._triggers = dict(triggers)
         self._host = host
         self._port = port
-        self._httpd: Optional[ThreadingHTTPServer] = None
-        self._thread: Optional[threading.Thread] = None
+        self._httpd: ThreadingHTTPServer | None = None
+        self._thread: threading.Thread | None = None
         self._last_fired: dict[str, float] = {}
         # ThreadingHTTPServer runs handlers on separate threads — the
         # cooldown check-then-set must be atomic or a burst double-fires.
@@ -114,8 +116,8 @@ class WebhookServer:
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
-            def log_message(self, fmt, *args):  # route to our logger, not stderr
-                log.debug("webhook http: " + fmt, *args)
+            def log_message(self, fmt: str, *args: Any) -> None:  # route to our logger
+                log.debug("webhook http: %s", fmt % args)
 
             def _reply(self, code: int, body: dict[str, Any]) -> None:
                 data = json.dumps(body).encode()
@@ -125,10 +127,10 @@ class WebhookServer:
                 self.end_headers()
                 self.wfile.write(data)
 
-            def do_GET(self):  # noqa: N802
+            def do_GET(self) -> None:
                 self._reply(405, {"error": "POST only"})
 
-            def do_POST(self):  # noqa: N802
+            def do_POST(self) -> None:
                 auth = self.headers.get("Authorization") or ""
                 expected = f"Bearer {outer._token}"
                 if not hmac.compare_digest(auth, expected):

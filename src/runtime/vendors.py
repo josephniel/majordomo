@@ -13,11 +13,14 @@ LLM_CHAIN overrides it entirely.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Any
 
 from adapters.model import DeepSeekAgent, GeminiAgent, GroqAgent, OllamaAgent, OpenAIAgent
 
-from .settings import RuntimeSettings
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from .settings import RuntimeSettings
 
 
 @dataclass(frozen=True)
@@ -27,21 +30,21 @@ class VendorSpec:
     # (claude rides the Claude Agent SDK adapter, constructed by the
     # composition root — it resumes sessions and may run keyless on
     # subscription auth).
-    backend: Optional[type]
+    backend: type | None
     enabled: Callable[[RuntimeSettings], bool]
     api_key: Callable[[RuntimeSettings], str]
-    model: Callable[[RuntimeSettings], Optional[str]]
+    model: Callable[[RuntimeSettings], str | None]
     # Endpoint override; None means "use the backend's DEFAULT_BASE_URL".
     # Only self-hosted vendors (ollama) need this to be configurable.
-    base_url: Callable[[RuntimeSettings], Optional[str]] = lambda s: None
+    base_url: Callable[[RuntimeSettings], str | None] = lambda _s: None
     # Per-deployment completion kwargs merged over the backend's class
     # defaults. Hosted vendors pin theirs in code (the model is fixed); a
     # self-hosted vendor runs whatever the operator pulled, and the correct
     # knobs are model-specific — see OllamaAgent on reasoning_effort.
-    extra: Callable[[RuntimeSettings], dict] = lambda s: {}
+    extra_kwargs: Callable[[RuntimeSettings], dict[str, Any]] = lambda _s: {}
     # None = trust the backend class. Only self-hosted vendors override it,
     # because the capability belongs to the pulled model, not the vendor.
-    supports_vision: Callable[[RuntimeSettings], Optional[bool]] = lambda s: None
+    supports_vision: Callable[[RuntimeSettings], bool | None] = lambda _s: None
     # Human-readable answer to "why isn't this vendor available?", used when a
     # chain names it but `enabled` says no. Lives here rather than in the
     # composition root so the diagnostic can't drift from the predicate above.
@@ -82,14 +85,14 @@ VENDORS: tuple[VendorSpec, ...] = (
         "openai", OpenAIAgent,
         enabled=lambda s: bool(s.openai_api_key),
         api_key=lambda s: s.openai_api_key,
-        model=lambda s: None,
+        model=lambda _s: None,
         requires="OPENAI_API_KEY",
     ),
     VendorSpec(
         "deepseek", DeepSeekAgent,
         enabled=lambda s: bool(s.deepseek_api_key),
         api_key=lambda s: s.deepseek_api_key,
-        model=lambda s: None,
+        model=lambda _s: None,
         requires="DEEPSEEK_API_KEY",
     ),
     VendorSpec(
@@ -106,11 +109,11 @@ VENDORS: tuple[VendorSpec, ...] = (
     VendorSpec(
         "ollama", OllamaAgent,
         enabled=_ollama_enabled,
-        api_key=lambda s: "",  # keyless; OllamaAgent.REQUIRES_API_KEY is False
+        api_key=lambda _s: "",  # keyless; OllamaAgent.REQUIRES_API_KEY is False
         model=lambda s: s.ollama_model,
         base_url=lambda s: s.ollama_base_url,
-        extra=lambda s: ({"reasoning_effort": s.ollama_reasoning_effort}
-                         if s.ollama_reasoning_effort else {}),
+        extra_kwargs=lambda s: ({"reasoning_effort": s.ollama_reasoning_effort}
+                                if s.ollama_reasoning_effort else {}),
         supports_vision=lambda s: s.ollama_vision,
         requires="OLLAMA_ENABLED=1 (keyless — a running daemon is not consent)",
     ),

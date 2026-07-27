@@ -46,7 +46,8 @@ class TestRunReflection:
         saved = await engine.run_reflection(CHAT_ID)
         assert saved == 1
         results = await memdb.recall(persona_id, "Makati moved")
-        assert results and results[0].metadata["source"] == "reflection"
+        assert results
+        assert results[0].metadata["source"] == "reflection"
 
     async def test_watermark_advances_and_prevents_rereading(self, history, memory, persona_id):
         summ = FakeSummarizer(facts_json(
@@ -91,7 +92,9 @@ class TestRunReflection:
         assert saved == 1
         assert "conversation line 0" in summ.prompts[0]
 
-    async def test_garbage_model_output_saves_nothing_but_advances(self, history, memory, persona_id):
+    async def test_garbage_model_output_saves_nothing_but_advances(
+        self, history, memory, persona_id
+    ):
         summ = FakeSummarizer("I couldn't find anything durable, sorry!")
         engine = make_engine(history, memory, persona_id, summ)
         await seed_convo(history, persona_id)
@@ -99,10 +102,12 @@ class TestRunReflection:
         assert await history.get_reflection_watermark(persona_id, CHAT_ID) > 0
 
     async def test_invalid_scope_fact_skipped(self, history, memory, persona_id):
-        summ = FakeSummarizer(facts_json(
-            {"scope": "cosmic", "content": "invalid scope fact"},
-            {"scope": "user", "content": "valid fact about the user's cat"},
-        ))
+        summ = FakeSummarizer(
+            facts_json(
+                {"scope": "cosmic", "content": "invalid scope fact"},
+                {"scope": "user", "content": "valid fact about the user's cat"},
+            )
+        )
         engine = make_engine(history, memory, persona_id, summ)
         await seed_convo(history, persona_id)
         assert await engine.run_reflection(CHAT_ID) == 1
@@ -110,17 +115,26 @@ class TestRunReflection:
 
 class TestAutoLink:
     async def test_same_compartment_facts_autolinked(self, history, memory, memdb, persona_id):
-        summ = FakeSummarizer(facts_json(
-            {"scope": "domain", "domain_key": "gmail",
-             "content": "The user's newsletters arrive from Acme Corp"},
-            {"scope": "domain", "domain_key": "gmail",
-             "content": "The user archives promotional mail every Friday"},
-        ))
+        summ = FakeSummarizer(
+            facts_json(
+                {
+                    "scope": "domain",
+                    "domain_key": "gmail",
+                    "content": "The user's newsletters arrive from Acme Corp",
+                },
+                {
+                    "scope": "domain",
+                    "domain_key": "gmail",
+                    "content": "The user archives promotional mail every Friday",
+                },
+            )
+        )
         engine = make_engine(history, memory, persona_id, summ)
         await seed_convo(history, persona_id)
         assert await engine.run_reflection(CHAT_ID) == 2
-        rows = await memdb.recall(persona_id, "newsletters archives mail",
-                                  scope="domain", domain_key="gmail", limit=5)
+        rows = await memdb.recall(
+            persona_id, "newsletters archives mail", scope="domain", domain_key="gmail", limit=5
+        )
         ids = {r.id for r in rows}
         assert len(ids) == 2
         first = next(iter(ids))
@@ -128,44 +142,63 @@ class TestAutoLink:
         assert any(n.id in ids and rel == "relates_to" for n, rel, _ in neigh)
 
     async def test_cross_compartment_not_autolinked(self, history, memory, memdb, persona_id):
-        summ = FakeSummarizer(facts_json(
-            {"scope": "user", "content": "The user enjoys trail running on weekends"},
-            {"scope": "domain", "domain_key": "gmail",
-             "content": "The user flags invoices from vendors"},
-        ))
+        summ = FakeSummarizer(
+            facts_json(
+                {"scope": "user", "content": "The user enjoys trail running on weekends"},
+                {
+                    "scope": "domain",
+                    "domain_key": "gmail",
+                    "content": "The user flags invoices from vendors",
+                },
+            )
+        )
         engine = make_engine(history, memory, persona_id, summ)
         await seed_convo(history, persona_id)
         assert await engine.run_reflection(CHAT_ID) == 2
         rows = await memdb.list_active(persona_id, scope="user")
-        assert rows and await memdb.neighbors(rows[0].id) == []
+        assert rows
+        assert await memdb.neighbors(rows[0].id) == []
 
 
 class TestVolatileDetection:
     async def test_path_citing_fact_marked_volatile(self, history, memory, memdb, persona_id):
-        summ = FakeSummarizer(facts_json(
-            {"scope": "agent", "content": "The bot reads config from src/personas/settings.py"}))
+        summ = FakeSummarizer(
+            facts_json(
+                {"scope": "agent", "content": "The bot reads config from src/personas/settings.py"}
+            )
+        )
         engine = make_engine(history, memory, persona_id, summ)
         await seed_convo(history, persona_id)
         await engine.run_reflection(CHAT_ID)
         rows = await memdb.list_active(persona_id, scope="agent")
-        assert rows and rows[0].volatile is True
+        assert rows
+        assert rows[0].volatile is True
 
     async def test_plain_fact_not_volatile(self, history, memory, memdb, persona_id):
-        summ = FakeSummarizer(facts_json(
-            {"scope": "user", "content": "The user enjoys hiking with friends on weekends"}))
+        summ = FakeSummarizer(
+            facts_json(
+                {"scope": "user", "content": "The user enjoys hiking with friends on weekends"}
+            )
+        )
         engine = make_engine(history, memory, persona_id, summ)
         await seed_convo(history, persona_id)
         await engine.run_reflection(CHAT_ID)
         rows = await memdb.list_active(persona_id, scope="user")
-        assert rows and rows[0].volatile is False
+        assert rows
+        assert rows[0].volatile is False
 
 
 class TestTimers:
     async def test_note_activity_rearms(self, history, memory, persona_id):
-        engine = ReflectionEngine(history=history, memory=memory,
-                                  summarizer=FakeSummarizer(), persona_id=persona_id,
-                                  idle_seconds=3600)
+        engine = ReflectionEngine(
+            history=history,
+            memory=memory,
+            summarizer=FakeSummarizer(),
+            persona_id=persona_id,
+            idle_seconds=3600,
+        )
         import asyncio
+
         engine.note_activity(CHAT_ID)
         t1 = engine._timers[CHAT_ID]
         engine.note_activity(CHAT_ID)

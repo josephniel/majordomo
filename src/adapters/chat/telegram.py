@@ -14,9 +14,9 @@ import logging
 import os
 import secrets
 import time
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
@@ -31,7 +31,6 @@ from telegram.ext import (
 )
 
 from ports import Attachment, ConversationRef
-from adapters.comms import CommsLog
 
 from .base import (
     ChatPlatform,
@@ -43,6 +42,14 @@ from .base import (
     StatusTracker,
 )
 from .transcription import CascadingTranscriber, filename_for_mime
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+    from types import TracebackType
+
+    from telegram import Bot, Chat, Message, User
+
+    from adapters.comms import CommsLog
 
 log = logging.getLogger(__name__)
 
@@ -61,49 +68,24 @@ SUPPORTED_DOC_MIME_PREFIXES = ("image/", "text/")
 SUPPORTED_DOC_MIMES = {"application/pdf"}
 
 
-_PROMPT_PART = """== Chat Platform ==
-
-You are talking to the user over Telegram (mobile or desktop client). Telegram is the only interface for this conversation. The user is NOT using any external app, desktop client, or website — no such UI exists for this user.
-
-Rendering rules:
-- Telegram chat displays plain text. Do NOT use markdown markers — **bold**, *italic*, `backticks`, ```code blocks```, # headers, or [link](url) syntax. They appear as literal characters in chat.
-- Emphasize via phrasing or capitalization, not formatting.
-- Light bullets (lines starting with -) and numbered lists are fine because they are plain characters.
-- Keep messages short — Telegram is not the place for long essays.
-
-Attachments: The user can send images and PDFs and you receive their contents. {voice_line} Video and stickers are not supported (the runtime tells the user when they try).
-
-Authorization: There is NO `/mcp` UI here, NO browser-based auth flow you can trigger, NO external connector authorization page. NEVER suggest the user authorize anything via external apps, desktop clients, websites, `/mcp` commands, MCP connectors, browser flows, or any UI not visible inside Telegram. The user CANNOT take those actions from where they are.
-
-If a tool call fails: report the literal error and suggest the appropriate `./manage` command for the user to run on the host to fix the connector.
-
-Concrete example of a WRONG response — NEVER say anything like this:
-    "The ClickUp connector needs to be authorized first. Open the app on your desktop and run /mcp to connect..."
-That is forbidden. The user is on Telegram. There is nothing to "open" and no `/mcp` to run."""
+_PROMPT_PART = (
+    Path(__file__).parent / "prompts/telegram_platform.md"
+).read_text(encoding="utf-8")
 
 
-_CONTROL_ROOM_PART_TEMPLATE = """== Control Room (group chat) ==
-
-You also participate in a Telegram group chat with the operator and one or more peer bots.
-
-YOUR identity in this group: @{bot_username}. Any other @something_bot in a message refers to a peer bot, not you.
-
-In this group:
-- Every message in the room is delivered to you, prefixed with the sender like "[@username]: ...". Use the prefix to tell who is speaking.
-- Reply when the message is for you: your exact @{bot_username} is mentioned, your name/role is invoked, a question you can usefully answer, an acknowledgment of something YOU said, or a request to multiple bots that you can contribute to.
-- Stay silent when the message is not for you: a different @bot is mentioned (even if the topic looks adjacent to yours), generic chatter, or an acknowledgment of a peer bot's reply. To stay silent, output the literal sentinel `<silent>` and nothing else — the runtime drops it so the room stays quiet.
-- Don't echo what a peer bot just said. If another bot already answered well, stay silent unless you can add a distinct, useful piece.
-- To address a peer bot directly, include their @username in your reply.
-- The operator is in the room and reads everything, including the inter-bot dialogue. Be concise — multiple bots talking gets noisy fast.
-"""
+_CONTROL_ROOM_PART_TEMPLATE = (
+    Path(__file__).parent / "prompts/telegram_control_room.md"
+).read_text(encoding="utf-8")
 
 
 PLATFORM_NAME = "telegram"
 
 
 def _ref(chat_id: int) -> ConversationRef:
-    """Telegram chat id -> ConversationRef. The ONLY place refs are minted
-    here; everything above receives them already built."""
+    """Telegram chat id -> ConversationRef.
+
+    The ONLY place refs are minted here; everything above receives them already built.
+    """
     return ConversationRef(PLATFORM_NAME, str(chat_id))
 
 
@@ -126,16 +108,16 @@ def _native(chat_id: ConversationRef | int) -> int:
 
 class TelegramPlatform(ChatPlatform):
     name = "telegram"
-    REQUIRED_ENV = ["TELEGRAM_TOKEN"]
+    REQUIRED_ENV: ClassVar[list[str]] = ["TELEGRAM_TOKEN"]
 
     def __init__(
         self,
         token: str,
         allowed_user_ids: set[int],
         persona_id: str,
-        control_room_chat_id: Optional[int] = None,
-        comms_log: Optional[CommsLog] = None,
-        transcriber: Optional[CascadingTranscriber] = None,
+        control_room_chat_id: int | None = None,
+        comms_log: CommsLog | None = None,
+        transcriber: CascadingTranscriber | None = None,
     ) -> None:
         self._token = token
         self._allowed_user_ids = allowed_user_ids
@@ -145,15 +127,15 @@ class TelegramPlatform(ChatPlatform):
         self._transcriber = transcriber
         # Filled in during _post_init via bot.get_me() so we can detect
         # @-mentions of ourselves in the control room.
-        self._username: Optional[str] = None
-        self._user_id: Optional[int] = None
-        self._app: Optional[Application] = None
+        self._username: str | None = None
+        self._user_id: int | None = None
+        self._app: Application[Any, Any, Any, Any, Any, Any] | None = None
         # nonce -> future resolved by the inline-keyboard callback.
         self._pending_approvals: dict[str, asyncio.Future] = {}
-        self._on_message: Optional[OnMessage] = None
-        self._on_command: Optional[OnCommand] = None
-        self._on_startup: Optional[OnLifecycle] = None
-        self._on_shutdown: Optional[OnLifecycle] = None
+        self._on_message: OnMessage | None = None
+        self._on_command: OnCommand | None = None
+        self._on_startup: OnLifecycle | None = None
+        self._on_shutdown: OnLifecycle | None = None
 
     # ---- ChatPlatform contract ----
 
@@ -163,9 +145,9 @@ class TelegramPlatform(ChatPlatform):
         raw: dict[str, Any],
         env: Mapping[str, str],
         persona_id: str,
-        comms_log: Optional[CommsLog] = None,
-        transcriber: Optional[CascadingTranscriber] = None,
-    ) -> "TelegramPlatform":
+        comms_log: CommsLog | None = None,
+        transcriber: CascadingTranscriber | None = None,
+    ) -> TelegramPlatform:
         """Parse the telegram block of instances/<persona_id>/platform.yaml.
 
         Expected shape:
@@ -180,7 +162,7 @@ class TelegramPlatform(ChatPlatform):
                 "Refusing to run an open bot."
             )
         cr_raw = raw.get("control_room") or None
-        cr_chat_id: Optional[int] = None
+        cr_chat_id: int | None = None
         if cr_raw:
             if "chat_id" not in cr_raw:
                 raise ValueError(
@@ -231,14 +213,14 @@ class TelegramPlatform(ChatPlatform):
         return 4000
 
     @property
-    def mention_handle(self) -> Optional[str]:
+    def mention_handle(self) -> str | None:
         return self._username
 
     async def send_text(
         self,
         chat_id: ConversationRef,
         text: str,
-        reply_to: Optional[int] = None,
+        reply_to: int | None = None,
     ) -> None:
         if self._app is None:
             raise RuntimeError("TelegramPlatform.send_text called before run()")
@@ -281,14 +263,14 @@ class TelegramPlatform(ChatPlatform):
         self,
         chat_id: ConversationRef,
         path: str,
-        caption: Optional[str] = None,
+        caption: str | None = None,
     ) -> bool:
         chat_id = _native(chat_id)
         if self._app is None:
             raise RuntimeError("TelegramPlatform.send_file called before run()")
         p = Path(path)
         try:
-            size = p.stat().st_size
+            size = (await asyncio.to_thread(p.stat)).st_size
         except OSError:
             log.warning("send_file: %s does not exist", path)
             return False
@@ -314,7 +296,9 @@ class TelegramPlatform(ChatPlatform):
         self,
         chat_id: ConversationRef,
         text: str,
-        timeout: float = APPROVAL_TIMEOUT_SECONDS,
+        # Expiry DENIES rather than cancelling, so this is a policy deadline
+        # the caller can tune, not a timeout wrapping the call.
+        deny_after: float = APPROVAL_TIMEOUT_SECONDS,
     ) -> bool:
         """Inline Approve/Deny keyboard; blocks until tapped or timeout.
 
@@ -347,9 +331,9 @@ class TelegramPlatform(ChatPlatform):
             self._pending_approvals.pop(nonce, None)
             return False
         try:
-            approved = bool(await asyncio.wait_for(fut, timeout=timeout))
+            approved = bool(await asyncio.wait_for(fut, timeout=deny_after))
             outcome = "✅ Approved" if approved else "❌ Denied"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             approved = False
             outcome = "⏰ Timed out — denied"
         except asyncio.CancelledError:
@@ -448,7 +432,7 @@ class TelegramPlatform(ChatPlatform):
 
     # ---- PTB lifecycle adapters ----
 
-    async def _post_init(self, _application) -> None:
+    async def _post_init(self, _application: object) -> None:
         # Cache our own identity so we can detect @-mentions and replies-to-self.
         try:
             me = await self._app.bot.get_me()
@@ -474,13 +458,13 @@ class TelegramPlatform(ChatPlatform):
         if self._on_startup is not None:
             await self._on_startup()
 
-    async def _post_shutdown(self, _application) -> None:
+    async def _post_shutdown(self, _application: object) -> None:
         if self._on_shutdown is not None:
             await self._on_shutdown()
 
     # ---- PTB → port translation ----
 
-    def _create_command_handler(self, command: str):
+    def _create_command_handler(self, command: str) -> Callable[..., Awaitable[None]]:
         async def handler(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
             user = update.effective_user
             chat = update.effective_chat
@@ -502,6 +486,45 @@ class TelegramPlatform(ChatPlatform):
             ))
         return handler
 
+    async def _readable_text(self, msg: Message, bot: Bot) -> str | None:
+        """Read the user's words off a message, or None when there is nothing to act on.
+
+        None also covers the cases already answered for the user: a voice note
+        that could not be transcribed, and a video we have to decline.
+        """
+        # Voice/audio transcribes when a transcriber is configured; a None
+        # return means the user already got a rejection/error reply.
+        voice_text: str | None = None
+        if msg.voice or msg.audio:
+            voice_text = await self._transcribe_voice(msg, bot)
+            if voice_text is None:
+                return None
+        if msg.video or msg.video_note:
+            await msg.reply_text(
+                "Videos aren't supported. I can read images, PDFs, and voice notes."
+            )
+            return None
+        if msg.sticker or msg.animation:
+            return None  # silently ignore stickers/gifs
+        return voice_text or msg.text or msg.caption or ""
+
+    async def _mirror_inbound(self, chat: Chat, msg: Message, user: User, text: str) -> None:
+        """Put a control-room message on the comms log, so peer bots see it."""
+        if self._comms_log is None:
+            return
+        try:
+            await self._comms_log.append(
+                instance=self._persona_id,
+                direction="in",
+                text=text,
+                chat_id=_ref(chat.id),
+                message_id=msg.message_id,
+                from_user=user.id,
+                from_username=user.username,
+            )
+        except Exception:
+            log.exception("could not append inbound to comms_log")
+
     async def _handle_message_update(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -517,24 +540,10 @@ class TelegramPlatform(ChatPlatform):
             )
             return
 
-        is_control_room = self._is_control_room(chat.id)
+        text = await self._readable_text(msg, context.bot)
+        if text is None:
+            return  # unsupported, or the user already got an answer
 
-        # Voice/audio transcribe when a transcriber is configured; a None
-        # return means the user already got a rejection/error reply.
-        voice_text: Optional[str] = None
-        if msg.voice or msg.audio:
-            voice_text = await self._transcribe_voice(msg, context.bot)
-            if voice_text is None:
-                return
-        if msg.video or msg.video_note:
-            await msg.reply_text(
-                "Videos aren't supported. I can read images, PDFs, and voice notes."
-            )
-            return
-        if msg.sticker or msg.animation:
-            return  # silently ignore stickers/gifs
-
-        text = voice_text or msg.text or msg.caption or ""
         attachments, complaints = await self._extract_attachments(msg, context.bot)
         for c in complaints:
             await msg.reply_text(c)
@@ -542,26 +551,14 @@ class TelegramPlatform(ChatPlatform):
         if not text and not attachments:
             return
 
-        # In control room, prefix text with the sender label so the agent
-        # can tell who's talking and decide whether the message is for it.
-        if is_control_room and text:
-            sender_label = f"@{user.username}" if user.username else f"user-{user.id}"
-            text = f"[{sender_label}]: {text}"
-
-        # Mirror the inbound to the comms log so peer bots get the NOTIFY.
-        if is_control_room and self._comms_log is not None:
-            try:
-                await self._comms_log.append(
-                    instance=self._persona_id,
-                    direction="in",
-                    text=text,
-                    chat_id=_ref(chat.id),
-                    message_id=msg.message_id,
-                    from_user=user.id,
-                    from_username=user.username,
-                )
-            except Exception:
-                log.exception("could not append inbound to comms_log")
+        if self._is_control_room(chat.id):
+            # Prefix the sender label so the agent can tell who is talking and
+            # decide whether the message is for it, then mirror the labelled
+            # text to the comms log so peer bots get the NOTIFY.
+            if text:
+                sender = f"@{user.username}" if user.username else f"user-{user.id}"
+                text = f"[{sender}]: {text}"
+            await self._mirror_inbound(chat, msg, user, text)
 
         if self._on_message is None:
             return
@@ -573,9 +570,11 @@ class TelegramPlatform(ChatPlatform):
             message_id=msg.message_id,
         ))
 
-    async def _transcribe_voice(self, msg, bot) -> Optional[str]:
-        """Download + transcribe a voice/audio message. Returns the text to
-        treat as the user's turn, or None after replying with why not."""
+    async def _transcribe_voice(self, msg: Message, bot: Bot) -> str | None:
+        """Download + transcribe a voice/audio message.
+
+        Returns the text to treat as the user's turn, or None after replying with why not.
+        """
         media = msg.voice or msg.audio
         if self._transcriber is None:
             await msg.reply_text(
@@ -615,7 +614,7 @@ class TelegramPlatform(ChatPlatform):
             and chat_id == self._control_room_chat_id
         )
 
-    def _is_authorized_chat(self, chat, user) -> bool:
+    def _is_authorized_chat(self, chat: Chat, user: User) -> bool:
         # 1:1 DM with an allowed user.
         if chat.type == "private":
             return user.id in self._allowed_user_ids
@@ -628,7 +627,9 @@ class TelegramPlatform(ChatPlatform):
         return False
 
 
-    async def _extract_attachments(self, msg, bot) -> tuple[list[Attachment], list[str]]:
+    async def _extract_attachments(
+        self, msg: Message, bot: Bot
+    ) -> tuple[list[Attachment], list[str]]:
         """Pull supported attachments off a Telegram message.
 
         Returns (attachments, complaints). `complaints` are human-readable
@@ -687,7 +688,7 @@ class TelegramPlatform(ChatPlatform):
 # ---- typing heartbeat ----
 
 @asynccontextmanager
-async def _keep_typing_cm(bot, chat_id: int, interval: float = 4.0):
+async def _keep_typing_cm(bot: Bot, chat_id: int, interval: float = 4.0) -> AsyncIterator[None]:
     """Hold the Telegram 'typing' indicator until the block exits.
 
     Telegram clears chat_action after ~5s, so we re-send it every `interval`.
@@ -709,10 +710,8 @@ async def _keep_typing_cm(bot, chat_id: int, interval: float = 4.0):
         yield
     finally:
         task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
 
 # ---- in-progress status message ----
@@ -727,7 +726,7 @@ class _TelegramStatusTracker:
 
     def __init__(
         self,
-        bot,
+        bot: Bot,
         chat_id: int,  # internal: already converted by status_tracker()
         friendly: Callable[[str, dict[str, Any]], str],
         *,
@@ -741,21 +740,24 @@ class _TelegramStatusTracker:
         self._heartbeat_interval = heartbeat_interval
         self._started = time.monotonic()
         self._last_update_at = self._started
-        self._last_text: Optional[str] = None
-        self._message_id: Optional[int] = None
-        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._last_text: str | None = None
+        self._message_id: int | None = None
+        self._heartbeat_task: asyncio.Task | None = None
 
-    async def __aenter__(self) -> "_TelegramStatusTracker":
+    async def __aenter__(self) -> _TelegramStatusTracker:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         return self
 
-    async def __aexit__(self, exc_type, exc, tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
         if self._heartbeat_task is not None:
             self._heartbeat_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
         await self._clear_status_message()
 
     async def on_tool_use(self, tool_name: str, args: dict[str, Any]) -> None:

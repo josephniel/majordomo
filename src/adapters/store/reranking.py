@@ -38,7 +38,12 @@ import logging
 import math
 import threading
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from fastembed.rerank.cross_encoder import TextCrossEncoder
 
 log = logging.getLogger(__name__)
 
@@ -47,8 +52,10 @@ DEFAULT_MODEL = "Xenova/ms-marco-MiniLM-L-12-v2"
 
 @dataclass(frozen=True)
 class RerankConfig:
-    """Every reranking knob in one value, so `configure` is atomic — a
-    partial update can't leave the calibration and the model disagreeing."""
+    """Every reranking knob in one value, so `configure` is atomic.
+
+    A partial update can't leave the calibration and the model disagreeing.
+    """
 
     enabled: bool = True
     model: str = DEFAULT_MODEL
@@ -79,6 +86,10 @@ class RerankConfig:
     temperature: float = 2.0
 
 
+# exp() overflows past this; the sigmoid is already 0.0/1.0 to full precision.
+_LOGIT_SATURATION = 60.0
+
+
 class Reranker:
     """Scores (query, passage) pairs with one specific cross-encoder.
 
@@ -91,9 +102,9 @@ class Reranker:
     load it degrades to RRF rather than breaking recall.
     """
 
-    def __init__(self, config: Optional[RerankConfig] = None) -> None:
+    def __init__(self, config: RerankConfig | None = None) -> None:
         self.config = config or RerankConfig()
-        self._loaded = None
+        self._loaded: TextCrossEncoder | None = None
         self._unavailable = False
         self._lock = threading.Lock()
 
@@ -109,10 +120,12 @@ class Reranker:
     def available(self) -> bool:
         return self.config.enabled and not self._unavailable
 
-    def _model(self):
-        """Lazily load the cross-encoder. Returns None (once, loudly) if it
-        can't be loaded — reranking is an enhancement, not a dependency, and a
-        missing model must degrade to RRF rather than break recall."""
+    def _model(self) -> TextCrossEncoder | None:
+        """Lazily load the cross-encoder.
+
+        Returns None (once, loudly) if it can't be loaded — reranking is an enhancement, not a
+        dependency, and a missing model must degrade to RRF rather than break recall.
+        """
         if self._unavailable:
             return None
         if self._loaded is None:
@@ -131,7 +144,7 @@ class Reranker:
                         return None
         return self._loaded
 
-    def rerank(self, query: str, passages: Sequence[str]) -> Optional[list[float]]:
+    def rerank(self, query: str, passages: Sequence[str]) -> list[float] | None:
         """Score each passage against the query in 0..1, aligned to `passages`.
 
         Returns None when reranking is off or unavailable, so callers keep
@@ -158,11 +171,13 @@ class Reranker:
         return [self._calibrate(float(s)) for s in raw]
 
     def _calibrate(self, logit: float) -> float:
-        """Squash a cross-encoder logit to 0..1 around the measured decision
-        boundary (see RerankConfig.center). Overflow-safe at the tails."""
+        """Squash a cross-encoder logit to 0..1 around the decision boundary.
+
+        See RerankConfig.center. Overflow-safe at the tails.
+        """
         z = (logit - self.config.center) / (self.config.temperature or 1.0)
-        if z < -60:
+        if z < -_LOGIT_SATURATION:
             return 0.0
-        if z > 60:
+        if z > _LOGIT_SATURATION:
             return 1.0
         return 1.0 / (1.0 + math.exp(-z))

@@ -7,7 +7,6 @@ import pytest
 from adapters.chat.transcription import (
     AudioTranscriber,
     CascadingTranscriber,
-    TranscriptionConfig,
     build_transcriber,
     filename_for_mime,
 )
@@ -110,12 +109,12 @@ class TestCascade:
             await CascadingTranscriber([a]).transcribe(b"x")
 
     def test_empty_chain_rejected(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="at least one backend"):
             CascadingTranscriber([])
 
 
 class TestFilenameForMime:
-    @pytest.mark.parametrize("mime,expected", [
+    @pytest.mark.parametrize(("mime", "expected"), [
         ("audio/ogg", "voice.ogg"),
         ("audio/mpeg", "audio.mp3"),
         ("audio/x-m4a", "audio.m4a"),

@@ -10,15 +10,16 @@ Raw bytes are not stored; only extracted text (chunked) plus metadata.
 """
 from __future__ import annotations
 
-from ports import ConversationRef, chat_key
-
 import asyncio
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import asyncpg
 
-from .embeddings import Embedder, to_pgvector as _to_pgvector
+from ports import ConversationRef, chat_key
+
+from .embeddings import Embedder
+from .embeddings import to_pgvector as _to_pgvector
 
 log = logging.getLogger(__name__)
 
@@ -69,7 +70,9 @@ BEGIN
        AND NOT attisdropped;
 
     IF current_dim IS NOT NULL AND current_dim > 0 AND current_dim <> {{EMBED_DIM}} THEN
-        RAISE NOTICE 'document_chunks.embedding: % -> {{EMBED_DIM}} dims; clearing stale vectors', current_dim;
+        RAISE NOTICE
+            'document_chunks.embedding: % -> {{EMBED_DIM}} dims; clearing stale vectors',
+            current_dim;
         DROP INDEX IF EXISTS document_chunks_embedding_hnsw_idx;
         ALTER TABLE document_chunks
             ALTER COLUMN embedding TYPE vector({{EMBED_DIM}}) USING NULL;
@@ -112,9 +115,41 @@ END $$;
 """
 
 
+# doc_search, in its two forms. Written out rather than assembled from a
+# fragment, so the statement in the file is the statement the database runs.
+# Everything variable is a bound parameter, including the embedding model name:
+# a future model rename can neither break nor inject the query.
+_CHUNK_SEARCH_TRIGRAM = """
+    SELECT c.doc_id, d.name AS doc_name, c.chunk_index, c.content,
+           similarity(c.content, $2) AS score
+    FROM document_chunks c
+    JOIN documents d ON d.id = c.doc_id
+    WHERE c.persona_id = $1
+    ORDER BY score DESC
+    LIMIT $3
+"""
+_CHUNK_SEARCH_HYBRID = """
+    SELECT c.doc_id, d.name AS doc_name, c.chunk_index, c.content,
+           GREATEST(
+               similarity(c.content, $2),
+               CASE WHEN c.embedding IS NOT NULL AND c.embedding_model = $4
+                    THEN (1 - (c.embedding <=> $5::vector))
+                    ELSE 0.0 END
+           ) AS score
+    FROM document_chunks c
+    JOIN documents d ON d.id = c.doc_id
+    WHERE c.persona_id = $1
+    ORDER BY score DESC
+    LIMIT $3
+"""
+
+
 def chunk_text(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    """Sliding-window chunks; prefers to cut at a newline/space near the end
-    of the window so sentences survive chunk boundaries."""
+    """Sliding-window chunks.
+
+    Prefers to cut at a newline/space near the end of the window, so sentences
+    survive chunk boundaries.
+    """
     text = (text or "").strip()
     if not text:
         return []
@@ -137,17 +172,21 @@ def chunk_text(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP)
     return [c for c in chunks if c]
 
 
+# Below this the trigram/vector best-of is noise rather than a weak match.
+_MIN_CHUNK_SCORE = 0.1
+
+
 class DocumentStore:
     """Async client for the documents + document_chunks tables."""
 
-    def __init__(self, dsn: str, *, embedder: Optional[Embedder] = None) -> None:
+    def __init__(self, dsn: str, *, embedder: Embedder | None = None) -> None:
         self._dsn = dsn
         # Injected for the same reason MemoryDatabase takes one: the model
         # sizes document_chunks.embedding and is stored per chunk. Two stores
         # sharing a database MUST share a model, which the composition root
         # enforces by handing both the same object.
         self._embed = embedder or Embedder()
-        self._pool: Optional[asyncpg.Pool] = None
+        self._pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
         if self._pool is not None:
@@ -170,7 +209,7 @@ class DocumentStore:
         name: str,
         mime: str,
         text: str,
-        chat_id: Optional[ConversationRef] = None,
+        chat_id: ConversationRef | None = None,
     ) -> tuple[int, int]:
         """Chunk + embed + store. Returns (doc_id, num_chunks)."""
         chunks = chunk_text(text)
@@ -179,35 +218,36 @@ class DocumentStore:
         # Embed off the event loop, one pass (the model batches internally).
         vectors = await asyncio.to_thread(
             lambda: [self._embed.embed_passage(c) for c in chunks])
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                doc_id = await conn.fetchval(
-                    """
+        async with self._pool.acquire() as conn, conn.transaction():
+            doc_id = await conn.fetchval(
+                """
                     INSERT INTO documents (persona_id, name, mime, chat_id, num_chunks, char_count)
                     VALUES ($1, $2, $3, $4, $5, $6)
                     RETURNING id
                     """,
-                    persona_id, name, mime, chat_key(chat_id) if chat_id is not None else None,
-                    len(chunks), len(text),
-                )
-                await conn.executemany(
-                    """
+                persona_id, name, mime, chat_key(chat_id) if chat_id is not None else None,
+                len(chunks), len(text),
+            )
+            await conn.executemany(
+                """
                     INSERT INTO document_chunks
                         (doc_id, persona_id, chunk_index, content, embedding, embedding_model)
                     VALUES ($1, $2, $3, $4, $5::vector, $6)
                     """,
-                    [
-                        (doc_id, persona_id, i, chunk, _to_pgvector(vec),
-                         self._embed.model_name)
-                        for i, (chunk, vec) in enumerate(zip(chunks, vectors))
-                    ],
-                )
+                [
+                    (doc_id, persona_id, i, chunk, _to_pgvector(vec),
+                     self._embed.model_name)
+                    for i, (chunk, vec) in enumerate(zip(chunks, vectors, strict=False))
+                ],
+            )
         log.info("ingested document %r (#%d, %d chunks)", name, doc_id, len(chunks))
         return int(doc_id), len(chunks)
 
     async def prune(self, persona_id: str, older_than_days: int) -> int:
-        """Delete documents older than N days (chunks cascade). Disabled by
-        default in the retention policy — these are user-saved files."""
+        """Delete documents older than N days (chunks cascade).
+
+        Disabled by default in the retention policy — these are user-saved files.
+        """
         if older_than_days <= 0:
             return 0
         async with self._pool.acquire() as conn:
@@ -248,7 +288,7 @@ class DocumentStore:
         doc_id: int,
         start_chunk: int = 0,
         max_chunks: int = 4,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:
             doc = await conn.fetchrow(
                 "SELECT id, name, num_chunks FROM documents WHERE persona_id = $1 AND id = $2",
@@ -276,35 +316,21 @@ class DocumentStore:
         query: str,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
-        """Hybrid chunk search: max(trigram similarity, embedding cosine),
-        same shape as memory recall. Vector arm only trusts current-model
-        embeddings (graceful degradation after a model migration)."""
+        """Hybrid chunk search: max(trigram similarity, embedding cosine).
+
+        Same shape as memory recall. The vector arm only trusts current-model
+        embeddings (graceful degradation after a model migration).
+        """
         query = (query or "").strip()
         if not query:
             return []
         # Query side: asymmetric encoder (see storage.embeddings).
         vec_literal = await asyncio.to_thread(
             lambda: _to_pgvector(self._embed.embed_query(query)))
-        # Everything variable is a bound parameter — even the (currently
-        # constant) embedding model name, so a future model rename can't
-        # break or inject the query.
-        vec_expr = (
-            "(CASE WHEN c.embedding IS NOT NULL AND c.embedding_model = $4 "
-            "THEN (1 - (c.embedding <=> $5::vector)) ELSE 0.0 END)"
-            if vec_literal else "0.0"
-        )
-        sql = f"""
-            SELECT c.doc_id, d.name AS doc_name, c.chunk_index, c.content,
-                   GREATEST(similarity(c.content, $2), {vec_expr}) AS score
-            FROM document_chunks c
-            JOIN documents d ON d.id = c.doc_id
-            WHERE c.persona_id = $1
-            ORDER BY score DESC
-            LIMIT $3
-        """
+        sql = _CHUNK_SEARCH_HYBRID if vec_literal else _CHUNK_SEARCH_TRIGRAM
         args: list[Any] = [persona_id, query, int(limit)]
         if vec_literal:
             args += [self._embed.model_name, vec_literal]
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *args)
-        return [dict(r) for r in rows if r["score"] and r["score"] > 0.1]
+        return [dict(r) for r in rows if r["score"] and r["score"] > _MIN_CHUNK_SCORE]

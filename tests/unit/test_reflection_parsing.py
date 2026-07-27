@@ -5,7 +5,8 @@ from domain.reflection import _looks_volatile, _parse_facts
 class TestParseFacts:
     def test_clean_json_array(self):
         facts = _parse_facts('[{"scope":"user","content":"x","domain_key":"","title":"t"}]')
-        assert len(facts) == 1 and facts[0]["content"] == "x"
+        assert len(facts) == 1
+        assert facts[0]["content"] == "x"
 
     def test_empty_array(self):
         assert _parse_facts("[]") == []
@@ -35,7 +36,8 @@ class TestParseFacts:
 
     def test_items_missing_content_dropped(self):
         facts = _parse_facts('[{"scope":"user"},{"scope":"user","content":"keep"}]')
-        assert len(facts) == 1 and facts[0]["content"] == "keep"
+        assert len(facts) == 1
+        assert facts[0]["content"] == "keep"
 
     def test_items_missing_scope_dropped(self):
         assert _parse_facts('[{"content":"no scope"}]') == []

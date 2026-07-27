@@ -54,12 +54,14 @@ class TestAttachmentBlocks:
     def test_text_file_inlined(self):
         att = Attachment(media_type="text/plain", data="héllo".encode())
         block = AnthropicAgent._attachment_to_content_block(att)
-        assert block["type"] == "text" and "héllo" in block["text"]
+        assert block["type"] == "text"
+        assert "héllo" in block["text"]
 
     def test_unsupported_type_noted(self):
         att = Attachment(media_type="audio/mpeg", data=b"ID3")
         block = AnthropicAgent._attachment_to_content_block(att)
-        assert block["type"] == "text" and "audio/mpeg" in block["text"]
+        assert block["type"] == "text"
+        assert "audio/mpeg" in block["text"]
 
 
 class TestAgentFlags:

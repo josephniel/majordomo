@@ -14,35 +14,57 @@ pattern as the write-approval gate.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, ClassVar
 
-from ports import Faculty, ToolContext, ToolResult, tool
+from ports import ConversationRef, Faculty, ToolContext, ToolResult, ToolSpec, tool
 
 log = logging.getLogger(__name__)
 
 # sender(chat_id, path, caption) -> delivered?
-FileSender = Callable[[int, str, Optional[str]], Awaitable[bool]]
+FileSender = Callable[[ConversationRef, str, str | None], Awaitable[bool]]
+
+
+async def _sendable_path(raw: str, data_dir: Path) -> tuple[Path | None, str]:
+    """Resolve `raw` and confirm it names a real file inside the data dir.
+
+    Returns (path, "") when it does, or (None, reason) — the reason goes to the
+    model, so it says which rule was broken rather than just "no".
+    """
+    if not raw:
+        return None, "path is empty"
+    try:
+        path = await asyncio.to_thread(Path(raw).resolve)
+        allowed_root = await asyncio.to_thread(data_dir.resolve)
+    except OSError as e:
+        return None, f"bad path: {e}"
+    if not path.is_relative_to(allowed_root):
+        return None, f"refusing: only files under {allowed_root} can be sent"
+    if not path.is_file():
+        return None, f"no such file: {path}"
+    return path, ""
 
 
 class FileCourier(Faculty):
     name = "files"
     TRIGGER_KEYWORDS = ("file", "send", "download", "csv", "chart",
                         "artifact", "attachment", "report")
-    STATUS = {"chat_send_file": "Sending a file to the chat"}
+    STATUS: ClassVar[dict[str, str]] = {"chat_send_file": "Sending a file to the chat"}
 
     def __init__(self, data_dir: Path) -> None:
         self._data_dir = data_dir
-        self._sender: Optional[FileSender] = None
+        self._sender: FileSender | None = None
 
     def bind(self, sender: FileSender) -> None:
         self._sender = sender
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         outer = self
 
         @tool(
@@ -53,7 +75,7 @@ class FileCourier(Faculty):
             "tools), caption (optional short text shown with the file).",
             {"path": str, "caption": str},
         )
-        async def chat_send_file_tool(args: dict[str, Any], ctx: ToolContext):
+        async def chat_send_file_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             return await outer._send(args, ctx)
 
         return [chat_send_file_tool]
@@ -64,20 +86,9 @@ class FileCourier(Faculty):
         chat_id = ctx.chat_id
         if chat_id is None:
             return ToolResult.error("no chat context to send the file to")
-        raw = str(args.get("path") or "").strip()
-        if not raw:
-            return ToolResult.error("path is empty")
-        try:
-            path = Path(raw).resolve()
-            allowed_root = self._data_dir.resolve()
-        except OSError as e:
-            return ToolResult.error(f"bad path: {e}")
-        if not path.is_relative_to(allowed_root):
-            return ToolResult.error(
-                f"refusing: only files under {allowed_root} can be sent"
-            )
-        if not path.is_file():
-            return ToolResult.error(f"no such file: {path}")
+        path, why = await _sendable_path(str(args.get("path") or "").strip(), self._data_dir)
+        if path is None:
+            return ToolResult.error(why)
         caption = str(args.get("caption") or "").strip() or None
         try:
             delivered = await self._sender(chat_id, str(path), caption)
@@ -85,5 +96,7 @@ class FileCourier(Faculty):
             log.exception("chat_send_file failed")
             return ToolResult.error(f"sending failed: {e}")
         if not delivered:
-            return ToolResult.error("the platform could not deliver the file (too large, or unsupported)")
+            return ToolResult.error(
+                "the platform could not deliver the file (too large, or unsupported)"
+            )
         return ToolResult.ok(f"sent {path.name} to the chat")

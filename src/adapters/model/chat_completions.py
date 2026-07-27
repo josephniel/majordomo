@@ -18,23 +18,27 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
-import re
 import logging
-from typing import Any, Optional
+import re
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from ports import ConversationRef, Connector, ToolContext, ToolSpec, as_tool_result
+from ports import Connector, ConversationRef, ToolContext, ToolSpec, as_tool_result
 
 from .base import (
     Agent,
     Attachment,
-    PersonaLike,
     ContextBuilder,
+    PersonaLike,
     Summarizer,
     ToolUseCallback,
     UsageLimitError,
 )
-from .history import ConversationHistory
+
+if TYPE_CHECKING:
+    from .history import ConversationHistory
 
 log = logging.getLogger(__name__)
 
@@ -80,11 +84,10 @@ def _signals_usage_limit(exc: BaseException) -> bool:
             return True
         if isinstance(exc, openai.APIStatusError):
             code = getattr(exc, "status_code", None)
-            if code in (408, 409, 429) or (isinstance(code, int) and code >= 500):
+            if code in _RETRYABLE_STATUS or (isinstance(code, int) and code >= _SERVER_ERROR):
                 return True
     except Exception:
-        # openai unavailable for some reason — fall through to heuristics.
-        pass
+        log.debug("openai types unavailable; falling through to heuristics", exc_info=True)
 
     msg = (str(exc) or "").lower()
     if any(hint in msg for hint in _USAGE_LIMIT_HINTS):
@@ -93,10 +96,18 @@ def _signals_usage_limit(exc: BaseException) -> bool:
     return "ratelimit" in cls_name or "overloaded" in cls_name
 
 
+# Statuses worth failing over on: the explicit rate/conflict/timeout trio, and
+# anything 5xx (the vendor is having a bad time, another might not be).
+_RETRYABLE_STATUS = (408, 409, 429)
+_SERVER_ERROR = 500
+
+
 def _is_usage_limit(exc: BaseException) -> bool:
-    """True if `exc` (or any wrapped cause) is a rate/usage/overload limit that
-    should trigger failover. Walks the __cause__/__context__ chain so a limit
-    error wrapped in a generic exception is still caught."""
+    """Report whether `exc` is a rate/usage/overload limit that should fail over.
+
+    Walks the __cause__/__context__ chain, so a limit error wrapped in a
+    generic exception is still caught.
+    """
     seen: set[int] = set()
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
@@ -124,23 +135,33 @@ def _spec_to_openai_function(prefixed_name: str, spec: ToolSpec) -> dict[str, An
     }
 
 
+# OpenAI's hard cap on a function name, and the room a "_abc123" suffix needs.
+_MAX_TOOL_NAME_CHARS = 64
+_HASHED_NAME_STEM = _MAX_TOOL_NAME_CHARS - 7
+
+
 def _fit_tool_name(name: str, taken: dict[str, Any]) -> str:
-    """OpenAI caps function names at 64 chars. Truncate, but never let two
-    long names silently collapse into the same key — disambiguate with a
-    short stable hash suffix."""
-    if len(name) <= 64 and name not in taken:
+    """OpenAI caps function names at 64 chars.
+
+    Truncate, but never let two long names silently collapse into the same key — disambiguate with a
+    short stable hash suffix.
+    """
+    if len(name) <= _MAX_TOOL_NAME_CHARS and name not in taken:
         return name
-    base = name[:64]
+    base = name[:_MAX_TOOL_NAME_CHARS]
     if base not in taken:
         return base
     import hashlib
-    suffix = hashlib.sha1(name.encode()).hexdigest()[:6]
-    return f"{name[:57]}_{suffix}"
+    # Disambiguating a truncated tool name, not authenticating anything.
+    suffix = hashlib.sha1(name.encode(), usedforsecurity=False).hexdigest()[:6]
+    return f"{name[:_HASHED_NAME_STEM]}_{suffix}"
 
 
-def _extract_failed_generation(exc: BaseException) -> Optional[str]:
+def _extract_failed_generation(exc: BaseException) -> str | None:
     """Pull Groq's `failed_generation` string out of a tool_use_failed 400.
-    Checks the SDK's parsed body first, then falls back to scraping str(exc)."""
+
+    Checks the SDK's parsed body first, then falls back to scraping str(exc).
+    """
     body = getattr(exc, "body", None)
     candidates = []
     if isinstance(body, dict):
@@ -157,9 +178,11 @@ def _extract_failed_generation(exc: BaseException) -> Optional[str]:
 
 
 def _parse_llama_tool_calls(text: str) -> list[tuple[str, str]]:
-    """Parse Llama's malformed tool syntax `<function=NAME {json}>` (one or
-    more) into (name, arguments_json) pairs. Brace-matches so nested JSON is
-    captured correctly."""
+    """Parse Llama's malformed tool syntax into (name, arguments_json) pairs.
+
+    Handles one or more `<function=NAME {json}>` blocks, brace-matching so
+    nested JSON is captured correctly.
+    """
     out: list[tuple[str, str]] = []
     for m in re.finditer(r"<function=([A-Za-z0-9_\-.]+)", text or ""):
         name = m.group(1)
@@ -188,9 +211,11 @@ def _parse_llama_tool_calls(text: str) -> list[tuple[str, str]]:
 
 
 def _recover_failed_tool_calls(exc: BaseException) -> list[tuple[str, str]]:
-    """If `exc` is a Groq/Llama tool_use_failed 400, extract the intended tool
-    calls from its failed generation. Returns [] when not applicable, so the
-    normal error handling proceeds."""
+    """Extract the intended tool calls from a Groq/Llama tool_use_failed 400.
+
+    Returns [] when `exc` is anything else, so the normal error handling
+    proceeds.
+    """
     marker = "tool_use_failed"
     code = getattr(exc, "code", None)
     if code != marker and marker not in str(exc):
@@ -202,19 +227,41 @@ def _recover_failed_tool_calls(exc: BaseException) -> list[tuple[str, str]]:
 
 
 def _extract_text_from_tool_result(result: Any) -> str:
-    """Flatten a handler result (ToolResult, or a legacy MCP-shaped dict from
-    external MCP servers) into the single string OpenAI's `tool` message
-    content field wants. (The error flag isn't surfaced separately here —
-    handlers word their error text self-descriptively.)"""
+    """Flatten a handler result into the string OpenAI's `tool` message wants.
+
+    The result is a ToolResult, or a legacy MCP-shaped dict from an external
+    MCP server. (The error flag isn't surfaced separately here —
+    handlers word their error text self-descriptively.)
+    """
     return as_tool_result(result).text or "(empty)"
 
 
+@dataclass(frozen=True)
+class VendorEndpoint:
+    """Where a chat-completions vendor lives, and how it wants to be called.
+
+    One value rather than six constructor arguments, because they travel
+    together: VendorSpec produces exactly this set, the composition root passes
+    exactly this set, and every one of them defaults to "trust the backend
+    class" — which is a property of the group, not of each field separately.
+    """
+
+    model: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    max_tokens: int | None = None
+    extra_completion_kwargs: dict[str, Any] | None = None
+    supports_vision: bool | None = None
+
+
 class ChatCompletionsAgent(Agent):
-    """Base implementation for any vendor speaking the OpenAI Chat
-    Completions API (OpenAI itself, DeepSeek, etc.)."""
+    """Base implementation for any vendor speaking the OpenAI Chat Completions API.
+
+    OpenAI itself, DeepSeek, and the rest.
+    """
 
     DEFAULT_MODEL: str = ""
-    DEFAULT_BASE_URL: Optional[str] = None
+    DEFAULT_BASE_URL: str | None = None
     API_KEY_ENV: str = ""
     # Env var holding an endpoint override, for backends whose address isn't
     # fixed (self-hosted). Empty means the endpoint is pinned by the class.
@@ -228,7 +275,7 @@ class ChatCompletionsAgent(Agent):
     REQUEST_TIMEOUT: float = 30.0
     # Extra params merged into every chat.completions.create() call. Subclasses
     # use this for vendor-specific knobs (e.g. Gemini's reasoning_effort).
-    EXTRA_COMPLETION_KWARGS: dict[str, Any] = {}
+    EXTRA_COMPLETION_KWARGS: ClassVar[dict[str, Any]] = {}
     # Whether this backend can accept image inputs (OpenAI multimodal parts).
     # Gemini + OpenAI: yes; DeepSeek's chat model: no.
     SUPPORTS_VISION: bool = False
@@ -254,18 +301,18 @@ class ChatCompletionsAgent(Agent):
         history: ConversationHistory,
         persona_id: str,
         chat_id: ConversationRef,
-        connectors: Optional[list[Connector]] = None,
-        persona: Optional[PersonaLike] = None,
-        model: Optional[str] = None,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        external_tools_provider: Optional[
-            Any  # async () -> dict[str, ToolSpec]; see adapters/model/external_mcp.py
-        ] = None,
-        max_tokens: Optional[int] = None,
-        extra_completion_kwargs: Optional[dict[str, Any]] = None,
-        supports_vision: Optional[bool] = None,
+        endpoint: VendorEndpoint | None = None,
+        connectors: list[Connector] | None = None,
+        persona: PersonaLike | None = None,
+        external_tools_provider: Any | None = None,
     ) -> None:
+        endpoint = endpoint or VendorEndpoint()
+        model = endpoint.model
+        api_key = endpoint.api_key
+        base_url = endpoint.base_url
+        max_tokens = endpoint.max_tokens
+        extra_completion_kwargs = endpoint.extra_completion_kwargs
+        supports_vision = endpoint.supports_vision
         self._composer = context_builder
         self._history = history
         self._persona_id = persona_id
@@ -278,7 +325,7 @@ class ChatCompletionsAgent(Agent):
         self._api_key = api_key
         self._base_url = base_url or self.DEFAULT_BASE_URL
         self._client = None
-        self._current_task: Optional[asyncio.Task] = None
+        self._current_task: asyncio.Task | None = None
         self._external_tools_provider = external_tools_provider
         self._external_tools_loaded = False
         self._max_tokens = max_tokens or None  # 0/None → vendor default
@@ -305,7 +352,7 @@ class ChatCompletionsAgent(Agent):
         # (External MCP tools are merged lazily at first send — they need a
         # running event loop to spawn their subprocesses.)
         self._tools_by_name: dict[str, ToolSpec] = self._collect_tools()
-        self._openai_tools: Optional[list[dict[str, Any]]] = None
+        self._openai_tools: list[dict[str, Any]] | None = None
         self._rebuild_openai_tools()
 
     def _rebuild_openai_tools(self) -> None:
@@ -329,15 +376,17 @@ class ChatCompletionsAgent(Agent):
         }
 
     def _connector_base_for(self, prefixed_name: str) -> str:
-        """Map a `<server>__<tool>` key to its connector's base name
-        (gmail, google_calendar, splitwise, memory, schedule, …)."""
+        """Map a `<server>__<tool>` key to its connector's base name.
+
+        gmail, google_calendar, splitwise, memory, schedule, …
+        """
         server = prefixed_name.rsplit("__", 1)[0]
         for c in self._connectors:
             if c.owns_profile(server):
                 return c.name
         return server
 
-    def _select_tools(self, text: str) -> Optional[list[dict[str, Any]]]:
+    def _select_tools(self, text: str) -> list[dict[str, Any]] | None:
         """Choose which tools to send this turn.
 
         Token-constrained vendors (SUBSET_TOOLS) can't afford all ~60 tool
@@ -353,7 +402,7 @@ class ChatCompletionsAgent(Agent):
             return self._openai_tools
         low = (text or "").lower()
 
-        def _attach(base: Optional[str]) -> bool:
+        def _attach(base: str | None) -> bool:
             routing = self._provider_routing.get(base)
             if routing is None:
                 return True  # unknown/external provider → always keep
@@ -369,7 +418,7 @@ class ChatCompletionsAgent(Agent):
         return tools or self._openai_tools
 
     @property
-    def session_id(self) -> Optional[str]:
+    def session_id(self) -> str | None:
         return None  # client-side history only
 
     @property
@@ -377,10 +426,11 @@ class ChatCompletionsAgent(Agent):
         return self._model
 
     async def probe_tool_calling(self) -> tuple[bool, str]:
-        """Layer-4 canary: does this model actually invoke a tool when asked?
-        Sends a tiny one-tool request (≈100 tokens, safe under any TPM cap).
-        Returns (ok, detail). This is what would have caught gemini-flash
-        silently regressing to hallucinated saves."""
+        """Layer-4 canary — check this model still invokes a tool when asked.
+
+        Sends a tiny one-tool request (≈100 tokens, safe under any TPM cap). Returns (ok, detail).
+        This is what would have caught gemini-flash silently regressing to hallucinated saves.
+        """
         try:
             await self.start()
             ping = {
@@ -409,7 +459,10 @@ class ChatCompletionsAgent(Agent):
                 raise
             msg = resp.choices[0].message if resp.choices else None
             called = bool(getattr(msg, "tool_calls", None))
-            return (called, "called ping" if called else "no tool_call returned (hallucination risk)")
+            return (
+                called,
+                "called ping" if called else "no tool_call returned (hallucination risk)",
+            )
         except Exception as e:
             return (False, str(e)[:140])
 
@@ -417,6 +470,7 @@ class ChatCompletionsAgent(Agent):
         if self._client is not None:
             return
         from openai import AsyncOpenAI
+
         # The SDK rejects an empty api_key outright, so keyless backends
         # (Ollama) send a placeholder the server ignores.
         kwargs: dict[str, Any] = {"api_key": self._api_key or "no-key-required"}
@@ -429,16 +483,12 @@ class ChatCompletionsAgent(Agent):
         # we ever get to fail over. max_retries=0 makes a busy vendor fail
         # instantly so we advance to the next one immediately. Tight timeout
         # caps a hung request (SDK default is 600s).
-        self._client = AsyncOpenAI(
-            max_retries=0, timeout=self.REQUEST_TIMEOUT, **kwargs
-        )
+        self._client = AsyncOpenAI(max_retries=0, timeout=self.REQUEST_TIMEOUT, **kwargs)
 
     async def stop(self) -> None:
         if self._client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._client.close()
-            except Exception:
-                pass
             self._client = None
 
     async def interrupt(self) -> None:
@@ -448,13 +498,15 @@ class ChatCompletionsAgent(Agent):
     # ---- tool collection ----
 
     def _collect_tools(self) -> dict[str, ToolSpec]:
-        """Walk connectors, apply the persona's allowed_tool_names filter,
-        return a flat name→ToolSpec map. Names are prefixed with the server
-        so multi-profile connectors (gmail per profile) stay disambiguated.
+        """Walk connectors and return a flat name→ToolSpec map.
+
+        Applies the persona's allowed_tool_names filter. Names are prefixed
+        with the server so multi-profile connectors (gmail per profile) stay
+        disambiguated.
         """
         out: dict[str, ToolSpec] = {}
         for c in self._connectors:
-            allowed: Optional[list[str]] = None
+            allowed: list[str] | None = None
             if self._persona is not None:
                 allowed = self._persona.allowed_tool_names(c)
                 if allowed == []:
@@ -470,8 +522,10 @@ class ChatCompletionsAgent(Agent):
     # ---- main turn ----
 
     async def prewarm(self) -> bool:
-        """Build this turn's prompt prefix and send it with a 1-token cap, so
-        the engine caches it BEFORE a human is waiting on it.
+        """Warm the engine's cache with this turn's prompt prefix.
+
+        Sends it with a 1-token cap, so the prefix is cached BEFORE a human is
+        waiting on it.
 
         Local inference pays ~100s to prefill a cold ~13k-token prompt and
         ~0.6s once it's cached. Nothing makes that first prefill cheap — but
@@ -492,8 +546,11 @@ class ChatCompletionsAgent(Agent):
         ]
         try:
             await self._client.chat.completions.create(
-                model=self._model, messages=messages,
-                tools=self._openai_tools, max_tokens=1, **self._extra_kwargs,
+                model=self._model,
+                messages=messages,
+                tools=self._openai_tools,
+                max_tokens=1,
+                **self._extra_kwargs,
             )
             return True
         except Exception as e:
@@ -503,24 +560,29 @@ class ChatCompletionsAgent(Agent):
     async def send(
         self,
         text: str,
-        on_tool_use: Optional[ToolUseCallback] = None,
-        attachments: Optional[list[Attachment]] = None,
-        current_row_id: Optional[int] = None,
+        on_tool_use: ToolUseCallback | None = None,
+        attachments: list[Attachment] | None = None,
+        current_row_id: int | None = None,
     ) -> str:
-        """`text` IS the current user message — it goes on the wire verbatim
-        (including any composed context like the auto-RAG memory block). The
-        mirror supplies HISTORY only: when the caller mirrored this turn
+        """Send `text` as the current user message, mirrored history behind it.
+
+        `text` goes on the wire verbatim (including any composed context like
+        the auto-RAG memory block). The mirror supplies HISTORY only: when the
+        caller mirrored this turn
         already (CascadingAgent passes the row id as `current_row_id`), that
         raw row is excluded so the message isn't sent twice. This replaced
         the old last-row-must-be-user heuristic, which double-appended on
         mid-turn failover after tool calls and silently DROPPED the memory
-        block for every chat-completions vendor."""
+        block for every chat-completions vendor.
+        """
         if self._client is None:
             await self.start()
         await self._merge_external_tools()
 
         history_rows = await self._history.recent(
-            self._persona_id, self._chat_id, limit=self.MAX_HISTORY_FETCH,
+            self._persona_id,
+            self._chat_id,
+            limit=self.MAX_HISTORY_FETCH,
         )
         if current_row_id is not None:
             history_rows = [r for r in history_rows if r.get("id") != current_row_id]
@@ -547,17 +609,20 @@ class ChatCompletionsAgent(Agent):
             self._current_task = None
 
     async def _merge_external_tools(self) -> None:
-        """Fold in tools from external stdio MCP servers (once). Keeps
-        connector parity with the Claude path, which mounts these natively —
-        without this, a failover silently loses capabilities (gap A3)."""
+        """Fold in tools from external stdio MCP servers (once).
+
+        Keeps connector parity with the Claude path, which mounts these natively — without this, a
+        failover silently loses capabilities (gap A3).
+        """
         if self._external_tools_loaded or self._external_tools_provider is None:
             return
         self._external_tools_loaded = True
         try:
             external: dict[str, ToolSpec] = await self._external_tools_provider()
         except Exception:
-            log.exception("external MCP tools unavailable to %s (continuing without)",
-                          self.__class__.__name__)
+            log.exception(
+                "external MCP tools unavailable to %s (continuing without)", self.__class__.__name__
+            )
             return
         added = 0
         for name, spec in external.items():
@@ -580,8 +645,9 @@ class ChatCompletionsAgent(Agent):
         return row["role"] in ("user", "assistant", "system")
 
     def _history_floor(self, rows: list[dict[str, Any]]) -> int:
-        """Oldest mirror row id that may replay — sticky, and only ever moves
-        forward in big steps.
+        """Oldest mirror row id that may replay.
+
+        Sticky, and only ever moves forward in big steps.
 
         A plain newest-first budget evicts exactly one old row per turn once
         the window is full. That changes the FIRST replayed message every
@@ -596,8 +662,7 @@ class ChatCompletionsAgent(Agent):
         half the window refills before the next trim.
         """
         replayable = [r for r in rows if self._is_replayable(r)]
-        in_window = [r for r in replayable
-                     if (r.get("id") or 0) >= self._history_floor_id]
+        in_window = [r for r in replayable if (r.get("id") or 0) >= self._history_floor_id]
         total = sum(len(r["content"]) for r in in_window)
         if total <= self.MAX_HISTORY_CHARS:
             return self._history_floor_id
@@ -606,11 +671,11 @@ class ChatCompletionsAgent(Agent):
         acc = 0
         kept_any = False
         new_floor = self._history_floor_id
-        for row in reversed(replayable):          # newest first
+        for row in reversed(replayable):  # newest first
             rid = row.get("id") or 0
             cost = len(row["content"])
             if kept_any and acc + cost > target:
-                new_floor = rid + 1               # this row and older drop out
+                new_floor = rid + 1  # this row and older drop out
                 break
             # The newest row ALWAYS rides, even if it alone exceeds the
             # target — dropping the turn we are answering would be absurd.
@@ -621,19 +686,20 @@ class ChatCompletionsAgent(Agent):
         return self._history_floor_id
 
     def _assemble_context(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Budget-based replay of the mirror. Newest rows win the budget;
-        summary rows always ride along; mirrored tool calls surface as
-        inline system notes so this vendor knows what actions were taken
-        (possibly by a different vendor).
+        """Budget-based replay of the mirror.
+
+        Newest rows win the budget; summary rows always ride along; mirrored tool calls surface as
+        inline system notes so this vendor knows what actions were taken (possibly by a different
+        vendor).
 
         The window's lower edge is sticky (see _history_floor) so the replayed
         prefix stays byte-identical between trims — that is what lets a local
-        model reuse its KV cache instead of re-reading the whole prompt."""
+        model reuse its KV cache instead of re-reading the whole prompt.
+        """
         kept: list[dict[str, Any]] = []
         budget = self.MAX_HISTORY_CHARS
         floor = self._history_floor(rows)
-        rows = [r for r in rows
-                if r["role"] == "summary" or (r.get("id") or 0) >= floor]
+        rows = [r for r in rows if r["role"] == "summary" or (r.get("id") or 0) >= floor]
         for row in reversed(rows):
             role = row["role"]
             meta = row.get("metadata") or {}
@@ -654,31 +720,38 @@ class ChatCompletionsAgent(Agent):
         # kept alongside (it's inserted at compaction time), but it covers
         # the OLDEST part of the conversation — rendering it before the raw
         # turns keeps the narrative in causal order.
-        for row in kept:
-            if row["role"] == "summary":
-                messages.append({
-                    "role": "system",
-                    "content": f"[Earlier conversation summary]\n{row['content']}",
-                })
+        messages.extend(
+            {"role": "system", "content": f"[Earlier conversation summary]\n{row['content']}"}
+            for row in kept
+            if row["role"] == "summary"
+        )
         for row in kept:
             role = row["role"]
             meta = row.get("metadata") or {}
             if role == "summary":
                 continue
             if role == "system" and meta.get("tool_use"):
-                messages.append({
-                    "role": "system",
-                    "content": f"[The assistant performed this action: {row['content']}]",
-                })
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": f"[The assistant performed this action: {row['content']}]",
+                    }
+                )
             elif role in ("user", "assistant"):
                 messages.append({"role": role, "content": row["content"]})
         return messages
 
-    def _apply_attachments(self, messages: list[dict[str, Any]], attachments: list[Attachment]) -> None:
-        """Augment the latest user message with image parts (if this backend
-        supports vision) and/or a note about what couldn't be processed."""
-        idx = next((i for i in range(len(messages) - 1, -1, -1)
-                    if messages[i].get("role") == "user"), None)
+    def _apply_attachments(
+        self, messages: list[dict[str, Any]], attachments: list[Attachment]
+    ) -> None:
+        """Augment the latest user message with image parts.
+
+        Only when this backend supports vision; adds a note about whatever
+        couldn't be processed.
+        """
+        idx = next(
+            (i for i in range(len(messages) - 1, -1, -1) if messages[i].get("role") == "user"), None
+        )
         if idx is None:
             return
         base = messages[idx].get("content")
@@ -689,18 +762,23 @@ class ChatCompletionsAgent(Agent):
 
         notes: list[str] = []
         if others:
-            notes.append(f"[{len(others)} non-image attachment(s) (e.g. PDF) were sent; "
-                         f"they can only be read on the Claude backend.]")
+            notes.append(
+                f"[{len(others)} non-image attachment(s) (e.g. PDF) were sent; "
+                f"they can only be read on the Claude backend.]"
+            )
         if images and not self.SUPPORTS_VISION:
             notes.append(f"[{len(images)} image(s) were sent but this model can't view images.]")
         note = ("\n" + " ".join(notes)) if notes else ""
 
         if images and self.SUPPORTS_VISION:
-            parts: list[dict[str, Any]] = [{"type": "text", "text": (base_text + note) or "(image attached)"}]
+            parts: list[dict[str, Any]] = [
+                {"type": "text", "text": (base_text + note) or "(image attached)"}
+            ]
             for a in images:
                 b64 = base64.b64encode(a.data).decode("ascii")
-                parts.append({"type": "image_url",
-                              "image_url": {"url": f"data:{a.media_type};base64,{b64}"}})
+                parts.append(
+                    {"type": "image_url", "image_url": {"url": f"data:{a.media_type};base64,{b64}"}}
+                )
             messages[idx]["content"] = parts
         elif note:
             messages[idx]["content"] = base_text + note
@@ -708,8 +786,8 @@ class ChatCompletionsAgent(Agent):
     async def _run_tool_loop(
         self,
         messages: list[dict[str, Any]],
-        on_tool_use: Optional[ToolUseCallback],
-        tools: Optional[list[dict[str, Any]]] = None,
+        on_tool_use: ToolUseCallback | None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> str:
         if tools is None:
             tools = self._openai_tools
@@ -738,26 +816,36 @@ class ChatCompletionsAgent(Agent):
                 # so the quirk is transparent and Groq keeps serving.
                 recovered = _recover_failed_tool_calls(e)
                 if recovered:
-                    log.info("%s: recovered %d malformed tool call(s) from a "
-                             "tool_use_failed error", self.__class__.__name__, len(recovered))
-                    messages.append({
-                        "role": "assistant", "content": "",
-                        "tool_calls": [
-                            {"id": f"recovered_{iteration}_{i}", "type": "function",
-                             "function": {"name": n, "arguments": a}}
+                    log.info(
+                        "%s: recovered %d malformed tool call(s) from a tool_use_failed error",
+                        self.__class__.__name__,
+                        len(recovered),
+                    )
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": f"recovered_{iteration}_{i}",
+                                    "type": "function",
+                                    "function": {"name": n, "arguments": a},
+                                }
+                                for i, (n, a) in enumerate(recovered)
+                            ],
+                        }
+                    )
+                    await self._dispatch_calls(
+                        [
+                            (f"recovered_{iteration}_{i}", n, a)
                             for i, (n, a) in enumerate(recovered)
                         ],
-                    })
-                    await self._dispatch_calls(
-                        [(f"recovered_{iteration}_{i}", n, a)
-                         for i, (n, a) in enumerate(recovered)],
-                        messages, on_tool_use,
+                        messages,
+                        on_tool_use,
                     )
                     continue
                 if _is_usage_limit(e):
-                    raise UsageLimitError(
-                        f"{self.__class__.__name__} usage limit hit: {e}"
-                    ) from e
+                    raise UsageLimitError(f"{self.__class__.__name__} usage limit hit: {e}") from e
                 raise
 
             # Accumulate token usage across the whole tool loop.
@@ -766,7 +854,8 @@ class ChatCompletionsAgent(Agent):
                 total_in += getattr(usage, "prompt_tokens", 0) or 0
                 total_out += getattr(usage, "completion_tokens", 0) or 0
                 self.last_turn_usage = {
-                    "input_tokens": total_in, "output_tokens": total_out,
+                    "input_tokens": total_in,
+                    "output_tokens": total_out,
                 }
 
             choice = resp.choices[0] if resp.choices else None
@@ -804,14 +893,15 @@ class ChatCompletionsAgent(Agent):
                 return (msg.content or "").strip()
 
             await self._dispatch_calls(
-                [(tc.id, tc.function.name, tc.function.arguments or "{}")
-                 for tc in tool_calls],
-                messages, on_tool_use,
+                [(tc.id, tc.function.name, tc.function.arguments or "{}") for tc in tool_calls],
+                messages,
+                on_tool_use,
             )
 
         log.warning(
             "%s tool loop exceeded %d iterations; bailing",
-            self.__class__.__name__, MAX_TOOL_LOOP_ITERATIONS,
+            self.__class__.__name__,
+            MAX_TOOL_LOOP_ITERATIONS,
         )
         return (
             "(I ran out of tool-call retries on this turn. "
@@ -822,10 +912,12 @@ class ChatCompletionsAgent(Agent):
         self,
         calls: list[tuple[str, str, str]],  # (id, name, arguments_json)
         messages: list[dict[str, Any]],
-        on_tool_use: Optional[ToolUseCallback],
+        on_tool_use: ToolUseCallback | None,
     ) -> None:
         """Run each requested tool, appending its `tool` result message.
-        Shared by the normal path and the malformed-call recovery path."""
+
+        Shared by the normal path and the malformed-call recovery path.
+        """
         for call_id, tool_name, arguments in calls:
             try:
                 args = json.loads(arguments or "{}")
@@ -844,16 +936,19 @@ class ChatCompletionsAgent(Agent):
             else:
                 try:
                     result = await spec.handler(
-                        args, ToolContext(chat_id=self._chat_id),
+                        args,
+                        ToolContext(chat_id=self._chat_id),
                     )
                     result_text = _extract_text_from_tool_result(result)
                 except Exception as e:
                     result_text = f"error: {e}"
-            messages.append({
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": result_text,
-            })
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": result_text,
+                }
+            )
 
 
 class OpenAIAgent(ChatCompletionsAgent):
@@ -863,7 +958,7 @@ class OpenAIAgent(ChatCompletionsAgent):
     DEFAULT_MODEL = "gpt-4o-mini"
     DEFAULT_BASE_URL = None
     API_KEY_ENV = "OPENAI_API_KEY"
-    REQUIRED_ENV = ["OPENAI_API_KEY"]
+    REQUIRED_ENV: ClassVar[list[str]] = ["OPENAI_API_KEY"]
     SUPPORTS_VISION = True
     SUBSET_TOOLS = True
 
@@ -873,7 +968,7 @@ class DeepSeekAgent(ChatCompletionsAgent):
     DEFAULT_MODEL = "deepseek-chat"
     DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
     API_KEY_ENV = "DEEPSEEK_API_KEY"
-    REQUIRED_ENV = ["DEEPSEEK_API_KEY"]
+    REQUIRED_ENV: ClassVar[list[str]] = ["DEEPSEEK_API_KEY"]
     SUBSET_TOOLS = True
 
 
@@ -892,8 +987,8 @@ class GeminiAgent(ChatCompletionsAgent):
     DEFAULT_MODEL = "gemini-2.5-flash"
     DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
     API_KEY_ENV = "GEMINI_API_KEY"
-    REQUIRED_ENV = ["GEMINI_API_KEY"]
-    EXTRA_COMPLETION_KWARGS = {"reasoning_effort": "low"}
+    REQUIRED_ENV: ClassVar[list[str]] = ["GEMINI_API_KEY"]
+    EXTRA_COMPLETION_KWARGS: ClassVar[dict[str, str]] = {"reasoning_effort": "low"}
     SUPPORTS_VISION = True
     SUBSET_TOOLS = True
     MAX_HISTORY_CHARS = 16_000  # ≈ 4k tokens; conserve free-tier quota
@@ -913,7 +1008,7 @@ class GroqAgent(ChatCompletionsAgent):
     DEFAULT_MODEL = "llama-3.3-70b-versatile"
     DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
     API_KEY_ENV = "GROQ_API_KEY"
-    REQUIRED_ENV = ["GROQ_API_KEY"]
+    REQUIRED_ENV: ClassVar[list[str]] = ["GROQ_API_KEY"]
     SUPPORTS_VISION = False
     SUBSET_TOOLS = True
     MAX_HISTORY_CHARS = 10_000  # ≈ 2.5k tokens — leaves headroom under 12k TPM
@@ -942,9 +1037,9 @@ class OllamaAgent(ChatCompletionsAgent):
     # local model", for the two ways to raise it.
     DEFAULT_MODEL = "gemma4:12b"
     DEFAULT_BASE_URL = "http://localhost:11434/v1"
-    API_KEY_ENV = ""          # keyless
+    API_KEY_ENV = ""  # keyless
     BASE_URL_ENV = "OLLAMA_BASE_URL"
-    REQUIRED_ENV: list[str] = []
+    REQUIRED_ENV: ClassVar[list[str]] = []
     REQUIRES_API_KEY = False
     SUPPORTS_VISION = True
     # DELIBERATELY OFF, unlike every metered vendor — and it makes turns
@@ -980,7 +1075,7 @@ class OllamaAgent(ChatCompletionsAgent):
     # the instance .env for models that don't need to think. Unset = leave the
     # model alone, which is the safe default. Ollama ignores per-request
     # `options` but its /v1 layer does honor reasoning_effort.
-    EXTRA_COMPLETION_KWARGS: dict[str, Any] = {}
+    EXTRA_COMPLETION_KWARGS: ClassVar[dict[str, Any]] = {}
     # NOT a context limit — that is raised on the Ollama server (see
     # docs/DEPLOYING.md). This is purely a LATENCY budget: local prefill runs
     # on the order of 100 tok/s, so every ~100 prompt tokens costs a second of
@@ -993,15 +1088,22 @@ class OllamaAgent(ChatCompletionsAgent):
 
 
 class ChatCompletionsSummarizer(Summarizer):
-    """`Summarizer` that runs memory/history compaction through any
-    OpenAI-compatible vendor (Gemini/OpenAI/DeepSeek). This is what keeps the
-    memory subsystem LLM-agnostic: a Gemini-primary bot summarizes with Gemini,
+    """`Summarizer` running compaction through any OpenAI-compatible vendor.
+
+    Gemini/OpenAI/DeepSeek. This is what keeps the memory subsystem
+    LLM-agnostic: a Gemini-primary bot summarizes with Gemini,
     not Claude. Reuses the vendor backend's model/base_url/key/extra config so
     there's a single source of truth per vendor.
     """
 
-    def __init__(self, model: str, api_key: str, base_url: Optional[str] = None,
-                 extra: Optional[dict] = None, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        model: str,
+        api_key: str,
+        base_url: str | None = None,
+        extra: dict[str, Any] | None = None,
+        timeout: float = 30.0,
+    ) -> None:
         self._model = model
         self._api_key = api_key
         self._base_url = base_url
@@ -1013,20 +1115,22 @@ class ChatCompletionsSummarizer(Summarizer):
     def for_backend(
         cls,
         backend: type,
-        model: Optional[str] = None,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        extra: Optional[dict] = None,
-    ) -> "ChatCompletionsSummarizer":
-        """Build from a ChatCompletionsAgent subclass — single source of
-        truth for base_url/extra kwargs per vendor. The composition root
-        resolves model/api_key/base_url/extra from settings; no env reads here.
+        model: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> ChatCompletionsSummarizer:
+        """Build from a ChatCompletionsAgent subclass.
+
+        That subclass is the single source of truth for base_url/extra kwargs
+        per vendor. The composition root resolves model/api_key/base_url/extra
+        from settings; no env reads here.
         `base_url` and `extra` override the backend defaults (self-hosted
-        endpoints, whose right knobs depend on the model in use)."""
+        endpoints, whose right knobs depend on the model in use).
+        """
         if not api_key and backend.REQUIRES_API_KEY:
             raise RuntimeError(
-                f"{backend.__name__} summarizer: no API key configured "
-                f"(set {backend.API_KEY_ENV})"
+                f"{backend.__name__} summarizer: no API key configured (set {backend.API_KEY_ENV})"
             )
         return cls(
             model=model or backend.DEFAULT_MODEL,
@@ -1037,14 +1141,21 @@ class ChatCompletionsSummarizer(Summarizer):
         )
 
     async def summarize(self, prompt: str, *, deep: bool = False) -> str:
+        # One model per vendor here; `deep` only means something to the Claude
+        # summarizer, which swaps Haiku for Sonnet. Accepted for parity.
+        del deep
         if self._client is None:
             from openai import AsyncOpenAI
+
             # Same fast-fail rationale as the agent client (see start()):
             # summarization is best-effort/background, so don't let SDK
             # retries stall it either.
-            self._client = AsyncOpenAI(api_key=self._api_key or "no-key-required",
-                                       base_url=self._base_url,
-                                       max_retries=0, timeout=self._timeout)
+            self._client = AsyncOpenAI(
+                api_key=self._api_key or "no-key-required",
+                base_url=self._base_url,
+                max_retries=0,
+                timeout=self._timeout,
+            )
         resp = await self._client.chat.completions.create(
             model=self._model,
             messages=[{"role": "user", "content": prompt}],

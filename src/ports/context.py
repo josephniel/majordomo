@@ -9,9 +9,10 @@ signature.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING
 
-from .conversation import ConversationRef
+if TYPE_CHECKING:
+    from .conversation import ConversationRef
 
 
 @dataclass(frozen=True)
@@ -25,4 +26,5 @@ class ToolContext:
     Opaque by contract: it is a ConversationRef, not a platform id. A handler
     that reaches into `.chat_key` has coupled a faculty to one platform.
     """
-    chat_id: Optional[ConversationRef] = None
+
+    chat_id: ConversationRef | None = None

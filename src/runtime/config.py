@@ -81,16 +81,19 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import TYPE_CHECKING, Any, cast
 
 import yaml
 
 from adapters.chat.transcription import DEFAULT_VENDOR_ORDER as DEFAULT_TRANSCRIPTION_ORDER
 from adapters.store.reranking import RerankConfig
 from adapters.trigger.retention import RetentionPolicy
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -136,7 +139,7 @@ def as_lower(v: Any) -> str:
     return as_str(v).strip().lower()
 
 
-def as_opt_str(v: Any) -> Optional[str]:
+def as_opt_str(v: Any) -> str | None:
     s = as_str(v).strip()
     return s or None
 
@@ -147,7 +150,7 @@ def as_bool(v: Any) -> bool:
     return as_str(v).strip().lower() in ("1", "true", "yes", "on")
 
 
-def as_opt_bool(v: Any) -> Optional[bool]:
+def as_opt_bool(v: Any) -> bool | None:
     if v is None or (isinstance(v, str) and not v.strip()):
         return None
     return as_bool(v)
@@ -162,7 +165,7 @@ def as_float(v: Any) -> float:
 
 
 def as_csv(v: Any) -> tuple[str, ...]:
-    """A vendor chain. YAML writes a list; env writes "a,b,c"."""
+    """Parse a vendor chain. YAML writes a list; env writes "a,b,c"."""
     if isinstance(v, (list, tuple)):
         return tuple(str(x).strip().lower() for x in v if str(x).strip())
     return tuple(x.strip().lower() for x in as_str(v).split(",") if x.strip())
@@ -334,13 +337,18 @@ class Resolved:
 
 
 class ConfigError(Exception):
-    """A configuration file is malformed. Distinct from a missing one, which
-    is normal — every layer is optional."""
+    """A configuration file is malformed.
+
+    Distinct from a missing one, which is normal — every layer is optional.
+    """
 
 
 def _dig(tree: Mapping[str, Any], path: str) -> Any:
-    """Walk a dotted path. Returns None for a missing key OR an explicit
-    null, which are treated the same: unset, defer to the next layer."""
+    """Walk a dotted path.
+
+    Returns None for a missing key OR an explicit null, which are treated the same: unset, defer to
+    the next layer.
+    """
     node: Any = tree
     for part in path.split("."):
         if not isinstance(node, Mapping) or part not in node:
@@ -374,7 +382,7 @@ class InterpolationTracker:
         return path in self._interpolated
 
     def consumed(self, var: str) -> bool:
-        """True if a config file read this variable through ${VAR}.
+        """Report whether a config file read this variable through ${VAR}.
 
         Such a variable is the OPPOSITE of dead — it is where the value
         comes from. Without this distinction the audit tells an operator to
@@ -384,12 +392,12 @@ class InterpolationTracker:
 
     @property
     def unresolved(self) -> dict[str, str]:
-        """path -> variable name, for the ones nothing supplied."""
+        """Path -> variable name, for the ones nothing supplied."""
         return dict(self._unresolved)
 
 
 def interpolate(tree: Any, env: Mapping[str, str],
-                tracker: Optional[InterpolationTracker] = None,
+                tracker: InterpolationTracker | None = None,
                 _path: str = "") -> Any:
     """Substitute ${VAR} from `env` throughout a parsed YAML tree.
 
@@ -409,7 +417,7 @@ def interpolate(tree: Any, env: Mapping[str, str],
 
     missing: list[str] = []
 
-    def sub(m: re.Match) -> str:
+    def sub(m: re.Match[str]) -> str:
         var = m.group(1)
         val = env.get(var)
         if tracker is not None:
@@ -424,9 +432,12 @@ def interpolate(tree: Any, env: Mapping[str, str],
 
 
 def load_yaml(path: Path, env: Mapping[str, str],
-              tracker: Optional[InterpolationTracker] = None) -> dict[str, Any]:
-    """Parse one config file. A missing file is an empty layer, not an error
-    — every layer is optional and the defaults are complete."""
+              tracker: InterpolationTracker | None = None) -> dict[str, Any]:
+    """Parse one config file.
+
+    A missing file is an empty layer, not an error — every layer is optional and the defaults are
+    complete.
+    """
     if not path.exists():
         return {}
     try:
@@ -435,7 +446,10 @@ def load_yaml(path: Path, env: Mapping[str, str],
         raise ConfigError(f"{path}: {e}") from e
     if not isinstance(raw, dict):
         raise ConfigError(f"{path}: expected a mapping at the top level")
-    return interpolate(raw, env, tracker)
+    # interpolate() recurses over Any, so mypy sees Any coming back; the
+    # isinstance check above is what actually establishes the shape, and
+    # interpolation preserves it (mappings stay mappings).
+    return cast("dict[str, Any]", interpolate(raw, env, tracker))
 
 
 class ConfigResolver:
@@ -449,11 +463,11 @@ class ConfigResolver:
     def __init__(
         self,
         *,
-        host: Optional[Mapping[str, Any]] = None,
-        persona: Optional[Mapping[str, Any]] = None,
-        env: Optional[Mapping[str, str]] = None,
-        host_tracker: Optional[InterpolationTracker] = None,
-        persona_tracker: Optional[InterpolationTracker] = None,
+        host: Mapping[str, Any] | None = None,
+        persona: Mapping[str, Any] | None = None,
+        env: Mapping[str, str] | None = None,
+        host_tracker: InterpolationTracker | None = None,
+        persona_tracker: InterpolationTracker | None = None,
     ) -> None:
         self.host = dict(host or {})
         self.persona = dict(persona or {})
@@ -465,12 +479,14 @@ class ConfigResolver:
     def load(
         cls,
         project_root: Path,
-        persona_dir: Optional[Path] = None,
-        env: Optional[Mapping[str, str]] = None,
-    ) -> "ConfigResolver":
-        """Read both YAML layers. Each is optional — a deployment with no
-        config.yaml anywhere still boots on the environment and the
-        defaults, which is what keeps the migration incremental."""
+        persona_dir: Path | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> ConfigResolver:
+        """Read both YAML layers.
+
+        Each is optional — a deployment with no config.yaml anywhere still boots on the environment
+        and the defaults, which is what keeps the migration incremental.
+        """
         env = dict(env if env is not None else os.environ)
         ht, pt = InterpolationTracker(), InterpolationTracker()
         host = load_yaml(project_root / CONFIG_FILENAME, env, ht)
@@ -481,8 +497,10 @@ class ConfigResolver:
                    host_tracker=ht, persona_tracker=pt)
 
     def resolve(self, s: Setting) -> Resolved:
-        """instances/<id>/config.yaml > config.yaml > environment > default,
-        with HOST settings skipping the persona layer entirely."""
+        """instances/<id>/config.yaml > config.yaml > environment > default.
+
+        HOST settings skip the persona layer entirely.
+        """
         if s.scope is Scope.PERSONA:
             v = _dig(self.persona, s.path)
             if v is not None:
@@ -519,9 +537,11 @@ class ConfigResolver:
                 if s.scope is Scope.HOST and _dig(self.persona, s.path) is not None]
 
     def literal_secrets(self) -> list[tuple[Setting, str]]:
-        """Secrets written as literals into a YAML file rather than
-        referenced with ${VAR}. config.yaml is committed and this repo is
-        public, so this is the check that keeps it safe to commit."""
+        """Secrets written as literals into a YAML file rather than referenced with ${VAR}.
+
+        config.yaml is committed and this repo is public, so this is the check that keeps it safe to
+        commit.
+        """
         out: list[tuple[Setting, str]] = []
         for s in SETTINGS:
             if not s.secret:
@@ -536,9 +556,10 @@ class ConfigResolver:
         return out
 
     def dead_env_entries(self) -> list[Setting]:
-        """Env variables that are set but can no longer have any effect,
-        because a YAML layer supplies the same setting. Harmless, and
-        completely misleading to read.
+        """Env variables that are set but can no longer have any effect.
+
+        A YAML layer supplies the same setting. Harmless, and completely
+        misleading to read.
 
         A variable a config file READS via ${VAR} is not dead — it is the
         value. Reporting those was worse than reporting nothing: the fix it
@@ -556,7 +577,7 @@ class ConfigResolver:
         return out
 
     def consumes_variable(self, var: str) -> bool:
-        """Did either config file interpolate this variable?"""
+        """Report whether either config file interpolated this variable."""
         return (self._host_tracker.consumed(var)
                 or self._persona_tracker.consumed(var))
 

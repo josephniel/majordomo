@@ -1,12 +1,16 @@
 """capabilities.schedule — ScheduleEngine validation, parsing, persistence."""
-from datetime import datetime, timedelta
+import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-import json
-
+from domain.schedule import ScheduledTask, ScheduleEngine
 from ports import ConversationRef
-from domain.schedule import ScheduleEngine, ScheduledTask
+
+
+def _local_now() -> datetime:
+    """Naive host-local now — what the schedule engine produces with no timezone set."""
+    return datetime.now(UTC).astimezone().replace(tzinfo=None)
 
 
 @pytest.fixture
@@ -17,7 +21,8 @@ def engine(tmp_path):
 class TestAdd:
     def test_add_valid_cron(self, engine):
         e = engine.add("daily_check", "0 8 * * 1-5", chat_id=1, prompt="do it")
-        assert e.cron == "0 8 * * 1-5" and not e.is_one_shot
+        assert e.cron == "0 8 * * 1-5"
+        assert not e.is_one_shot
 
     def test_duplicate_name_rejected(self, engine):
         engine.add("x", "0 8 * * *", chat_id=1, prompt="p")
@@ -35,7 +40,7 @@ class TestAdd:
 
 
 class TestAddOnce:
-    @pytest.mark.parametrize("when,delta", [
+    @pytest.mark.parametrize(("when", "delta"), [
         ("+30s", timedelta(seconds=30)),
         ("+5m", timedelta(minutes=5)),
         ("+2h", timedelta(hours=2)),
@@ -44,17 +49,17 @@ class TestAddOnce:
     def test_relative_offsets(self, engine, when, delta):
         e = engine.add_once("once_rel", when, chat_id=1, prompt="p")
         run_at = datetime.fromisoformat(e.run_at)
-        expect = datetime.now() + delta
+        expect = _local_now() + delta
         assert abs((run_at - expect).total_seconds()) < 5
         assert e.is_one_shot
 
     def test_absolute_iso(self, engine):
-        future = (datetime.now() + timedelta(hours=1)).isoformat(timespec="minutes")
+        future = (_local_now() + timedelta(hours=1)).isoformat(timespec="minutes")
         e = engine.add_once("once_abs", future, chat_id=1, prompt="p")
         assert e.run_at.startswith(future[:16])
 
     def test_past_time_rejected(self, engine):
-        past = (datetime.now() - timedelta(hours=1)).isoformat(timespec="minutes")
+        past = (_local_now() - timedelta(hours=1)).isoformat(timespec="minutes")
         with pytest.raises(ValueError, match="past"):
             engine.add_once("x", past, chat_id=1, prompt="p")
 
@@ -94,7 +99,8 @@ class TestPersistence:
         e2 = ScheduleEngine(store_file=f)
         e2._load()
         got = e2.get("keepme")
-        assert got and got.prompt == "hello"
+        assert got
+        assert got.prompt == "hello"
         # A bare id handed to add() is namespaced on the way in and survives
         # the JSON round-trip as a ref, not as the int it was written with —
         # which is what stops a pre-upgrade reminder from silently vanishing.

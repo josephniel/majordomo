@@ -1,9 +1,9 @@
 """storage.docs + capabilities.documents — live Postgres, real embeddings."""
 import pytest
 
+from adapters.store.docs import DocumentStore
 from domain.documents import DocumentLibrary
 from ports import ToolContext
-from adapters.store.docs import DocumentStore
 from tests.conftest import TEST_DSN
 
 
@@ -32,7 +32,8 @@ class TestDocumentStore:
         )
         assert n > 1
         (doc,) = await store.list_docs(persona_id)
-        assert doc["id"] == doc_id and doc["name"] == "budget.txt"
+        assert doc["id"] == doc_id
+        assert doc["name"] == "budget.txt"
         assert doc["num_chunks"] == n
 
     async def test_search_finds_semantic_match(self, store, persona_id):
@@ -67,7 +68,7 @@ class TestDocumentStore:
         assert await store.search(persona_id, "marketing budget") == []
 
     async def test_empty_text_rejected(self, store, persona_id):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="no extractable text"):
             await store.ingest(
                 persona_id=persona_id, name="e.txt", mime="text/plain", text="  ",
             )
@@ -118,7 +119,7 @@ class TestDocumentLibraryTools:
             assert "start_chunk=" in text
 
     async def test_doc_delete_is_write_tool(self):
-        assert DocumentLibrary.WRITE_TOOLS == {"doc_delete"}
+        assert {"doc_delete"} == DocumentLibrary.WRITE_TOOLS
 
     async def test_delete_tool(self, library, store, persona_id):
         await library.ingest_attachment(

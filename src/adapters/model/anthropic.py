@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import logging
-from typing import Any, AsyncIterator, Optional
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -24,12 +25,14 @@ from claude_agent_sdk import (
     TextBlock,
     ToolUseBlock,
     create_sdk_mcp_server,
+)
+from claude_agent_sdk import (
     tool as _claude_sdk_tool,
 )
 
 from ports import (
-    ConversationRef,
     Connector,
+    ConversationRef,
     ServiceCatalog,
     ToolContext,
     ToolSpec,
@@ -39,12 +42,15 @@ from ports import (
 from .base import (
     Agent,
     Attachment,
+    ContextBuilder,
     PersonaLike,
     Summarizer,
-    ContextBuilder,
     ToolUseCallback,
     UsageLimitError,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 log = logging.getLogger(__name__)
 
@@ -106,7 +112,7 @@ DEFAULT_COMPACTION_FALLBACK_MODEL = "claude-sonnet-5"
 async def summarize_with_subscription_auth(
     prompt: str,
     primary_model: str = DEFAULT_COMPACTION_MODEL,
-    fallback_model: Optional[str] = DEFAULT_COMPACTION_FALLBACK_MODEL,
+    fallback_model: str | None = DEFAULT_COMPACTION_FALLBACK_MODEL,
 ) -> str:
     """One-off completion for compaction / summarization tasks.
 
@@ -137,9 +143,10 @@ async def summarize_with_subscription_auth(
 
 
 async def _sdk_one_shot(prompt: str, model: str) -> str:
-    """Minimal stateless completion via ClaudeSDKClient. No tools, no MCP,
-    no system prompt — just send `prompt` as the user turn and read the
-    reply. Client is created and torn down per call (~200ms cold start).
+    """Minimal stateless completion via ClaudeSDKClient.
+
+    No tools, no MCP, no system prompt — just send `prompt` as the user turn and read the reply.
+    Client is created and torn down per call (~200ms cold start).
     """
     opts = ClaudeAgentOptions(
         model=model,
@@ -158,9 +165,7 @@ async def _sdk_one_shot(prompt: str, model: str) -> str:
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 actual_model = getattr(msg, "model", None) or actual_model
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        chunks.append(block.text)
+                chunks.extend(b.text for b in msg.content if isinstance(b, TextBlock))
             elif isinstance(msg, ResultMessage):
                 actual_model = getattr(msg, "model", None) or actual_model
                 usage = getattr(msg, "usage", None)
@@ -174,8 +179,9 @@ async def _sdk_one_shot(prompt: str, model: str) -> str:
 
 
 class SubscriptionAuthSummarizer(Summarizer):
-    """Concrete `Summarizer` that runs through the bundled Claude CLI's
-    subscription auth — no API key needed.
+    """Concrete `Summarizer` running on the bundled Claude CLI's subscription auth.
+
+    No API key needed.
 
     Default models: Haiku-4.5 for normal, Sonnet-4.6 for deep. Both are
     customizable so a persona can override (e.g. point deep at Opus).
@@ -200,7 +206,7 @@ class SubscriptionAuthSummarizer(Summarizer):
         )
 
 
-def _to_claude_sdk_tool(spec: ToolSpec, ctx: ToolContext):
+def _to_claude_sdk_tool(spec: ToolSpec, ctx: ToolContext) -> Any:
     """Translate a vendor-neutral ToolSpec into a claude_agent_sdk @tool.
 
     The SDK's `@tool` decorator wraps an async handler with metadata it uses
@@ -213,7 +219,7 @@ def _to_claude_sdk_tool(spec: ToolSpec, ctx: ToolContext):
     agent's chat scope, bound per mount since each agent is chat-scoped.
     """
     @_claude_sdk_tool(spec.name, spec.description, spec.json_schema())
-    async def _wrapped(args: dict[str, Any]):
+    async def _wrapped(args: dict[str, Any]) -> dict[str, Any]:
         return _mcp_content(await spec.handler(args, ctx))
     return _wrapped
 
@@ -248,10 +254,10 @@ class AnthropicOptionsBuilder:
         config: ServiceCatalog,
         connectors: list[Connector],
         persona: PersonaLike,
-        model: Optional[str] = None,
-        max_turns: Optional[int] = None,
-        max_output_tokens: Optional[int] = None,
-        default_model: Optional[str] = None,
+        model: str | None = None,
+        max_turns: int | None = None,
+        max_output_tokens: int | None = None,
+        default_model: str | None = None,
     ) -> None:
         self._composer = context_builder
         self._config = config
@@ -270,8 +276,8 @@ class AnthropicOptionsBuilder:
 
     def build(
         self,
-        resume_session_id: Optional[str] = None,
-        chat_id: Optional[ConversationRef] = None,
+        resume_session_id: str | None = None,
+        chat_id: ConversationRef | None = None,
     ) -> ClaudeAgentOptions:
         enabled = self._config.load_enabled()
         ctx = ToolContext(chat_id=chat_id)
@@ -314,9 +320,11 @@ class AnthropicOptionsBuilder:
                 "args": i.args,
                 "env": i.env,
             }
-            for tool_name in i.allowed_tools:
-                if allowed_for_c is None or tool_name in allowed_for_c:
-                    allowed_tools.append(f"mcp__{i.name}__{tool_name}")
+            allowed_tools.extend(
+                f"mcp__{i.name}__{tool_name}"
+                for tool_name in i.allowed_tools
+                if allowed_for_c is None or tool_name in allowed_for_c
+            )
 
         # The CLI reads its output cap from the environment; env here is
         # additive to the inherited subprocess environment.
@@ -338,7 +346,7 @@ class AnthropicOptionsBuilder:
             env=env,
         )
 
-    def _allowed_for_profile(self, profile_name: str) -> Optional[list[str]]:
+    def _allowed_for_profile(self, profile_name: str) -> list[str] | None:
         for c in self._connectors:
             if c.owns_profile(profile_name):
                 return self._persona.allowed_tool_names(c)
@@ -347,7 +355,7 @@ class AnthropicOptionsBuilder:
     @staticmethod
     def _filter_tool_specs(
         specs: list[ToolSpec],
-        allowed_names: Optional[list[str]],
+        allowed_names: list[str] | None,
     ) -> list[ToolSpec]:
         """Filter ToolSpec list by name. None = all allowed; [] = none."""
         if allowed_names is None:
@@ -360,25 +368,25 @@ class AnthropicOptionsBuilder:
 class AnthropicAgent(Agent):
     """One persistent Claude conversation per chat (session-based)."""
 
-    REQUIRED_ENV: list[str] = []  # Subscription-auth fallback handles missing key.
+    REQUIRED_ENV: ClassVar[list[str]] = []  # Subscription-auth fallback handles missing key.
     USES_SERVER_SIDE_HISTORY = True  # Claude sessions live CLI-side.
 
     def __init__(
         self,
         options_builder: AnthropicOptionsBuilder,
-        session_id: Optional[str] = None,
-        chat_id: Optional[ConversationRef] = None,
+        session_id: str | None = None,
+        chat_id: ConversationRef | None = None,
     ) -> None:
         self._options_builder = options_builder
-        self._session_id: Optional[str] = session_id
+        self._session_id: str | None = session_id
         # The chat this agent serves — bound into every mounted tool's
         # ToolContext so handlers know their scope without ambient state.
         self._chat_id = chat_id
-        self._client: Optional[ClaudeSDKClient] = None
+        self._client: ClaudeSDKClient | None = None
         self.last_turn_usage: dict[str, Any] = {}
 
     @property
-    def session_id(self) -> Optional[str]:
+    def session_id(self) -> str | None:
         return self._session_id
 
     @property
@@ -404,15 +412,16 @@ class AnthropicAgent(Agent):
             await self._open(None)
 
     async def reset_session(self) -> None:
-        """Abandon the resumed session and open a fresh one. The caller
-        (CascadingAgent rotation) reseeds context from the mirror; without
-        this, a resumed session replays the entire conversation as input
-        tokens on every turn, forever."""
+        """Abandon the resumed session and open a fresh one.
+
+        The caller (CascadingAgent rotation) reseeds context from the mirror; without this, a
+        resumed session replays the entire conversation as input tokens on every turn, forever.
+        """
         await self._discard_client()
         self._session_id = None
         await self._open(None)
 
-    async def _open(self, session_id: Optional[str]) -> None:
+    async def _open(self, session_id: str | None) -> None:
         opts = self._options_builder.build(session_id, chat_id=self._chat_id)
         self._client = ClaudeSDKClient(options=opts)
         await self._client.__aenter__()
@@ -423,7 +432,7 @@ class AnthropicAgent(Agent):
         try:
             await self._client.__aexit__(None, None, None)
         except Exception:
-            pass
+            log.debug("error closing the Claude client; discarding it anyway", exc_info=True)
         finally:
             self._client = None
 
@@ -437,47 +446,54 @@ class AnthropicAgent(Agent):
     async def interrupt(self) -> None:
         if self._client is None:
             return
-        try:
+        with contextlib.suppress(Exception):
             await self._client.interrupt()
-        except Exception:
-            pass
+
+    async def _collect_reply(self, client: Any, on_tool_use: ToolUseCallback | None) -> str:
+        """Drain the SDK's response stream into the reply, noting tool calls as they pass.
+
+        Returns the empty string for a blank turn rather than a placeholder —
+        same contract as the chat-completions agents, because CascadingAgent's
+        empty-reply failover has to be able to see it.
+        """
+        parts: list[str] = []
+        async for msg in client.receive_response():
+            if isinstance(msg, ResultMessage):
+                self._session_id = msg.session_id
+                self._capture_usage(msg)
+                continue
+            if not isinstance(msg, AssistantMessage):
+                continue
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    parts.append(block.text)
+                elif isinstance(block, ToolUseBlock) and on_tool_use is not None:
+                    with contextlib.suppress(Exception):
+                        await on_tool_use(block.name, dict(block.input or {}))
+        return "".join(parts).strip()
 
     async def send(
         self,
         text: str,
-        on_tool_use: Optional[ToolUseCallback] = None,
-        attachments: Optional[list[Attachment]] = None,
-        current_row_id: Optional[int] = None,  # server-side history: unused
+        on_tool_use: ToolUseCallback | None = None,
+        attachments: list[Attachment] | None = None,
+        current_row_id: int | None = None,
     ) -> str:
+        # This vendor keeps history server-side, so there is no mirror row to
+        # exclude. The parameter exists for parity with the Agent contract.
+        del current_row_id
         if self._client is None:
             await self.start()
-        assert self._client is not None
+        if self._client is None:  # start() always sets it; this keeps mypy honest
+            raise RuntimeError("Claude client is not running after start()")
 
         try:
             if attachments:
                 await self._client.query(self._stream_multimodal(text, attachments))
             else:
                 await self._client.query(text)
-
             self.last_turn_usage = {}
-            parts: list[str] = []
-            async for msg in self._client.receive_response():
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            parts.append(block.text)
-                        elif isinstance(block, ToolUseBlock) and on_tool_use is not None:
-                            try:
-                                await on_tool_use(block.name, dict(block.input or {}))
-                            except Exception:
-                                pass
-                elif isinstance(msg, ResultMessage):
-                    self._session_id = msg.session_id
-                    self._capture_usage(msg)
-            # Empty string, not a placeholder — same contract as the
-            # chat-completions agents: a blank turn must stay visibly blank so
-            # CascadingAgent's empty-reply failover can see it.
-            return "".join(parts).strip()
+            return await self._collect_reply(self._client, on_tool_use)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -489,7 +505,9 @@ class AnthropicAgent(Agent):
 
     def _capture_usage(self, msg: ResultMessage) -> None:
         """Pull token usage off the ResultMessage (previously discarded).
-        Shape varies slightly across SDK versions — read defensively."""
+
+        Shape varies slightly across SDK versions — read defensively.
+        """
         try:
             usage = getattr(msg, "usage", None) or {}
             if not isinstance(usage, dict):
@@ -505,7 +523,7 @@ class AnthropicAgent(Agent):
             self.last_turn_usage = {}
 
     @staticmethod
-    def _attachment_to_content_block(att: Attachment) -> Optional[dict]:
+    def _attachment_to_content_block(att: Attachment) -> dict[str, Any] | None:
         if att.media_type.startswith("image/"):
             return {
                 "type": "image",

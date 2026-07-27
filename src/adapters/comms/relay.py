@@ -12,14 +12,19 @@ Push-driven; no polling, no file contention.
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
-from .log import CommsLog
+from ports import ConversationRef
+
+if TYPE_CHECKING:
+    from .log import CommsLog
 
 log = logging.getLogger(__name__)
 
-# Callback signature matches ConversationOrchestrator's relay handler: (chat_id, text, message_id_or_None).
-OnRelay = Callable[[int, str, Optional[int]], Awaitable[None]]
+# Callback signature matches ConversationOrchestrator's relay handler:
+# (chat_id, text, message_id_or_None).
+OnRelay = Callable[[ConversationRef, str, int | None], Awaitable[None]]
 
 # Loop guard: max consecutive bot 'out' messages in a chat (no human 'in'
 # between them) before this instance stops relaying. Two bots @-mentioning
@@ -38,20 +43,23 @@ class CommsRelay:
         self._log = comms_log
         self._persona_id = persona_id
         self._on_relay = on_relay
-        self._mention_token: Optional[str] = None  # "@username" lowercased
+        self._mention_token: str | None = None  # "@username" lowercased
         # chat_id -> consecutive bot 'out' entries since the last human 'in'.
         self._bot_hops: dict[int, int] = {}
 
-    async def start(self, mention_handle: Optional[str]) -> None:
-        """Subscribe to comms_log notifications. `mention_handle` is the
-        instance's @-handle (no '@'); if None, the relay subscribes but never
-        relays anything (no addressable identity yet)."""
+    async def start(self, mention_handle: str | None) -> None:
+        """Subscribe to comms_log notifications.
+
+        `mention_handle` is the instance's @-handle (no '@'); if None, the relay subscribes but
+        never relays anything (no addressable identity yet).
+        """
         if mention_handle:
             self._mention_token = f"@{mention_handle.lower()}"
         await self._log.subscribe(self._on_comms_entry)
         log.info(
             "comms relay started: persona=%s mention=%s",
-            self._persona_id, self._mention_token,
+            self._persona_id,
+            self._mention_token,
         )
 
     async def stop(self) -> None:
@@ -70,7 +78,8 @@ class CommsRelay:
             log.warning(
                 "loop guard: %d consecutive bot messages in chat %s without a "
                 "human; not relaying (will resume after a human speaks)",
-                hops, chat_id,
+                hops,
+                chat_id,
             )
             return
         try:
@@ -80,8 +89,10 @@ class CommsRelay:
 
     def _track_hops(self, entry: dict[str, Any]) -> None:
         """Human inbound resets the counter; every bot outbound bumps it.
-        (Only humans produce 'in' rows — Telegram never delivers one bot's
-        messages to another, which is why this relay exists at all.)"""
+
+        (Only humans produce 'in' rows — Telegram never delivers one bot's messages to another,
+        which is why this relay exists at all.)
+        """
         chat_id = entry.get("chat_id")
         if chat_id is None:
             return

@@ -30,7 +30,7 @@ class ReadOnlyConnector(Connector):
 
 
 def make_persona(enabled):
-    return Persona(id="t", dir=Path("."), name="t", system_prompt="", enabled_connectors=enabled)
+    return Persona(id="t", dir=Path(), name="t", system_prompt="", enabled_connectors=enabled)
 
 
 class TestAllowedToolNames:

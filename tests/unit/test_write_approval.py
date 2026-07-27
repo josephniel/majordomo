@@ -3,8 +3,6 @@ Telegram inline-keyboard confirm flow."""
 import asyncio
 from types import SimpleNamespace
 
-import pytest
-
 from adapters.tools.approvals import (
     GatedToolProvider,
     WriteApprovalGate,
@@ -66,7 +64,7 @@ class TestGatedView:
         conn = FakeMailConnector()
         gated = GatedToolProvider(conn, WriteApprovalGate())
         assert gated.name == "fakemail"
-        assert gated.WRITE_TOOLS == frozenset({"send_mail"})
+        assert frozenset({"send_mail"}) == gated.WRITE_TOOLS
         assert gated.owns_profile("fakemail_work")
 
     def test_builtin_servers_path_wraps_exactly_once(self):
@@ -170,7 +168,7 @@ class TestApprovalPromptFormat:
             "name": "x_y", "body": "word " * 300,
         })
         assert "NOT SHOWN" in prompt
-        line = next(l for l in prompt.splitlines() if l.startswith("• body:"))
+        line = next(ln for ln in prompt.splitlines() if ln.startswith("• body:"))
         assert len(line) < 700
 
     def test_routing_fields_first_and_generous(self):
@@ -179,7 +177,7 @@ class TestApprovalPromptFormat:
             "to": "someone-with-a-really-long-address@example.com",
             "subject": "hi",
         })
-        lines = [l for l in prompt.splitlines() if l.startswith("• ")]
+        lines = [ln for ln in prompt.splitlines() if ln.startswith("• ")]
         assert lines[0].startswith("• to:"), "recipient renders before body"
         assert "NOT SHOWN" not in lines[0]
 
@@ -281,13 +279,13 @@ class TestTelegramApproval:
 
     async def test_timeout_denies(self):
         p = self._platform()
-        assert await p.request_approval(42, "🔐 Approve?", timeout=0.05) is False
+        assert await p.request_approval(42, "🔐 Approve?", deny_after=0.05) is False
         assert any("Timed out" in e for e in p._app.bot.edits)
         assert p._pending_approvals == {}
 
     async def test_unauthorized_user_cannot_approve(self):
         p = self._platform()
-        task = asyncio.create_task(p.request_approval(42, "🔐 Approve?", timeout=0.3))
+        task = asyncio.create_task(p.request_approval(42, "🔐 Approve?", deny_after=0.3))
         query = await self._answer(p, "y", user_id=666)
         assert "not allowed" in query.answers[0][0][0]
         assert await task is False  # nobody legit answered -> timeout deny

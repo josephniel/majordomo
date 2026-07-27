@@ -14,10 +14,9 @@ import uuid
 
 import pytest
 
-from ports import FactCandidate, MemoryVerdict
 from domain.memory import LongTermMemory
 from domain.reconcile import Reconciler, candidate_from_extraction
-
+from ports import FactCandidate, MemoryVerdict
 from tests.fakes.memory_store import FakeMemoryStore
 
 
@@ -59,7 +58,7 @@ def candidate(content, scope="user", **kw):
 
 class TestTheContradictionThisFixes:
     async def test_a_changed_fact_supersedes_instead_of_piling_up(self, mem, store):
-        _, old = await mem.save_fact("user", "the user lives in Manila")
+        _, old = await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
         model = Scripted(verdict_json("update", old.id, "the user has moved"))
         r = Reconciler(mem, model)
 
@@ -74,12 +73,14 @@ class TestTheContradictionThisFixes:
         """Pins the premise: these two facts are NOT near-duplicates, so the
         dedup threshold alone would have let both through. If this ever fails,
         dedup got stricter and the test above is measuring the wrong thing."""
-        await mem.save_fact("user", "the user lives in Manila")
-        msg, entry = await mem.save_fact("user", "the user moved to Cebu last month")
+        await mem.save_fact(FactCandidate('user', 'the user lives in Manila'))
+        _msg, entry = await mem.save_fact(
+            FactCandidate("user", "the user moved to Cebu last month")
+        )
         assert entry is not None, "dedup does not catch a changed fact"
 
     async def test_restating_a_known_fact_is_a_noop(self, mem):
-        await mem.save_fact("user", "the user prefers dark mode")
+        await mem.save_fact(FactCandidate("user", "the user prefers dark mode"))
         model = Scripted(verdict_json("noop", reason="already known"))
         r = Reconciler(mem, model)
         decision = await r.ingest(candidate("the user likes dark mode"))
@@ -89,7 +90,7 @@ class TestTheContradictionThisFixes:
     async def test_a_cancelled_plan_is_expired_not_deleted(self, mem, store):
         """DELETE expires rather than tombstones: the fact WAS true, and
         "what did I have on last August?" should still answer."""
-        _, e = await mem.save_fact("user", "the user is flying to Tokyo on the 14th")
+        _, e = await mem.save_fact(FactCandidate("user", "the user is flying to Tokyo on the 14th"))
         model = Scripted(verdict_json("delete", e.id, "the trip was cancelled"))
         r = Reconciler(mem, model)
         await r.ingest(candidate("the user cancelled the Tokyo trip"))
@@ -107,40 +108,35 @@ class TestFailuresBiasTowardAdd:
     already overwritten the value it was judging."""
 
     async def test_unparseable_reply_adds(self, mem):
-        await mem.save_fact("user", "the user lives in Manila")
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
         r = Reconciler(mem, Scripted("I think you should update the Manila one!"))
         decision = await r.decide(candidate("the user moved to Cebu"))
         assert decision.verdict is MemoryVerdict.ADD
 
     async def test_unknown_verdict_word_adds(self, mem):
-        await mem.save_fact("user", "the user lives in Manila")
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
         r = Reconciler(mem, Scripted(json.dumps({"verdict": "merge"})))
-        assert (await r.decide(candidate("the user moved to Cebu"))).verdict is \
-            MemoryVerdict.ADD
+        assert (await r.decide(candidate("the user moved to Cebu"))).verdict is MemoryVerdict.ADD
 
     async def test_model_failure_adds(self, mem):
         class Broken:
             async def summarize(self, prompt, deep=False):
                 raise RuntimeError("vendor down")
 
-        await mem.save_fact("user", "the user lives in Manila")
-        decision = await Reconciler(mem, Broken()).decide(
-            candidate("the user moved to Cebu")
-        )
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
+        decision = await Reconciler(mem, Broken()).decide(candidate("the user moved to Cebu"))
         assert decision.verdict is MemoryVerdict.ADD
         assert "unavailable" in decision.reason
 
     async def test_recall_failure_adds(self, mem, store):
-        await mem.save_fact("user", "the user lives in Manila")
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
         store.fail_recall = True
-        decision = await Reconciler(mem, Scripted()).decide(
-            candidate("the user moved to Cebu")
-        )
+        decision = await Reconciler(mem, Scripted()).decide(candidate("the user moved to Cebu"))
         assert decision.verdict is MemoryVerdict.ADD
 
     async def test_update_with_no_target_adds(self, mem):
         """Guessing which fact was meant is exactly how data gets lost."""
-        await mem.save_fact("user", "the user lives in Manila")
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
         r = Reconciler(mem, Scripted(verdict_json("update", None)))
         decision = await r.decide(candidate("the user moved to Cebu"))
         assert decision.verdict is MemoryVerdict.ADD
@@ -150,8 +146,8 @@ class TestFailuresBiasTowardAdd:
         """The model can only legitimately name a fact it was shown. An id
         from anywhere else is invented — and acting on it would destroy an
         unrelated fact."""
-        _, shown = await mem.save_fact("user", "the user lives in Manila")
-        _, unrelated = await mem.save_fact("agent", "the assistant speaks English")
+        _, shown = await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
+        _, unrelated = await mem.save_fact(FactCandidate("agent", "the assistant speaks English"))
         invented = uuid.uuid4()
         r = Reconciler(mem, Scripted(verdict_json("update", invented)))
 
@@ -164,8 +160,8 @@ class TestFailuresBiasTowardAdd:
     async def test_delete_targeting_an_unshown_id_adds(self, mem, store):
         """Same guard on the other destructive verb — the one where the
         original fact would be gone with no replacement."""
-        _, other = await mem.save_fact("agent", "the assistant speaks English")
-        await mem.save_fact("user", "the user lives in Manila")
+        _, other = await mem.save_fact(FactCandidate("agent", "the assistant speaks English"))
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
         # `other` is in a different scope, so it is not in the candidate's
         # neighbourhood — naming it is out of bounds.
         r = Reconciler(mem, Scripted(verdict_json("delete", other.id)))
@@ -184,8 +180,8 @@ class TestCostControl:
         assert model.prompts == [], "no model was consulted"
 
     async def test_the_prompt_shows_only_the_neighbourhood(self, mem):
-        await mem.save_fact("user", "the user lives in Manila")
-        await mem.save_fact("agent", "the assistant replies in English")
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
+        await mem.save_fact(FactCandidate("agent", "the assistant replies in English"))
         model = Scripted(verdict_json("noop"))
         await Reconciler(mem, model).decide(candidate("the user moved to Cebu"))
         (prompt,) = model.prompts
@@ -196,12 +192,15 @@ class TestCostControl:
 class TestExtractionValidation:
     """Validation happens before the (model-priced) verdict step."""
 
-    @pytest.mark.parametrize("bad", [
-        {"scope": "nonsense", "content": "x"},
-        {"scope": "user", "content": "   "},
-        {"scope": "domain", "content": "x", "domain_key": ""},
-        {"content": "no scope at all"},
-    ])
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"scope": "nonsense", "content": "x"},
+            {"scope": "user", "content": "   "},
+            {"scope": "domain", "content": "x", "domain_key": ""},
+            {"content": "no scope at all"},
+        ],
+    )
     def test_invalid_candidates_are_rejected(self, bad):
         assert candidate_from_extraction(bad, provenance="reflection") is None
 
@@ -210,14 +209,16 @@ class TestExtractionValidation:
             {"scope": "user", "content": "the user bikes to work", "title": "commute"},
             provenance="reflection",
         )
-        assert c.provenance == "reflection" and c.confidence == 1.0
+        assert c.provenance == "reflection"
+        assert c.confidence == 1.0
 
     def test_scope_and_domain_key_are_normalised(self):
         c = candidate_from_extraction(
             {"scope": "  DOMAIN ", "content": "x", "domain_key": " GMail "},
             provenance="chat",
         )
-        assert c.scope == "domain" and c.domain_key == "gmail"
+        assert c.scope == "domain"
+        assert c.domain_key == "gmail"
 
     def test_an_unparseable_valid_to_means_no_end(self):
         """Most facts have no end date, and a small background model asked
@@ -231,8 +232,12 @@ class TestExtractionValidation:
 
     def test_an_iso_valid_to_is_kept(self):
         c = candidate_from_extraction(
-            {"scope": "user", "content": "the user is on leave",
-             "valid_to": "2026-08-19T00:00:00Z"},
+            {
+                "scope": "user",
+                "content": "the user is on leave",
+                "valid_to": "2026-08-19T00:00:00Z",
+            },
             provenance="reflection",
         )
-        assert c.valid_to is not None and c.valid_to.tzinfo is not None
+        assert c.valid_to is not None
+        assert c.valid_to.tzinfo is not None

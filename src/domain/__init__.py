@@ -22,7 +22,7 @@ from .ideation import Ideator
 from .memory import LongTermMemory
 from .reconcile import Reconciler
 from .reflection import ReflectionEngine
-from .schedule import ScheduleEngine, TaskScheduler, ScheduledTask
+from .schedule import ScheduledTask, ScheduleEngine, TaskScheduler
 from .skills import SkillsLibrary
 
 __all__ = [
@@ -35,7 +35,7 @@ __all__ = [
     "Reconciler",
     "ReflectionEngine",
     "ScheduleEngine",
+    "ScheduledTask",
     "SkillsLibrary",
     "TaskScheduler",
-    "ScheduledTask",
 ]

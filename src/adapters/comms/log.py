@@ -10,14 +10,16 @@ Schema is created idempotently on connect — safe to call repeatedly.
 """
 from __future__ import annotations
 
-from ports import ConversationRef
-
 import asyncio
 import json
 import logging
-from typing import Any, Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
+
+if TYPE_CHECKING:
+    from ports import ConversationRef
 
 log = logging.getLogger(__name__)
 
@@ -93,9 +95,9 @@ class CommsLog:
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._pool: Optional[asyncpg.Pool] = None
-        self._listener_conn: Optional[asyncpg.Connection] = None
-        self._listener_callback: Optional[EntryCallback] = None
+        self._pool: asyncpg.Pool | None = None
+        self._listener_conn: asyncpg.Connection | None = None
+        self._listener_callback: EntryCallback | None = None
 
     async def connect(self) -> None:
         if self._pool is not None:
@@ -133,16 +135,17 @@ class CommsLog:
         direction: str,  # 'in' | 'out'
         text: str,
         chat_id: ConversationRef,
-        message_id: Optional[int] = None,
-        from_user: Optional[int] = None,
-        from_username: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        message_id: int | None = None,
+        from_user: int | None = None,
+        from_username: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         async with self._pool.acquire() as conn:
             return await conn.fetchval(
                 """
                 INSERT INTO comms_log
-                    (instance, direction, text, chat_id, message_id, from_user, from_username, metadata)
+                    (instance, direction, text, chat_id, message_id,
+                     from_user, from_username, metadata)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
                 RETURNING id
                 """,
@@ -159,7 +162,7 @@ class CommsLog:
             )
         return [dict(r) for r in rows]
 
-    async def fetch_entry(self, entry_id: int) -> Optional[dict[str, Any]]:
+    async def fetch_entry(self, entry_id: int) -> dict[str, Any] | None:
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM comms_log WHERE id = $1", entry_id,
@@ -167,9 +170,11 @@ class CommsLog:
         return dict(row) if row else None
 
     async def prune(self, older_than_days: int) -> int:
-        """Delete control-room rows older than N days. The table is shared
-        across instances on the same DB, so pruning is age-based, not
-        per-instance — the room's history is one conversation."""
+        """Delete control-room rows older than N days.
+
+        The table is shared across instances on the same DB, so pruning is age-based, not
+        per-instance — the room's history is one conversation.
+        """
         if older_than_days <= 0:
             return 0
         async with self._pool.acquire() as conn:
@@ -182,9 +187,11 @@ class CommsLog:
     # ---- subscribe (LISTEN/NOTIFY) ----
 
     async def subscribe(self, callback: EntryCallback) -> None:
-        """Begin pushing new comms_log rows to `callback`. Holds one
-        dedicated connection from the pool for the lifetime of the
-        subscription. Call unsubscribe() / close() to release."""
+        """Begin pushing new comms_log rows to `callback`.
+
+        Holds one dedicated connection from the pool for the lifetime of the subscription. Call
+        unsubscribe() / close() to release.
+        """
         if self._listener_conn is not None:
             await self.unsubscribe()
         self._listener_callback = callback
@@ -206,7 +213,9 @@ class CommsLog:
             self._listener_conn = None
         self._listener_callback = None
 
-    async def _on_notify(self, _conn, _pid, _channel, payload) -> None:
+    async def _on_notify(
+        self, _conn: object, _pid: int, _channel: str, payload: str
+    ) -> None:
         try:
             row_id = int(payload)
         except (TypeError, ValueError):

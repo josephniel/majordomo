@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextvars import ContextVar
-from typing import Any, Callable, Optional
+from contextvars import ContextVar, Token
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from ports import Faculty, ToolContext, ToolResult, tool
+from ports import Faculty, ToolContext, ToolResult, ToolSpec, tool
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
@@ -51,11 +54,11 @@ class DelegationDepth:
     def current(self) -> int:
         return self._var.get()
 
-    def enter(self):
+    def enter(self) -> Token[int]:
         """Descend one level. Returns a token to pass back to `exit`."""
         return self._var.set(self._var.get() + 1)
 
-    def exit(self, token) -> None:
+    def exit(self, token: Token[int]) -> None:
         self._var.reset(token)
 
 
@@ -63,13 +66,13 @@ class Delegator(Faculty):
     name = "delegate"
     TRIGGER_KEYWORDS = ("delegate", "summarize all", "audit", "go through",
                         "digest", "triage", "review all", "every")
-    STATUS = {"delegate_task": "Working on a delegated task"}
+    STATUS: ClassVar[dict[str, str]] = {"delegate_task": "Working on a delegated task"}
 
     def __init__(
         self,
         subagent_factory: Callable[..., Any],  # factory(chat_id) -> Agent
         timeout: float = DELEGATE_TIMEOUT_SECONDS,
-        depth: Optional[DelegationDepth] = None,
+        depth: DelegationDepth | None = None,
     ) -> None:
         self._factory = subagent_factory
         self._timeout = timeout
@@ -78,10 +81,10 @@ class Delegator(Faculty):
         # context, not through this object — see DelegationDepth.
         self._depth = depth or DelegationDepth()
 
-    def _tool_status(self, local: str, _args: dict[str, Any]) -> Optional[str]:
+    def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         outer = self
 
         @tool(
@@ -96,7 +99,7 @@ class Delegator(Faculty):
             "Not for quick single-tool lookups; call those directly.",
             {"task": str},
         )
-        async def delegate_task_tool(args: dict[str, Any], ctx: ToolContext):
+        async def delegate_task_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             task = str(args.get("task") or "").strip()
             if not task:
                 return ToolResult.error("delegate_task needs a non-empty `task`")
@@ -120,7 +123,7 @@ class Delegator(Faculty):
                             await agent.stop()
                         except Exception:
                             log.exception("delegate sub-agent stop failed")
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 log.warning("delegated task timed out after %.0fs", outer._timeout)
                 return ToolResult.error(
                     f"the delegated task timed out after {int(outer._timeout)}s; "

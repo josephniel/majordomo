@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from domain.schedule import TaskScheduler
-from ports import Connector, ToolContext, ToolResult, tool
+from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
 
 class RecordingConnector(Connector):
@@ -20,11 +20,13 @@ class RecordingConnector(Connector):
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def _recording_tool(self, name: str, description: str, parameters: dict, reply: str):
+    def _recording_tool(
+        self, name: str, description: str, parameters: dict[str, Any], reply: str
+    ) -> ToolSpec:
         outer = self
 
         @tool(name, description, parameters)
-        async def handler(args: dict[str, Any], _ctx: ToolContext):
+        async def handler(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             outer.calls.append((name, dict(args)))
             return ToolResult.ok(reply)
 
@@ -44,7 +46,7 @@ class FakeMemory(RecordingConnector):
     def system_prompt_section(self) -> str:
         return self.SYSTEM_PROMPT_SECTION
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         return [
             self._recording_tool(
                 "memory_save",
@@ -64,8 +66,11 @@ class FakeMemory(RecordingConnector):
 
 
 class FakeGmail(RecordingConnector):
-    """Two mailboxes, like the real deployment — which is what makes the
-    "which mailbox?" clarification loop reproducible."""
+    """Two mailboxes, like the real deployment.
+
+    Which is what makes the "which mailbox?" clarification loop reproducible.
+    """
+
     name = "gmail"
 
     def system_prompt_section(self) -> str:
@@ -76,7 +81,7 @@ class FakeGmail(RecordingConnector):
             "do NOT ask again — call the tool."
         )
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         return [
             self._recording_tool(
                 f"gmail_{box}__search_emails",
@@ -90,8 +95,7 @@ class FakeGmail(RecordingConnector):
 
 
 class FakeBulkTools(RecordingConnector):
-    """Filler tools that exist purely to make the eval's PROMPT THE SIZE IT IS
-    IN PRODUCTION.
+    """Filler tools that exist purely to size the eval's prompt like production.
 
     This is not padding for its own sake. gemma4-e4b scored 7/7 here while
     failing live, because the eval prompt was ~1.5k tokens and 5 tools while a
@@ -100,6 +104,7 @@ class FakeBulkTools(RecordingConnector):
     a model that cannot do the job. Mirrors production's provider breadth
     (calendar, tasks, expenses, documents, code, files, …).
     """
+
     name = "bulk"
 
     _AREAS = ("calendar", "tasks", "expenses", "documents", "code", "files",
@@ -108,7 +113,7 @@ class FakeBulkTools(RecordingConnector):
     def system_prompt_section(self) -> str:
         return ""
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         return [
             self._recording_tool(
                 f"{area}__{verb}_{area}_item",
@@ -130,7 +135,7 @@ class FakeSchedule(RecordingConnector):
         # invent times") — schema realism is the whole point of the fakes.
         return TaskScheduler.SYSTEM_PROMPT_SECTION
 
-    def builtin_tools(self) -> list:
+    def builtin_tools(self) -> list[ToolSpec]:
         return [
             self._recording_tool(
                 "schedule_create",

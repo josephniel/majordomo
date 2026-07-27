@@ -4,11 +4,16 @@ Without it the model answers time questions from training data. It rides the
 per-turn text rather than the system prompt on purpose: the system prompt is
 the cacheable prefix, and a clock in there would invalidate it every turn.
 """
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from adapters.model.fallback import CascadingAgent
 from tests.conftest import FakeAgent, FakeSummarizer
+
+
+def _local_now() -> datetime:
+    """Naive host-local now — what the schedule engine produces with no timezone set."""
+    return datetime.now(UTC).astimezone().replace(tzinfo=None)
 
 
 def make(tz=None):
@@ -29,13 +34,13 @@ class TestNowLine:
     def test_falls_back_to_host_time_when_timezone_unset(self):
         line = make(None)._now_line()
         assert "Current time:" in line
-        assert str(datetime.now().year) in line
+        assert str(_local_now().year) in line
 
     def test_unknown_timezone_degrades_instead_of_raising(self):
         """A typo in SCHEDULE_TIMEZONE must not break every turn."""
         line = make("Not/AZone")._now_line()
         assert "Current time:" in line
-        assert str(datetime.now().year) in line
+        assert str(_local_now().year) in line
 
     def test_states_it_is_for_relative_references(self):
         assert "relative" in make("Asia/Manila")._now_line().lower()

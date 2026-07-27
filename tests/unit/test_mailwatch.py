@@ -1,8 +1,6 @@
 """services.mailwatch — watermark/dedupe logic with fake Gmail clients."""
 import json
 
-import pytest
-
 from adapters.trigger.mailwatch import MailWatcher
 
 
@@ -67,7 +65,8 @@ class TestMailWatch:
         w = _watcher(tmp_path, {"g": client})
         assert await w.check() is not None
         block = await w.check()  # no commit in between
-        assert block is not None and "urgent thing" in block
+        assert block is not None
+        assert "urgent thing" in block
 
     async def test_new_message_after_first_poll_is_reported(self, tmp_path):
         client = FakeGmailClient({"m1": ("a@b.c", "first", "")})
@@ -77,7 +76,8 @@ class TestMailWatch:
         client._messages["m2"] = ("x@y.z", "second", "")
         block = await w.check()
         assert block is not None
-        assert "second" in block and "first" not in block
+        assert "second" in block
+        assert "first" not in block
 
     async def test_state_survives_restart(self, tmp_path):
         client = FakeGmailClient({"m1": ("a@b.c", "s", "")})
@@ -107,7 +107,8 @@ class TestMailWatch:
         assert block is None or "flaky-subject" not in (block or "")
         w.commit()
         block = await w.check()
-        assert block is not None and "flaky-subject" in block
+        assert block is not None
+        assert "flaky-subject" in block
 
     async def test_first_poll_uses_recent_window(self, tmp_path):
         client = FakeGmailClient({})
@@ -124,7 +125,8 @@ class TestMailWatch:
         good = FakeGmailClient({"m1": ("a@b.c", "ok-subject", "")})
         w = _watcher(tmp_path, {"bad": Exploding(), "good": good})
         block = await w.check()
-        assert block is not None and "ok-subject" in block
+        assert block is not None
+        assert "ok-subject" in block
 
     async def test_overflow_summarized(self, tmp_path):
         msgs = {f"m{i}": (f"s{i}@x.y", f"subj{i}", "") for i in range(8)}

@@ -28,9 +28,11 @@ class TestCoreIsALeaf:
                     names = [node.module or ""]
                 else:
                     continue
-                for name in names:
-                    if name.split(".")[0] in OTHER_PACKAGES:
-                        offenders.append(f"{path.name}: {name}")
+                offenders.extend(
+                    f"{path.name}: {name}"
+                    for name in names
+                    if name.split(".")[0] in OTHER_PACKAGES
+                )
         assert not offenders, f"core/ must stay a leaf; found {offenders}"
 
 
@@ -69,7 +71,8 @@ class TestToolResult:
         raw = {"content": [{"type": "text", "text": "a"},
                            {"type": "text", "text": "b"}], "isError": True}
         r = ports.as_tool_result(raw)
-        assert r.text == "a\nb" and r.is_error
+        assert r.text == "a\nb"
+        assert r.is_error
 
     def test_as_tool_result_stringifies_unknown(self):
         assert ports.as_tool_result(42).text == "42"
@@ -98,6 +101,7 @@ class TestToolContext:
 
     def test_frozen(self):
         import dataclasses
+
         import pytest
         with pytest.raises(dataclasses.FrozenInstanceError):
             ports.ToolContext(chat_id=1).chat_id = 2

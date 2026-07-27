@@ -4,9 +4,9 @@ import asyncio
 
 import pytest
 
+from adapters.model.base import UsageLimitError
 from adapters.model.fallback import CascadingAgent
 from adapters.model.health import VendorHealthBoard
-from adapters.model.base import UsageLimitError
 from tests.conftest import CHAT_ID, FakeAgent, FakeSummarizer
 
 pytestmark = pytest.mark.integration
@@ -227,10 +227,13 @@ class TestMemoryInjection:
 
 
 class TestSessionAndReset:
-    async def test_session_id_from_server_side_vendor_even_after_failover(self, history, persona_id):
+    async def test_session_id_from_server_side_vendor_even_after_failover(
+        self, history, persona_id
+    ):
         claude = FakeAgent("claude", server_side=True, fail="limit")
-        casc = make_cascade(history, persona_id,
-                            [("claude", claude), ("gemini", FakeAgent("gemini"))])
+        casc = make_cascade(
+            history, persona_id, [("claude", claude), ("gemini", FakeAgent("gemini"))]
+        )
         await casc.send("x")  # served by gemini
         assert casc.session_id == "sess-claude"
 
@@ -243,16 +246,18 @@ class TestSessionAndReset:
 
     async def test_vendor_names_and_health_exposed(self, history, persona_id):
         board = VendorHealthBoard()
-        casc = make_cascade(history, persona_id,
-                            [("claude", FakeAgent("claude")),
-                             ("gemini", FakeAgent("gemini"))], board)
+        casc = make_cascade(
+            history,
+            persona_id,
+            [("claude", FakeAgent("claude")), ("gemini", FakeAgent("gemini"))],
+            board,
+        )
         assert casc.vendor_names == ["claude", "gemini"]
         board.mark_limited("gemini", 100)
         assert "gemini" in casc.health
 
     async def test_last_turn_tool_calls_tracked(self, history, persona_id):
-        casc = make_cascade(history, persona_id,
-                            [("claude", FakeAgent("claude", fire_tool=True))])
+        casc = make_cascade(history, persona_id, [("claude", FakeAgent("claude", fire_tool=True))])
         await casc.send("do something")
         assert casc.last_turn_tool_calls == 1
         casc2 = make_cascade(history, persona_id, [("claude", FakeAgent("claude"))])
@@ -268,13 +273,20 @@ class TestCanary:
             def __init__(self, name, ok):
                 super().__init__(name)
                 self._ok = ok
+
             async def probe_tool_calling(self):
                 return (self._ok, "called ping" if self._ok else "no tool_call")
 
-        casc = make_cascade(history, persona_id,
-                            [("groq", ProbeAgent("groq", True)),
-                             ("gemini", ProbeAgent("gemini", False)),
-                             ("claude", FakeAgent("claude"))], board)  # claude: no probe
+        casc = make_cascade(
+            history,
+            persona_id,
+            [
+                ("groq", ProbeAgent("groq", True)),
+                ("gemini", ProbeAgent("gemini", False)),
+                ("claude", FakeAgent("claude")),
+            ],
+            board,
+        )  # claude: no probe
         results = await casc.run_canary()
         assert results["groq"] == (True, "called ping")
         assert results["gemini"][0] is False
@@ -287,6 +299,7 @@ class TestCanary:
         class BoomAgent(FakeAgent):
             async def probe_tool_calling(self):
                 raise RuntimeError("network down")
+
         casc = make_cascade(history, persona_id, [("groq", BoomAgent("groq"))])
         results = await casc.run_canary()
         assert results["groq"][0] is False

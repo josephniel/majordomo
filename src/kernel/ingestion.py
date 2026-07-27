@@ -8,9 +8,12 @@ ignorant of what a "document" is.
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
-from ports import ConversationRef, AttachmentIngestor, Connector
-from adapters.chat import InboundMessage
+from ports import AttachmentIngestor, Connector, ConversationRef
+
+if TYPE_CHECKING:
+    from adapters.chat import InboundMessage
 
 log = logging.getLogger(__name__)
 
@@ -21,9 +24,11 @@ async def ingest_attachments(
     text: str,
     msg: InboundMessage,
 ) -> str:
-    """Best-effort: save text/PDF attachments to the document library and
-    append the saved-note(s) to the turn text. No library, no ingestible
-    attachments, or any failure → text passes through unchanged."""
+    """Save text/PDF attachments to the document library, best-effort.
+
+    Appends the saved-note(s) to the turn text. No library, no ingestible
+    attachments, or any failure → text passes through unchanged.
+    """
     if not msg.attachments:
         return text
     library = next(

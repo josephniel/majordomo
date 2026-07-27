@@ -25,12 +25,13 @@ handler below is about to make one, it belongs in `memory.py`.
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from ports import (
     LINK_RELATIONS,
     VALID_SCOPES,
+    FactCandidate,
     MemoryEntry,
     ToolContext,
     ToolResult,
@@ -38,11 +39,15 @@ from ports import (
     tool,
 )
 
-from .memory import staleness_suffix
+from .staleness import staleness_suffix
 
 if TYPE_CHECKING:
     from adapters.model.history import ConversationHistory
 
+    # Type-only, and the only edge back to the faculty. At runtime the
+    # dependency runs one way — memory.py imports this module to build its
+    # tools — so there is no cycle to break here, just one component whose
+    # faculty and tool surface live in two files.
     from .memory import LongTermMemory
 
 
@@ -50,11 +55,13 @@ def _err(msg: str) -> ToolResult:
     return ToolResult.error(f"error: {msg}")
 
 
-def _uuid(raw: Any) -> Optional[UUID]:
-    """Parse a model-supplied id, or None. The model hands us strings and
-    occasionally invents plausible ones, so every id is parsed defensively —
-    a ValueError escaping here would surface as a tool crash rather than a
-    correctable message."""
+def _uuid(raw: Any) -> UUID | None:
+    """Parse a model-supplied id, or None.
+
+    The model hands us strings and occasionally invents plausible ones, so every id is parsed
+    defensively — a ValueError escaping here would surface as a tool crash rather than a correctable
+    message.
+    """
     try:
         return UUID(str(raw or "").strip())
     except ValueError:
@@ -65,33 +72,27 @@ def _label(entry: MemoryEntry) -> str:
     return entry.scope if not entry.domain_key else f"{entry.scope}/{entry.domain_key}"
 
 
-def build_memory_tools(
-    mem: "LongTermMemory",
-    *,
-    history: Optional["ConversationHistory"] = None,
-) -> list[ToolSpec]:
-    """Every memory tool, bound to one faculty instance.
+# One turn in a history-search result: enough to recognise it, and the model
+# can ask for the surrounding turns if it matters.
+_MAX_TURN_PREVIEW = 400
 
-    `history` is optional and adds `history_search`. It is passed explicitly
-    rather than read off `mem` so this module has exactly one collaborator
-    it can mutate state through.
+
+async def _resolve(mem: LongTermMemory, raw: Any) -> tuple[UUID | None, str]:
+    """Model-supplied id → an id that is safe to act on.
+
+    Two failure modes, both real: a malformed UUID, and a well-formed one
+    that names another persona's entry or an already-superseded row. The
+    ownership half is enforced by the faculty; parsing is ours.
     """
+    eid = _uuid(raw)
+    if eid is None:
+        return None, f"{raw!r} is not a valid UUID (use memory_recall to find ids)"
+    entry, reason = await mem.resolve_active(eid)
+    return (eid, "") if entry is not None else (None, reason)
 
-    async def _resolve(raw: Any) -> tuple[Optional[UUID], str]:
-        """Model-supplied id → an id that is safe to act on.
 
-        Two failure modes, both real: a malformed UUID, and a well-formed one
-        that names another persona's entry or an already-superseded row. The
-        ownership half is enforced by the faculty; parsing is ours.
-        """
-        eid = _uuid(raw)
-        if eid is None:
-            return None, f"{raw!r} is not a valid UUID (use memory_recall to find ids)"
-        entry, reason = await mem.resolve_active(eid)
-        return (eid, "") if entry is not None else (None, reason)
-
-    # ---- write ----
-
+def _capture_tools(mem: LongTermMemory) -> list[ToolSpec]:
+    """Put a fact in, and get facts back out."""
     @tool(
         "memory_save",
         "Save one atomic fact to long-term memory. Be conservative — only "
@@ -104,32 +105,43 @@ def build_memory_tools(
                 "scope": {
                     "type": "string",
                     "enum": list(VALID_SCOPES),
-                    "description": "user = about the operator; agent = about you; domain = about an external system; reference = pointer to a URL/doc/resource",
+                    "description": (
+                        "user = about the operator; agent = about you; "
+                        "domain = about an external system; "
+                        "reference = pointer to a URL/doc/resource"
+                    ),
                 },
                 "content": {"type": "string", "description": "The fact, in one sentence."},
                 "domain_key": {
                     "type": "string",
-                    "description": "Required when scope='domain': gmail, google_calendar, clickup, splitwise, yahoo, schedule, …",
+                    "description": (
+                        "Required when scope='domain': gmail, google_calendar, clickup, "
+                        "splitwise, yahoo, schedule, …"
+                    ),
                 },
                 "title": {"type": "string", "description": "Short label (optional)."},
                 "volatile": {
                     "type": "boolean",
-                    "description": "true if the fact can drift (cites a file path, flag, commit, version, config value) — it'll be flagged for re-verification when it ages.",
+                    "description": (
+                        "true if the fact can drift (cites a file path, flag, commit, "
+                        "version, config value) — it'll be flagged for re-verification "
+                        "when it ages."
+                    ),
                 },
             },
             "required": ["scope", "content"],
         },
     )
-    async def memory_save_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_save_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         try:
-            msg, entry = await mem.save_fact(
+            msg, entry = await mem.save_fact(FactCandidate(
                 scope=args.get("scope") or "",
                 content=args.get("content") or "",
                 domain_key=args.get("domain_key") or "",
                 title=args.get("title") or "",
-                source="chat",
+                provenance="chat",
                 volatile=bool(args.get("volatile")),
-            )
+            ))
             # A rejected near-duplicate is a successful outcome, not an error:
             # the fact IS remembered, and flagging it as a failure invites the
             # model to retry the save in a loop.
@@ -161,7 +173,7 @@ def build_memory_tools(
             "required": ["query"],
         },
     )
-    async def memory_recall_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_recall_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         query = (args.get("query") or "").strip()
         if not query:
             return _err("query is empty")
@@ -180,9 +192,7 @@ def build_memory_tools(
         lines: list[str] = []
         for r in results:
             title = f" [{r.title}]" if r.title else ""
-            lines.append(
-                f"id={r.id} ({_label(r)}){title}\n  {r.content}{staleness_suffix(r)}"
-            )
+            lines.append(f"id={r.id} ({_label(r)}){title}\n  {r.content}{staleness_suffix(r)}")
             # Surface 1-hop links so related facts travel together — the graph
             # payoff of memory_link. Best-effort: a graph read failing must
             # not cost the caller the recall results it already has.
@@ -197,6 +207,14 @@ def build_memory_tools(
 
     # ---- replacement & retraction ----
 
+    return [
+        memory_save_tool,
+        memory_recall_tool,
+    ]
+
+
+def _revise_tools(mem: LongTermMemory) -> list[ToolSpec]:
+    """Change what is remembered: supersede, retract, compact."""
     @tool(
         "memory_update",
         "Supersede an existing memory with revised content. Use when a "
@@ -211,8 +229,8 @@ def build_memory_tools(
             "required": ["id", "content"],
         },
     )
-    async def memory_update_tool(args: dict[str, Any], _ctx: ToolContext):
-        eid, err = await _resolve(args.get("id"))
+    async def memory_update_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        eid, err = await _resolve(mem, args.get("id"))
         if err:
             return _err(err)
         content = (args.get("content") or "").strip()
@@ -228,8 +246,7 @@ def build_memory_tools(
 
     @tool(
         "memory_forget",
-        "Soft-delete an entry by id (drops it from active recall, keeps "
-        "the row for traceability).",
+        "Soft-delete an entry by id (drops it from active recall, keeps the row for traceability).",
         {
             "type": "object",
             "properties": {
@@ -238,17 +255,15 @@ def build_memory_tools(
             "required": ["id"],
         },
     )
-    async def memory_forget_tool(args: dict[str, Any], _ctx: ToolContext):
-        eid, err = await _resolve(args.get("id"))
+    async def memory_forget_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        eid, err = await _resolve(mem, args.get("id"))
         if err:
             return _err(err)
         try:
             ok = await mem.forget_fact(eid)
         except Exception as e:
             return _err(str(e))
-        return ToolResult.ok(f"forgotten: {eid}") if ok else _err(
-            f"no active entry with id={eid}"
-        )
+        return ToolResult.ok(f"forgotten: {eid}") if ok else _err(f"no active entry with id={eid}")
 
     # ---- compaction ----
 
@@ -266,27 +281,50 @@ def build_memory_tools(
                 },
                 "deep": {
                     "type": "boolean",
-                    "description": "true = use a more capable model for tricky reconciliation (default false = cheap fast model).",
+                    "description": (
+                        "true = use a more capable model for tricky reconciliation "
+                        "(default false = cheap fast model)."
+                    ),
                 },
             },
             "required": ["scope"],
         },
     )
-    async def memory_compact_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_compact_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         scope = (args.get("scope") or "").strip().lower()
         if scope not in VALID_SCOPES:
             return _err(f"scope must be one of {'/'.join(VALID_SCOPES)}")
         domain_key = (args.get("domain_key") or "").strip().lower()
         if scope == "domain" and not domain_key:
             return _err("scope='domain' requires a domain_key")
-        summary = await mem.compact_compartment(
-            scope, domain_key, deep=bool(args.get("deep"))
-        )
+        summary = await mem.compact_compartment(scope, domain_key, deep=bool(args.get("deep")))
         label = f"{scope}{('/' + domain_key) if domain_key else ''}"
         return ToolResult.ok(f"compacted {label}:\n\n{summary}")
 
     # ---- graph ----
 
+    return [
+        memory_update_tool,
+        memory_forget_tool,
+        memory_compact_tool,
+    ]
+
+
+async def _resolve_pair(
+    mem: LongTermMemory, args: dict[str, Any]
+) -> tuple[UUID | None, UUID | None, str]:
+    """Resolve both ends of an edge; (None, None, reason) on the first failure."""
+    from_id, err = await _resolve(mem, args.get("from_id"))
+    if err:
+        return None, None, err
+    to_id, err = await _resolve(mem, args.get("to_id"))
+    if err:
+        return None, None, err
+    return from_id, to_id, ""
+
+
+def _link_tools(mem: LongTermMemory) -> list[ToolSpec]:
+    """Edges between facts."""
     @tool(
         "memory_link",
         "Connect two related memories so they surface together on recall. "
@@ -307,14 +345,11 @@ def build_memory_tools(
             "required": ["from_id", "to_id"],
         },
     )
-    async def memory_link_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_link_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         relation = (args.get("relation") or "relates_to").strip().lower()
         if relation not in LINK_RELATIONS:
             return _err(f"relation must be one of {'/'.join(LINK_RELATIONS)}")
-        from_id, err = await _resolve(args.get("from_id"))
-        if err:
-            return _err(err)
-        to_id, err = await _resolve(args.get("to_id"))
+        from_id, to_id, err = await _resolve_pair(mem, args)
         if err:
             return _err(err)
         if from_id == to_id:
@@ -345,7 +380,7 @@ def build_memory_tools(
             "required": ["from_id", "to_id"],
         },
     )
-    async def memory_unlink_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_unlink_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         # Deliberately NOT _resolve: unlinking is the repair operation for a
         # graph that references a superseded entry, so requiring both ends to
         # be active would lock the model out of exactly the mess it needs to
@@ -360,12 +395,18 @@ def build_memory_tools(
             removed = await mem.unlink(from_id, to_id, relation)
         except Exception as e:
             return _err(str(e))
-        return ToolResult.ok(f"unlinked {from_id} -x- {to_id}") if removed else _err(
-            "no such link"
-        )
+        return ToolResult.ok(f"unlinked {from_id} -x- {to_id}") if removed else _err("no such link")
 
     # ---- annotation ----
 
+    return [
+        memory_link_tool,
+        memory_unlink_tool,
+    ]
+
+
+def _flag_tools(mem: LongTermMemory) -> list[ToolSpec]:
+    """Per-fact flags: pinning, and re-confirming a volatile fact."""
     @tool(
         "memory_pin",
         "Pin a fact so it stays in your always-on context verbatim — use "
@@ -378,33 +419,30 @@ def build_memory_tools(
             "required": ["id"],
         },
     )
-    async def memory_pin_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_pin_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         return await _set_pinned(args.get("id"), True, "pinned")
 
     @tool(
         "memory_unpin",
-        "Stop pinning a fact (it stays in memory, just no longer forced "
-        "verbatim into context).",
+        "Stop pinning a fact (it stays in memory, just no longer forced verbatim into context).",
         {
             "type": "object",
             "properties": {"id": {"type": "string", "description": "UUID of a pinned entry."}},
             "required": ["id"],
         },
     )
-    async def memory_unpin_tool(args: dict[str, Any], _ctx: ToolContext):
+    async def memory_unpin_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         return await _set_pinned(args.get("id"), False, "unpinned")
 
     async def _set_pinned(raw_id: Any, pinned: bool, verb: str) -> ToolResult:
-        eid, err = await _resolve(raw_id)
+        eid, err = await _resolve(mem, raw_id)
         if err:
             return _err(err)
         try:
             ok = await mem.set_pinned(eid, pinned)
         except Exception as e:
             return _err(str(e))
-        return ToolResult.ok(f"{verb} {eid}") if ok else _err(
-            f"no active entry with id={eid}"
-        )
+        return ToolResult.ok(f"{verb} {eid}") if ok else _err(f"no active entry with id={eid}")
 
     @tool(
         "memory_verify",
@@ -413,33 +451,45 @@ def build_memory_tools(
         "resets the clock.",
         {
             "type": "object",
-            "properties": {"id": {"type": "string", "description": "UUID of the fact you re-checked."}},
+            "properties": {
+                "id": {"type": "string", "description": "UUID of the fact you re-checked."}
+            },
             "required": ["id"],
         },
     )
-    async def memory_verify_tool(args: dict[str, Any], _ctx: ToolContext):
-        eid, err = await _resolve(args.get("id"))
+    async def memory_verify_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        eid, err = await _resolve(mem, args.get("id"))
         if err:
             return _err(err)
         try:
             ok = await mem.verify(eid)
         except Exception as e:
             return _err(str(e))
-        return ToolResult.ok(f"verified {eid}") if ok else _err(
-            f"no active entry with id={eid}"
-        )
+        return ToolResult.ok(f"verified {eid}") if ok else _err(f"no active entry with id={eid}")
 
-    tools: list[ToolSpec] = [
-        memory_save_tool,
-        memory_recall_tool,
-        memory_update_tool,
-        memory_forget_tool,
-        memory_compact_tool,
-        memory_link_tool,
-        memory_unlink_tool,
+    return [
         memory_pin_tool,
         memory_unpin_tool,
         memory_verify_tool,
+    ]
+
+
+def build_memory_tools(
+    mem: LongTermMemory,
+    *,
+    history: ConversationHistory | None = None,
+) -> list[ToolSpec]:
+    """Every memory tool, bound to one faculty instance.
+
+    `history` is optional and adds `history_search`. It is passed explicitly
+    rather than read off `mem` so this module has exactly one collaborator
+    it can mutate state through.
+    """
+    tools: list[ToolSpec] = [
+        *_capture_tools(mem),
+        *_revise_tools(mem),
+        *_link_tools(mem),
+        *_flag_tools(mem),
     ]
 
     if history is not None:
@@ -447,9 +497,7 @@ def build_memory_tools(
     return tools
 
 
-def _history_search_tool(
-    mem: "LongTermMemory", history: "ConversationHistory"
-) -> ToolSpec:
+def _history_search_tool(mem: LongTermMemory, history: ConversationHistory) -> ToolSpec:
     """Search the conversation record rather than the fact archive.
 
     Grouped with the memory tools because to the model it is the same
@@ -473,7 +521,7 @@ def _history_search_tool(
             "required": ["query"],
         },
     )
-    async def history_search_tool(args: dict[str, Any], ctx: ToolContext):
+    async def history_search_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         query = (args.get("query") or "").strip()
         if not query:
             return _err("query is empty")
@@ -484,9 +532,7 @@ def _history_search_tool(
             return _err("no current chat context")
         limit = max(1, min(int(args.get("limit") or 10), 25))
         try:
-            rows = await history.search(
-                mem.persona_id, ctx.chat_id, query, limit=limit
-            )
+            rows = await history.search(mem.persona_id, ctx.chat_id, query, limit=limit)
         except Exception as e:
             return _err(str(e))
         if not rows:
@@ -495,8 +541,8 @@ def _history_search_tool(
         for r in rows:
             when = r["ts"].strftime("%Y-%m-%d %H:%M") if r.get("ts") else "?"
             content = r["content"]
-            if len(content) > 400:
-                content = content[:400] + "…"
+            if len(content) > _MAX_TURN_PREVIEW:
+                content = content[:_MAX_TURN_PREVIEW] + "…"
             lines.append(f"[{when}] {r['role']}: {content}")
         return ToolResult.ok("\n\n".join(lines))
 
