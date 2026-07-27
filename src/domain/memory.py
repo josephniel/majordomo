@@ -211,7 +211,7 @@ Three principles:
   2. UPDATE OVER APPEND. If a fact changes, recall the old entry then memory_update its id — don't
      write a contradicting new entry.
   3. DON'T NARRATE. Save and continue the conversation; don't announce memory operations to the user.
-"""
+"""  # noqa: E501 — model-facing text; a wrap here changes what the model reads
 
     def __init__(
         self,
@@ -646,7 +646,9 @@ Three principles:
         Returns the new summary (or an explanatory error string on failure).
         """
         entries = await self.list_active(
-            scope=scope, domain_key=domain_key, limit=500,
+            scope=scope,
+            domain_key=domain_key,
+            limit=500,
         )
         if not entries:
             await self._db.set_core(self._persona_id, scope, domain_key, "", 0)
@@ -654,8 +656,7 @@ Three principles:
             return "(compartment is empty; core summary cleared)"
 
         existing = next(
-            (c for c in self._memory_core_cache
-             if c.scope == scope and c.domain_key == domain_key),
+            (c for c in self._memory_core_cache if c.scope == scope and c.domain_key == domain_key),
             None,
         )
         existing_summary = existing.summary if existing else ""
@@ -669,7 +670,11 @@ Three principles:
             return "compaction returned empty summary"
 
         await self._db.set_core(
-            self._persona_id, scope, domain_key, new_summary.strip(), len(entries),
+            self._persona_id,
+            scope,
+            domain_key,
+            new_summary.strip(),
+            len(entries),
         )
         await self.refresh_core_cache()
         return new_summary.strip()
@@ -703,20 +708,26 @@ Three principles:
         lines.append("Output ONLY the new running narrative. No preamble, no explanation.")
         return "\n".join(lines)
 
-
     async def _maybe_auto_compact(self, scope: str, domain_key: str) -> None:
         try:
             active = await self._db.count_active(self._persona_id, scope, domain_key)
             existing = next(
-                (c for c in self._memory_core_cache
-                 if c.scope == scope and c.domain_key == domain_key),
+                (
+                    c
+                    for c in self._memory_core_cache
+                    if c.scope == scope and c.domain_key == domain_key
+                ),
                 None,
             )
             last = existing.last_source_count if existing else 0
             if active - last >= AUTO_COMPACT_THRESHOLD:
                 log.info(
                     "auto-compacting %s/%s for %s (active=%d, last_compacted_at_count=%d)",
-                    scope, domain_key, self._persona_id, active, last,
+                    scope,
+                    domain_key,
+                    self._persona_id,
+                    active,
+                    last,
                 )
                 await self.compact_compartment(scope, domain_key, deep=False)
         except Exception:

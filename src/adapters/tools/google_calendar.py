@@ -70,8 +70,12 @@ class CalendarClient:
     async def create_event(self, calendar_id: str, body: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", f"/calendars/{calendar_id}/events", json_body=body)
 
-    async def update_event(self, calendar_id: str, event_id: str, body: dict[str, Any]) -> dict[str, Any]:
-        return await self._request("PATCH", f"/calendars/{calendar_id}/events/{event_id}", json_body=body)
+    async def update_event(
+        self, calendar_id: str, event_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        return await self._request(
+            "PATCH", f"/calendars/{calendar_id}/events/{event_id}", json_body=body
+        )
 
     async def delete_event(self, calendar_id: str, event_id: str) -> dict[str, Any]:
         return await self._request("DELETE", f"/calendars/{calendar_id}/events/{event_id}")
@@ -102,6 +106,7 @@ class CalendarClient:
 
 
 # ---- formatting helpers ----
+
 
 def _event_when(ev: dict[str, Any]) -> str:
     start = ev.get("start") or {}
@@ -156,9 +161,21 @@ def _format_http_error(e: httpx.HTTPStatusError) -> str:
 
 class GoogleCalendarConnector(Connector):
     name = "google_calendar"
-    TRIGGER_KEYWORDS = ("calendar", "event", "meeting", "appointment",
-                        "invite", "schedule", "free", "busy", "availab",
-                        "reschedule", "tomorrow", "today", "agenda")
+    TRIGGER_KEYWORDS = (
+        "calendar",
+        "event",
+        "meeting",
+        "appointment",
+        "invite",
+        "schedule",
+        "free",
+        "busy",
+        "availab",
+        "reschedule",
+        "tomorrow",
+        "today",
+        "agenda",
+    )
     # create_event satisfies an "I've set a reminder" claim (chat Layer 3b).
     SCHEDULE_CLAIM_TOOLS = frozenset({"create_event"})
     WRITE_TOOLS = frozenset({"create_event", "update_event", "delete_event"})
@@ -230,8 +247,8 @@ class GoogleCalendarConnector(Connector):
             metavar="PATH",
             required=True,
             help="path to a Google OAuth client JSON (Desktop app type). Can be "
-                 "the same gcp-oauth.keys.json you used for Gmail — same client "
-                 "works, just different scopes.",
+            "the same gcp-oauth.keys.json you used for Gmail — same client "
+            "works, just different scopes.",
         )
         p.add_argument(
             "--reauth",
@@ -454,7 +471,9 @@ class GoogleCalendarConnector(Connector):
             if args.get("end"):
                 body["end"] = _when(args["end"])
             if args.get("attendees"):
-                body["attendees"] = [{"email": e.strip()} for e in str(args["attendees"]).split(",") if e.strip()]
+                body["attendees"] = [
+                    {"email": e.strip()} for e in str(args["attendees"]).split(",") if e.strip()
+                ]
             return body
 
         @tool(
@@ -465,8 +484,16 @@ class GoogleCalendarConnector(Connector):
             "(optional), attendees (optional, comma-separated emails), calendar_id "
             "(default 'primary'), timezone (optional IANA tz; defaults to the "
             f"user's, {self._default_timezone!r}). Confirm the created event to the user.",
-            {"summary": str, "start": str, "end": str, "description": str,
-             "location": str, "attendees": str, "calendar_id": str, "timezone": str},
+            {
+                "summary": str,
+                "start": str,
+                "end": str,
+                "description": str,
+                "location": str,
+                "attendees": str,
+                "calendar_id": str,
+                "timezone": str,
+            },
         )
         async def create_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
@@ -474,7 +501,9 @@ class GoogleCalendarConnector(Connector):
                 if not body.get("start") or not body.get("end"):
                     return ToolResult.error("error: start and end are required")
                 ev = await client.create_event(args.get("calendar_id") or "primary", body)
-                return ToolResult.ok(f"created event [{ev.get('id','?')}] {ev.get('summary','')} — {_event_when(ev)}")
+                return ToolResult.ok(
+                    f"created event [{ev.get('id', '?')}] {ev.get('summary', '')} — {_event_when(ev)}"
+                )
             except httpx.HTTPStatusError as e:
                 return ToolResult.error(_format_http_error(e))
             except Exception as e:
@@ -486,16 +515,29 @@ class GoogleCalendarConnector(Connector):
             "fields you pass change). Args: event_id (required), calendar_id "
             "(default 'primary'), plus any of summary/start/end/description/"
             "location/attendees/timezone (same formats as create_event).",
-            {"event_id": str, "calendar_id": str, "summary": str, "start": str,
-             "end": str, "description": str, "location": str, "attendees": str, "timezone": str},
+            {
+                "event_id": str,
+                "calendar_id": str,
+                "summary": str,
+                "start": str,
+                "end": str,
+                "description": str,
+                "location": str,
+                "attendees": str,
+                "timezone": str,
+            },
         )
         async def update_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 body = _event_body(args)
                 if not body:
                     return ToolResult.error("error: nothing to update")
-                ev = await client.update_event(args.get("calendar_id") or "primary", args["event_id"], body)
-                return ToolResult.ok(f"updated event [{ev.get('id','?')}] {ev.get('summary','')} — {_event_when(ev)}")
+                ev = await client.update_event(
+                    args.get("calendar_id") or "primary", args["event_id"], body
+                )
+                return ToolResult.ok(
+                    f"updated event [{ev.get('id', '?')}] {ev.get('summary', '')} — {_event_when(ev)}"
+                )
             except httpx.HTTPStatusError as e:
                 return ToolResult.error(_format_http_error(e))
             except Exception as e:
@@ -517,5 +559,11 @@ class GoogleCalendarConnector(Connector):
             except Exception as e:
                 return ToolResult.error(f"error: {e}")
 
-        return [list_calendars_tool, list_events_tool, get_event_tool,
-                create_event_tool, update_event_tool, delete_event_tool]
+        return [
+            list_calendars_tool,
+            list_events_tool,
+            get_event_tool,
+            create_event_tool,
+            update_event_tool,
+            delete_event_tool,
+        ]

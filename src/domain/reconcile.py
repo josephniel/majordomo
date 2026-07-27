@@ -115,7 +115,7 @@ Rules:
 
 Output STRICT JSON, one object, no prose and no code fences:
   {{"verdict": "noop"|"add"|"update"|"delete", "target_id": "<uuid or null>", "reason": "<one short sentence>"}}
-"""
+"""  # noqa: E501 — model-facing text; a wrap here changes what the model reads
 
 
 def _render_existing(neighbours: list[MemoryEntry]) -> str:

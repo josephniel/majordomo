@@ -182,9 +182,7 @@ def build_memory_tools(
         lines: list[str] = []
         for r in results:
             title = f" [{r.title}]" if r.title else ""
-            lines.append(
-                f"id={r.id} ({_label(r)}){title}\n  {r.content}{staleness_suffix(r)}"
-            )
+            lines.append(f"id={r.id} ({_label(r)}){title}\n  {r.content}{staleness_suffix(r)}")
             # Surface 1-hop links so related facts travel together — the graph
             # payoff of memory_link. Best-effort: a graph read failing must
             # not cost the caller the recall results it already has.
@@ -230,8 +228,7 @@ def build_memory_tools(
 
     @tool(
         "memory_forget",
-        "Soft-delete an entry by id (drops it from active recall, keeps "
-        "the row for traceability).",
+        "Soft-delete an entry by id (drops it from active recall, keeps the row for traceability).",
         {
             "type": "object",
             "properties": {
@@ -248,9 +245,7 @@ def build_memory_tools(
             ok = await mem.forget_fact(eid)
         except Exception as e:
             return _err(str(e))
-        return ToolResult.ok(f"forgotten: {eid}") if ok else _err(
-            f"no active entry with id={eid}"
-        )
+        return ToolResult.ok(f"forgotten: {eid}") if ok else _err(f"no active entry with id={eid}")
 
     # ---- compaction ----
 
@@ -281,9 +276,7 @@ def build_memory_tools(
         domain_key = (args.get("domain_key") or "").strip().lower()
         if scope == "domain" and not domain_key:
             return _err("scope='domain' requires a domain_key")
-        summary = await mem.compact_compartment(
-            scope, domain_key, deep=bool(args.get("deep"))
-        )
+        summary = await mem.compact_compartment(scope, domain_key, deep=bool(args.get("deep")))
         label = f"{scope}{('/' + domain_key) if domain_key else ''}"
         return ToolResult.ok(f"compacted {label}:\n\n{summary}")
 
@@ -362,9 +355,7 @@ def build_memory_tools(
             removed = await mem.unlink(from_id, to_id, relation)
         except Exception as e:
             return _err(str(e))
-        return ToolResult.ok(f"unlinked {from_id} -x- {to_id}") if removed else _err(
-            "no such link"
-        )
+        return ToolResult.ok(f"unlinked {from_id} -x- {to_id}") if removed else _err("no such link")
 
     # ---- annotation ----
 
@@ -385,8 +376,7 @@ def build_memory_tools(
 
     @tool(
         "memory_unpin",
-        "Stop pinning a fact (it stays in memory, just no longer forced "
-        "verbatim into context).",
+        "Stop pinning a fact (it stays in memory, just no longer forced verbatim into context).",
         {
             "type": "object",
             "properties": {"id": {"type": "string", "description": "UUID of a pinned entry."}},
@@ -404,9 +394,7 @@ def build_memory_tools(
             ok = await mem.set_pinned(eid, pinned)
         except Exception as e:
             return _err(str(e))
-        return ToolResult.ok(f"{verb} {eid}") if ok else _err(
-            f"no active entry with id={eid}"
-        )
+        return ToolResult.ok(f"{verb} {eid}") if ok else _err(f"no active entry with id={eid}")
 
     @tool(
         "memory_verify",
@@ -415,7 +403,9 @@ def build_memory_tools(
         "resets the clock.",
         {
             "type": "object",
-            "properties": {"id": {"type": "string", "description": "UUID of the fact you re-checked."}},
+            "properties": {
+                "id": {"type": "string", "description": "UUID of the fact you re-checked."}
+            },
             "required": ["id"],
         },
     )
@@ -427,9 +417,7 @@ def build_memory_tools(
             ok = await mem.verify(eid)
         except Exception as e:
             return _err(str(e))
-        return ToolResult.ok(f"verified {eid}") if ok else _err(
-            f"no active entry with id={eid}"
-        )
+        return ToolResult.ok(f"verified {eid}") if ok else _err(f"no active entry with id={eid}")
 
     tools: list[ToolSpec] = [
         memory_save_tool,
@@ -449,9 +437,7 @@ def build_memory_tools(
     return tools
 
 
-def _history_search_tool(
-    mem: LongTermMemory, history: ConversationHistory
-) -> ToolSpec:
+def _history_search_tool(mem: LongTermMemory, history: ConversationHistory) -> ToolSpec:
     """Search the conversation record rather than the fact archive.
 
     Grouped with the memory tools because to the model it is the same
@@ -486,9 +472,7 @@ def _history_search_tool(
             return _err("no current chat context")
         limit = max(1, min(int(args.get("limit") or 10), 25))
         try:
-            rows = await history.search(
-                mem.persona_id, ctx.chat_id, query, limit=limit
-            )
+            rows = await history.search(mem.persona_id, ctx.chat_id, query, limit=limit)
         except Exception as e:
             return _err(str(e))
         if not rows:

@@ -339,7 +339,7 @@ class ClickUpConnector(Connector):
             "--team-id",
             required=True,
             help="ClickUp Workspace/Team ID (the 7-10 digit number in your "
-                 "ClickUp URL: app.clickup.com/<TEAM_ID>/...).",
+            "ClickUp URL: app.clickup.com/<TEAM_ID>/...).",
         )
         p.add_argument(
             "--rotate",
@@ -462,9 +462,7 @@ class ClickUpConnector(Connector):
         secrets_dir = self.credentials_dir / slug
         secrets_dir.mkdir(parents=True, exist_ok=True)
         secrets_file = secrets_dir / "secrets.json"
-        payload = json.dumps(
-            {"CLICKUP_API_KEY": api_key, "CLICKUP_TEAM_ID": team_id}
-        )
+        payload = json.dumps({"CLICKUP_API_KEY": api_key, "CLICKUP_TEAM_ID": team_id})
         secrets_file.write_text(payload, encoding="utf-8")
         return secrets_file
 
@@ -567,7 +565,9 @@ class ClickUpConnector(Connector):
             "set_assignees.",
             {},
         )
-        async def list_workspace_members_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        async def list_workspace_members_tool(
+            _args: dict[str, Any], _ctx: ToolContext
+        ) -> ToolResult:
             try:
                 members = await client.list_workspace_members()
                 if not members:
@@ -623,7 +623,9 @@ class ClickUpConnector(Connector):
                 lists = resp.get("lists", [])
                 if not lists:
                     return ToolResult.ok("No lists in this folder.")
-                lines = [f"- [{lst.get('id', '?')}] {lst.get('name', '(unnamed)')}" for lst in lists]
+                lines = [
+                    f"- [{lst.get('id', '?')}] {lst.get('name', '(unnamed)')}" for lst in lists
+                ]
                 return ToolResult.ok("\n".join(lines))
             except httpx.HTTPStatusError as e:
                 return ToolResult.error(_format_http_error(e))
@@ -678,7 +680,9 @@ class ClickUpConnector(Connector):
             body = {"assignees": {"add": add_ids, "rem": rem_ids}}
             try:
                 await client.update_task(args["task_id"], body)
-                return ToolResult.ok(f"task {args['task_id']}: added {add_ids or '[]'}, removed {rem_ids or '[]'}")
+                return ToolResult.ok(
+                    f"task {args['task_id']}: added {add_ids or '[]'}, removed {rem_ids or '[]'}"
+                )
             except httpx.HTTPStatusError as e:
                 return ToolResult.error(_format_http_error(e))
             except Exception as e:

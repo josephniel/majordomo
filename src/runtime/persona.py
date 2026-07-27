@@ -1,7 +1,8 @@
 """Persona — a chat instance's identity, skills, and personality.
 
 A persona is a directory under instances/ that contains:
-  persona.yaml         — identity (name, system_prompt, faculties:/connectors: enablement, optional model)
+  persona.yaml         — identity (name, system_prompt, optional model, and the
+                         faculties:/connectors: enablement)
   platform.yaml        — one platform-named config block (e.g. telegram: {...})
   .env                 — secrets (TELEGRAM_TOKEN, API keys, DATABASE_URL, …)
   connectors.yaml      — per-profile config for enabled connectors

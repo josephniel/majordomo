@@ -335,7 +335,10 @@ class GmailConnector(Connector):
             self._run_browser_auth(email, oauth_keys_local, creds_file)
         except GoogleOAuthError as e:
             print(f"\nauth failed: {e}", file=sys.stderr)
-            print(f"the YAML block is in place but disabled. re-run: python cli.py auth gmail {email}", file=sys.stderr)
+            print(
+                f"the YAML block is in place but disabled. re-run: python cli.py auth gmail {email}",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         self._config.set_profile_enabled("gmail", email, True)
@@ -476,8 +479,7 @@ class GmailConnector(Connector):
 
         @tool(
             "list_filters",
-            "List the user's Gmail filters (the rules that auto-label/forward/etc. "
-            "incoming mail).",
+            "List the user's Gmail filters (the rules that auto-label/forward/etc. incoming mail).",
             {},
         )
         async def list_filters_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:

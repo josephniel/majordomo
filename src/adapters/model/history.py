@@ -167,14 +167,12 @@ class ConversationHistory:
         the rows survive but the lookup key no longer matches, which reads to
         the operator as the bot developing amnesia rather than as a failure.
         """
-        template = (Path(__file__).resolve().parents[1] / "store" / "chat_id_migration.sql").read_text(
-            encoding="utf-8"
-        )
+        template = (
+            Path(__file__).resolve().parents[1] / "store" / "chat_id_migration.sql"
+        ).read_text(encoding="utf-8")
         for table in self._CHAT_ID_TABLES:
             await conn.execute(
-                template.replace("{{TABLE}}", table).replace(
-                    "{{PLATFORM}}", self._legacy_platform
-                )
+                template.replace("{{TABLE}}", table).replace("{{PLATFORM}}", self._legacy_platform)
             )
 
     async def close(self) -> None:
@@ -200,7 +198,11 @@ class ConversationHistory:
                 VALUES ($1, $2, $3, $4, $5::jsonb)
                 RETURNING id
                 """,
-                persona_id, chat_key(chat_id), role, content, metadata or {},
+                persona_id,
+                chat_key(chat_id),
+                role,
+                content,
+                metadata or {},
             )
 
     # ---- reads ----
@@ -223,7 +225,9 @@ class ConversationHistory:
                 ) sub
                 ORDER BY id ASC
                 """,
-                persona_id, chat_key(chat_id), limit,
+                persona_id,
+                chat_key(chat_id),
+                limit,
             )
         return [dict(r) for r in rows]
 
@@ -250,7 +254,10 @@ class ConversationHistory:
                 ORDER BY id ASC
                 LIMIT $4
                 """,
-                persona_id, chat_key(chat_id), after_id, limit,
+                persona_id,
+                chat_key(chat_id),
+                after_id,
+                limit,
             )
         return [dict(r) for r in rows]
 
@@ -263,12 +270,16 @@ class ConversationHistory:
                 SELECT last_row_id FROM reflection_state
                 WHERE persona_id = $1 AND chat_id = $2
                 """,
-                persona_id, chat_key(chat_id),
+                persona_id,
+                chat_key(chat_id),
             )
         return int(row or 0)
 
     async def set_reflection_watermark(
-        self, persona_id: str, chat_id: ConversationRef, last_row_id: int,
+        self,
+        persona_id: str,
+        chat_id: ConversationRef,
+        last_row_id: int,
     ) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
@@ -278,30 +289,40 @@ class ConversationHistory:
                 ON CONFLICT (persona_id, chat_id)
                 DO UPDATE SET last_row_id = EXCLUDED.last_row_id, last_run_at = NOW()
                 """,
-                persona_id, chat_key(chat_id), last_row_id,
+                persona_id,
+                chat_key(chat_id),
+                last_row_id,
             )
 
     async def last_row_id(self, persona_id: str, chat_id: ConversationRef) -> int:
         """Highest active row id for the chat (0 if empty)."""
         async with self._pool.acquire() as conn:
-            return await conn.fetchval(
-                """
+            return (
+                await conn.fetchval(
+                    """
                 SELECT COALESCE(MAX(id), 0) FROM chat_history
                 WHERE persona_id = $1 AND chat_id = $2 AND NOT archived
                 """,
-                persona_id, chat_key(chat_id),
-            ) or 0
+                    persona_id,
+                    chat_key(chat_id),
+                )
+                or 0
+            )
 
     async def total_chars(self, persona_id: str, chat_id: ConversationRef) -> int:
         async with self._pool.acquire() as conn:
-            return await conn.fetchval(
-                """
+            return (
+                await conn.fetchval(
+                    """
                 SELECT COALESCE(SUM(LENGTH(content)), 0)
                 FROM chat_history
                 WHERE persona_id = $1 AND chat_id = $2 AND NOT archived
                 """,
-                persona_id, chat_key(chat_id),
-            ) or 0
+                    persona_id,
+                    chat_key(chat_id),
+                )
+                or 0
+            )
 
     async def approx_tokens(self, persona_id: str, chat_id: ConversationRef) -> int:
         return max(1, (await self.total_chars(persona_id, chat_id)) // 4)
@@ -335,7 +356,11 @@ class ConversationHistory:
                          id DESC
                 LIMIT $5
                 """,
-                persona_id, chat_key(chat_id), query, pattern, limit,
+                persona_id,
+                chat_key(chat_id),
+                query,
+                pattern,
+                limit,
             )
         return [dict(r) for r in rows]
 
@@ -355,7 +380,8 @@ class ConversationHistory:
                     metadata = metadata || '{"reset": true}'::jsonb
                 WHERE persona_id = $1 AND chat_id = $2 AND NOT archived
                 """,
-                persona_id, chat_key(chat_id),
+                persona_id,
+                chat_key(chat_id),
             )
         n = int(result.split()[-1] or 0)
         log.info("reset chat %s for %s: archived %d rows", chat_id, persona_id, n)
@@ -388,7 +414,9 @@ class ConversationHistory:
                     WHERE persona_id = $1 AND chat_id = $2
                       AND NOT archived AND id <= $3
                     """,
-                persona_id, chat_key(chat_id), cutoff_id,
+                persona_id,
+                chat_key(chat_id),
+                cutoff_id,
             )
             folded = int(result.split()[-1] or 0)
             if folded == 0:
@@ -398,7 +426,9 @@ class ConversationHistory:
                     INSERT INTO chat_history (persona_id, chat_id, role, content, metadata)
                     VALUES ($1, $2, 'summary', $3, $4::jsonb)
                     """,
-                persona_id, chat_key(chat_id), summary_text,
+                persona_id,
+                chat_key(chat_id),
+                summary_text,
                 {"compacted_count": folded, "compacted_through_id": cutoff_id},
             )
         return folded
@@ -429,8 +459,17 @@ class ConversationHistory:
                          input_tokens, output_tokens, tool_calls, failovers, error)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     """,
-                    persona_id, chat_key(chat_id), vendor, model, status, latency_ms,
-                    input_tokens, output_tokens, tool_calls, failovers, error[:2000],
+                    persona_id,
+                    chat_key(chat_id),
+                    vendor,
+                    model,
+                    status,
+                    latency_ms,
+                    input_tokens,
+                    output_tokens,
+                    tool_calls,
+                    failovers,
+                    error[:2000],
                 )
         except Exception:
             log.exception("could not write turn_log row (continuing)")
@@ -463,7 +502,8 @@ class ConversationHistory:
                     WHERE persona_id = $1 AND archived
                       AND ts < NOW() - make_interval(days => $2)
                     """,
-                    persona_id, archived_days,
+                    persona_id,
+                    archived_days,
                 )
                 deleted["chat_history_archived"] = int(result.split()[-1])
             if turn_log_days > 0:
@@ -473,7 +513,8 @@ class ConversationHistory:
                     WHERE persona_id = $1
                       AND ts < NOW() - make_interval(days => $2)
                     """,
-                    persona_id, turn_log_days,
+                    persona_id,
+                    turn_log_days,
                 )
                 deleted["turn_log"] = int(result.split()[-1])
         return deleted
@@ -502,8 +543,13 @@ class ConversationHistory:
                     (persona_id, chat_id, connector, tool, args_preview, decision, reason)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                 """,
-                persona_id, chat_key(chat_id), connector, tool,
-                args_preview[:500], decision, reason[:300],
+                persona_id,
+                chat_key(chat_id),
+                connector,
+                tool,
+                args_preview[:500],
+                decision,
+                reason[:300],
             )
 
     async def approval_stats_today(self, persona_id: str) -> dict[str, int]:
@@ -534,7 +580,8 @@ class ConversationHistory:
                 FROM turn_log
                 WHERE persona_id = $1 AND chat_id = $2 AND ts >= date_trunc('day', NOW())
                 """,
-                persona_id, chat_key(chat_id),
+                persona_id,
+                chat_key(chat_id),
             )
             last = await conn.fetchrow(
                 """
@@ -542,7 +589,8 @@ class ConversationHistory:
                 WHERE persona_id = $1 AND chat_id = $2
                 ORDER BY id DESC LIMIT 1
                 """,
-                persona_id, chat_key(chat_id),
+                persona_id,
+                chat_key(chat_id),
             )
         return {
             "today": dict(agg) if agg else {},
@@ -598,8 +646,10 @@ class EphemeralConversationHistory:
         # comparing against a raw ref here silently matched nothing.
         wanted = chat_key(chat_id)
         return [
-            r for r in self._rows
-            if r["persona_id"] == persona_id and r["chat_id"] == wanted
+            r
+            for r in self._rows
+            if r["persona_id"] == persona_id
+            and r["chat_id"] == wanted
             and (include_archived or not r["archived"])
         ]
 

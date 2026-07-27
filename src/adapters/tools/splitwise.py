@@ -607,9 +607,13 @@ class SplitwiseConnector(Connector):
                 except (TypeError, ValueError) as e:
                     return ToolResult.error(f"invalid numeric value in shares: {e}")
                 if abs(paid_sum - cost_num) > 0.01:
-                    return ToolResult.error(f"sum of paid_share ({paid_sum:.2f}) doesn't match cost ({cost_num:.2f})")
+                    return ToolResult.error(
+                        f"sum of paid_share ({paid_sum:.2f}) doesn't match cost ({cost_num:.2f})"
+                    )
                 if abs(owed_sum - cost_num) > 0.01:
-                    return ToolResult.error(f"sum of owed_share ({owed_sum:.2f}) doesn't match cost ({cost_num:.2f})")
+                    return ToolResult.error(
+                        f"sum of owed_share ({owed_sum:.2f}) doesn't match cost ({cost_num:.2f})"
+                    )
 
                 form = _to_form(base)
                 form.update(_flatten_users_to_form(shares_list))

@@ -692,7 +692,9 @@ class PersonaRuntime:
                 if primary:
                     log.warning(
                         "persona %r: PRIMARY_LLM=%r not available; using %r as primary",
-                        self.persona.id, primary, fallback_primary,
+                        self.persona.id,
+                        primary,
+                        fallback_primary,
                     )
                 primary = fallback_primary
             # Primary first, then the rest in registry order.
@@ -701,7 +703,10 @@ class PersonaRuntime:
         chain: list[tuple[str, Agent]] = [(n, available[n]) for n in order if n in available]
         log.info(
             "persona %r: %s chain = %s (primary=%s, model=%s)",
-            self.persona.id, role.value, [n for n, _ in chain], primary,
+            self.persona.id,
+            role.value,
+            [n for n, _ in chain],
+            primary,
             role_chain.model or "per-vendor default",
         )
 
@@ -746,16 +751,19 @@ class PersonaRuntime:
             spec = VENDORS_BY_NAME.get(name)
             if spec is None:
                 log.warning(
-                    "persona %r: %s chain names unknown vendor %r — dropped. "
-                    "Known vendors: %s",
-                    self.persona.id, role.value, name,
+                    "persona %r: %s chain names unknown vendor %r — dropped. Known vendors: %s",
+                    self.persona.id,
+                    role.value,
+                    name,
                     ", ".join(v.name for v in VENDORS),
                 )
             else:
                 log.warning(
                     "persona %r: %s chain names %r but it is not configured — "
                     "dropped from the chain. Set %s, or remove it from the chain.",
-                    self.persona.id, role.value, name,
+                    self.persona.id,
+                    role.value,
+                    name,
                     spec.requires or f"the credentials for {name}",
                 )
 
@@ -782,9 +790,9 @@ class PersonaRuntime:
         provider injects context.
         """
         from adapters.tools import ContextInjector
+
         injectors = [
-            c.inject_context for c in self.active_services
-            if isinstance(c, ContextInjector)
+            c.inject_context for c in self.active_services if isinstance(c, ContextInjector)
         ]
         if not injectors:
             return None
@@ -799,6 +807,7 @@ class PersonaRuntime:
                 except Exception:
                     log.exception("context injector %r failed (continuing)", fn)
             return "\n\n".join(parts)
+
         return _inject_context
 
     @cached_property
@@ -879,10 +888,12 @@ class PersonaRuntime:
 
         def _load_prompt() -> str:
             import yaml
+
             cfg = yaml.safe_load(persona_yaml.read_text(encoding="utf-8")) or {}
             return str((cfg.get("heartbeat") or {}).get("prompt") or "").strip()
 
         from domain.triggers import HeartbeatSource
+
         return HeartbeatSource(
             cron=str(hb["cron"]),
             conversation=self._conversation(chat_id),
@@ -911,6 +922,7 @@ class PersonaRuntime:
         Documents arm is off unless RETENTION_DOCS_DAYS is set — see adapters/trigger/retention.py.
         """
         from adapters.trigger import RetentionJob
+
         docs_store = None
         for c in self.active_services:
             if isinstance(c, DocumentLibrary):
@@ -936,7 +948,8 @@ class PersonaRuntime:
         if chat_id is None:
             log.warning(
                 "persona %r: %s configured but no chat to notify",
-                self.persona.id, label,
+                self.persona.id,
+                label,
             )
         return self._conversation(chat_id) if chat_id is not None else None
 
@@ -954,6 +967,7 @@ class PersonaRuntime:
             return None
         from adapters.trigger.mailwatch import MAIL_WATCH_PROMPT_PREAMBLE, MailWatcher
         from domain.triggers import WatchSource
+
         every = max(1, int(cfg.get("every_minutes") or 3))
         return WatchSource(
             name="mail_watch",
@@ -990,6 +1004,7 @@ class PersonaRuntime:
             SplitwiseWatcher,
         )
         from domain.triggers import WatchSource
+
         every = max(1, int(cfg.get("every_minutes") or 10))
         return WatchSource(
             name="splitwise_watch",
@@ -1018,11 +1033,13 @@ class PersonaRuntime:
             WebhookServer,
             WebhookTrigger,
         )
+
         token = self.settings.webhook_token
         if not token:
             log.warning(
                 "persona %r: webhooks configured but WEBHOOK_TOKEN is unset; "
-                "webhook server disabled", self.persona.id,
+                "webhook server disabled",
+                self.persona.id,
             )
             return None
         default_chat = self._default_operator_chat_id()
@@ -1083,9 +1100,15 @@ class PersonaRuntime:
 
             async def _audit(chat_id, connector, tool, preview, decision, reason) -> None:
                 await hist.log_approval(
-                    persona_id=persona_id, chat_id=chat_id, connector=connector,
-                    tool=tool, args_preview=preview, decision=decision, reason=reason,
+                    persona_id=persona_id,
+                    chat_id=chat_id,
+                    connector=connector,
+                    tool=tool,
+                    args_preview=preview,
+                    decision=decision,
+                    reason=reason,
                 )
+
             self.approval_gate.bind_audit(_audit)
         # Same late-binding for file delivery.
         for c in self.active_services:

@@ -147,9 +147,19 @@ def _format_transaction(tx: dict[str, Any]) -> str:
 
 class BudgetConnector(Connector):
     name = "budget"
-    TRIGGER_KEYWORDS = ("budget", "expense", "spent", "spend", "paid",
-                        "bought", "purchase", "transaction", "gastos",
-                        "track", "ledger")
+    TRIGGER_KEYWORDS = (
+        "budget",
+        "expense",
+        "spent",
+        "spend",
+        "paid",
+        "bought",
+        "purchase",
+        "transaction",
+        "gastos",
+        "track",
+        "ledger",
+    )
     WRITE_TOOLS = frozenset({"record_transaction", "record_split"})
 
     TOOL_NAMES: ClassVar[list[str]] = [
@@ -232,7 +242,9 @@ the ledger books their share as expense and the rest as loans)."""
             try:
                 accounts = await client.list_accounts()
                 if not accounts:
-                    return ToolResult.ok("No accounts yet — create one in the budget tracker UI first.")
+                    return ToolResult.ok(
+                        "No accounts yet — create one in the budget tracker UI first."
+                    )
                 return ToolResult.ok("\n".join(_format_account(a) for a in accounts))
             except httpx.HTTPStatusError as e:
                 return ToolResult.error(_format_http_error(e))
@@ -250,7 +262,9 @@ the ledger books their share as expense and the rest as loans)."""
             try:
                 tags = await client.list_tags()
                 if not tags:
-                    return ToolResult.ok("No tags yet — create some in the budget tracker UI first.")
+                    return ToolResult.ok(
+                        "No tags yet — create some in the budget tracker UI first."
+                    )
                 return ToolResult.ok("\n".join(_format_tags(tags)))
             except httpx.HTTPStatusError as e:
                 return ToolResult.error(_format_http_error(e))
@@ -296,13 +310,31 @@ the ledger books their share as expense and the rest as loans)."""
             {
                 "type": "object",
                 "properties": {
-                    "account_id": {"type": "integer", "description": "Account the money moved on (list_accounts)."},
+                    "account_id": {
+                        "type": "integer",
+                        "description": "Account the money moved on (list_accounts).",
+                    },
                     "tag_id": {"type": "integer", "description": "Category tag (list_tags)."},
-                    "amount": {"type": "number", "exclusiveMinimum": 0, "description": "Positive amount in the account's currency."},
-                    "type": {"type": "string", "enum": ["debit", "credit"], "description": "debit = money out (default), credit = money in."},
+                    "amount": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "description": "Positive amount in the account's currency.",
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["debit", "credit"],
+                        "description": "debit = money out (default), credit = money in.",
+                    },
                     "description": {"type": "string", "description": "What this was for."},
-                    "counterparty": {"type": "string", "description": "Merchant or person on the other side.", "maxLength": 120},
-                    "occurred_at": {"type": "string", "description": "ISO 8601 datetime; omit for now."},
+                    "counterparty": {
+                        "type": "string",
+                        "description": "Merchant or person on the other side.",
+                        "maxLength": 120,
+                    },
+                    "occurred_at": {
+                        "type": "string",
+                        "description": "ISO 8601 datetime; omit for now.",
+                    },
                 },
                 "required": ["account_id", "tag_id", "amount"],
             },
@@ -314,8 +346,7 @@ the ledger books their share as expense and the rest as loans)."""
                     "type": args.get("type") or "debit",
                     "amount": args["amount"],
                     "tag_id": int(args["tag_id"]),
-                    "occurred_at": args.get("occurred_at")
-                    or datetime.now(UTC).isoformat(),
+                    "occurred_at": args.get("occurred_at") or datetime.now(UTC).isoformat(),
                 }
                 if args.get("description"):
                     payload["description"] = str(args["description"])
@@ -347,24 +378,45 @@ the ledger books their share as expense and the rest as loans)."""
             {
                 "type": "object",
                 "properties": {
-                    "account_id": {"type": "integer", "description": "Account the full payment left (list_accounts)."},
-                    "tag_id": {"type": "integer", "description": "Category tag for the expense (list_tags)."},
-                    "total_amount": {"type": "number", "exclusiveMinimum": 0, "description": "Full amount paid, including everyone's shares."},
+                    "account_id": {
+                        "type": "integer",
+                        "description": "Account the full payment left (list_accounts).",
+                    },
+                    "tag_id": {
+                        "type": "integer",
+                        "description": "Category tag for the expense (list_tags).",
+                    },
+                    "total_amount": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "description": "Full amount paid, including everyone's shares.",
+                    },
                     "shares": {
                         "type": "array",
                         "minItems": 1,
                         "items": {
                             "type": "object",
                             "properties": {
-                                "person": {"type": "string", "description": "Name of the person who owes this share.", "maxLength": 120},
-                                "amount": {"type": "number", "exclusiveMinimum": 0, "description": "What this person owes."},
+                                "person": {
+                                    "type": "string",
+                                    "description": "Name of the person who owes this share.",
+                                    "maxLength": 120,
+                                },
+                                "amount": {
+                                    "type": "number",
+                                    "exclusiveMinimum": 0,
+                                    "description": "What this person owes.",
+                                },
                             },
                             "required": ["person", "amount"],
                         },
                         "description": "The OTHER people's shares (never the user's own).",
                     },
                     "description": {"type": "string", "description": "What this was for."},
-                    "occurred_at": {"type": "string", "description": "ISO 8601 datetime; omit for now."},
+                    "occurred_at": {
+                        "type": "string",
+                        "description": "ISO 8601 datetime; omit for now.",
+                    },
                 },
                 "required": ["account_id", "tag_id", "total_amount", "shares"],
             },
@@ -380,8 +432,7 @@ the ledger books their share as expense and the rest as loans)."""
                     "total_amount": args["total_amount"],
                     "shares": shares,
                     "tag_id": int(args["tag_id"]),
-                    "occurred_at": args.get("occurred_at")
-                    or datetime.now(UTC).isoformat(),
+                    "occurred_at": args.get("occurred_at") or datetime.now(UTC).isoformat(),
                 }
                 if args.get("description"):
                     payload["description"] = str(args["description"])
@@ -415,7 +466,7 @@ the ledger books their share as expense and the rest as loans)."""
             "--url",
             default=DEFAULT_BASE_URL,
             help=f"budget tracker API base URL (default {DEFAULT_BASE_URL}; "
-                 "keep it on localhost — the public edge blocks automation)",
+            "keep it on localhost — the public edge blocks automation)",
         )
         p.add_argument(
             "--rotate",
@@ -526,8 +577,6 @@ the ledger books their share as expense and the rest as loans)."""
         secrets_dir = self.credentials_dir / slug
         secrets_dir.mkdir(parents=True, exist_ok=True)
         secrets_file = secrets_dir / "secrets.json"
-        payload = json.dumps(
-            {"BUDGET_API_KEY": api_key, "BUDGET_BASE_URL": base_url}
-        )
+        payload = json.dumps({"BUDGET_API_KEY": api_key, "BUDGET_BASE_URL": base_url})
         secrets_file.write_text(payload, encoding="utf-8")
         return secrets_file

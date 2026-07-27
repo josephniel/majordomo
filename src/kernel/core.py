@@ -508,8 +508,8 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         if self._agent_ctx_versions.get(chat_id) == current:
             return
         log.info(
-            "connector context changed; rebuilding agent for chat %s "
-            "(session preserved)", chat_id,
+            "connector context changed; rebuilding agent for chat %s (session preserved)",
+            chat_id,
         )
         self._persist_session_id(chat_id, agent)
         self._spawn_agent_stop(agent)
@@ -521,6 +521,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 await agent.stop()
             except Exception:
                 log.exception("error stopping stale agent")
+
         # Hold a reference — a bare create_task can be GC'd mid-flight.
         task = asyncio.create_task(_stop())
         self._stale_agent_stops.add(task)

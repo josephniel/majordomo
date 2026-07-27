@@ -400,7 +400,7 @@ For a ONE-TIME reminder ("remind me in 20 minutes", "ping me at 5pm today", "in 
 
 Use schedule_list to show the user their current schedules (recurring and one-shot). schedule_remove to delete one. schedule_set_enabled to pause/resume a recurring one without deleting.
 
-Do not invent times. If the user is vague ("remind me sometimes"), ask for specifics."""
+Do not invent times. If the user is vague ("remind me sometimes"), ask for specifics."""  # noqa: E501 — model-facing text; a wrap here changes what the model reads
 
     def __init__(self, runtime: ScheduleEngine) -> None:
         self._runtime = runtime
@@ -518,7 +518,9 @@ Do not invent times. If the user is vague ("remind me sometimes"), ask for speci
             lines = []
             for s in items:
                 status = "ON " if s.enabled else "OFF"
-                lines.append(f"[{status}] {s.name}: {s.cron} — {s.description or '(no description)'}")
+                lines.append(
+                    f"[{status}] {s.name}: {s.cron} — {s.description or '(no description)'}"
+                )
             return ToolResult.ok("\n".join(lines))
 
         @tool(

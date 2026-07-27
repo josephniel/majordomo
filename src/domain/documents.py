@@ -159,7 +159,8 @@ Prefer doc_search over asking the user to re-send anything."""
         )
         async def doc_search_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             hits = await outer._store.search(
-                outer._persona_id, str(args.get("query") or ""),
+                outer._persona_id,
+                str(args.get("query") or ""),
             )
             if not hits:
                 return ToolResult.ok("no matching passages")
@@ -188,8 +189,14 @@ Prefer doc_search over asking the user to re-send anything."""
             body = "\n\n".join(c["content"] for c in doc["chunks"])
             last = doc["chunks"][-1]["chunk_index"] if doc["chunks"] else start
             more = doc["num_chunks"] - last - 1
-            suffix = f"\n\n({more} more chunks; continue with start_chunk={last + 1})" if more > 0 else ""
-            return ToolResult.ok(f"{doc['name']} (chunks {start}..{last} of {doc['num_chunks']}):\n\n{body}{suffix}")
+            suffix = (
+                f"\n\n({more} more chunks; continue with start_chunk={last + 1})"
+                if more > 0
+                else ""
+            )
+            return ToolResult.ok(
+                f"{doc['name']} (chunks {start}..{last} of {doc['num_chunks']}):\n\n{body}{suffix}"
+            )
 
         @tool(
             "doc_delete",

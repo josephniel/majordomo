@@ -91,15 +91,25 @@ def _parse_skill(path: Path) -> Skill | None:
         name=path.stem,
         description=str(meta.get("description") or "").strip(),
         body=body,
-        keywords=tuple(str(k).strip().lower() for k in (meta.get("keywords") or []) if str(k).strip()),
+        keywords=tuple(
+            str(k).strip().lower() for k in (meta.get("keywords") or []) if str(k).strip()
+        ),
         always=bool(meta.get("always")),
     )
 
 
 class SkillsLibrary(Faculty):
     name = "skills"
-    TRIGGER_KEYWORDS = ("skill", "always", "never", "remember how",
-                        "from now on", "procedure", "instructions", "teach")
+    TRIGGER_KEYWORDS = (
+        "skill",
+        "always",
+        "never",
+        "remember how",
+        "from now on",
+        "procedure",
+        "instructions",
+        "teach",
+    )
     # Self-written skills mutate the agent's own standing instructions —
     # that's a write to the most privileged surface there is. Gate them.
     WRITE_TOOLS = frozenset({"skill_save", "skill_delete"})
@@ -156,17 +166,21 @@ class SkillsLibrary(Faculty):
         lines = [
             "== Skills ==",
             "",
-            ("Instruction notes that persist across conversations. Ones "
-            "relevant to the current message are attached to it "
-            "automatically; you can read any other with the skill_read tool "
-            "when its topic comes up."),
+            (
+                "Instruction notes that persist across conversations. Ones "
+                "relevant to the current message are attached to it "
+                "automatically; you can read any other with the skill_read tool "
+                "when its topic comes up."
+            ),
             "",
-            ("Learning loop: when the user corrects you for the second time "
-            "on the same thing, teaches you a procedure, or says "
-            "'always'/'never' do something, offer to save it as a skill via "
-            "skill_save (if that tool is available to you) so future "
-            "conversations get it right. The save asks the user for approval "
-            "— never claim a skill is saved unless the tool call succeeded."),
+            (
+                "Learning loop: when the user corrects you for the second time "
+                "on the same thing, teaches you a procedure, or says "
+                "'always'/'never' do something, offer to save it as a skill via "
+                "skill_save (if that tool is available to you) so future "
+                "conversations get it right. The save asks the user for approval "
+                "— never claim a skill is saved unless the tool call succeeded."
+            ),
         ]
         if not skills:
             return "\n".join([*lines, "", "No skills saved yet."])
@@ -198,8 +212,7 @@ class SkillsLibrary(Faculty):
             skill = skills.get(wanted)
             if skill is None:
                 return ToolResult.error(
-                    f"no skill named {wanted!r}. Available: "
-                    f"{', '.join(sorted(skills)) or '(none)'}"
+                    f"no skill named {wanted!r}. Available: {', '.join(sorted(skills)) or '(none)'}"
                 )
             return ToolResult.ok(skill.body)
 
@@ -242,14 +255,11 @@ class SkillsLibrary(Faculty):
             name = str(args.get("name") or "").strip().lower()
             body = str(args.get("body") or "").strip()
             if not _NAME_RE.match(name):
-                return ToolResult.error(
-                    f"invalid skill name {name!r} (snake_case, 2-64 chars)"
-                )
+                return ToolResult.error(f"invalid skill name {name!r} (snake_case, 2-64 chars)")
             if not body:
                 return ToolResult.error("skill body is empty")
             keywords = [
-                str(k).strip().lower()
-                for k in (args.get("keywords") or []) if str(k).strip()
+                str(k).strip().lower() for k in (args.get("keywords") or []) if str(k).strip()
             ]
             fm = {"description": str(args.get("description") or "").strip()}
             if keywords:

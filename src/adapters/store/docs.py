@@ -110,7 +110,7 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'skipping HNSW index on document_chunks.embedding: %', SQLERRM;
 END $$;
-"""
+"""  # noqa: E501 — SQL text; wrapping the statement to fit the column limit hurts it
 
 
 def chunk_text(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[str]:

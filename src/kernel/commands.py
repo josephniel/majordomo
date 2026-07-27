@@ -124,9 +124,7 @@ class CommandsMixin:
         agent = self._agents.get(chat_id)
         if isinstance(agent, VendorIntrospectable):
             model = agent.model_name or ""
-            lines.append(
-                f"Vendor: {agent.active_vendor}" + (f" ({model})" if model else "")
-            )
+            lines.append(f"Vendor: {agent.active_vendor}" + (f" ({model})" if model else ""))
             lines.append("Chain: " + " -> ".join(agent.vendor_names))
             health = agent.health
             if health:
@@ -154,9 +152,7 @@ class CommandsMixin:
         # The schedule faculty is already in self._connectors; find it there
         # rather than holding a second reference to it on the orchestrator.
         # Its count is per-chat, which is why it can't ride status_line().
-        scheduler = next(
-            (c for c in self._connectors if hasattr(c, "schedules_for_chat")), None
-        )
+        scheduler = next((c for c in self._connectors if hasattr(c, "schedules_for_chat")), None)
         if scheduler is not None:
             try:
                 scheds = scheduler.schedules_for_chat(chat_id)

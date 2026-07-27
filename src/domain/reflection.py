@@ -63,7 +63,7 @@ Rules:
 
 CONVERSATION EXCERPT:
 {transcript}
-"""
+"""  # noqa: E501 — model-facing text; a wrap here changes what the model reads
 
 
 class ReflectionEngine:
@@ -225,7 +225,7 @@ _VOLATILE_PATTERNS = re.compile(
     | \b[0-9a-f]{7,40}\b(?=.*\bcommit\b)|\bcommit\s+[0-9a-f]{7,40}\b          # commit SHA
     | \bv?\d+\.\d+(?:\.\d+)?\b                                                # version
     | \b[A-Z][A-Z0-9]*_[A-Z0-9_]*\b                                          # ENV_VAR / CONFIG_KEY (must have _)
-    """,
+    """,  # noqa: E501 — model-facing text; a wrap here changes what the model reads
     re.VERBOSE,
 )
 

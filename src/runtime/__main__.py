@@ -26,7 +26,9 @@ def main() -> None:
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     project_root = Path(__file__).resolve().parent.parent.parent
-    parser = argparse.ArgumentParser(description="Run the given persona on its configured chat platform (LLM-agnostic).")
+    parser = argparse.ArgumentParser(
+        description="Run the given persona on its configured chat platform (LLM-agnostic)."
+    )
     parser.add_argument(
         "--persona",
         required=True,

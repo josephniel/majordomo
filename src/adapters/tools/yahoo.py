@@ -105,90 +105,149 @@ class YahooConnector(Connector):
               {"query": str, "mailbox": str, "limit": int})
         async def search_by_sender(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
-                return await _search(["FROM", args["query"]], args.get("mailbox") or "INBOX", int(args.get("limit") or 10))
+                return await _search(
+                    ["FROM", args["query"]],
+                    args.get("mailbox") or "INBOX",
+                    int(args.get("limit") or 10),
+                )
             except Exception as e:
                 return _err(e)
 
-        @tool("search_by_subject",
-              "Search Yahoo Mail by subject. Args: query, mailbox (default INBOX), limit (default 10).",
-              {"query": str, "mailbox": str, "limit": int})
+        @tool(
+            "search_by_subject",
+            "Search Yahoo Mail by subject. Args: query, mailbox (default INBOX), "
+            "limit (default 10).",
+            {"query": str, "mailbox": str, "limit": int},
+        )
         async def search_by_subject(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
-                return await _search(["SUBJECT", args["query"]], args.get("mailbox") or "INBOX", int(args.get("limit") or 10))
+                return await _search(
+                    ["SUBJECT", args["query"]],
+                    args.get("mailbox") or "INBOX",
+                    int(args.get("limit") or 10),
+                )
             except Exception as e:
                 return _err(e)
 
-        @tool("search_by_recipient",
-              "Search Yahoo Mail by recipient (To). Args: query, mailbox (default INBOX), limit (default 10).",
-              {"query": str, "mailbox": str, "limit": int})
+        @tool(
+            "search_by_recipient",
+            "Search Yahoo Mail by recipient (To). Args: query, mailbox (default INBOX), "
+            "limit (default 10).",
+            {"query": str, "mailbox": str, "limit": int},
+        )
         async def search_by_recipient(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
-                return await _search(["TO", args["query"]], args.get("mailbox") or "INBOX", int(args.get("limit") or 10))
+                return await _search(
+                    ["TO", args["query"]],
+                    args.get("mailbox") or "INBOX",
+                    int(args.get("limit") or 10),
+                )
             except Exception as e:
                 return _err(e)
 
-        @tool("search_by_body",
-              "Search Yahoo Mail message bodies for text. Args: query, mailbox (default INBOX), limit (default 10).",
-              {"query": str, "mailbox": str, "limit": int})
+        @tool(
+            "search_by_body",
+            "Search Yahoo Mail message bodies for text. Args: query, mailbox (default INBOX), "
+            "limit (default 10).",
+            {"query": str, "mailbox": str, "limit": int},
+        )
         async def search_by_body(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
-                return await _search(["BODY", args["query"]], args.get("mailbox") or "INBOX", int(args.get("limit") or 10))
+                return await _search(
+                    ["BODY", args["query"]],
+                    args.get("mailbox") or "INBOX",
+                    int(args.get("limit") or 10),
+                )
             except Exception as e:
                 return _err(e)
 
-        @tool("search_since_date",
-              "Search Yahoo Mail for messages on/after a date. Args: date (DD-Mon-YYYY, e.g. 01-Jul-2026), "
-              "mailbox (default INBOX), limit (default 10).",
-              {"date": str, "mailbox": str, "limit": int})
+        @tool(
+            "search_since_date",
+            "Search Yahoo Mail for messages on/after a date. Args: date (DD-Mon-YYYY, "
+            "e.g. 01-Jul-2026), mailbox (default INBOX), limit (default 10).",
+            {"date": str, "mailbox": str, "limit": int},
+        )
         async def search_since_date(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
-                return await _search(["SINCE", args["date"]], args.get("mailbox") or "INBOX", int(args.get("limit") or 10))
+                return await _search(
+                    ["SINCE", args["date"]],
+                    args.get("mailbox") or "INBOX",
+                    int(args.get("limit") or 10),
+                )
             except Exception as e:
                 return _err(e)
 
-        @tool("get_unseen_messages",
-              "List unread Yahoo Mail messages. Args: mailbox (default INBOX), limit (default 10).",
-              {"mailbox": str, "limit": int})
+        @tool(
+            "get_unseen_messages",
+            "List unread Yahoo Mail messages. Args: mailbox (default INBOX), limit (default 10).",
+            {"mailbox": str, "limit": int},
+        )
         async def get_unseen_messages(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
-                return await _search(["UNSEEN"], args.get("mailbox") or "INBOX", int(args.get("limit") or 10))
+                return await _search(
+                    ["UNSEEN"], args.get("mailbox") or "INBOX", int(args.get("limit") or 10)
+                )
             except Exception as e:
                 return _err(e)
 
-        @tool("get_recent_messages",
-              "List the most recent Yahoo Mail messages. Args: mailbox (default INBOX), limit (default 10).",
-              {"mailbox": str, "limit": int})
+        @tool(
+            "get_recent_messages",
+            "List the most recent Yahoo Mail messages. Args: mailbox (default INBOX), "
+            "limit (default 10).",
+            {"mailbox": str, "limit": int},
+        )
         async def get_recent_messages(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
-                return await _search([], args.get("mailbox") or "INBOX", int(args.get("limit") or 10))
+                return await _search(
+                    [], args.get("mailbox") or "INBOX", int(args.get("limit") or 10)
+                )
             except Exception as e:
                 return _err(e)
 
-        @tool("get_message",
-              "Read one Yahoo Mail message in full (headers + body). Args: uid, mailbox (default INBOX).",
-              {"uid": str, "mailbox": str})
+        @tool(
+            "get_message",
+            "Read one Yahoo Mail message in full (headers + body). Args: uid, "
+            "mailbox (default INBOX).",
+            {"uid": str, "mailbox": str},
+        )
         async def get_message(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 rows = await asyncio.to_thread(
-                    _imap_fetch_uids, env, args.get("mailbox") or "INBOX", [str(args["uid"]).strip()], True)
-                return ToolResult.ok(_format_msg(rows[0], True)) if rows else ToolResult.ok("(message not found)")
+                    _imap_fetch_uids,
+                    env,
+                    args.get("mailbox") or "INBOX",
+                    [str(args["uid"]).strip()],
+                    True,
+                )
+                return (
+                    ToolResult.ok(_format_msg(rows[0], True))
+                    if rows
+                    else ToolResult.ok("(message not found)")
+                )
             except Exception as e:
                 return _err(e)
 
-        @tool("get_messages",
-              "Read several Yahoo Mail messages in full. Args: uids (comma-separated), mailbox (default INBOX).",
-              {"uids": str, "mailbox": str})
+        @tool(
+            "get_messages",
+            "Read several Yahoo Mail messages in full. Args: uids (comma-separated), mailbox "
+            "(default INBOX).",
+            {"uids": str, "mailbox": str},
+        )
         async def get_messages(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 uids = [u.strip() for u in str(args["uids"]).split(",") if u.strip()]
-                rows = await asyncio.to_thread(_imap_fetch_uids, env, args.get("mailbox") or "INBOX", uids, True)
-                return ToolResult.ok("\n\n".join(_format_msg(r, True) for r in rows)) if rows else ToolResult.ok("(no messages)")
+                rows = await asyncio.to_thread(
+                    _imap_fetch_uids, env, args.get("mailbox") or "INBOX", uids, True
+                )
+                return (
+                    ToolResult.ok("\n\n".join(_format_msg(r, True) for r in rows))
+                    if rows
+                    else ToolResult.ok("(no messages)")
+                )
             except Exception as e:
                 return _err(e)
 
-        @tool("list_mailboxes",
-              "List Yahoo Mail folders/mailboxes. No args.",
-              {})
+        @tool("list_mailboxes", "List Yahoo Mail folders/mailboxes. No args.", {})
         async def list_mailboxes(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 names = await asyncio.to_thread(_imap_list_mailboxes, env)
@@ -196,34 +255,61 @@ class YahooConnector(Connector):
             except Exception as e:
                 return _err(e)
 
-        @tool("get_attachments",
-              "List attachments (name, type, size) on a Yahoo Mail message. Args: uid, mailbox (default INBOX).",
-              {"uid": str, "mailbox": str})
+        @tool(
+            "get_attachments",
+            "List attachments (name, type, size) on a Yahoo Mail message. Args: uid, mailbox "
+            "(default INBOX).",
+            {"uid": str, "mailbox": str},
+        )
         async def get_attachments(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
-                atts = await asyncio.to_thread(_imap_attachments, env, args.get("mailbox") or "INBOX", str(args["uid"]).strip())
+                atts = await asyncio.to_thread(
+                    _imap_attachments, env, args.get("mailbox") or "INBOX", str(args["uid"]).strip()
+                )
                 if not atts:
                     return ToolResult.ok("(no attachments)")
-                return ToolResult.ok("Attachments:\n" + "\n".join(f"- {a['name']} ({a['type']}, {a['size']} bytes)" for a in atts))
+                return ToolResult.ok(
+                    "Attachments:\n"
+                    + "\n".join(f"- {a['name']} ({a['type']}, {a['size']} bytes)" for a in atts)
+                )
             except Exception as e:
                 return _err(e)
 
-        @tool("mark_as_read",
-              "Mark a Yahoo Mail message as read (\\Seen flag). Args: uid, mailbox (default INBOX).",
-              {"uid": str, "mailbox": str})
+        @tool(
+            "mark_as_read",
+            "Mark a Yahoo Mail message as read (\\Seen flag). Args: uid, mailbox (default INBOX).",
+            {"uid": str, "mailbox": str},
+        )
         async def mark_as_read(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
                 host, port, secure, user, password = _conn_params(env)
-                await asyncio.to_thread(_imap_mark_read, host, port, secure, user, password,
-                                        args.get("mailbox") or "INBOX", str(args["uid"]).strip())
+                await asyncio.to_thread(
+                    _imap_mark_read,
+                    host,
+                    port,
+                    secure,
+                    user,
+                    password,
+                    args.get("mailbox") or "INBOX",
+                    str(args["uid"]).strip(),
+                )
                 return ToolResult.ok(f"marked uid={args['uid']} as read")
             except Exception as e:
                 return _err(e)
 
         return [
-            search_by_sender, search_by_subject, search_by_recipient, search_by_body,
-            search_since_date, get_unseen_messages, get_recent_messages, get_message,
-            get_messages, list_mailboxes, get_attachments, mark_as_read,
+            search_by_sender,
+            search_by_subject,
+            search_by_recipient,
+            search_by_body,
+            search_since_date,
+            get_unseen_messages,
+            get_recent_messages,
+            get_message,
+            get_messages,
+            list_mailboxes,
+            get_attachments,
+            mark_as_read,
         ]
 
     # ---- CLI ----
@@ -379,6 +465,7 @@ def _imap_mark_read(
 
 # ---- in-process IMAP read helpers (run via asyncio.to_thread) ----
 
+
 def _conn_params(env: dict[str, Any]) -> tuple[Any, ...]:
     return (
         env.get("IMAP_HOST", "imap.mail.yahoo.com"),
@@ -406,14 +493,16 @@ def _logout(m) -> None:
         m.logout()
 
 
-def _imap_search(env: dict[str, Any], mailbox: str, criteria: list[Any], limit: int, full: bool = False) -> list[Any]:
+def _imap_search(
+    env: dict[str, Any], mailbox: str, criteria: list[Any], limit: int, full: bool = False
+) -> list[Any]:
     m = _open(env, mailbox)
     try:
         typ, data = m.uid("SEARCH", None, *criteria) if criteria else m.uid("SEARCH", None, "ALL")
         if typ != "OK":
             raise RuntimeError(f"SEARCH failed: {data!r}")
         uids = (data[0] or b"").split()
-        uids = uids[-max(1, limit):][::-1]  # most recent first
+        uids = uids[-max(1, limit) :][::-1]  # most recent first
         return [_fetch_one(m, u, full) for u in uids]
     finally:
         _logout(m)
@@ -449,7 +538,7 @@ def _fetch_one(m, uid, full: bool) -> dict[str, Any]:
 
 
 def _first_bytes(data) -> bytes:
-    for part in (data or []):
+    for part in data or []:
         if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
             return bytes(part[1])
     return b""
@@ -471,13 +560,15 @@ def _text_body(msg) -> str:
             if part.get_content_type() == "text/plain" and "attachment" not in disp:
                 try:
                     return (part.get_payload(decode=True) or b"").decode(
-                        part.get_content_charset() or "utf-8", "replace")
+                        part.get_content_charset() or "utf-8", "replace"
+                    )
                 except Exception:
                     continue
         return ""
     try:
         return (msg.get_payload(decode=True) or b"").decode(
-            msg.get_content_charset() or "utf-8", "replace")
+            msg.get_content_charset() or "utf-8", "replace"
+        )
     except Exception:
         return ""
 
@@ -490,7 +581,7 @@ def _imap_list_mailboxes(env: dict[str, Any]) -> list[Any]:
         m.login(user, pw)
         _typ, data = m.list()
         names = []
-        for line in (data or []):
+        for line in data or []:
             if not line:
                 continue
             s = line.decode(errors="replace") if isinstance(line, (bytes, bytearray)) else str(line)
@@ -513,15 +604,20 @@ def _imap_attachments(env: dict[str, Any], mailbox: str, uid: str) -> list[Any]:
                 fn = part.get_filename()
                 if "attachment" in disp or fn:
                     payload = part.get_payload(decode=True) or b""
-                    atts.append({"name": _decode(fn) or "(unnamed)",
-                                 "type": part.get_content_type(), "size": len(payload)})
+                    atts.append(
+                        {
+                            "name": _decode(fn) or "(unnamed)",
+                            "type": part.get_content_type(),
+                            "size": len(payload),
+                        }
+                    )
         return atts
     finally:
         _logout(m)
 
 
 def _format_msg(r: dict[str, Any], full: bool) -> str:
-    line = f"[{r['uid']}] {r.get('from','')} | {r.get('subject') or '(no subject)'} — {r.get('date','')}"
+    line = f"[{r['uid']}] {r.get('from', '')} | {r.get('subject') or '(no subject)'} — {r.get('date', '')}"
     if full and r.get("body"):
         line += "\n" + r["body"]
     return line

@@ -182,8 +182,7 @@ class RecallReport:
             lines.append(f"  misses ({len(self.misses)}):")
             for r in self.misses:
                 lines.append(
-                    f"    {r.case.query!r} — want {r.case.expect}, "
-                    f"got {r.ranked_keys[:K_AUTO]}"
+                    f"    {r.case.query!r} — want {r.case.expect}, got {r.ranked_keys[:K_AUTO]}"
                 )
         lines.append("")
         return "\n".join(lines)
@@ -276,9 +275,7 @@ async def run_negatives(
         scored = await db.recall_scored(persona_id, q, limit=AUTO_RECALL_LIMIT_PROBE)
         chosen = select_for_injection(scored)
         if chosen:
-            report.false_injections.append(
-                (q, [key_by_id.get(str(e.id), "?") for e, _ in chosen])
-            )
+            report.false_injections.append((q, [key_by_id.get(str(e.id), "?") for e, _ in chosen]))
 
 
 async def _require_schema(db: MemoryDatabase, dsn: str) -> None:
@@ -346,9 +343,7 @@ async def evaluate(
     finally:
         try:
             async with db._acquire() as conn:
-                await conn.execute(
-                    "DELETE FROM memory_entries WHERE persona_id = $1", persona_id
-                )
+                await conn.execute("DELETE FROM memory_entries WHERE persona_id = $1", persona_id)
         finally:
             await db.close()
 
@@ -360,17 +355,24 @@ def build_parser() -> argparse.ArgumentParser:
     it deserves an assertion.
     """
     ap = argparse.ArgumentParser(prog="eval-recall", description=__doc__)
-    ap.add_argument("--dsn", default=DEFAULT_DSN,
-                    help="Postgres DSN to seed against (default: the test "
-                         "database, NOT a live assistant's)")
-    ap.add_argument("--migrate", action="store_true",
-                    help="create/upgrade the schema on the target first. Off "
-                         "by default: a benchmark should not be able to apply "
-                         "DDL to a database it does not own.")
+    ap.add_argument(
+        "--dsn",
+        default=DEFAULT_DSN,
+        help="Postgres DSN to seed against (default: the test database, NOT a live assistant's)",
+    )
+    ap.add_argument(
+        "--migrate",
+        action="store_true",
+        help="create/upgrade the schema on the target first. Off "
+        "by default: a benchmark should not be able to apply "
+        "DDL to a database it does not own.",
+    )
     ap.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     ap.add_argument("--verbose", "-v", action="store_true", help="per-case detail")
     ap.add_argument(
-        "--min-recall", type=float, default=None,
+        "--min-recall",
+        type=float,
+        default=None,
         help=f"exit non-zero if recall@{K_AUTO} falls below this (0-1)",
     )
     return ap
@@ -379,15 +381,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    report = asyncio.run(
-        evaluate(dsn=args.dsn, cases_path=args.cases, migrate=args.migrate)
-    )
+    report = asyncio.run(evaluate(dsn=args.dsn, cases_path=args.cases, migrate=args.migrate))
     print(report.render(verbose=args.verbose))
     if args.min_recall is not None and report.recall_at_auto < args.min_recall:
-        print(
-            f"FAIL: recall@{K_AUTO} {report.recall_at_auto:.1%} "
-            f"< floor {args.min_recall:.1%}"
-        )
+        print(f"FAIL: recall@{K_AUTO} {report.recall_at_auto:.1%} < floor {args.min_recall:.1%}")
         return 1
     return 0
 

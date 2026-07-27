@@ -83,7 +83,7 @@ If a tool call fails: report the literal error and suggest the appropriate `./ma
 
 Concrete example of a WRONG response — NEVER say anything like this:
     "The ClickUp connector needs to be authorized first. Open the app on your desktop and run /mcp to connect..."
-That is forbidden. The user is on Telegram. There is nothing to "open" and no `/mcp` to run."""
+That is forbidden. The user is on Telegram. There is nothing to "open" and no `/mcp` to run."""  # noqa: E501 — model-facing text; a wrap here changes what the model reads
 
 
 _CONTROL_ROOM_PART_TEMPLATE = """== Control Room (group chat) ==
@@ -99,7 +99,7 @@ In this group:
 - Don't echo what a peer bot just said. If another bot already answered well, stay silent unless you can add a distinct, useful piece.
 - To address a peer bot directly, include their @username in your reply.
 - The operator is in the room and reads everything, including the inter-bot dialogue. Be concise — multiple bots talking gets noisy fast.
-"""
+"""  # noqa: E501 — model-facing text; a wrap here changes what the model reads
 
 
 PLATFORM_NAME = "telegram"

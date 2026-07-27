@@ -559,7 +559,8 @@ class MemoryDatabase:
         """
         async with self._acquire() as conn:
             result = await conn.execute(
-                "UPDATE memory_entries SET verified_at = NOW() WHERE id = $1 AND superseded_by IS NULL",
+                "UPDATE memory_entries SET verified_at = NOW() WHERE id = $1 AND superseded_by IS "
+                "NULL",
                 entry_id,
             )
         return result.split()[-1] != "0"
@@ -909,7 +910,7 @@ LIMIT ${len(params)}
                     summary = EXCLUDED.summary,
                     last_source_count = EXCLUDED.last_source_count,
                     last_compacted_at = NOW()
-                """,
+                """,  # noqa: E501 — SQL text; wrapping the statement to fit the column limit hurts it
                 persona_id, scope, domain_key, summary, source_count,
             )
 

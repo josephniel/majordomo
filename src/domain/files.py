@@ -86,5 +86,7 @@ class FileCourier(Faculty):
             log.exception("chat_send_file failed")
             return ToolResult.error(f"sending failed: {e}")
         if not delivered:
-            return ToolResult.error("the platform could not deliver the file (too large, or unsupported)")
+            return ToolResult.error(
+                "the platform could not deliver the file (too large, or unsupported)"
+            )
         return ToolResult.ok(f"sent {path.name} to the chat")

@@ -57,7 +57,8 @@ class CommsRelay:
         await self._log.subscribe(self._on_comms_entry)
         log.info(
             "comms relay started: persona=%s mention=%s",
-            self._persona_id, self._mention_token,
+            self._persona_id,
+            self._mention_token,
         )
 
     async def stop(self) -> None:
@@ -76,7 +77,8 @@ class CommsRelay:
             log.warning(
                 "loop guard: %d consecutive bot messages in chat %s without a "
                 "human; not relaying (will resume after a human speaks)",
-                hops, chat_id,
+                hops,
+                chat_id,
             )
             return
         try:
