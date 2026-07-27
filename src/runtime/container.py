@@ -563,6 +563,39 @@ class PersonaRuntime:
         # namespaces them with the platform that must have written them.
         return ConversationHistory(dsn, legacy_platform=self.platform_config.type)
 
+    def _chain_order(
+        self,
+        role: ModelRole,
+        role_chain: RoleChain,
+        primary: str,
+        available: dict[str, Agent],
+    ) -> tuple[list[str], str]:
+        """Decide the fallback order for this role, and which vendor leads it.
+
+        An explicit chain wins when set: LLM_CHAIN="gemini,claude,groq" gives
+        full control over the sequence, which the default order cannot express
+        (e.g. claude-before-groq). Unknown or unavailable names are dropped,
+        and any configured-but-unlisted vendor is appended rather than
+        silently lost.
+        """
+        if role_chain.chain:
+            order = [n for n in role_chain.chain if n in available]
+            self._warn_dropped_vendors(role, role_chain.chain, available)
+            order += [n for n in available if n not in order]  # append leftovers
+            return (order or list(available)), (order or list(available))[0]
+
+        # No explicit chain: the primary leads, then registry order. An unset
+        # or unavailable primary falls back to whatever is available.
+        if primary not in available:
+            fallback_primary = next(iter(available))
+            if primary:
+                log.warning(
+                    "persona %r: PRIMARY_LLM=%r not available; using %r as primary",
+                    self.persona.id, primary, fallback_primary,
+                )
+            primary = fallback_primary
+        return [primary, *[v.name for v in VENDORS if v.name != primary]], primary
+
     def create_agent(
         self,
         chat_id: ConversationRef,
@@ -683,33 +716,7 @@ class PersonaRuntime:
                 f"CLAUDE_ENABLED=1 / OLLAMA_ENABLED=1, plus PRIMARY_LLM, in the instance .env."
             )
 
-        # Explicit chain order wins when set: LLM_CHAIN="gemini,claude,groq"
-        # gives full control over the fallback sequence (the default order
-        # below can't express e.g. claude-before-groq). Unknown/unavailable
-        # names are dropped; any configured-but-unlisted vendors are appended
-        # so they're never silently lost.
-        if role_chain.chain:
-            order = [n for n in role_chain.chain if n in available]
-            self._warn_dropped_vendors(role, role_chain.chain, available)
-            order += [n for n in available if n not in order]  # append leftovers
-            if not order:
-                order = list(available)
-            primary = order[0]
-        else:
-            # Resolve the primary; if unset or unavailable, use the first available.
-            if primary not in available:
-                fallback_primary = next(iter(available))
-                if primary:
-                    log.warning(
-                        "persona %r: PRIMARY_LLM=%r not available; using %r as primary",
-                        self.persona.id,
-                        primary,
-                        fallback_primary,
-                    )
-                primary = fallback_primary
-            # Primary first, then the rest in registry order.
-            order = [primary] + [v.name for v in VENDORS if v.name != primary]
-
+        order, primary = self._chain_order(role, role_chain, primary, available)
         chain: list[tuple[str, Agent]] = [(n, available[n]) for n in order if n in available]
         log.info(
             "persona %r: %s chain = %s (primary=%s, model=%s)",
@@ -1136,7 +1143,23 @@ class PersonaRuntime:
         # there's nothing to log or relay. Same gate as in `platform`.
         cr_configured = bool(self.platform_config.raw.get("control_room"))
         comms = self.comms_log if cr_configured else None
-        return ConversationOrchestrator(platform=self.platform, agent_factory=self.create_agent, session_store=self.session_store, config=self.config, connectors_list=self.active_services, persona_id=self.persona.id, optional=OptionalSubsystems(comms_log=comms, conversation_history=self.conversation_history, reflection=self.reflection_engine, status_reporter=self.status_reporter, trigger_sources=self.trigger_sources(schedule_conn), background_agent_factory=self._background_agent_factory, approval_gate=self.approval_gate))
+        return ConversationOrchestrator(
+            platform=self.platform,
+            agent_factory=self.create_agent,
+            session_store=self.session_store,
+            config=self.config,
+            connectors_list=self.active_services,
+            persona_id=self.persona.id,
+            optional=OptionalSubsystems(
+                comms_log=comms,
+                conversation_history=self.conversation_history,
+                reflection=self.reflection_engine,
+                status_reporter=self.status_reporter,
+                trigger_sources=self.trigger_sources(schedule_conn),
+                background_agent_factory=self._background_agent_factory,
+                approval_gate=self.approval_gate,
+            ),
+        )
 
     def trigger_sources(self, schedule_conn: Any) -> list[Any]:
         """Every way this persona can be woken without the user typing.
