@@ -16,11 +16,13 @@ import secrets
 import time
 from collections.abc import Callable, Coroutine
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
+from telegram.error import BadRequest, RetryAfter
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -832,10 +834,28 @@ class _TelegramStatusTracker:
 
 # ---- streamed reply ----
 
-# Telegram rate-limits edits to a message; roughly one per second per chat is
-# safe, and exceeding it earns a 429 that stalls the very thing this exists to
-# speed up. Slower than the eye wants, faster than the API allows.
-_STREAM_EDIT_INTERVAL = 1.2
+# How often the message is repainted. Telegram flood-controls edits, but the
+# ceiling is not a fixed number — it reacts to how hard you push a given chat.
+# So this is a STARTING point that backs off on demand (see _on_retry_after)
+# rather than a constant tuned pessimistically for the worst case.
+#
+# It was 1.2s, which is where "streaming" reads as a slideshow: local decode
+# is ~30 tok/s, so 1.2s lands a whole sentence at once.
+_STREAM_EDIT_INTERVAL = 0.4
+
+# Never repaint faster than this even if nothing complains, and never slower
+# than this no matter how much Telegram sulks — past the ceiling the user is
+# better served by a slideshow than by a stalled message.
+_STREAM_MIN_INTERVAL = 0.35
+_STREAM_MAX_INTERVAL = 3.0
+
+# Multiplier applied when Telegram asks us to slow down.
+_STREAM_BACKOFF = 1.6
+
+# Trailing glyph while text is still arriving. This is what makes it read as
+# typing rather than as a message that keeps being replaced: it marks the text
+# as unfinished, so a pause looks like thinking instead of like the end.
+_STREAM_CURSOR = "▌"
 
 # Don't open a message until the reply is at least this long OR it stops
 # growing. Two reasons, and the second is the important one:
@@ -852,6 +872,20 @@ _STREAM_MIN_CHARS = 40
 _SILENT_SENTINEL = "<silent>"
 
 
+def _typed_prefix(body: str) -> str:
+    """Trim to the last word boundary, so no half-word is ever shown.
+
+    Watching "phenomen" become "phenomenon" is the tell that this is a buffer
+    being flushed rather than someone typing. Holding the last partial word
+    back costs a few characters of latency and removes it.
+
+    Whitespace-free text (a long URL, a code token) has no boundary to trim
+    to; showing it whole beats showing nothing.
+    """
+    cut = body.rfind(" ")
+    return body[:cut] if cut > 0 else body
+
+
 class _TelegramReplyStream:
     """Writes a reply into one Telegram message as the model generates it.
 
@@ -859,8 +893,11 @@ class _TelegramReplyStream:
     kernel already owns it, for chunking), and reaching up for it from here
     would invert the layering — import-linter says so out loud.
 
-    Local decode runs at ~30 tok/s, so an average reply is ~15 seconds during
-    which the chat previously showed nothing but a typing indicator.
+    Repainting is driven by a STEADY TICK rather than by token arrival. That
+    distinction is most of what makes it look like typing: painting whenever a
+    token happens to land past the interval produces bursts of wildly
+    different sizes, which reads as chunks appearing. A fixed cadence reads as
+    someone writing, even at the same average rate.
 
     Everything here is best-effort. A failed edit is logged and dropped: the
     caller still holds the complete text and `finish()` reports how much
@@ -881,9 +918,12 @@ class _TelegramReplyStream:
         self._max_length = max_length
         self._message_id: int | None = None
         self._shown = ""
-        self._last_edit_at = 0.0
+        self._pending = ""
+        self._interval = _STREAM_EDIT_INTERVAL
+        self._painter: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> _TelegramReplyStream:
+        self._painter = asyncio.create_task(self._paint_loop())
         return self
 
     async def __aexit__(
@@ -892,6 +932,7 @@ class _TelegramReplyStream:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
+        await self._stop_painter()
         # A turn that raised or was cancelled leaves a half-written reply on
         # screen. Withdraw it — a truncated answer the user might act on is
         # worse than no answer, and the orchestrator reports the error itself.
@@ -899,20 +940,21 @@ class _TelegramReplyStream:
             await self._withdraw()
 
     async def push(self, text: str) -> None:
-        body = text.strip()
-        if len(body) < _STREAM_MIN_CHARS and self._message_id is None:
-            return
-        now = time.monotonic()
-        if now - self._last_edit_at < _STREAM_EDIT_INTERVAL:
-            return
-        await self._paint(body)
+        """Record the latest snapshot. Deliberately does no I/O.
+
+        The painter owns the cadence; if this edited too, the two would
+        interleave and the evenness that makes it look like typing would be
+        exactly what got lost.
+        """
+        self._pending = text
 
     async def finish(self, text: str) -> int:
+        await self._stop_painter()
         body = text.strip()
         if not body or body.lower() == _SILENT_SENTINEL:
             await self._withdraw()
             return 0
-        await self._paint(body, force=True)
+        await self._paint(body, final=True)
         head = body[: self._max_length]
         if self._shown != head:
             # The final paint didn't land, so what's on screen is a stale
@@ -923,33 +965,77 @@ class _TelegramReplyStream:
             return 0
         return len(self._shown)
 
-    async def _paint(self, body: str, force: bool = False) -> None:
+    async def _paint_loop(self) -> None:
+        """Repaint on a steady tick until cancelled."""
+        try:
+            while True:
+                await asyncio.sleep(self._interval)
+                body = self._pending.strip()
+                if len(body) < _STREAM_MIN_CHARS and self._message_id is None:
+                    continue
+                await self._paint(_typed_prefix(body))
+        except asyncio.CancelledError:
+            pass
+
+    async def _stop_painter(self) -> None:
+        if self._painter is None:
+            return
+        self._painter.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._painter
+        self._painter = None
+
+    async def _paint(self, body: str, final: bool = False) -> None:
         if not body:
             return
         # Only the first message's worth lives here; the caller sends the rest
         # as follow-ups, which is also why finish() returns what landed.
         head = body[: self._max_length]
-        if head == self._shown and not force:
+        if head == self._shown and not final:
             return
-        self._last_edit_at = time.monotonic()
+        # The cursor is display only and never enters _shown — finish()
+        # compares against the real text to decide whether the reply landed.
+        rendered = head if final else (head + _STREAM_CURSOR)[: self._max_length]
         try:
             if self._message_id is None:
                 kwargs: dict[str, Any] = {}
                 if self._reply_to is not None:
                     kwargs["reply_to_message_id"] = self._reply_to
                     kwargs["allow_sending_without_reply"] = True
-                msg = await self._bot.send_message(self._chat_id, head, **kwargs)
+                msg = await self._bot.send_message(self._chat_id, rendered, **kwargs)
                 self._message_id = msg.message_id
-            elif head != self._shown:
+            else:
                 await self._bot.edit_message_text(
-                    head, chat_id=self._chat_id, message_id=self._message_id
+                    rendered, chat_id=self._chat_id, message_id=self._message_id
                 )
             self._shown = head
+        except RetryAfter as e:
+            self._on_retry_after(e)
+        except BadRequest as e:
+            # "Message is not modified" means the text already matches — the
+            # paint succeeded in every sense the caller cares about, so record
+            # it rather than leaving _shown stale and retrying forever.
+            if "not modified" in str(e).lower():
+                self._shown = head
+            else:
+                log.debug("reply stream paint failed", exc_info=True)
         except Exception:
-            # Includes the 429 this throttle exists to avoid. Whatever was
-            # already painted stays; _shown is left alone so the next attempt
-            # still sees a diff.
             log.debug("reply stream paint failed", exc_info=True)
+
+    def _on_retry_after(self, e: RetryAfter) -> None:
+        """Telegram asked us to slow down, so slow down and stay slowed.
+
+        Backing off only for the one retry would walk straight back into the
+        limit on the next tick; the interval is the thing that was wrong.
+        """
+        # PTB types this as int | timedelta depending on a library-wide
+        # setting, so accept both rather than assuming today's config.
+        raw = e.retry_after
+        asked = raw.total_seconds() if isinstance(raw, timedelta) else float(raw)
+        self._interval = min(
+            max(self._interval * _STREAM_BACKOFF, asked), _STREAM_MAX_INTERVAL,
+        )
+        log.debug("telegram flood control; stream interval now %.2fs", self._interval)
 
     async def _withdraw(self) -> None:
         if self._message_id is None:
