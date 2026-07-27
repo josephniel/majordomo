@@ -258,6 +258,11 @@ class MemoryStore(Protocol):
 
     # ---- lifecycle ----
     async def connect(self) -> None: ...
+
+    async def warmup(self) -> None:
+        """Prime whatever a first query would otherwise pay for. May be a no-op."""
+        ...
+
     async def close(self) -> None: ...
 
     # ---- writing ----

@@ -57,6 +57,9 @@ class FakeMemoryStore:
     async def connect(self) -> None:
         self.connected = True
 
+    async def warmup(self) -> None:
+        """Nothing to load: this store holds dicts."""
+
     async def close(self) -> None:
         self.connected = False
 

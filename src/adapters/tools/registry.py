@@ -115,11 +115,14 @@ class ServiceRegistry:
         return out
 
     def _resolve_path(self, path_str: str) -> Path:
-        # expandvars has no Path equivalent; the home-dir half does.
-        s = str(Path(os.path.expandvars(path_str)).expanduser())
+        # The ./ test has to run on the RAW string. Path("./x") normalises to
+        # "x", so building the Path first makes a project-relative path miss
+        # this branch and silently resolve against the process CWD instead —
+        # which is how every secrets_file stopped being found.
+        s = os.path.expandvars(path_str)
         if s.startswith(("./", "../")):
-            s = str((self.project_root / s).resolve())
-        return Path(s)
+            return (self.project_root / s).resolve()
+        return Path(s).expanduser()
 
     def _load_secrets(self, path_str: str) -> dict[str, str]:
         path = self._resolve_path(path_str)

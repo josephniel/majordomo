@@ -190,6 +190,10 @@ class LongTermMemory(Faculty):
         await self._db.connect()
         await self.refresh_core_cache()
 
+    async def warmup(self) -> None:
+        """Load the embedding + reranking models the first recall would need."""
+        await self._db.warmup()
+
     async def on_chat_shutdown(self) -> None:
         # Drain before closing: an in-flight recompaction writing to a store
         # whose pool just went away logs a confusing error, and the summary

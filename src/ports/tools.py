@@ -271,6 +271,17 @@ class ToolProvider:
 
     # ---- chat lifecycle hooks ----
 
+    async def warmup(self) -> None:
+        """Prime anything expensive, off the critical path. Default: no-op.
+
+        Distinct from `on_chat_startup`, which runs BEFORE the platform starts
+        polling and therefore delays the bot answering at all. This runs
+        concurrently in the background once the bot is already live, for work
+        that is too slow to block boot and too slow to do on a user's first
+        turn — loading a local embedding model, priming a prompt cache.
+        """
+
+
     async def on_chat_startup(self) -> None:
         """Set up anything that needs the platform's event loop to exist first.
 

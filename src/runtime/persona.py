@@ -160,7 +160,13 @@ class Persona:
 
     @property
     def connectors_yaml(self) -> Path:
-        return self.dir / "adapters.tools.yaml"
+        # The FILE is connectors.yaml and always has been. The ports-and-adapters
+        # rename moved the package connectors/ -> adapters/tools/ and caught this
+        # string on the way past, which silently disabled every service connector
+        # for anyone who upgraded: the registry looked for a file nobody has, found
+        # nothing enabled, and every connector contributed zero tools without
+        # logging a thing.
+        return self.dir / "connectors.yaml"
 
     @property
     def data_dir(self) -> Path:
