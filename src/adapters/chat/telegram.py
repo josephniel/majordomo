@@ -224,15 +224,15 @@ class TelegramPlatform(ChatPlatform):
     ) -> None:
         if self._app is None:
             raise RuntimeError("TelegramPlatform.send_text called before run()")
-        chat_id = _native(chat_id)
+        native_id = _native(chat_id)
         kwargs: dict[str, Any] = {}
         if reply_to is not None:
             # If the original message was deleted, fall back to a normal send
             # rather than erroring out.
             kwargs["reply_to_message_id"] = reply_to
             kwargs["allow_sending_without_reply"] = True
-        sent = await self._app.bot.send_message(chat_id, text, **kwargs)
-        if self._is_control_room(chat_id) and self._comms_log is not None:
+        sent = await self._app.bot.send_message(native_id, text, **kwargs)
+        if self._is_control_room(native_id) and self._comms_log is not None:
             try:
                 await self._comms_log.append(
                     instance=self._persona_id,
@@ -265,7 +265,7 @@ class TelegramPlatform(ChatPlatform):
         path: str,
         caption: str | None = None,
     ) -> bool:
-        chat_id = _native(chat_id)
+        native_id = _native(chat_id)
         if self._app is None:
             raise RuntimeError("TelegramPlatform.send_file called before run()")
         p = Path(path)
@@ -284,7 +284,7 @@ class TelegramPlatform(ChatPlatform):
             fd = os.open(str(p), os.O_RDONLY | os.O_NOFOLLOW)
             with os.fdopen(fd, "rb") as fh:
                 await self._app.bot.send_document(
-                    chat_id, document=fh, filename=p.name,
+                    native_id, document=fh, filename=p.name,
                     caption=(caption or None),
                 )
             return True
@@ -306,15 +306,15 @@ class TelegramPlatform(ChatPlatform):
         concurrent_updates(True) — the callback handler doesn't take the
         per-chat lock, so answering can't deadlock the waiting tool call.
         """
-        chat_id = _native(chat_id)
+        native_id = _native(chat_id)
         if self._app is None:
             raise RuntimeError("TelegramPlatform.request_approval called before run()")
         # Writes triggered from the control room are approved in the
         # OPERATOR's DM, not the group: the arg preview may contain private
         # data (email snippets) peer bots shouldn't see, and the prompt
         # should reach the person accountable for the tap.
-        if self._is_control_room(chat_id) and self._allowed_user_ids:
-            chat_id = min(self._allowed_user_ids)
+        if self._is_control_room(native_id) and self._allowed_user_ids:
+            native_id = min(self._allowed_user_ids)
         nonce = secrets.token_urlsafe(8)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending_approvals[nonce] = fut

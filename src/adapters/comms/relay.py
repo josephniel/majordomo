@@ -33,6 +33,20 @@ OnRelay = Callable[[ConversationRef, str, int | None], Awaitable[None]]
 MAX_BOT_HOPS_WITHOUT_HUMAN = 8
 
 
+def _as_ref(raw: Any) -> ConversationRef | None:
+    """Turn the comms_log chat_id column back into a ref, or None if it is junk.
+
+    The column is TEXT holding a namespaced key ("telegram:12345"). This used
+    to call int() on it, which raises on every row the migration namespaced —
+    inside a try/except, so nothing was relayed and the only symptom was a
+    logged traceback.
+    """
+    try:
+        return ConversationRef.parse(str(raw))
+    except ValueError:
+        return None
+
+
 class CommsRelay:
     def __init__(
         self,
@@ -45,7 +59,7 @@ class CommsRelay:
         self._on_relay = on_relay
         self._mention_token: str | None = None  # "@username" lowercased
         # chat_id -> consecutive bot 'out' entries since the last human 'in'.
-        self._bot_hops: dict[int, int] = {}
+        self._bot_hops: dict[ConversationRef, int] = {}
 
     async def start(self, mention_handle: str | None) -> None:
         """Subscribe to comms_log notifications.
@@ -69,11 +83,15 @@ class CommsRelay:
         self._track_hops(entry)
         if not self._is_addressed_to_us(entry):
             return
-        chat_id = entry.get("chat_id")
+        raw_chat_id = entry.get("chat_id")
         text = entry.get("text") or ""
-        if chat_id is None or not text:
+        if raw_chat_id is None or not text:
             return
-        hops = self._bot_hops.get(int(chat_id), 0)
+        chat_id = _as_ref(raw_chat_id)
+        if chat_id is None:
+            log.warning("relay: unusable chat_id %r on a comms entry", raw_chat_id)
+            return
+        hops = self._bot_hops.get(chat_id, 0)
         if hops > MAX_BOT_HOPS_WITHOUT_HUMAN:
             log.warning(
                 "loop guard: %d consecutive bot messages in chat %s without a "
@@ -83,7 +101,7 @@ class CommsRelay:
             )
             return
         try:
-            await self._on_relay(int(chat_id), text, entry.get("message_id"))
+            await self._on_relay(chat_id, text, entry.get("message_id"))
         except Exception:
             log.exception("relay callback failed for entry from %s", entry.get("instance"))
 
@@ -93,10 +111,9 @@ class CommsRelay:
         (Only humans produce 'in' rows — Telegram never delivers one bot's messages to another,
         which is why this relay exists at all.)
         """
-        chat_id = entry.get("chat_id")
+        chat_id = _as_ref(entry.get("chat_id"))
         if chat_id is None:
             return
-        chat_id = int(chat_id)
         if entry.get("direction") == "in":
             self._bot_hops[chat_id] = 0
         elif entry.get("direction") == "out":

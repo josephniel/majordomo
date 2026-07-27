@@ -1,6 +1,7 @@
 """comms.relay — addressing rules + the bot-to-bot loop guard."""
 
 from adapters.comms.relay import MAX_BOT_HOPS_WITHOUT_HUMAN, CommsRelay
+from ports import ConversationRef
 
 
 class FakeCommsLog:
@@ -16,7 +17,11 @@ def make_relay(collected):
     return relay
 
 
-def entry(direction="out", instance="peer", text="hi @me_bot", chat_id=5, message_id=9):
+def entry(direction="out", instance="peer", text="hi @me_bot",
+          chat_id="telegram:5", message_id=9):
+    # chat_id is what the comms_log column actually holds: TEXT, namespaced.
+    # This used to default to a bare int, which is the pre-migration shape —
+    # so the relay's int() worked here and raised on every real row.
     return {"direction": direction, "instance": instance, "text": text,
             "chat_id": chat_id, "message_id": message_id}
 
@@ -25,7 +30,7 @@ class TestAddressing:
     async def test_mentioned_outbound_from_peer_relays(self):
         got = []
         await make_relay(got)._on_comms_entry(entry())
-        assert got == [(5, "hi @me_bot", 9)]
+        assert got == [(ConversationRef("telegram", "5"), "hi @me_bot", 9)]
 
     async def test_case_insensitive_mention(self):
         got = []
@@ -80,7 +85,30 @@ class TestLoopGuard:
         got = []
         relay = make_relay(got)
         for i in range(MAX_BOT_HOPS_WITHOUT_HUMAN + 3):
-            await relay._on_comms_entry(entry(chat_id=1, message_id=i))
+            await relay._on_comms_entry(entry(chat_id="telegram:1", message_id=i))
         # Different chat is unaffected.
-        await relay._on_comms_entry(entry(chat_id=2, message_id=0))
-        assert (2, "hi @me_bot", 0) in got
+        await relay._on_comms_entry(entry(chat_id="telegram:2", message_id=0))
+        assert (ConversationRef("telegram", "2"), "hi @me_bot", 0) in got
+
+
+class TestTheChatIdIsAConversationRef:
+    """The relay reads a namespaced TEXT key, not a Telegram int.
+
+    It called int() on the column for the whole life of the ConversationRef
+    migration, which raised on every namespaced row — inside a try/except, so
+    the only symptom was a logged traceback and silence in the control room.
+    """
+
+    async def test_a_namespaced_key_relays_as_a_ref(self):
+        collected = []
+        relay = make_relay(collected)
+        await relay._on_comms_entry(entry(chat_id="telegram:4242"))
+        assert len(collected) == 1
+        chat_id, _text, _mid = collected[0]
+        assert chat_id == ConversationRef("telegram", "4242")
+
+    async def test_an_unparseable_key_is_dropped_not_raised(self):
+        collected = []
+        relay = make_relay(collected)
+        await relay._on_comms_entry(entry(chat_id="12345"))  # pre-migration bare id
+        assert collected == []

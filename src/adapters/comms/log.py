@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
+from ports import chat_key
+
 if TYPE_CHECKING:
     from ports import ConversationRef
 
@@ -160,7 +162,7 @@ class CommsLog:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
                 RETURNING id
                 """,
-                instance, direction, text, chat_id, message_id,
+                instance, direction, text, chat_key(chat_id), message_id,
                 from_user, from_username, metadata or {},
             )
 
