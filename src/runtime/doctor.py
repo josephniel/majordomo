@@ -38,6 +38,9 @@ from .persona import Persona
 from .settings import RuntimeSettings
 from .vendors import VENDORS_BY_NAME
 
+# Nothing to compare against with fewer than two of a thing.
+_MIN_TO_COMPARE = 2
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -334,7 +337,7 @@ def _check_duplication(report: Report, root: Path) -> None:
     the one that wasn't is the bug that started all of this.
     """
     personas = Persona.list_personas(root)
-    if len(personas) < 2:
+    if len(personas) < _MIN_TO_COMPARE:
         report.add(OK, "duplication", "only one persona — nothing to duplicate")
         return
 
@@ -343,7 +346,7 @@ def _check_duplication(report: Report, root: Path) -> None:
         f = root / "instances" / p / ".env"
         if f.exists():
             envs[p] = {k: v for k, v in dotenv_values(f).items() if v is not None}
-    if len(envs) < 2:
+    if len(envs) < _MIN_TO_COMPARE:
         report.add(OK, "duplication", "fewer than two .env files to compare")
         return
 

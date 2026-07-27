@@ -141,6 +141,10 @@ def chunk_text(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP)
     return [c for c in chunks if c]
 
 
+# Below this the trigram/vector best-of is noise rather than a weak match.
+_MIN_CHUNK_SCORE = 0.1
+
+
 class DocumentStore:
     """Async client for the documents + document_chunks tables."""
 
@@ -314,4 +318,4 @@ class DocumentStore:
             args += [self._embed.model_name, vec_literal]
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *args)
-        return [dict(r) for r in rows if r["score"] and r["score"] > 0.1]
+        return [dict(r) for r in rows if r["score"] and r["score"] > _MIN_CHUNK_SCORE]

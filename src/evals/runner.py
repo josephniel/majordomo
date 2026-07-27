@@ -121,6 +121,10 @@ def load_cases(path: Path) -> list[EvalCase]:
     return cases
 
 
+# One retry for a per-minute cap; a second failure is a real vendor finding.
+_TPM_RETRIES = 2
+
+
 async def run_case(vendor: str, case: EvalCase) -> CaseResult:
     import os
     agent_cls, model_env = VENDORS[vendor]
@@ -164,7 +168,7 @@ async def run_case(vendor: str, case: EvalCase) -> CaseResult:
                 # finding: fail fast, that's the signal this harness exists
                 # to surface.
                 transient = "tokens per minute" in msg or "TPM" in msg
-                if attempt < 2 and transient:
+                if attempt < _TPM_RETRIES and transient:
                     print(f"       {vendor}: TPM limited; waiting 20s…")
                     await asyncio.sleep(20)
                     continue

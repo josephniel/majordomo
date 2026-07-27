@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# coreutils `timeout` reports this when it kills the child.
+_TIMEOUT_EXIT_CODE = 124
+
 DEFAULT_IMAGE = "python:3.13-slim"
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 300
@@ -193,7 +196,7 @@ script instead of many small runs."""
         except Exception as e:
             return ToolResult.error(f"could not start the sandbox: {e}")
 
-        timed_out = proc.returncode == 124  # coreutils `timeout` exit code
+        timed_out = proc.returncode == _TIMEOUT_EXIT_CODE
         out = _read_head(out_path)
         err = _read_head(err_path)
         artifacts = sorted(

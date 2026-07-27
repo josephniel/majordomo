@@ -35,6 +35,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# A compartment holding one fact has nothing to link that fact to.
+_MIN_MEMBERS_TO_LINK = 2
+
 # Fire reflection after a chat has been quiet this long.
 DEFAULT_IDLE_SECONDS = 20 * 60
 # Don't bother reflecting on fewer than this many new user/assistant rows.
@@ -205,7 +208,7 @@ class ReflectionEngine:
         for e in entries:
             groups.setdefault((e.scope, e.domain_key), []).append(e)
         for members in groups.values():
-            if len(members) < 2:
+            if len(members) < _MIN_MEMBERS_TO_LINK:
                 continue
             for a, b in combinations(members, 2):
                 try:

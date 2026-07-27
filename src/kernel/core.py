@@ -53,6 +53,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# "mcp__<server>__<tool>" — anything shorter is not a namespaced tool name.
+_MCP_NAME_PARTS = 3
+
 # Flood control: max user-initiated turns per chat per window. Generous for a
 # personal bot; the point is stopping runaway loops (forwarded-message storms,
 # a peer bot gone chatty), not throttling a human.
@@ -642,7 +645,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         """
         if tool_name.startswith("mcp__"):
             parts = tool_name.split("__", 2)
-            if len(parts) >= 3:
+            if len(parts) >= _MCP_NAME_PARTS:
                 connector_name, local_name = parts[1], parts[2]
                 for c in self._connectors:
                     s = c.tool_status(connector_name, local_name, args)

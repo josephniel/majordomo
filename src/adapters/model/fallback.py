@@ -48,6 +48,14 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# A mirrored tool call is a breadcrumb, not a record: enough argument text to
+# recognise the call, not enough to bloat the replayed history.
+_MAX_TOOL_ARG_PREVIEW = 300
+
+# The quoted question in a cold-handoff anchor. Long enough to be unambiguous,
+# short enough that it doesn't dominate the turn.
+_MAX_ANCHORED_QUESTION = 500
+
 # Trigger compaction when (persona, chat) history exceeds this many chars.
 HISTORY_COMPACTION_CHAR_THRESHOLD = 20_000  # ≈ 5k tokens
 
@@ -267,8 +275,8 @@ class CascadingAgent(Agent):
                     await on_tool_use(tool_name, dict(args))
             try:
                 arg_str = json.dumps(args, default=str)
-                if len(arg_str) > 300:
-                    arg_str = arg_str[:300] + "…"
+                if len(arg_str) > _MAX_TOOL_ARG_PREVIEW:
+                    arg_str = arg_str[:_MAX_TOOL_ARG_PREVIEW] + "…"
                 await self._history.append(
                     persona_id=self._persona_id,
                     chat_id=self._chat_id,
@@ -534,8 +542,8 @@ class CascadingAgent(Agent):
     @staticmethod
     def _active_exchange_anchor(open_q: dict[str, Any]) -> str:
         q = (open_q.get("content") or "").strip()
-        if len(q) > 500:
-            q = q[:500] + "…"
+        if len(q) > _MAX_ANCHORED_QUESTION:
+            q = q[:_MAX_ANCHORED_QUESTION] + "…"
         return (
             "[You just asked the user this — their message below is the answer "
             "to THIS specific question. Do not re-interpret it as being about "

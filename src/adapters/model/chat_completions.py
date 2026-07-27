@@ -83,7 +83,7 @@ def _signals_usage_limit(exc: BaseException) -> bool:
             return True
         if isinstance(exc, openai.APIStatusError):
             code = getattr(exc, "status_code", None)
-            if code in (408, 409, 429) or (isinstance(code, int) and code >= 500):
+            if code in _RETRYABLE_STATUS or (isinstance(code, int) and code >= _SERVER_ERROR):
                 return True
     except Exception:
         log.debug("openai types unavailable; falling through to heuristics", exc_info=True)
@@ -93,6 +93,12 @@ def _signals_usage_limit(exc: BaseException) -> bool:
         return True
     cls_name = exc.__class__.__name__.lower()
     return "ratelimit" in cls_name or "overloaded" in cls_name
+
+
+# Statuses worth failing over on: the explicit rate/conflict/timeout trio, and
+# anything 5xx (the vendor is having a bad time, another might not be).
+_RETRYABLE_STATUS = (408, 409, 429)
+_SERVER_ERROR = 500
 
 
 def _is_usage_limit(exc: BaseException) -> bool:
@@ -128,21 +134,26 @@ def _spec_to_openai_function(prefixed_name: str, spec: ToolSpec) -> dict[str, An
     }
 
 
+# OpenAI's hard cap on a function name, and the room a "_abc123" suffix needs.
+_MAX_TOOL_NAME_CHARS = 64
+_HASHED_NAME_STEM = _MAX_TOOL_NAME_CHARS - 7
+
+
 def _fit_tool_name(name: str, taken: dict[str, Any]) -> str:
     """OpenAI caps function names at 64 chars.
 
     Truncate, but never let two long names silently collapse into the same key — disambiguate with a
     short stable hash suffix.
     """
-    if len(name) <= 64 and name not in taken:
+    if len(name) <= _MAX_TOOL_NAME_CHARS and name not in taken:
         return name
-    base = name[:64]
+    base = name[:_MAX_TOOL_NAME_CHARS]
     if base not in taken:
         return base
     import hashlib
     # Disambiguating a truncated tool name, not authenticating anything.
     suffix = hashlib.sha1(name.encode(), usedforsecurity=False).hexdigest()[:6]
-    return f"{name[:57]}_{suffix}"
+    return f"{name[:_HASHED_NAME_STEM]}_{suffix}"
 
 
 def _extract_failed_generation(exc: BaseException) -> str | None:

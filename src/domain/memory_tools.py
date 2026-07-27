@@ -71,6 +71,11 @@ def _label(entry: MemoryEntry) -> str:
     return entry.scope if not entry.domain_key else f"{entry.scope}/{entry.domain_key}"
 
 
+# One turn in a history-search result: enough to recognise it, and the model
+# can ask for the surrounding turns if it matters.
+_MAX_TURN_PREVIEW = 400
+
+
 def build_memory_tools(
     mem: LongTermMemory,
     *,
@@ -499,8 +504,8 @@ def _history_search_tool(mem: LongTermMemory, history: ConversationHistory) -> T
         for r in rows:
             when = r["ts"].strftime("%Y-%m-%d %H:%M") if r.get("ts") else "?"
             content = r["content"]
-            if len(content) > 400:
-                content = content[:400] + "…"
+            if len(content) > _MAX_TURN_PREVIEW:
+                content = content[:_MAX_TURN_PREVIEW] + "…"
             lines.append(f"[{when}] {r['role']}: {content}")
         return ToolResult.ok("\n\n".join(lines))
 

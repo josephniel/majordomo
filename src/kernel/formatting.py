@@ -12,6 +12,10 @@ from __future__ import annotations
 
 import re
 
+# "please cancel that" is four words. Longer, and the message is carrying
+# content rather than just asking to stop.
+_MAX_CANCEL_WORDS = 4
+
 # ---- markdown stripping for plain chat messages ----
 
 _RE_FENCED = re.compile(r"```[\w]*\n?([\s\S]*?)```")
@@ -64,7 +68,7 @@ def is_cancel_intent(text: str) -> bool:
     'stop the music') is NOT cancel intent.
     """
     words = re.sub(r"[^\w\s]", " ", text.strip().lower()).split()
-    if not words or len(words) > 4:
+    if not words or len(words) > _MAX_CANCEL_WORDS:
         return False
     if not all(w in _CANCEL_VOCAB for w in words):
         return False

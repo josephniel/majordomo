@@ -50,6 +50,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# "---", front matter, body: a well-formed header splits into three.
+_FRONTMATTER_PARTS = 3
+
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 
 # Injection caps: keyword matches must never crowd out the conversation.
@@ -76,7 +79,7 @@ def _parse_skill(path: Path) -> Skill | None:
     body = text.strip()
     if text.startswith("---"):
         parts = text.split("---", 2)
-        if len(parts) >= 3:
+        if len(parts) >= _FRONTMATTER_PARTS:
             try:
                 meta = yaml.safe_load(parts[1]) or {}
                 if not isinstance(meta, dict):

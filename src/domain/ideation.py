@@ -60,6 +60,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Inference needs facts to sit BETWEEN. Below this a model just paraphrases the
+# one fact it was handed and calls it an insight.
+_MIN_FACTS_TO_INFER = 3
+
 # How many existing facts one ideation pass reads.
 MAX_SOURCE_FACTS = 120
 
@@ -164,7 +168,7 @@ class Ideator:
         except Exception:
             log.exception("ideation: could not read memory")
             return []
-        if len(facts) < 3:
+        if len(facts) < _MIN_FACTS_TO_INFER:
             # Nothing to cross-reference. Inference needs at least a couple of
             # facts to sit between; below that a model will "infer" a
             # paraphrase of the single fact it was given.

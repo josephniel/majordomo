@@ -84,6 +84,10 @@ class RerankConfig:
     temperature: float = 2.0
 
 
+# exp() overflows past this; the sigmoid is already 0.0/1.0 to full precision.
+_LOGIT_SATURATION = 60.0
+
+
 class Reranker:
     """Scores (query, passage) pairs with one specific cross-encoder.
 
@@ -170,8 +174,8 @@ class Reranker:
         See RerankConfig.center. Overflow-safe at the tails.
         """
         z = (logit - self.config.center) / (self.config.temperature or 1.0)
-        if z < -60:
+        if z < -_LOGIT_SATURATION:
             return 0.0
-        if z > 60:
+        if z > _LOGIT_SATURATION:
             return 1.0
         return 1.0 / (1.0 + math.exp(-z))

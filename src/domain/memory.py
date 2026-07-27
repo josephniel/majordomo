@@ -64,6 +64,10 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# Shorter than this and the "query" is an acknowledgement ("ok", "thanks"),
+# which matches everything and means nothing.
+_MIN_AUTO_RECALL_CHARS = 8
+
 # Auto-recall: inject at most this many facts, only above this match score.
 AUTO_RECALL_LIMIT = 4
 
@@ -540,7 +544,7 @@ Three principles:
         Empty string when nothing clears the relevance bar.
         """
         query = (query or "").strip()
-        if len(query) < 8:  # too short to mean anything ("ok", "thanks")
+        if len(query) < _MIN_AUTO_RECALL_CHARS:
             return ""
         try:
             scored = await self._db.recall_scored(
