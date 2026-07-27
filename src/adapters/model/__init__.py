@@ -38,7 +38,7 @@ from .chat_completions import (
 from .external_mcp import ExternalMCPManager
 from .fallback import CascadingAgent
 from .health import VendorHealthBoard
-from .history import ConversationHistory, EphemeralConversationHistory
+from .history import ConversationHistory, EphemeralConversationHistory, TurnRecord
 
 __all__ = [
     "Agent",
@@ -59,6 +59,7 @@ __all__ = [
     "SubscriptionAuthSummarizer",
     "Summarizer",
     "ToolUseCallback",
+    "TurnRecord",
     "UsageLimitError",
     "VendorHealthBoard",
     "summarize_with_subscription_auth",

@@ -1,4 +1,5 @@
 """Retention pruning + approval audit — live Postgres."""
+from adapters.model import TurnRecord
 import pytest
 
 from adapters.store.docs import DocumentStore
@@ -47,8 +48,7 @@ class TestHistoryPrune:
         assert deleted["chat_history_archived"] == 0
 
     async def test_turn_log_pruned_by_age(self, history, persona_id):
-        await history.log_turn(persona_id=persona_id, chat_id=1, vendor="groq",
-                               model="m", status="ok", latency_ms=1)
+        await history.log_turn(persona_id, 1, TurnRecord(vendor='groq', model='m', status='ok', latency_ms=1))
         await _age_rows(history, "turn_log", persona_id, 100)
         deleted = await history.prune(persona_id, archived_days=0, turn_log_days=90)
         assert deleted["turn_log"] == 1

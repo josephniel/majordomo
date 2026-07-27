@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,9 @@ from ports import ConversationRef, chat_key
 _CHAT_ID_MIGRATION_SQL = Path(__file__).resolve().parents[1] / "store" / "chat_id_migration.sql"
 
 log = logging.getLogger(__name__)
+
+# A stack trace in turn_log is for recognising the failure, not debugging it.
+_MAX_LOGGED_ERROR = 2000
 
 # rows_between, in its two forms. Spelled out rather than assembled, so the
 # statement a reader sees is the statement the database gets.
@@ -130,6 +134,27 @@ CREATE TABLE IF NOT EXISTS reflection_state (
 # decisions without pulling in tiktoken.
 def _approx_tokens(text: str) -> int:
     return max(1, len(text) // 4)
+
+
+@dataclass(frozen=True)
+class TurnRecord:
+    """What one agent turn cost and how it went.
+
+    The conversation it belongs to is passed alongside, not held here: the same
+    record shape is written for every persona and chat, and threading the
+    identity through the value object would only invite it to disagree with the
+    caller.
+    """
+
+    vendor: str
+    model: str = ""
+    status: str = "ok"
+    latency_ms: int = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    tool_calls: int = 0
+    failovers: int = 0
+    error: str = ""
 
 
 class ConversationHistory:
@@ -447,19 +472,7 @@ class ConversationHistory:
     # ---- turn log ----
 
     async def log_turn(
-        self,
-        *,
-        persona_id: str,
-        chat_id: ConversationRef,
-        vendor: str,
-        model: str = "",
-        status: str = "ok",
-        latency_ms: int = 0,
-        input_tokens: int | None = None,
-        output_tokens: int | None = None,
-        tool_calls: int = 0,
-        failovers: int = 0,
-        error: str = "",
+        self, persona_id: str, chat_id: ConversationRef, turn: TurnRecord
     ) -> None:
         try:
             async with self._pool.acquire() as conn:
@@ -472,15 +485,15 @@ class ConversationHistory:
                     """,
                     persona_id,
                     chat_key(chat_id),
-                    vendor,
-                    model,
-                    status,
-                    latency_ms,
-                    input_tokens,
-                    output_tokens,
-                    tool_calls,
-                    failovers,
-                    error[:2000],
+                    turn.vendor,
+                    turn.model,
+                    turn.status,
+                    turn.latency_ms,
+                    turn.input_tokens,
+                    turn.output_tokens,
+                    turn.tool_calls,
+                    turn.failovers,
+                    turn.error[:_MAX_LOGGED_ERROR],
                 )
         except Exception:
             log.exception("could not write turn_log row (continuing)")

@@ -1,5 +1,6 @@
 """ConversationHistory against live Postgres — archive semantics, explicit-
 cutoff compaction (B1 regression), reset (B4 regression), search, turn log."""
+from adapters.model import TurnRecord
 import pytest
 
 from tests.conftest import CHAT_ID
@@ -165,12 +166,8 @@ class TestReflectionWatermark:
 
 class TestTurnLog:
     async def test_log_and_stats(self, history, persona_id):
-        await history.log_turn(persona_id=persona_id, chat_id=CHAT_ID, vendor="claude",
-                               model="m1", status="ok", latency_ms=500,
-                               input_tokens=10, output_tokens=20, tool_calls=2)
-        await history.log_turn(persona_id=persona_id, chat_id=CHAT_ID, vendor="gemini",
-                               model="m2", status="ok", latency_ms=300,
-                               input_tokens=5, output_tokens=5, failovers=1)
+        await history.log_turn(persona_id, CHAT_ID, TurnRecord(vendor='claude', model='m1', status='ok', latency_ms=500, input_tokens=10, output_tokens=20, tool_calls=2))
+        await history.log_turn(persona_id, CHAT_ID, TurnRecord(vendor='gemini', model='m2', status='ok', latency_ms=300, input_tokens=5, output_tokens=5, failovers=1))
         stats = await history.turn_stats(persona_id, CHAT_ID)
         assert stats["today"]["turns"] == 2
         assert stats["today"]["input_tokens"] == 15
@@ -179,8 +176,7 @@ class TestTurnLog:
         assert stats["last"]["vendor"] == "gemini"
 
     async def test_error_status_and_truncation(self, history, persona_id):
-        await history.log_turn(persona_id=persona_id, chat_id=CHAT_ID, vendor="x",
-                               status="error", error="e" * 5000)
+        await history.log_turn(persona_id, CHAT_ID, TurnRecord(vendor='x', status='error', error='e' * 5000))
         stats = await history.turn_stats(persona_id, CHAT_ID)
         assert stats["last"]["status"] == "error"
 

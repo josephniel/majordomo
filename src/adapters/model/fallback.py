@@ -46,6 +46,8 @@ from .health import VendorHealthBoard
 if TYPE_CHECKING:
     from .history import ConversationHistory
 
+from .history import TurnRecord
+
 log = logging.getLogger(__name__)
 
 # A mirrored tool call is a breadcrumb, not a record: enough argument text to
@@ -729,17 +731,19 @@ class CascadingAgent(Agent):
         usage = dict(getattr(agent, "last_turn_usage", None) or {})
         try:
             await self._history.log_turn(
-                persona_id=self._persona_id,
-                chat_id=self._chat_id,
-                vendor=vendor,
-                model=(agent.model_name if agent else ""),
-                status=status,
-                latency_ms=int((time.monotonic() - started_at) * 1000),
-                input_tokens=usage.get("input_tokens"),
-                output_tokens=usage.get("output_tokens"),
-                tool_calls=tool_calls,
-                failovers=failovers,
-                error=error,
+                self._persona_id,
+                self._chat_id,
+                TurnRecord(
+                    vendor=vendor,
+                    model=(agent.model_name if agent else ""),
+                    status=status,
+                    latency_ms=int((time.monotonic() - started_at) * 1000),
+                    input_tokens=usage.get("input_tokens"),
+                    output_tokens=usage.get("output_tokens"),
+                    tool_calls=tool_calls,
+                    failovers=failovers,
+                    error=error,
+                ),
             )
         except Exception:
             log.debug("turn_log write failed", exc_info=True)
