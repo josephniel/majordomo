@@ -84,14 +84,14 @@ class TestPrecedence:
             SETTINGS_BY_FIELD["claude_model"])
         assert (got.value, got.source) == ("claude-sonnet-5", SOURCE_DEFAULT)
 
-    def test_a_yaml_false_IS_a_value(self, project):
+    def test_a_yaml_false_is_still_a_value(self, project):
         """The mirror-image trap: `enabled: false` must not be mistaken for
         "unset" and replaced by a default of true. Falsiness is not absence."""
         r = resolver(project, host={"rerank": {"enabled": False}})
         got = r.resolve(SETTINGS_BY_FIELD["rerank.enabled"])
         assert (got.value, got.source) == (False, SOURCE_HOST)
 
-    def test_a_yaml_zero_IS_a_value(self, project):
+    def test_a_yaml_zero_is_still_a_value(self, project):
         r = resolver(project, host={"retention": {"documents_days": 0}})
         got = r.resolve(SETTINGS_BY_FIELD["retention.documents_days"])
         assert (got.value, got.source) == (0, SOURCE_HOST)
@@ -266,7 +266,7 @@ class TestMalformedFiles:
 
     def test_broken_yaml_names_the_file(self, project):
         (project / "config.yaml").write_text("llm: [unclosed\n")
-        with pytest.raises(ConfigError, match="config.yaml"):
+        with pytest.raises(ConfigError, match=r"config\.yaml"):
             ConfigResolver.load(project, None, {})
 
     def test_a_top_level_list_is_refused(self, project):

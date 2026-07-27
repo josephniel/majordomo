@@ -40,14 +40,14 @@ class TestParseLlamaToolCalls:
 
 
 class TestRecoverFailedToolCalls:
-    class FakeBadRequest(Exception):
+    class FakeBadRequestError(Exception):
         def __init__(self, fg, code="tool_use_failed"):
             super().__init__(f"400 tool_use_failed: {fg}")
             self.code = code
             self.body = {"error": {"code": code, "failed_generation": fg}}
 
     def test_recovers_from_body(self):
-        calls = _recover_failed_tool_calls(self.FakeBadRequest(REAL_FG))
+        calls = _recover_failed_tool_calls(self.FakeBadRequestError(REAL_FG))
         assert calls[0][0] == "memory__memory_save"
 
     def test_recovers_from_stringified_exception(self):
@@ -66,4 +66,4 @@ class TestRecoverFailedToolCalls:
         assert _recover_failed_tool_calls(ValueError("bad input")) == []
 
     def test_tool_use_failed_with_no_generation_returns_empty(self):
-        assert _recover_failed_tool_calls(self.FakeBadRequest("")) == []
+        assert _recover_failed_tool_calls(self.FakeBadRequestError("")) == []

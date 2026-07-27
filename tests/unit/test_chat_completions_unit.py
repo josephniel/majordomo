@@ -105,8 +105,8 @@ class TestUsageLimitClassification:
 
 
 class TestAssembleContext:
-    def _row(self, id, role, content, meta=None):
-        return {"id": id, "role": role, "content": content, "metadata": meta or {}}
+    def _row(self, row_id, role, content, meta=None):
+        return {"id": row_id, "role": role, "content": content, "metadata": meta or {}}
 
     def test_summary_rows_render_first(self):
         agent = make_agent()

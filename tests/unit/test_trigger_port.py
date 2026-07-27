@@ -6,6 +6,8 @@ here is the contract itself: that all five sources satisfy it, that the event
 carries what the orchestrator needs, and that the lifecycle survives sources
 that misbehave.
 """
+from dataclasses import FrozenInstanceError
+
 import pytest
 
 from domain.triggers import (
@@ -99,7 +101,7 @@ class TestTriggerEvent:
         """Sources hand an event over and are done with it; the orchestrator
         must not be able to rewrite where a fire is going."""
         event = TriggerEvent(source="heartbeat", conversation=CHAT, prompt="x")
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             event.conversation = ConversationRef("telegram", "999")
 
     def test_defaults_to_a_dedicated_agent(self):

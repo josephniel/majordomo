@@ -30,11 +30,11 @@ async def server():
         s.stop()
 
 
-async def _post(server, path, token="sekret", body=None):
+async def _post(server, path, bearer="sekret", body=None):
     async with httpx.AsyncClient() as client:
         return await client.post(
             f"http://127.0.0.1:{server.port}{path}",
-            headers={"Authorization": f"Bearer {token}"} if token else {},
+            headers={"Authorization": f"Bearer {bearer}"} if bearer else {},
             content=body or b"",
         )
 
@@ -56,14 +56,14 @@ class TestWebhookServer:
 
     async def test_bad_token_rejected(self, server):
         s, fired = server
-        resp = await _post(s, "/trigger/alert", token="wrong")
+        resp = await _post(s, "/trigger/alert", bearer="wrong")
         assert resp.status_code == 401
         await asyncio.sleep(0.05)
         assert fired == []
 
     async def test_missing_token_rejected(self, server):
         s, _fired = server
-        resp = await _post(s, "/trigger/alert", token=None)
+        resp = await _post(s, "/trigger/alert", bearer=None)
         assert resp.status_code == 401
 
     async def test_unknown_trigger_404(self, server):

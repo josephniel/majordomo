@@ -27,7 +27,7 @@ class TestTheTemplatesAreCurrent:
         `python scripts/gen_config_templates.py`."""
         r = subprocess.run(
             [sys.executable, "scripts/gen_config_templates.py", "--check"],
-            cwd=ROOT, capture_output=True, text=True,
+            cwd=ROOT, capture_output=True, text=True, check=False,
         )
         assert r.returncode == 0, r.stdout + r.stderr
 
