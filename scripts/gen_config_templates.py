@@ -14,11 +14,23 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from runtime.config import Scope, Setting
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "src"))
 
-from runtime.config import SETTINGS, Scope, Setting  # noqa: E402
+
+def _settings_table() -> tuple[list[Setting], type[Scope]]:
+    """Load the settings table, putting src/ on the path first.
+
+    Deferred rather than imported at module scope because the path it needs is
+    arranged here: this script runs from a checkout, not an install.
+    """
+    sys.path.insert(0, str(ROOT / "src"))
+    from runtime.config import SETTINGS, Scope
+    return SETTINGS, Scope
 
 HOST_TEMPLATE = ROOT / "config.yaml.example"
 PERSONA_TEMPLATE = ROOT / "instances" / "_template" / "config.yaml.example"
@@ -116,8 +128,8 @@ def _wrap(text: str, width: int) -> list[str]:
     return out
 
 
-def build(scope: Scope, header: str) -> str:
-    chosen = [s for s in SETTINGS if s.scope is scope]
+def build(settings: list[Setting], scope: Scope, header: str) -> str:
+    chosen = [s for s in settings if s.scope is scope]
     body = render(tree(chosen))
     # Collapse the blank line the renderer leaves after the final entry.
     while body and body[-1] == "":
@@ -131,9 +143,10 @@ def main() -> int:
                     help="exit 1 if the committed templates are out of date")
     args = ap.parse_args()
 
+    settings, scope = _settings_table()
     targets = [
-        (HOST_TEMPLATE, build(Scope.HOST, HOST_HEADER)),
-        (PERSONA_TEMPLATE, build(Scope.PERSONA, PERSONA_HEADER)),
+        (HOST_TEMPLATE, build(settings, scope.HOST, HOST_HEADER)),
+        (PERSONA_TEMPLATE, build(settings, scope.PERSONA, PERSONA_HEADER)),
     ]
     stale = []
     for path, content in targets:
