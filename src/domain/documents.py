@@ -182,8 +182,8 @@ Prefer doc_search over asking the user to re-send anything."""
         )
         async def doc_read_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
-                doc_id = int(args.get("doc_id"))
-            except (TypeError, ValueError):
+                doc_id = int(args["doc_id"])
+            except (KeyError, TypeError, ValueError):
                 return ToolResult.error("doc_id must be an integer")
             start = int(args.get("start_chunk") or 0)
             doc = await outer._store.read_doc(outer._persona_id, doc_id, start_chunk=start)
@@ -208,8 +208,8 @@ Prefer doc_search over asking the user to re-send anything."""
         )
         async def doc_delete_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             try:
-                doc_id = int(args.get("doc_id"))
-            except (TypeError, ValueError):
+                doc_id = int(args["doc_id"])
+            except (KeyError, TypeError, ValueError):
                 return ToolResult.error("doc_id must be an integer")
             ok = await outer._store.delete(outer._persona_id, doc_id)
             if not ok:

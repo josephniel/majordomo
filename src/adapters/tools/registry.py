@@ -194,7 +194,8 @@ class ServiceRegistry:
 
     def _connectors(self, cfg: dict[str, Any]) -> dict[str, Any]:
         cfg.setdefault("connectors", {})
-        return cfg["connectors"]
+        connectors: dict[str, Any] = cfg["connectors"]
+        return connectors
 
     def set_profile_enabled(self, connector: str, profile_id: str, value: bool) -> None:
         cfg = self._read()
@@ -241,7 +242,8 @@ class ServiceRegistry:
         connectors = self._connectors(cfg)
         if connector not in connectors:
             raise KeyError(f"no connector named {connector!r}")
-        return connectors[connector]
+        block: dict[str, Any] = connectors[connector]
+        return block
 
     def rename_connector(self, old: str, new: str) -> None:
         self.validate_connector_name(new)
@@ -285,7 +287,8 @@ class ServiceRegistry:
         profiles = (cfg.get("connectors") or {}).get(connector, {}).get("profiles") or {}
         if profile_id not in profiles:
             raise KeyError(f"no profile {profile_id!r} under connector {connector!r}")
-        return profiles[profile_id]
+        profile: dict[str, Any] = profiles[profile_id]
+        return profile
 
     def set_profile(
         self, connector: str, profile_id: str, block: dict[str, Any]

@@ -247,7 +247,8 @@ class ScheduleSource:
         Available only after `start()` — APScheduler rejects jobs before the loop exists, which is
         why the orchestrator starts this source first.
         """
-        return self._scheduler.add_system_cron
+        add_cron: Callable[..., None] = self._scheduler.add_system_cron
+        return add_cron
 
     async def start(self, ctx: TriggerContext) -> None:
         self._emit = ctx.emit

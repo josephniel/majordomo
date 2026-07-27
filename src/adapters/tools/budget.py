@@ -23,7 +23,7 @@ import httpx
 
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
-from ._failures import HTTP_NO_CONTENT, api_errors, format_http_error
+from ._failures import api_errors, format_http_error, json_array, json_object
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,7 +59,7 @@ class BudgetClient:
         path: str,
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
-    ) -> Any:
+    ) -> httpx.Response:
         async with httpx.AsyncClient(
             timeout=self.TIMEOUT, transport=self._transport
         ) as http:
@@ -74,17 +74,15 @@ class BudgetClient:
                 json=body,
             )
             response.raise_for_status()
-            if response.status_code == HTTP_NO_CONTENT or not response.text:
-                return {}
-            return response.json()
+            return response
 
     # ---- read ----
 
-    async def list_accounts(self) -> list[dict]:
-        return await self._request("GET", "/accounts")
+    async def list_accounts(self) -> list[dict[str, Any]]:
+        return json_array(await self._request("GET", "/accounts"))
 
-    async def list_tags(self) -> list[dict]:
-        return await self._request("GET", "/tags")
+    async def list_tags(self) -> list[dict[str, Any]]:
+        return json_array(await self._request("GET", "/tags"))
 
     async def list_transactions(
         self,
@@ -94,19 +92,19 @@ class BudgetClient:
         params: dict[str, Any] = {"page": 1, "page_size": page_size}
         if account_id is not None:
             params["account_ids"] = str(account_id)
-        return await self._request("GET", "/transactions", params=params)
+        return json_object(await self._request("GET", "/transactions", params=params))
 
     # ---- write ----
 
     async def create_transaction(self, account_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._request(
+        return json_object(await self._request(
             "POST", f"/accounts/{account_id}/transactions", body=payload
-        )
+        ))
 
     async def create_split(self, account_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._request(
+        return json_object(await self._request(
             "POST", f"/accounts/{account_id}/split", body=payload
-        )
+        ))
 
 
 # ---- formatting helpers ----
@@ -125,7 +123,7 @@ def _format_account(a: dict[str, Any]) -> str:
     )
 
 
-def _format_tags(tags: list[dict], indent: str = "") -> list[str]:
+def _format_tags(tags: list[dict[str, Any]], indent: str = "") -> list[str]:
     lines: list[str] = []
     for t in tags:
         kinds = []

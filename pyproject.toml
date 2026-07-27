@@ -209,6 +209,11 @@ explicit_package_bases = true
 ignore_missing_imports = true
 warn_unused_configs = true
 
-[[tool.mypy.overrides]]
-module = ["ports.*"]
+# Strict everywhere. This started as a ratchet — a per-package list that a
+# package joined the day it reached zero — and every package has now joined,
+# so the list is just "all of it". Setting it here rather than re-listing them
+# means a NEW package is strict from its first line instead of starting exempt.
+#
+# If one ever has to be relaxed, do it as an override for that module with the
+# reason, not by turning this off.
 strict = true

@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ports import ConversationRef, ToolTraceReporting
 
@@ -133,7 +133,7 @@ class RecoveryMixin:
         _reflection: ReflectionEngine | None
         _schedule_claim_tools: tuple[str, ...]
         _send_claim_tools: tuple[str, ...]
-        _stale_agent_stops: set[asyncio.Task[None]]
+        _stale_agent_stops: set[asyncio.Task[Any]]
 
         async def _send_safe(self, chat_id: ConversationRef, text: str) -> None: ...
         def _persist_session_id(self, chat_id: ConversationRef, agent: Agent) -> None: ...
@@ -158,6 +158,9 @@ class RecoveryMixin:
         for the idle timer. Cheap: reflection dedups, so a false
         positive just costs one summarizer call.
         """
+        reflection = self._reflection
+        if reflection is None:
+            return
         if not isinstance(agent, ToolTraceReporting) or agent.last_turn_tool_calls > 0:
             return
         if not _CLAIMS_MEMORY_SAVE.search(reply or ""):
@@ -166,7 +169,7 @@ class RecoveryMixin:
             "chat %s: reply claims a save but no tool was called; "
             "triggering reflection now", chat_id,
         )
-        task = asyncio.create_task(self._reflection.run_reflection(chat_id))
+        task = asyncio.create_task(reflection.run_reflection(chat_id))
         self._stale_agent_stops.add(task)  # reuse the held-task set
         task.add_done_callback(self._stale_agent_stops.discard)
 

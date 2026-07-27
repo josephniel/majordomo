@@ -31,10 +31,10 @@ from claude_agent_sdk import (
 )
 
 from ports import (
-    Connector,
     ConversationRef,
     ServiceCatalog,
     ToolContext,
+    ToolProviderView,
     ToolSpec,
     as_tool_result,
 )
@@ -50,7 +50,7 @@ from .base import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
 log = logging.getLogger(__name__)
 
@@ -176,6 +176,9 @@ async def _sdk_one_shot(prompt: str, model: str) -> str:
             model, actual_model or "(not reported)", usage,
         )
         return "".join(chunks).strip()
+    # ClaudeSDKClient.__aexit__ is typed as possibly suppressing, so the block
+    # is not provably terminal — an empty reply is the honest fallback.
+    return ""
 
 
 class SubscriptionAuthSummarizer(Summarizer):
@@ -252,7 +255,7 @@ class AnthropicOptionsBuilder:
         self,
         context_builder: ContextBuilder,
         config: ServiceCatalog,
-        connectors: list[Connector],
+        connectors: Sequence[ToolProviderView],
         persona: PersonaLike,
         model: str | None = None,
         max_turns: int | None = None,
@@ -559,8 +562,8 @@ class AnthropicAgent(Agent):
     @staticmethod
     async def _stream_multimodal(
         text: str, attachments: list[Attachment]
-    ) -> AsyncIterator[dict]:
-        content: list[dict] = []
+    ) -> AsyncIterator[dict[str, Any]]:
+        content: list[dict[str, Any]] = []
         if text:
             content.append({"type": "text", "text": text})
         for att in attachments:

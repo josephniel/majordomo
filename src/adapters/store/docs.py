@@ -192,7 +192,7 @@ class DocumentStore:
         if self._pool is not None:
             return
         self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=4)
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             await conn.execute(_SCHEMA.replace("{{EMBED_DIM}}", str(self._embed.dim)))
 
     async def close(self) -> None:
@@ -201,6 +201,12 @@ class DocumentStore:
             self._pool = None
 
     # ---- writes ----
+
+    def _acquire(self) -> asyncpg.pool.PoolAcquireContext:
+        """Take a pooled connection, or say clearly that connect() was never called."""
+        if self._pool is None:
+            raise RuntimeError("DocumentStore.connect() not called yet")
+        return self._pool.acquire()
 
     async def ingest(
         self,
@@ -218,7 +224,7 @@ class DocumentStore:
         # Embed off the event loop, one pass (the model batches internally).
         vectors = await asyncio.to_thread(
             lambda: [self._embed.embed_passage(c) for c in chunks])
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with self._acquire() as conn, conn.transaction():
             doc_id = await conn.fetchval(
                 """
                     INSERT INTO documents (persona_id, name, mime, chat_id, num_chunks, char_count)
@@ -250,7 +256,7 @@ class DocumentStore:
         """
         if older_than_days <= 0:
             return 0
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             result = await conn.execute(
                 """
                 DELETE FROM documents
@@ -261,7 +267,7 @@ class DocumentStore:
         return int(result.split()[-1])
 
     async def delete(self, persona_id: str, doc_id: int) -> bool:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             deleted = await conn.fetchval(
                 "DELETE FROM documents WHERE persona_id = $1 AND id = $2 RETURNING id",
                 persona_id, doc_id,
@@ -271,7 +277,7 @@ class DocumentStore:
     # ---- reads ----
 
     async def list_docs(self, persona_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, name, mime, num_chunks, char_count, ts
@@ -289,7 +295,7 @@ class DocumentStore:
         start_chunk: int = 0,
         max_chunks: int = 4,
     ) -> dict[str, Any] | None:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             doc = await conn.fetchrow(
                 "SELECT id, name, num_chunks FROM documents WHERE persona_id = $1 AND id = $2",
                 persona_id, doc_id,
@@ -331,6 +337,6 @@ class DocumentStore:
         args: list[Any] = [persona_id, query, int(limit)]
         if vec_literal:
             args += [self._embed.model_name, vec_literal]
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             rows = await conn.fetch(sql, *args)
         return [dict(r) for r in rows if r["score"] and r["score"] > _MIN_CHUNK_SCORE]

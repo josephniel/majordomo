@@ -29,7 +29,6 @@ from adapters.chat import ChatPlatform, InboundMessage
 from adapters.comms import CommsLog, CommsRelay
 from ports import (
     CanaryRunner,
-    Connector,
     ConversationRef,
     TriggerAgent,
     TriggerEvent,
@@ -43,12 +42,13 @@ from .proactive import ProactiveMixin
 from .recovery import RecoveryMixin
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from adapters.comms.status_report import StatusReporter
     from adapters.model import Agent, Attachment, ConversationHistory, ToolUseCallback
     from adapters.tools import ServiceRegistry, WriteApprovalGate
     from domain import ReflectionEngine
+    from ports import ToolProviderView
 
     from .sessions import SessionStore
 
@@ -114,7 +114,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         agent_factory: Callable[..., Agent],
         session_store: SessionStore,
         config: ServiceRegistry,
-        connectors_list: list[Connector],
+        connectors_list: Sequence[ToolProviderView],
         persona_id: str,
         optional: OptionalSubsystems | None = None,
     ) -> None:
@@ -124,7 +124,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._agent_factory = agent_factory
         self._session_store = session_store
         self._config = config
-        self._connectors = connectors_list
+        self._connectors = list(connectors_list)
         self._persona_id = persona_id
         self._comms_log = optional.comms_log
         self._conversation_history = optional.conversation_history
@@ -157,10 +157,13 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         # recompaction), stale agents rebuild with the session preserved.
         self._agent_ctx_versions: dict[ConversationRef, int] = {}
         # Flood control: recent turn timestamps + "already warned" flag.
-        self._turn_times: dict[int, deque[float]] = {}
-        self._rate_warned_at: dict[int, float] = {}
+        self._turn_times: dict[ConversationRef, deque[float]] = {}
+        self._rate_warned_at: dict[ConversationRef, float] = {}
         # Held refs for background agent teardowns.
-        self._stale_agent_stops: set[asyncio.Task] = set()
+        # Held references for fire-and-forget work — a bare create_task can be
+        # garbage-collected mid-flight. The results are all discarded, so the
+        # set does not care what each task returns.
+        self._stale_agent_stops: set[asyncio.Task[Any]] = set()
         # Union of the providers' SCHEDULE_CLAIM_TOOLS — tool names that
         # satisfy an "I've set a reminder" claim (RecoveryMixin, Layer 3b).
         # Substring-matched: vendors report different name forms
@@ -292,7 +295,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         """
         msg = InboundMessage(
             chat_id=chat_id,
-            sender_id=0,  # synthetic — relay messages have no platform user
+            sender_id="",  # synthetic — relay messages have no platform user
             text=text,
             attachments=[],
             message_id=original_message_id,

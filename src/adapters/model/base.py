@@ -22,7 +22,9 @@ from ports.llm import (
 from ports.messaging import Attachment
 
 if TYPE_CHECKING:
-    from ports import Connector, ServiceCatalog
+    from collections.abc import Sequence
+
+    from ports import ServiceCatalog, ToolProviderView
 
 __all__ = [
     "Agent",
@@ -80,7 +82,7 @@ class ContextBuilder:
     def __init__(
         self,
         config: ServiceCatalog,
-        connectors: list[Connector],
+        connectors: Sequence[ToolProviderView],
         persona: PersonaLike,
         platform_context: str = "",
     ) -> None:
@@ -116,7 +118,7 @@ class ContextBuilder:
         parts.extend(volatile)
         return "\n\n".join(p for p in parts if p)
 
-    def _connectors_section(self, enabled: list[Any]) -> str:
+    def _connectors_section(self, enabled: Sequence[Any]) -> str:
         if not enabled:
             return "== Connectors ==\n\nNo connectors are enabled right now."
         lines = ["== Connectors ==", ""]

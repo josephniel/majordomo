@@ -36,17 +36,13 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
 
-from ports import ConversationRef, SessionResettable, ToolCallProbe
+from ports import ConversationMirror, ConversationRef, SessionResettable, ToolCallProbe
 
 from .base import Agent, Attachment, Summarizer, ToolUseCallback, UsageLimitError
 from .health import VendorHealthBoard
-
-if TYPE_CHECKING:
-    from .history import ConversationHistory
-
 from .history import TurnRecord
 
 log = logging.getLogger(__name__)
@@ -113,7 +109,7 @@ class _ToolTrace:
 
     def __init__(
         self,
-        history: ConversationHistory,
+        history: ConversationMirror,
         persona_id: str,
         chat_id: ConversationRef,
         on_tool_use: ToolUseCallback | None,
@@ -154,7 +150,7 @@ class CascadingAgent(Agent):
     def __init__(
         self,
         chain: list[tuple[str, Agent]],
-        history: ConversationHistory,
+        history: ConversationMirror,
         persona_id: str,
         chat_id: ConversationRef,
         summarizer: Summarizer,
@@ -188,7 +184,7 @@ class CascadingAgent(Agent):
         # (summary + kept tail) on their next turn, so per-turn input tokens
         # stay bounded instead of replaying the whole conversation forever.
         self._pending_rotation: set[str] = set()
-        self._bg_tasks: set[asyncio.Task] = set()
+        self._bg_tasks: set[asyncio.Task[None]] = set()
         # Tools invoked during the most recent successful turn — the
         # orchestrator's hallucination detector (Layer 3) reads these to spot
         # a model that CLAIMED a save/schedule but never called the tool.
@@ -651,6 +647,8 @@ class CascadingAgent(Agent):
         if self._started.get(vendor):
             return
         agent = self._agent_by_name(vendor)
+        if agent is None:
+            raise KeyError(f"{vendor!r} is not in this chain")
         await agent.start()
         self._started[vendor] = True
 

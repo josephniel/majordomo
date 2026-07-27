@@ -44,6 +44,32 @@ HTTP_OK = 200
 HTTP_NO_CONTENT = 204
 
 
+def json_object(response: httpx.Response) -> dict[str, Any]:
+    """Read the response body as an object; {} for a 204 or an empty body.
+
+    Five connectors each wrote the 204 check, and each then returned httpx's
+    Any from a method declaring dict[str, Any] — so the annotation was a wish.
+    The isinstance is what makes it true: an endpoint that starts answering
+    with a different shape fails here, naming what it sent.
+    """
+    if response.status_code == HTTP_NO_CONTENT or not response.text:
+        return {}
+    body = response.json()
+    if not isinstance(body, dict):
+        raise TypeError(f"expected a JSON object, got {type(body).__name__}")
+    return body
+
+
+def json_array(response: httpx.Response) -> list[dict[str, Any]]:
+    """Read the response body as a list of objects; [] for a 204 or empty body."""
+    if response.status_code == HTTP_NO_CONTENT or not response.text:
+        return []
+    body = response.json()
+    if not isinstance(body, list):
+        raise TypeError(f"expected a JSON array, got {type(body).__name__}")
+    return [item for item in body if isinstance(item, dict)]
+
+
 def format_http_error(vendor: str, e: httpx.HTTPStatusError) -> str:
     """Render a failed API call as the one line the model will read."""
     return f"{vendor} API error {e.response.status_code}: {(e.response.text or '')[:_BODY_CHARS]}"

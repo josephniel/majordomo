@@ -197,8 +197,19 @@ class ConversationHistory:
         )
         await self.init_schema()
 
+    def _acquire(self) -> asyncpg.pool.PoolAcquireContext:
+        """Take a pooled connection, or say clearly that connect() was never called.
+
+        Without this every method reads self._pool.acquire() on a pool that is
+        None until connect(), and the failure is an AttributeError naming
+        NoneType rather than the mistake.
+        """
+        if self._pool is None:
+            raise RuntimeError("ConversationHistory.connect() not called yet")
+        return self._pool.acquire()
+
     async def init_schema(self) -> None:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             await conn.execute(_SCHEMA)
             await self._migrate_chat_ids(conn)
 
@@ -232,8 +243,8 @@ class ConversationHistory:
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        async with self._pool.acquire() as conn:
-            return await conn.fetchval(
+        async with self._acquire() as conn:
+            row_id = await conn.fetchval(
                 """
                 INSERT INTO chat_history (persona_id, chat_id, role, content, metadata)
                 VALUES ($1, $2, $3, $4, $5::jsonb)
@@ -245,6 +256,7 @@ class ConversationHistory:
                 content,
                 metadata or {},
             )
+        return int(row_id)
 
     # ---- reads ----
 
@@ -255,7 +267,7 @@ class ConversationHistory:
         limit: int = 40,
     ) -> list[dict[str, Any]]:
         """Return the last N ACTIVE (non-archived) rows in chronological order."""
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM (
@@ -287,7 +299,7 @@ class ConversationHistory:
         extraction).
         """
         sql = _ROWS_BETWEEN_ALL if include_archived else _ROWS_BETWEEN_ACTIVE
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             rows = await conn.fetch(
                 sql,
                 persona_id,
@@ -300,7 +312,7 @@ class ConversationHistory:
     # ---- reflection watermark ----
 
     async def get_reflection_watermark(self, persona_id: str, chat_id: ConversationRef) -> int:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             row = await conn.fetchval(
                 """
                 SELECT last_row_id FROM reflection_state
@@ -317,7 +329,7 @@ class ConversationHistory:
         chat_id: ConversationRef,
         last_row_id: int,
     ) -> None:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO reflection_state (persona_id, chat_id, last_row_id, last_run_at)
@@ -332,7 +344,7 @@ class ConversationHistory:
 
     async def last_row_id(self, persona_id: str, chat_id: ConversationRef) -> int:
         """Highest active row id for the chat (0 if empty)."""
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             return (
                 await conn.fetchval(
                     """
@@ -346,7 +358,7 @@ class ConversationHistory:
             )
 
     async def total_chars(self, persona_id: str, chat_id: ConversationRef) -> int:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             return (
                 await conn.fetchval(
                     """
@@ -378,7 +390,7 @@ class ConversationHistory:
         can cite when.
         """
         pattern = f"%{query}%"
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT id, role, content, ts, archived,
@@ -408,7 +420,7 @@ class ConversationHistory:
         The fallback vendors' client-side replay starts empty afterwards — this is what makes /reset
         true on non-Claude paths. Returns rows archived.
         """
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             result = await conn.execute(
                 """
                 UPDATE chat_history
@@ -442,7 +454,7 @@ class ConversationHistory:
         Folded rows are archived, not deleted — the raw record stays
         available to `search()`. Returns the count of rows folded in.
         """
-        async with self._pool.acquire() as conn, conn.transaction():
+        async with self._acquire() as conn, conn.transaction():
             result = await conn.execute(
                 """
                     UPDATE chat_history
@@ -475,7 +487,7 @@ class ConversationHistory:
         self, persona_id: str, chat_id: ConversationRef, turn: TurnRecord
     ) -> None:
         try:
-            async with self._pool.acquire() as conn:
+            async with self._acquire() as conn:
                 await conn.execute(
                     """
                     INSERT INTO turn_log
@@ -518,7 +530,7 @@ class ConversationHistory:
         archived_days is the episodic-recall horizon, not just disk hygiene.
         """
         deleted = {"chat_history_archived": 0, "turn_log": 0}
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             if archived_days > 0:
                 result = await conn.execute(
                     """
@@ -560,7 +572,7 @@ class ConversationHistory:
 
         The durable answer to 'what did the bot try to write this week?'.
         """
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO approval_log
@@ -577,7 +589,7 @@ class ConversationHistory:
             )
 
     async def approval_stats_today(self, persona_id: str) -> dict[str, int]:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT decision, COUNT(*) AS n FROM approval_log
@@ -594,7 +606,7 @@ class ConversationHistory:
         chat_id: ConversationRef,
     ) -> dict[str, Any]:
         """Summarize today's turns/tokens plus last-turn info, for /status."""
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             agg = await conn.fetchrow(
                 """
                 SELECT COUNT(*) AS turns,
@@ -634,7 +646,7 @@ class EphemeralConversationHistory:
     """
 
     def __init__(self) -> None:
-        self._rows: list[dict] = []
+        self._rows: list[dict[str, Any]] = []
         self._next_id = 1
 
     async def connect(self) -> None:
@@ -652,18 +664,18 @@ class EphemeralConversationHistory:
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        row = {
-            "id": self._next_id,
+        row_id = self._next_id
+        self._next_id += 1
+        self._rows.append({
+            "id": row_id,
             "persona_id": persona_id,
             "chat_id": chat_key(chat_id),
             "role": role,
             "content": content,
             "metadata": metadata or {},
             "archived": False,
-        }
-        self._next_id += 1
-        self._rows.append(row)
-        return row["id"]
+        })
+        return row_id
 
     def _match(
         self, persona_id: str, chat_id: ConversationRef, include_archived: bool = False

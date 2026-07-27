@@ -28,7 +28,7 @@ import httpx
 
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
-from ._failures import HTTP_NO_CONTENT, api_errors
+from ._failures import api_errors, json_object
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -71,9 +71,7 @@ class ClickUpClient:
                 json=body,
             )
             response.raise_for_status()
-            if response.status_code == HTTP_NO_CONTENT or not response.text:
-                return {}
-            return response.json()
+            return json_object(response)
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self._request("GET", path, params=params)
@@ -131,12 +129,13 @@ class ClickUpClient:
             params["subtasks"] = "true"
         return await self._get(f"/team/{self._team_id}/task", params)
 
-    async def list_workspace_members(self) -> list[dict]:
+    async def list_workspace_members(self) -> list[dict[str, Any]]:
         """Return the members list for this client's team_id."""
         teams_resp = await self._get("/team")
         for team in teams_resp.get("teams", []):
             if str(team.get("id")) == str(self._team_id):
-                return team.get("members", [])
+                members: list[dict[str, Any]] = team.get("members", [])
+                return members
         return []
 
     async def list_folders(self, space_id: str) -> dict[str, Any]:

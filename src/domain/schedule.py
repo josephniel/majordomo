@@ -92,6 +92,20 @@ class ScheduleEngine:
                     timezone,
                 )
 
+    def all_schedules(self) -> list[ScheduledTask]:
+        """Every schedule in the store, by name, without starting the scheduler.
+
+        For inspecting a persona that is not running: reading the JSON is what
+        start() would do anyway, minus APScheduler.
+        """
+        self._load()
+        return sorted(self._schedules.values(), key=lambda s: s.name)
+
+    @property
+    def legacy_platform(self) -> str:
+        """The platform a bare chat id belongs to, for coercing config values."""
+        return self._legacy_platform
+
     @property
     def timezone_name(self) -> str | None:
         return str(self._tz) if self._tz is not None else None
@@ -324,7 +338,7 @@ class ScheduleEngine:
             with contextlib.suppress(Exception):
                 self._scheduler.remove_job(job_id)
             return
-        if entry.is_one_shot:
+        if entry.is_one_shot and entry.run_at is not None:
             try:
                 run_dt = self._localize(datetime.fromisoformat(entry.run_at))
             except (TypeError, ValueError):
@@ -529,15 +543,6 @@ class TaskScheduler(Faculty):
     def shutdown(self) -> None:
         self._runtime.shutdown()
 
-    def all_schedules(self) -> list[ScheduledTask]:
-        """Every schedule in the store, by name, without starting the scheduler.
-
-        For inspecting a persona that is not running: reading the JSON is what
-        start() would do anyway, minus APScheduler.
-        """
-        self._load()
-        return sorted(self._schedules.values(), key=lambda s: s.name)
-
     def schedules_for_chat(self, chat_id: ConversationRef) -> list[ScheduledTask]:
         """Public accessor for /status."""
         return self._runtime.list_for_chat(chat_id)
@@ -567,6 +572,6 @@ class TaskScheduler(Faculty):
 
 
         return [
-            *_creating_tools(runtime, self._legacy_platform),
+            *_creating_tools(runtime, runtime.legacy_platform),
             *_managing_tools(runtime),
         ]

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from adapters.chat import ChatPlatform, CommandEvent
     from adapters.model import ConversationHistory
     from kernel.sessions import SessionStore
-    from ports import Agent, ServiceCatalog, ToolProvider, TriggerSource
+    from ports import Agent, ServiceCatalog, ToolProviderView, TriggerSource
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ class CommandsMixin:
     if TYPE_CHECKING:
         _platform: ChatPlatform
         _config: ServiceCatalog
-        _connectors: list[ToolProvider]
+        _connectors: list[ToolProviderView]
         _persona_id: str
         _agents: dict[ConversationRef, Agent]
         _session_ids: dict[ConversationRef, str]

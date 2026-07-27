@@ -26,7 +26,7 @@ import httpx
 
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
-from ._failures import HTTP_NO_CONTENT, api_errors
+from ._failures import api_errors, json_object
 from ._google_oauth import (
     CredentialStore,
     GoogleOAuthClient,
@@ -75,9 +75,7 @@ class GmailClient:
                 json=json,
             )
             r.raise_for_status()
-            if r.status_code == HTTP_NO_CONTENT or not r.text:
-                return {}
-            return r.json()
+            return json_object(r)
 
     async def search_messages(self, query: str, max_results: int = 25) -> dict[str, Any]:
         return await self._request(

@@ -41,13 +41,12 @@ if TYPE_CHECKING:
     from adapters.model import (
         Agent,
         ConversationHistory,
-        EphemeralConversationHistory,
         Summarizer,
     )
     from adapters.store import Embedder, MemoryDatabase
     from adapters.tools import ServiceRegistry
     from domain.schedule import ScheduleEngine
-    from ports import ConversationRef, ToolProvider
+    from ports import ConversationMirror, ConversationRef, ToolProvider
 
     from .persona import Persona
     from .settings import RuntimeSettings
@@ -92,10 +91,7 @@ class RuntimeContext(Protocol):
     # ephemeral one. A ConversationHistory PROTOCOL is the real fix; until then
     # this at least stops the annotation from claiming something false.
     def create_agent(
-        self,
-        *,
-        chat_id: ConversationRef,
-        history: ConversationHistory | EphemeralConversationHistory,
+        self, *, chat_id: ConversationRef, history: ConversationMirror
     ) -> Agent: ...
 
 

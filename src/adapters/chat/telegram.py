@@ -14,6 +14,7 @@ import logging
 import os
 import secrets
 import time
+from collections.abc import Callable, Coroutine
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -44,12 +45,15 @@ from .base import (
 from .transcription import CascadingTranscriber, filename_for_mime
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+    from collections.abc import AsyncIterator, Mapping
     from types import TracebackType
 
     from telegram import Bot, Chat, Message, User
 
     from adapters.comms import CommsLog
+
+# What CommandHandler wants: PTB passes (update, context) and awaits it.
+_CommandCallback = Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, None]]
 
 log = logging.getLogger(__name__)
 
@@ -131,7 +135,7 @@ class TelegramPlatform(ChatPlatform):
         self._user_id: int | None = None
         self._app: Application[Any, Any, Any, Any, Any, Any] | None = None
         # nonce -> future resolved by the inline-keyboard callback.
-        self._pending_approvals: dict[str, asyncio.Future] = {}
+        self._pending_approvals: dict[str, asyncio.Future[bool]] = {}
         self._on_message: OnMessage | None = None
         self._on_command: OnCommand | None = None
         self._on_startup: OnLifecycle | None = None
@@ -224,15 +228,15 @@ class TelegramPlatform(ChatPlatform):
     ) -> None:
         if self._app is None:
             raise RuntimeError("TelegramPlatform.send_text called before run()")
-        chat_id = _native(chat_id)
+        native_id = _native(chat_id)
         kwargs: dict[str, Any] = {}
         if reply_to is not None:
             # If the original message was deleted, fall back to a normal send
             # rather than erroring out.
             kwargs["reply_to_message_id"] = reply_to
             kwargs["allow_sending_without_reply"] = True
-        sent = await self._app.bot.send_message(chat_id, text, **kwargs)
-        if self._is_control_room(chat_id) and self._comms_log is not None:
+        sent = await self._app.bot.send_message(native_id, text, **kwargs)
+        if self._is_control_room(native_id) and self._comms_log is not None:
             try:
                 await self._comms_log.append(
                     instance=self._persona_id,
@@ -265,7 +269,7 @@ class TelegramPlatform(ChatPlatform):
         path: str,
         caption: str | None = None,
     ) -> bool:
-        chat_id = _native(chat_id)
+        native_id = _native(chat_id)
         if self._app is None:
             raise RuntimeError("TelegramPlatform.send_file called before run()")
         p = Path(path)
@@ -284,7 +288,7 @@ class TelegramPlatform(ChatPlatform):
             fd = os.open(str(p), os.O_RDONLY | os.O_NOFOLLOW)
             with os.fdopen(fd, "rb") as fh:
                 await self._app.bot.send_document(
-                    chat_id, document=fh, filename=p.name,
+                    native_id, document=fh, filename=p.name,
                     caption=(caption or None),
                 )
             return True
@@ -306,17 +310,17 @@ class TelegramPlatform(ChatPlatform):
         concurrent_updates(True) — the callback handler doesn't take the
         per-chat lock, so answering can't deadlock the waiting tool call.
         """
-        chat_id = _native(chat_id)
+        native_id = _native(chat_id)
         if self._app is None:
             raise RuntimeError("TelegramPlatform.request_approval called before run()")
         # Writes triggered from the control room are approved in the
         # OPERATOR's DM, not the group: the arg preview may contain private
         # data (email snippets) peer bots shouldn't see, and the prompt
         # should reach the person accountable for the tap.
-        if self._is_control_room(chat_id) and self._allowed_user_ids:
-            chat_id = min(self._allowed_user_ids)
+        if self._is_control_room(native_id) and self._allowed_user_ids:
+            native_id = min(self._allowed_user_ids)
         nonce = secrets.token_urlsafe(8)
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
         self._pending_approvals[nonce] = fut
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("✅ Approve", callback_data=f"apr|{nonce}|y"),
@@ -373,7 +377,7 @@ class TelegramPlatform(ChatPlatform):
             await query.answer("You're not allowed to approve actions.", show_alert=True)
             return
         try:
-            _, nonce, verdict = query.data.split("|", 2)
+            _prefix, nonce, verdict = query.data.split("|", 2)
         except ValueError:
             await query.answer()
             return
@@ -433,9 +437,13 @@ class TelegramPlatform(ChatPlatform):
     # ---- PTB lifecycle adapters ----
 
     async def _post_init(self, _application: object) -> None:
+        # Runs after build(), so the application exists.
+        app = self._app
+        if app is None:  # pragma: no cover — build() sets it before this fires
+            return
         # Cache our own identity so we can detect @-mentions and replies-to-self.
         try:
-            me = await self._app.bot.get_me()
+            me = await app.bot.get_me()
             self._username = me.username
             self._user_id = me.id
             log.info(
@@ -447,7 +455,7 @@ class TelegramPlatform(ChatPlatform):
         # Populate Telegram's "/" autocomplete menu.
         try:
             from telegram import BotCommand
-            await self._app.bot.set_my_commands([
+            await app.bot.set_my_commands([
                 BotCommand("status", "vendors, health, memory, schedules"),
                 BotCommand("reset", "start the conversation over"),
                 BotCommand("cancel", "stop the in-flight reply"),
@@ -464,7 +472,7 @@ class TelegramPlatform(ChatPlatform):
 
     # ---- PTB → port translation ----
 
-    def _create_command_handler(self, command: str) -> Callable[..., Awaitable[None]]:
+    def _create_command_handler(self, command: str) -> _CommandCallback:
         async def handler(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
             user = update.effective_user
             chat = update.effective_chat
@@ -576,6 +584,8 @@ class TelegramPlatform(ChatPlatform):
         Returns the text to treat as the user's turn, or None after replying with why not.
         """
         media = msg.voice or msg.audio
+        if media is None:
+            return None
         if self._transcriber is None:
             await msg.reply_text(
                 "Voice and audio aren't supported yet — text and images work."
@@ -742,7 +752,7 @@ class _TelegramStatusTracker:
         self._last_update_at = self._started
         self._last_text: str | None = None
         self._message_id: int | None = None
-        self._heartbeat_task: asyncio.Task | None = None
+        self._heartbeat_task: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> _TelegramStatusTracker:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())

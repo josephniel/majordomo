@@ -19,7 +19,7 @@ import logging
 import os
 from dataclasses import replace
 from functools import cached_property
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from dotenv import dotenv_values, load_dotenv
 
@@ -56,13 +56,15 @@ from adapters.tools import (
 from domain import (
     DocumentLibrary,
     FileCourier,
+    LongTermMemory,
     ReflectionEngine,
     ScheduleEngine,
+    SkillsLibrary,
     TaskScheduler,
 )
 from kernel.core import ConversationOrchestrator, OptionalSubsystems
 from kernel.sessions import SessionStore
-from ports import ConversationRef, ModelRole
+from ports import ConversationMirror, ConversationRef, ModelRole, ToolProviderView
 
 from .config import SHARED_ENV_FILENAME
 from .model_roles import RoleChain, resolve_roles
@@ -72,7 +74,7 @@ from .settings import RuntimeSettings
 from .vendors import VENDORS, VENDORS_BY_NAME
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import Awaitable, Callable, Iterable, Sequence
     from pathlib import Path
 
     from adapters.chat.transcription import CascadingTranscriber
@@ -81,6 +83,8 @@ if TYPE_CHECKING:
     from adapters.trigger.webhook import WebhookServer
     from domain.triggers import HeartbeatSource, WatchSource
     from ports import ToolSpec
+
+_F = TypeVar("_F")
 
 log = logging.getLogger(__name__)
 
@@ -284,7 +288,7 @@ class PersonaRuntime:
             return None
         return ReflectionEngine(
             history=self.conversation_history,
-            memory=self.provider("memory"),
+            memory=self.memory_faculty,
             summarizer=self.summarizer,
             persona_id=self.persona.id,
         )
@@ -353,7 +357,7 @@ class PersonaRuntime:
         return [*self.active_connectors, *self.active_faculties]
 
     @cached_property
-    def gated_services(self) -> list[ToolProvider]:
+    def gated_services(self) -> Sequence[ToolProviderView]:
         """The view AGENT BUILDERS consume, with WRITE_TOOLS behind the gate.
 
         Layer 5. Same objects as active_services when the persona opts out of
@@ -362,7 +366,42 @@ class PersonaRuntime:
         gate = self.approval_gate
         if gate is None:
             return self.active_services
-        return [GatedToolProvider(c, gate) for c in self.active_services]
+        gated: list[ToolProviderView] = []
+        gated.extend(GatedToolProvider(c, gate) for c in self.active_services)
+        return gated
+
+    @cached_property
+    def skills_library(self) -> SkillsLibrary:
+        """The skills faculty, as itself. Used by `./manage skills`."""
+        return self._faculty("skills", SkillsLibrary)
+
+    @cached_property
+    def document_library(self) -> DocumentLibrary:
+        """The documents faculty, as itself. Used by `./manage documents`."""
+        return self._faculty("documents", DocumentLibrary)
+
+    def _faculty(self, name: str, kind: type[_F]) -> _F:
+        """One provider, as the faculty it is rather than as the base contract.
+
+        provider() answers ToolProvider because that is what the registry
+        promises. Callers that need a faculty's own surface — the CLI reading
+        skills, retention pruning through the document store — need the type,
+        and would otherwise reach past the registry to get it.
+        """
+        provider = self.provider(name)
+        if not isinstance(provider, kind):
+            raise TypeError(f"the {name!r} provider is a {type(provider).__name__}")
+        return provider
+
+    @cached_property
+    def memory_faculty(self) -> LongTermMemory:
+        """Return the memory provider as the faculty it is.
+
+        provider() answers ToolProvider because that is what the registry
+        promises; reflection and ideation need the faculty's own surface, and
+        a persona without memory never reaches here (callers check first).
+        """
+        return self._faculty("memory", LongTermMemory)
 
     # ---- platform ----
 
@@ -600,7 +639,7 @@ class PersonaRuntime:
         self,
         chat_id: ConversationRef,
         session_id: str | None = None,
-        history: ConversationHistory | None = None,
+        history: ConversationMirror | None = None,
         persona_override: Persona | None = None,
         role: ModelRole = ModelRole.CHAT,
     ) -> Agent:
@@ -960,7 +999,7 @@ class PersonaRuntime:
             document_store=docs_store,
         )
 
-    def _watch_chat_id(self, cfg: dict[str, Any], label: str) -> int | None:
+    def _watch_chat_id(self, cfg: dict[str, Any], label: str) -> ConversationRef | None:
         chat_id = cfg.get("chat_id") or self._default_operator_chat_id()
         if chat_id is None:
             log.warning(

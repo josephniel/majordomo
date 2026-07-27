@@ -10,16 +10,19 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from ports import AttachmentIngestor, Connector, ConversationRef
+from ports import AttachmentIngestor, ConversationRef
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from adapters.chat import InboundMessage
+    from ports import ToolProviderView
 
 log = logging.getLogger(__name__)
 
 
 async def ingest_attachments(
-    connectors: list[Connector],
+    connectors: Sequence[ToolProviderView],
     chat_id: ConversationRef,
     text: str,
     msg: InboundMessage,

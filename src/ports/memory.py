@@ -210,6 +210,18 @@ class Reconciliation:
     target_id: UUID | None = None
     reason: str = ""
 
+    def require_target(self) -> UUID:
+        """Return the entry this verdict acts on.
+
+        UPDATE and DELETE always carry one — Reconciler.decide falls back to
+        ADD when the model names no target, or one it was never shown. This is
+        that invariant said out loud, so a caller acting on the target does not
+        have to re-derive it.
+        """
+        if self.target_id is None:
+            raise ValueError(f"a {self.verdict} decision must name a target_id")
+        return self.target_id
+
 
 @dataclass
 class MemoryCoreEntry:

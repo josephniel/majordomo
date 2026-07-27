@@ -20,6 +20,7 @@ from .conversation import ConversationRef, chat_key
 from .documents import DocumentStore
 from .llm import (
     Agent,
+    ConversationMirror,
     ModelRole,
     PersonaLike,
     Summarizer,
@@ -47,6 +48,7 @@ from .protocols import (
     ServiceCatalog,
     SessionResettable,
     ToolCallProbe,
+    ToolProviderView,
     ToolTraceReporting,
     VendorIntrospectable,
 )
@@ -78,6 +80,7 @@ __all__ = [
     "CanaryRunner",
     "Connector",
     "ContextInjector",
+    "ConversationMirror",
     "ConversationRef",
     "DocumentStore",
     "EmitTrigger",
@@ -99,6 +102,7 @@ __all__ = [
     "ToolCallProbe",
     "ToolContext",
     "ToolProvider",
+    "ToolProviderView",
     "ToolResult",
     "ToolSpec",
     "ToolTraceReporting",

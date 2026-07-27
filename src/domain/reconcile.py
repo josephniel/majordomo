@@ -243,7 +243,7 @@ class Reconciler:
             return entry
 
         if decision.verdict is MemoryVerdict.UPDATE:
-            entry = await self._memory.update_fact(decision.target_id, c.content)
+            entry = await self._memory.update_fact(decision.require_target(), c.content)
             log.info(
                 "reconcile update: id=%s -> %r (%s)",
                 decision.target_id, c.content[:80], decision.reason,
@@ -253,7 +253,7 @@ class Reconciler:
         # DELETE. Expire rather than retract: the fact WAS true, and the
         # window it covered is worth keeping. forget_fact would tombstone it
         # as though it should never have been recorded.
-        if await self._memory.expire_fact(decision.target_id):
+        if await self._memory.expire_fact(decision.require_target()):
             log.info(
                 "reconcile expire: id=%s (%s)", decision.target_id, decision.reason,
             )

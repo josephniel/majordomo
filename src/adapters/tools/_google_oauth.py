@@ -222,7 +222,7 @@ class CredentialStore:
         expiry_ms = int(creds.get("expiry_date", 0))
         now_ms = int(time.time() * 1000)
         if expiry_ms > now_ms + REFRESH_LEEWAY_S * 1000:
-            return creds["access_token"]
+            return str(creds["access_token"])
 
         refresh_token = creds.get("refresh_token")
         if not refresh_token:
@@ -233,4 +233,4 @@ class CredentialStore:
         if not new_creds.get("refresh_token"):
             new_creds["refresh_token"] = refresh_token
         self._save(new_creds)
-        return new_creds["access_token"]
+        return str(new_creds["access_token"])

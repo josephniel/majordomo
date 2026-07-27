@@ -182,7 +182,7 @@ class LongTermMemory(Faculty):
         # the orchestrator watches this to refresh stale agents (gap A2).
         self._context_version = 0
         # Held refs for fire-and-forget work (bare create_task can be GC'd).
-        self._bg_tasks: set[asyncio.Task] = set()
+        self._bg_tasks: set[asyncio.Task[None]] = set()
 
     # ---- lifecycle hooks ----
 

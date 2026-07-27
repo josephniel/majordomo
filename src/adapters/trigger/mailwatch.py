@@ -61,12 +61,17 @@ class MailWatcher:
 
     def _load(self) -> dict[str, dict[str, Any]]:
         try:
-            return json.loads(self._state_file.read_text(encoding="utf-8"))
+            # Whatever is on disk: a hand-edited state file is the operator's
+            # problem to fix, but it must not be this watcher's crash.
+            state: dict[str, dict[str, Any]] = json.loads(
+                self._state_file.read_text(encoding="utf-8")
+            )
         except FileNotFoundError:
             return {}
         except Exception:
             log.exception("mail_watch state unreadable; starting fresh")
             return {}
+        return state
 
     def _persist(self) -> None:
         try:

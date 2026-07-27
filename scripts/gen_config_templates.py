@@ -14,15 +14,17 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from runtime.config import Scope, Setting
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def _settings_table() -> tuple[list[Setting], type[Scope]]:
+def _settings_table() -> tuple[Sequence[Setting], type[Scope]]:
     """Load the settings table, putting src/ on the path first.
 
     Deferred rather than imported at module scope because the path it needs is
@@ -71,9 +73,9 @@ PERSONA_HEADER = """\
 """
 
 
-def tree(settings: list[Setting]) -> dict:
+def tree(settings: Sequence[Setting]) -> dict[str, Any]:
     """Group settings into the nested shape their YAML paths describe."""
-    out: dict = {}
+    out: dict[str, Any] = {}
     for s in settings:
         node = out
         parts = s.path.split(".")
@@ -83,7 +85,7 @@ def tree(settings: list[Setting]) -> dict:
     return out
 
 
-def render(node: dict, indent: int = 0) -> list[str]:
+def render(node: dict[str, Any], indent: int = 0) -> list[str]:
     lines: list[str] = []
     pad = "  " * indent
     for key, value in node.items():
@@ -128,7 +130,7 @@ def _wrap(text: str, width: int) -> list[str]:
     return out
 
 
-def build(settings: list[Setting], scope: Scope, header: str) -> str:
+def build(settings: Sequence[Setting], scope: Scope, header: str) -> str:
     chosen = [s for s in settings if s.scope is scope]
     body = render(tree(chosen))
     # Collapse the blank line the renderer leaves after the final entry.

@@ -50,8 +50,8 @@ jobs:
       - name: Check architecture (import-linter contracts)
         run: python scripts/check_architecture.py
 
-      - name: Type check contracts layer
-        run: python -m mypy src/ports
+      - name: Type check (strict, everything)
+        run: python -m mypy src/ cli.py scripts/
 
       - name: Run test suite
         run: python -m pytest tests -q

@@ -393,7 +393,8 @@ class MemoryDatabase:
                 """,
                 entry_id, at,
             )
-        return result.split()[-1] != "0"
+        # asyncpg reports "UPDATE <n>" / "DELETE <n>"; 0 means nothing matched.
+        return str(result).split()[-1] != "0"
 
     async def find_similar(
         self,
@@ -564,7 +565,8 @@ class MemoryDatabase:
                     "DELETE FROM memory_links WHERE from_id = $1 AND to_id = $2",
                     from_id, to_id,
                 )
-        return result.split()[-1] != "0"
+        # asyncpg reports "UPDATE <n>" / "DELETE <n>"; 0 means nothing matched.
+        return str(result).split()[-1] != "0"
 
     async def neighbors(
         self,
@@ -613,7 +615,8 @@ class MemoryDatabase:
                     entry_id,
                 )
         # asyncpg returns "DELETE n" / "UPDATE n"
-        return result.split()[-1] != "0"
+        # asyncpg reports "UPDATE <n>" / "DELETE <n>"; 0 means nothing matched.
+        return str(result).split()[-1] != "0"
 
     async def set_pinned(self, entry_id: UUID, pinned: bool) -> bool:
         """Pin/unpin an active entry.
@@ -629,7 +632,8 @@ class MemoryDatabase:
                 """,
                 entry_id, pinned,
             )
-        return result.split()[-1] != "0"
+        # asyncpg reports "UPDATE <n>" / "DELETE <n>"; 0 means nothing matched.
+        return str(result).split()[-1] != "0"
 
     async def mark_verified(self, entry_id: UUID) -> bool:
         """Record that a fact was just confirmed to still hold.
@@ -642,7 +646,8 @@ class MemoryDatabase:
                 "NULL",
                 entry_id,
             )
-        return result.split()[-1] != "0"
+        # asyncpg reports "UPDATE <n>" / "DELETE <n>"; 0 means nothing matched.
+        return str(result).split()[-1] != "0"
 
     async def list_pinned(self, persona_id: str) -> list[MemoryEntry]:
         """All active pinned entries for a persona, newest first."""
@@ -865,7 +870,7 @@ class MemoryDatabase:
         domain_key: str = "",
     ) -> int:
         async with self._acquire() as conn:
-            return await conn.fetchval(
+            count = await conn.fetchval(
                 """
                 SELECT COUNT(*)
                 FROM memory_entries
@@ -874,6 +879,7 @@ class MemoryDatabase:
                 """,
                 persona_id, scope, domain_key,
             )
+        return int(count or 0)
 
     # ---- core summary ----
 
@@ -926,7 +932,8 @@ class MemoryDatabase:
     async def fetch(self, sql: str, *args: Any) -> list[asyncpg.Record]:
         """Execute a SELECT and return all rows. For ad-hoc inspection only."""
         async with self._acquire() as conn:
-            return await conn.fetch(sql, *args)
+            rows: list[asyncpg.Record] = await conn.fetch(sql, *args)
+        return rows
 
     async def purge_persona(self, persona_id: str) -> int:
         """Delete every entry belonging to one persona. Returns the count.
