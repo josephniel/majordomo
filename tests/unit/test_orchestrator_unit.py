@@ -6,7 +6,7 @@ import time
 import pytest
 
 from adapters.tools.base import Connector
-from kernel.core import RATE_LIMIT_MAX_TURNS, ConversationOrchestrator
+from kernel.core import ConversationOrchestrator, OptionalSubsystems, RATE_LIMIT_MAX_TURNS
 from kernel.sessions import SessionStore
 
 
@@ -134,11 +134,7 @@ class TestHallucinationDetector:
         from kernel.core import ConversationOrchestrator
         from kernel.sessions import SessionStore
         refl = self.FakeReflection()
-        o = ConversationOrchestrator(
-            platform=object(), agent_factory=lambda **k: None,
-            session_store=SessionStore(tmp_path / "s.json"), config=object(),
-            connectors_list=[], persona_id="t", reflection=refl,
-        )
+        o = ConversationOrchestrator(platform=object(), agent_factory=lambda **k: None, session_store=SessionStore(tmp_path / 's.json'), config=object(), connectors_list=[], persona_id='t', optional=OptionalSubsystems(reflection=refl))
         return o, refl
 
     async def test_claim_without_tool_call_triggers_reflection(self, tmp_path):

@@ -11,7 +11,7 @@ from adapters.model.base import Attachment
 from adapters.trigger.webhook import WebhookTrigger
 from domain.documents import DocumentLibrary
 from domain.triggers import HeartbeatSource, WatchSource, WebhookSource
-from kernel.core import ConversationOrchestrator
+from kernel.core import ConversationOrchestrator, OptionalSubsystems
 from kernel.sessions import SessionStore
 from ports import TriggerContext
 
@@ -44,7 +44,8 @@ class FakeAgent:
         return self._reply
 
 
-def _orch(tmp_path, *, reply="ok", error=None, connectors=(), **kwargs):
+def _orch(tmp_path, *, reply="ok", error=None, connectors=(), **optional_kw):
+    """An orchestrator wired to fakes; extra kwargs configure the optionals."""
     platform = FakePlatform()
     agent = FakeAgent(reply, error)
     o = ConversationOrchestrator(
@@ -54,7 +55,7 @@ def _orch(tmp_path, *, reply="ok", error=None, connectors=(), **kwargs):
         config=SimpleNamespace(get_mtime=lambda: 0.0),
         connectors_list=list(connectors),
         persona_id="t",
-        **kwargs,
+        optional=OptionalSubsystems(**optional_kw),
     )
     return o, platform, agent
 

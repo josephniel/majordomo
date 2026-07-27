@@ -22,6 +22,7 @@ import contextlib
 import logging
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from adapters.chat import ChatPlatform, InboundMessage
@@ -63,6 +64,39 @@ RATE_LIMIT_MAX_TURNS = 15
 RATE_LIMIT_WINDOW_SECONDS = 60.0
 
 
+@dataclass(frozen=True)
+class OptionalSubsystems:
+    """Everything a persona can run without.
+
+    Grouped rather than listed as seven defaulted constructor parameters, so
+    that what the orchestrator REQUIRES stays visible: a platform, a way to
+    build agents, somewhere to keep sessions, a registry, connectors, and an
+    identity. Everything here is absent on some persona, and every use of it
+    is already guarded.
+    """
+
+    comms_log: CommsLog | None = None
+    conversation_history: ConversationHistory | None = None
+    reflection: ReflectionEngine | None = None
+    status_reporter: StatusReporter | None = None
+
+    # Every way this agent can be woken without the user typing. The
+    # orchestrator knows only the contract — not that heartbeats, webhooks or
+    # mail watches exist.
+    trigger_sources: list[TriggerSource] = field(default_factory=list)
+
+    # Resolves TriggerAgent.DEDICATED. Injected rather than derived so the
+    # orchestrator never has to know which model background work runs on —
+    # that is the composition root's call (see ModelRole.BACKGROUND). Falls
+    # back to the chat agent when absent, which keeps triggers working
+    # (expensively) rather than failing shut.
+    background_agent_factory: Callable[[ConversationRef], Agent] | None = None
+
+    # Read-only, and only to tell a WAITING turn from a WORKING one — see
+    # _pending_approval_notice. The orchestrator never approves anything.
+    approval_gate: WriteApprovalGate | None = None
+
+
 class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
     """Platform-agnostic chat orchestrator.
 
@@ -82,14 +116,9 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         config: ServiceRegistry,
         connectors_list: list[Connector],
         persona_id: str,
-        comms_log: CommsLog | None = None,
-        conversation_history: ConversationHistory | None = None,
-        reflection: ReflectionEngine | None = None,
-        status_reporter: StatusReporter | None = None,
-        trigger_sources: list[TriggerSource] | None = None,
-        background_agent_factory: Callable[[ConversationRef], Agent] | None = None,
-        approval_gate: WriteApprovalGate | None = None,
+        optional: OptionalSubsystems | None = None,
     ) -> None:
+        optional = optional or OptionalSubsystems()
         self._platform = platform
         # agent_factory(chat_id, session_id) -> Agent
         self._agent_factory = agent_factory
@@ -97,26 +126,16 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._config = config
         self._connectors = connectors_list
         self._persona_id = persona_id
-        self._comms_log = comms_log
-        self._conversation_history = conversation_history
-        self._reflection = reflection
-        self._status_reporter = status_reporter
-        # Every way this agent can be woken without the user typing. The
-        # orchestrator knows only the contract — not that heartbeats,
-        # webhooks or mail watches exist.
-        self._trigger_sources: list[TriggerSource] = list(trigger_sources or [])
-        # Resolves TriggerAgent.DEDICATED. Injected rather than derived so
-        # the orchestrator never has to know which model background work runs
-        # on — that is the composition root's call (see ModelRole.BACKGROUND).
-        # Falls back to the chat agent when absent, which keeps triggers
-        # working (expensively) rather than failing shut.
-        self._bg_agent_factory = background_agent_factory
-        # Read-only, and only to tell a WAITING turn from a WORKING one — see
-        # _pending_approval_notice. The orchestrator never approves anything.
-        self._approval_gate = approval_gate
+        self._comms_log = optional.comms_log
+        self._conversation_history = optional.conversation_history
+        self._reflection = optional.reflection
+        self._status_reporter = optional.status_reporter
+        self._trigger_sources: list[TriggerSource] = list(optional.trigger_sources)
+        self._bg_agent_factory = optional.background_agent_factory
+        self._approval_gate = optional.approval_gate
         self._relay: CommsRelay | None = (
-            CommsRelay(comms_log, persona_id, self._on_peer_message)
-            if comms_log is not None else None
+            CommsRelay(optional.comms_log, persona_id, self._on_peer_message)
+            if optional.comms_log is not None else None
         )
 
         # per-instance state

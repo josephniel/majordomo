@@ -16,7 +16,7 @@ import pytest
 
 from adapters.chat.base import InboundMessage
 from adapters.tools.approvals import WriteApprovalGate
-from kernel.core import ConversationOrchestrator
+from kernel.core import ConversationOrchestrator, OptionalSubsystems
 from kernel.sessions import SessionStore
 from ports import ConversationRef, ToolContext, ToolResult, tool
 
@@ -55,15 +55,7 @@ class FakeAgent:
 def _orch(tmp_path, gate=None, reply="ok"):
     platform = FakePlatform()
     agent = FakeAgent(reply)
-    o = ConversationOrchestrator(
-        platform=platform,
-        agent_factory=lambda **k: agent,
-        session_store=SessionStore(tmp_path / "s.json"),
-        config=SimpleNamespace(get_mtime=lambda: 0.0),
-        connectors_list=[],
-        persona_id="t",
-        approval_gate=gate,
-    )
+    o = ConversationOrchestrator(platform=platform, agent_factory=lambda **k: agent, session_store=SessionStore(tmp_path / 's.json'), config=SimpleNamespace(get_mtime=lambda: 0.0), connectors_list=[], persona_id='t', optional=OptionalSubsystems(approval_gate=gate))
     return o, platform, agent
 
 

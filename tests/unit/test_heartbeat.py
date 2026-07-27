@@ -15,7 +15,7 @@ import pytest
 
 from domain.schedule import ScheduleEngine, TaskScheduler
 from domain.triggers import HEARTBEAT_PREAMBLE, HeartbeatSource
-from kernel.core import ConversationOrchestrator
+from kernel.core import ConversationOrchestrator, OptionalSubsystems
 from kernel.sessions import SessionStore
 from ports import ConversationRef, TriggerAgent, TriggerContext, TriggerEvent
 
@@ -50,17 +50,7 @@ class FakeAgent:
 def _orch(tmp_path, reply="done!", background_agent_factory=None):
     platform = FakePlatform()
     agent = FakeAgent(reply)
-    o = ConversationOrchestrator(
-        platform=platform,
-        agent_factory=lambda **k: agent,
-        session_store=SessionStore(tmp_path / "s.json"),
-        # Trigger turns hot-reload config like user turns — the fake needs a
-        # real get_mtime.
-        config=SimpleNamespace(get_mtime=lambda: 0.0),
-        connectors_list=[],
-        persona_id="t",
-        background_agent_factory=background_agent_factory,
-    )
+    o = ConversationOrchestrator(platform=platform, agent_factory=lambda **k: agent, session_store=SessionStore(tmp_path / 's.json'), config=SimpleNamespace(get_mtime=lambda: 0.0), connectors_list=[], persona_id='t', optional=OptionalSubsystems(background_agent_factory=background_agent_factory))
     return o, platform, agent
 
 

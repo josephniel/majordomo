@@ -60,7 +60,7 @@ from domain import (
     ScheduleEngine,
     TaskScheduler,
 )
-from kernel.core import ConversationOrchestrator
+from kernel.core import ConversationOrchestrator, OptionalSubsystems
 from kernel.sessions import SessionStore
 from ports import ConversationRef, ModelRole
 
@@ -1136,21 +1136,7 @@ class PersonaRuntime:
         # there's nothing to log or relay. Same gate as in `platform`.
         cr_configured = bool(self.platform_config.raw.get("control_room"))
         comms = self.comms_log if cr_configured else None
-        return ConversationOrchestrator(
-            platform=self.platform,
-            agent_factory=self.create_agent,
-            session_store=self.session_store,
-            config=self.config,
-            connectors_list=self.active_services,
-            persona_id=self.persona.id,
-            comms_log=comms,
-            conversation_history=self.conversation_history,
-            reflection=self.reflection_engine,
-            status_reporter=self.status_reporter,
-            trigger_sources=self.trigger_sources(schedule_conn),
-            background_agent_factory=self._background_agent_factory,
-            approval_gate=self.approval_gate,
-        )
+        return ConversationOrchestrator(platform=self.platform, agent_factory=self.create_agent, session_store=self.session_store, config=self.config, connectors_list=self.active_services, persona_id=self.persona.id, optional=OptionalSubsystems(comms_log=comms, conversation_history=self.conversation_history, reflection=self.reflection_engine, status_reporter=self.status_reporter, trigger_sources=self.trigger_sources(schedule_conn), background_agent_factory=self._background_agent_factory, approval_gate=self.approval_gate))
 
     def trigger_sources(self, schedule_conn: Any) -> list[Any]:
         """Every way this persona can be woken without the user typing.
