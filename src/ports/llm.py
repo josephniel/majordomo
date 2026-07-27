@@ -100,6 +100,22 @@ class PersonaLike(Protocol):
 # Callback fired once per agent-emitted tool-use during a turn.
 ToolUseCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 
+# Callback fired once per tool that RETURNED, with whether it errored.
+#
+# Separate from ToolUseCallback because the two answer different questions and
+# have different audiences. "A tool started" drives the chat status line and
+# fires before anything is known; "a tool finished, and how" is what the
+# hallucination detectors need, and it cannot be known at invocation time.
+#
+# Collapsing them lost real failures: a write the operator DENIED still fires
+# ToolUseCallback, so a detector reading only invocations counts the claim as
+# backed and stays silent while the model reports success for something that
+# never happened.
+#
+# Optional on every path. A vendor that cannot observe results simply never
+# calls it, and detectors fall back to invocation-only evidence.
+ToolOutcomeCallback = Callable[[str, bool], Awaitable[None]]  # (tool_name, is_error)
+
 
 class UsageLimitError(Exception):
     """Vendor signaled it can't service this request now: rate-limit, overload, or quota exhausted.
@@ -159,11 +175,16 @@ class Agent(ABC):
         on_tool_use: ToolUseCallback | None = None,
         attachments: list[Attachment] | None = None,
         current_row_id: int | None = None,
+        on_tool_outcome: ToolOutcomeCallback | None = None,
     ) -> str:
         """Run one turn.
 
         `text` is the current user message, sent verbatim. `current_row_id`: when the caller already
         mirrored this turn into ConversationHistory, its row id — mirror-replaying vendors exclude
         that row so the message isn't duplicated. Server-side-history vendors ignore it.
+
+        `on_tool_outcome` fires per tool that returned. Implementations that
+        cannot observe results may omit it entirely; callers must not treat
+        silence as success.
         """
         ...

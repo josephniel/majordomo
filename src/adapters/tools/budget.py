@@ -383,6 +383,8 @@ class BudgetConnector(Connector):
         "ledger",
     )
     WRITE_TOOLS = frozenset({"record_transaction", "record_split"})
+    # Both write a ledger row the user will later rely on — chat Layer 3d.
+    RECORD_CLAIM_TOOLS = frozenset({"record_transaction", "record_split"})
 
     TOOL_NAMES: ClassVar[list[str]] = [
         # read

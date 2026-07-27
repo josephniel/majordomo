@@ -179,6 +179,12 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             for c in connectors_list
             for t in getattr(c, "SEND_CLAIM_TOOLS", ())
         }))
+        # Same, for "I've recorded that" claims (RecoveryMixin, Layer 3d).
+        self._record_claim_tools: tuple[str, ...] = tuple(sorted({
+            t
+            for c in connectors_list
+            for t in getattr(c, "RECORD_CLAIM_TOOLS", ())
+        }))
 
     # ---- lifecycle ----
 
@@ -448,10 +454,11 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 self._reflection.note_activity(chat_id)
                 self._detect_missed_save(chat_id, reply, agent)
 
-            # Layers 3b/3c — still inside the chat lock, so the corrective
+            # Layers 3b/3c/3d — still inside the chat lock, so the corrective
             # turn can't interleave with the user's next message.
             await self._recover_missed_schedule(chat_id, reply, agent)
             await self._recover_missed_send(chat_id, reply, agent)
+            await self._recover_missed_record(chat_id, reply, agent)
 
     async def _ingest_attachments(
         self, chat_id: ConversationRef, text: str, msg: InboundMessage

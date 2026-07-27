@@ -514,6 +514,9 @@ class SplitwiseConnector(Connector):
                         "paid", "settle", "reimburse", "bill", "share",
                         "cost", "debt")
     WRITE_TOOLS = frozenset({"create_expense", "update_expense", "delete_expense"})
+    # Only the CREATE satisfies an "I've recorded that" claim; update/delete
+    # are a different claim shape (see RECORD_CLAIM_TOOLS).
+    RECORD_CLAIM_TOOLS = frozenset({"create_expense"})
 
     TOOL_NAMES: ClassVar[list[str]] = [
         # read

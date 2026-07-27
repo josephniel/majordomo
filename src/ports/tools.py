@@ -196,6 +196,22 @@ class ToolProvider:
     # other mailbox.
     SEND_CLAIM_TOOLS: frozenset[str] = frozenset()
 
+    # Local tool names whose invocation satisfies an "I've recorded / logged /
+    # created that" claim — a write to an external system of record (a ledger
+    # entry, an expense, a task). Same contract as the two above, for chat
+    # Layer 3d.
+    #
+    # This exists because a `record_transaction` the operator DENIED was
+    # reported back as "Done — recorded ₱500". No detector fired: "recorded"
+    # matched no claim regex, and no provider declared a claim-tool set for
+    # writes. Unlike a missed reminder, nothing surfaces later — the user finds
+    # out when the ledger doesn't add up.
+    #
+    # Declare the tools that CREATE a record. Updates and deletes are
+    # deliberately out of scope: "I've updated it" is not the claim shape this
+    # layer matches, and a delete that no-ops is not the same failure.
+    RECORD_CLAIM_TOOLS: frozenset[str] = frozenset()
+
     def owns_profile(self, profile_name: str) -> bool:
         return (
             profile_name == self.name

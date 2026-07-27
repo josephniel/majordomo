@@ -24,6 +24,7 @@ from .base import (
     Attachment,
     ContextBuilder,
     Summarizer,
+    ToolOutcomeCallback,
     ToolUseCallback,
     UsageLimitError,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "OpenAIAgent",
     "SubscriptionAuthSummarizer",
     "Summarizer",
+    "ToolOutcomeCallback",
     "ToolUseCallback",
     "TurnRecord",
     "UsageLimitError",

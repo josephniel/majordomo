@@ -16,6 +16,7 @@ from ports.llm import (
     Agent,
     PersonaLike,
     Summarizer,
+    ToolOutcomeCallback,
     ToolUseCallback,
     UsageLimitError,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "ContextBuilder",
     "PersonaLike",
     "Summarizer",
+    "ToolOutcomeCallback",
     "ToolUseCallback",
     "UsageLimitError",
 ]

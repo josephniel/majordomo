@@ -99,10 +99,16 @@ class FakeAgent(Agent):
 
     fail: None | 'limit' (UsageLimitError) | 'broken' (RuntimeError),
     re-evaluated per send. Records everything sent to it.
+
+    tool_fails: when fire_tool is on, whether the fired tool reports an ERROR
+    back through on_tool_outcome — i.e. a denied write. Distinct from `fail`,
+    which is the VENDOR failing; a tool can refuse on a perfectly healthy turn,
+    and conflating the two is exactly what hid the auto-denied approvals.
     """
 
     def __init__(self, name: str, fail: str | None = None, server_side: bool = False,
-                 reply: str | None = None, fire_tool: bool = False):
+                 reply: str | None = None, fire_tool: bool = False,
+                 tool_fails: bool = False):
         self.name = name
         self.fail = fail
         self.USES_SERVER_SIDE_HISTORY = server_side
@@ -110,6 +116,7 @@ class FakeAgent(Agent):
         # failover path) and must not fall back to the default text.
         self.reply = f"reply from {name}" if reply is None else reply
         self.fire_tool = fire_tool
+        self.tool_fails = tool_fails
         self.sent: list[str] = []
         self.started = 0
         self.stopped = 0
@@ -133,14 +140,22 @@ class FakeAgent(Agent):
     async def interrupt(self):
         self.interrupted += 1
 
-    async def send(self, text, on_tool_use=None, attachments=None, current_row_id=None):
+    async def send(self, text, on_tool_use=None, attachments=None, current_row_id=None,
+                   on_tool_outcome=None):
         self.sent.append(text)
         if self.fail == "limit":
             raise UsageLimitError(f"{self.name} rate limited")
         if self.fail == "broken":
             raise RuntimeError(f"{self.name} exploded")
-        if self.fire_tool and on_tool_use is not None:
-            await on_tool_use("memory__memory_save", {"scope": "user", "content": "x"})
+        if self.fire_tool:
+            name = "memory__memory_save"
+            if on_tool_use is not None:
+                await on_tool_use(name, {"scope": "user", "content": "x"})
+            # Real adapters report the outcome after the handler returns, so
+            # the fake does too — a fake that only ever fires the invocation
+            # hook cannot express a denied write at all.
+            if on_tool_outcome is not None:
+                await on_tool_outcome(name, self.tool_fails)
         return self.reply
 
 

@@ -43,6 +43,7 @@ from .base import (
     ContextBuilder,
     PersonaLike,
     Summarizer,
+    ToolOutcomeCallback,
     ToolUseCallback,
     UsageLimitError,
 )
@@ -597,6 +598,7 @@ class ChatCompletionsAgent(Agent):
         on_tool_use: ToolUseCallback | None = None,
         attachments: list[Attachment] | None = None,
         current_row_id: int | None = None,
+        on_tool_outcome: ToolOutcomeCallback | None = None,
     ) -> str:
         """Send `text` as the current user message, mirrored history behind it.
 
@@ -638,7 +640,9 @@ class ChatCompletionsAgent(Agent):
         self._current_task = asyncio.current_task()
         self.last_turn_usage = {}
         try:
-            return await self._run_tool_loop(messages, on_tool_use, tools)
+            return await self._run_tool_loop(
+                messages, on_tool_use, tools, on_tool_outcome,
+            )
         finally:
             self._current_task = None
 
@@ -842,6 +846,7 @@ class ChatCompletionsAgent(Agent):
         messages: list[dict[str, Any]],
         on_tool_use: ToolUseCallback | None,
         tools: list[dict[str, Any]] | None = None,
+        on_tool_outcome: ToolOutcomeCallback | None = None,
     ) -> str:
         client = self._client
         if client is None:
@@ -891,6 +896,7 @@ class ChatCompletionsAgent(Agent):
                         ],
                         messages,
                         on_tool_use,
+                        on_tool_outcome,
                     )
                     continue
                 if _is_usage_limit(e):
@@ -945,6 +951,7 @@ class ChatCompletionsAgent(Agent):
                 [(tc.id, tc.function.name, tc.function.arguments or "{}") for tc in tool_calls],
                 messages,
                 on_tool_use,
+                on_tool_outcome,
             )
 
         log.warning(
@@ -962,6 +969,7 @@ class ChatCompletionsAgent(Agent):
         calls: list[tuple[str, str, str]],  # (id, name, arguments_json)
         messages: list[dict[str, Any]],
         on_tool_use: ToolUseCallback | None,
+        on_tool_outcome: ToolOutcomeCallback | None = None,
     ) -> None:
         """Run each requested tool, appending its `tool` result message.
 
@@ -982,15 +990,27 @@ class ChatCompletionsAgent(Agent):
             spec = self._tools_by_name.get(tool_name)
             if spec is None:
                 result_text = f"error: unknown tool {tool_name!r}"
+                is_error = True
             else:
                 try:
                     result = await spec.handler(
                         args,
                         ToolContext(chat_id=self._chat_id),
                     )
-                    result_text = _extract_text_from_tool_result(result)
+                    normalized = as_tool_result(result)
+                    result_text = normalized.text or "(empty)"
+                    is_error = normalized.is_error
                 except Exception as e:
                     result_text = f"error: {e}"
+                    is_error = True
+            # AFTER the handler: this is the signal the hallucination
+            # detectors need, and a denied write reaches them only here —
+            # on_tool_use already fired, reporting a call that did nothing.
+            if on_tool_outcome is not None:
+                try:
+                    await on_tool_outcome(tool_name, is_error)
+                except Exception:
+                    log.debug("on_tool_outcome callback raised", exc_info=True)
             messages.append(
                 {
                     "role": "tool",
