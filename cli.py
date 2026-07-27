@@ -23,11 +23,19 @@ import asyncio
 import contextlib
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
-from adapters.tools import Connector, ServiceRegistry
+from adapters.tools import Connector
+from ports import ConversationRef
 from runtime import Persona, PersonaRuntime
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from adapters.tools import ServiceRegistry
+    from ports import ToolProviderView
 
 # One line per fact in the exported index: a hook to recognise it by,
 # not the fact itself — the per-entry file has that.
@@ -47,7 +55,7 @@ class ConnectorCLI:
     def __init__(
         self,
         config: ServiceRegistry,
-        connectors: list[Connector],
+        connectors: Sequence[ToolProviderView],
         # Needed only by the memory/comms inspect commands.
         runtime: PersonaRuntime | None = None,
     ) -> None:
@@ -55,9 +63,21 @@ class ConnectorCLI:
         self._connectors = connectors
         self._runtime = runtime
 
-    def run(self, args: list[str] | None = None) -> None:
+    @property
+    def runtime(self) -> PersonaRuntime:
+        """The persona runtime the inspect commands need.
+
+        Optional on the CLI as a whole — `list`, `add` and `auth` work without
+        a built runtime — so the commands that DO need one ask here rather than
+        each reaching for a value that may not be there.
+        """
+        if self._runtime is None:
+            raise RuntimeError("this command needs a persona runtime")
+        return self._runtime
+
+    def run(self, argv: list[str] | None = None) -> None:
         parser = self._build_parser()
-        args = parser.parse_args(args)
+        args = parser.parse_args(argv)
         try:
             args.func(args)
         except (KeyError, ValueError) as e:
@@ -116,13 +136,13 @@ class ConnectorCLI:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
             sys.exit(1)
-        asyncio.run(_inspect_memory(self._runtime))
+        asyncio.run(_inspect_memory(self.runtime))
 
     def _cmd_memory_reembed(self, _args: argparse.Namespace) -> None:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
             sys.exit(1)
-        asyncio.run(_reembed_memory(self._runtime))
+        asyncio.run(_reembed_memory(self.runtime))
 
     def _cmd_memory_ideate(self, args: argparse.Namespace) -> None:
         if self._runtime is None:
@@ -141,19 +161,19 @@ class ConnectorCLI:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
             sys.exit(1)
-        asyncio.run(_run_canary(self._runtime))
+        asyncio.run(_run_canary(self.runtime))
 
     def _cmd_comms_inspect(self, args: argparse.Namespace) -> None:
         if self._runtime is None:
             print("error: persona container not available", file=sys.stderr)
             sys.exit(1)
-        asyncio.run(_inspect_comms(self._runtime, limit=args.limit))
+        asyncio.run(_inspect_comms(self.runtime, limit=args.limit))
 
     def _cmd_schedules(self, _args: argparse.Namespace) -> None:
-        engine = self._runtime.schedule_runtime
+        engine = self.runtime.schedule_runtime
         scheds = engine.all_schedules()
         tz = engine.timezone_name or "host-local"
-        print(f"=== Schedules for {self._runtime.persona.id} (timezone: {tz}) ===")
+        print(f"=== Schedules for {self.runtime.persona.id} (timezone: {tz}) ===")
         if not scheds:
             print("(none)")
         for s in scheds:
@@ -165,8 +185,8 @@ class ConnectorCLI:
                 print(f"        {s.description}")
 
     def _cmd_skills(self, _args: argparse.Namespace) -> None:
-        skills = self._runtime.skills_library.all_skills()
-        print(f"=== Skills for {self._runtime.persona.id} ===")
+        skills = self.runtime.skills_library.all_skills()
+        print(f"=== Skills for {self.runtime.persona.id} ===")
         if not skills:
             print("(none)")
         for s in skills:
@@ -181,10 +201,10 @@ class ConnectorCLI:
                 print(f"        {s.description}")
 
     def _cmd_documents_inspect(self, _args: argparse.Namespace) -> None:
-        asyncio.run(_inspect_documents(self._runtime))
+        asyncio.run(_inspect_documents(self.runtime))
 
     def _cmd_prune(self, _args: argparse.Namespace) -> None:
-        asyncio.run(_run_prune(self._runtime))
+        asyncio.run(_run_prune(self.runtime))
 
     # ---- helpers ----
 
@@ -214,7 +234,9 @@ class ConnectorCLI:
         self._add_inspection_commands(sub)
         return parser
 
-    def _add_connector_commands(self, sub: argparse._SubParsersAction) -> None:
+    def _add_connector_commands(
+        self, sub: argparse._SubParsersAction[argparse.ArgumentParser]
+    ) -> None:
         """Register the verbs that change what a persona is wired to."""
         sub.add_parser(
             "list", help="show all connector profiles and their status"
@@ -263,7 +285,9 @@ class ConnectorCLI:
         p.add_argument("new")
         p.set_defaults(func=self._cmd_rename)
 
-    def _add_inspection_commands(self, sub: argparse._SubParsersAction) -> None:
+    def _add_inspection_commands(
+        self, sub: argparse._SubParsersAction[argparse.ArgumentParser]
+    ) -> None:
         """Register the verbs that only look: memory, comms, schedules, skills, docs."""
         # `memory <action>` — Phase 1 memory layer maintenance.
         p_memory = sub.add_parser("memory", help="memory layer maintenance")
@@ -353,7 +377,7 @@ class ConnectorCLI:
 async def _run_canary(container: PersonaRuntime) -> None:
     """Probe each chain vendor's tool-calling ability and print results."""
     container.load_env()
-    agent = container.create_agent(chat_id=0)
+    agent = container.create_agent(chat_id=ConversationRef("cli", "0"))
     run = getattr(agent, "run_canary", None)
     if run is None:
         print("this agent doesn't support canary probing")
@@ -426,8 +450,8 @@ async def _export_memory(container: PersonaRuntime, out_dir: str) -> int:
             f"title: {json.dumps(e.title or '')}",
             f"pinned: {'true' if e.pinned else 'false'}",
             f"volatile: {'true' if e.volatile else 'false'}",
-            f"created_at: {e.created_at.isoformat()}",
-            f"updated_at: {e.updated_at.isoformat()}",
+            f"created_at: {e.created_at.isoformat() if e.created_at else ''}",
+            f"updated_at: {e.updated_at.isoformat() if e.updated_at else ''}",
             f"verified_at: {e.verified_at.isoformat() if e.verified_at else ''}",
             f"source: {json.dumps(e.metadata.get('source', ''))}",
             "---",
@@ -478,7 +502,7 @@ async def _ideate_memory(
     memory = container.provider("memory")
     await memory.on_chat_startup()
     try:
-        ideator = Ideator(memory, container.summarizer)
+        ideator = Ideator(container.memory_faculty, container.summarizer)
         decisions = await ideator.run(scope=scope, domain_key=domain_key, dry_run=dry_run)
 
         if not decisions:
@@ -516,7 +540,7 @@ async def _inspect_memory(container: PersonaRuntime) -> None:
         print("(none — no compartment has been compacted yet)")
     for c in cores:
         label = f"{c.scope}/{c.domain_key}" if c.domain_key else c.scope
-        ts = c.last_compacted_at.strftime("%Y-%m-%d %H:%M")
+        ts = c.last_compacted_at.strftime("%Y-%m-%d %H:%M") if c.last_compacted_at else "?"
         print(f"\n[{label}] (compacted {ts}, {c.last_source_count} sources)")
         print(f"  {c.summary}")
 
@@ -587,6 +611,9 @@ async def _inspect_documents(container: PersonaRuntime) -> None:
 async def _run_prune(container: PersonaRuntime) -> None:
     """Run the retention job once, with connected stores, and report."""
     job = container.retention_job
+    if job is None:
+        print("retention is not configured for this persona")
+        return
     p = job.policy
     print(
         f"retention policy: chat-archive {p.chat_archive_days}d, "

@@ -19,7 +19,7 @@ import logging
 import os
 from dataclasses import replace
 from functools import cached_property
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from dotenv import dotenv_values, load_dotenv
 
@@ -59,6 +59,7 @@ from domain import (
     LongTermMemory,
     ReflectionEngine,
     ScheduleEngine,
+    SkillsLibrary,
     TaskScheduler,
 )
 from kernel.core import ConversationOrchestrator, OptionalSubsystems
@@ -82,6 +83,8 @@ if TYPE_CHECKING:
     from adapters.trigger.webhook import WebhookServer
     from domain.triggers import HeartbeatSource, WatchSource
     from ports import ToolSpec
+
+_F = TypeVar("_F")
 
 log = logging.getLogger(__name__)
 
@@ -285,7 +288,7 @@ class PersonaRuntime:
             return None
         return ReflectionEngine(
             history=self.conversation_history,
-            memory=self._memory_faculty(),
+            memory=self.memory_faculty,
             summarizer=self.summarizer,
             persona_id=self.persona.id,
         )
@@ -367,17 +370,38 @@ class PersonaRuntime:
         gated.extend(GatedToolProvider(c, gate) for c in self.active_services)
         return gated
 
-    def _memory_faculty(self) -> LongTermMemory:
+    @cached_property
+    def skills_library(self) -> SkillsLibrary:
+        """The skills faculty, as itself. Used by `./manage skills`."""
+        return self._faculty("skills", SkillsLibrary)
+
+    @cached_property
+    def document_library(self) -> DocumentLibrary:
+        """The documents faculty, as itself. Used by `./manage documents`."""
+        return self._faculty("documents", DocumentLibrary)
+
+    def _faculty(self, name: str, kind: type[_F]) -> _F:
+        """One provider, as the faculty it is rather than as the base contract.
+
+        provider() answers ToolProvider because that is what the registry
+        promises. Callers that need a faculty's own surface — the CLI reading
+        skills, retention pruning through the document store — need the type,
+        and would otherwise reach past the registry to get it.
+        """
+        provider = self.provider(name)
+        if not isinstance(provider, kind):
+            raise TypeError(f"the {name!r} provider is a {type(provider).__name__}")
+        return provider
+
+    @cached_property
+    def memory_faculty(self) -> LongTermMemory:
         """Return the memory provider as the faculty it is.
 
         provider() answers ToolProvider because that is what the registry
         promises; reflection and ideation need the faculty's own surface, and
         a persona without memory never reaches here (callers check first).
         """
-        memory = self.provider("memory")
-        if not isinstance(memory, LongTermMemory):
-            raise TypeError(f"the 'memory' provider is a {type(memory).__name__}")
-        return memory
+        return self._faculty("memory", LongTermMemory)
 
     # ---- platform ----
 

@@ -26,7 +26,7 @@ from typing import Any
 
 import yaml
 
-from adapters.model import EphemeralConversationHistory
+from adapters.model import EphemeralConversationHistory, VendorEndpoint
 from adapters.model.base import ContextBuilder
 from adapters.model.chat_completions import (
     DeepSeekAgent,
@@ -35,6 +35,7 @@ from adapters.model.chat_completions import (
     OllamaAgent,
     OpenAIAgent,
 )
+from ports import ConversationRef
 
 from .fakes import FakeBulkTools, FakeGmail, FakeMemory, FakeSchedule
 
@@ -86,11 +87,14 @@ class _EvalRegistry:
     def load_enabled(self) -> list[Any]:
         return []
 
+    def get_mtime(self) -> float:
+        return 0.0  # nothing to reload; the eval config is the code
+
 
 class _EvalPersona:
     id = "_eval"
     name = "Eval"
-    model = None
+    model: str | None = None
     system_prompt = EVAL_SYSTEM_PROMPT
 
     def allowed_tool_names(self, _connector: Any) -> list[str] | None:
@@ -125,6 +129,9 @@ def load_cases(path: Path) -> list[EvalCase]:
 _TPM_RETRIES = 2
 
 
+EVAL_CHAT = ConversationRef("eval", "0")
+
+
 async def run_case(vendor: str, case: EvalCase) -> CaseResult:
     import os
     agent_cls, model_env = VENDORS[vendor]
@@ -138,13 +145,15 @@ async def run_case(vendor: str, case: EvalCase) -> CaseResult:
         ),
         history=history,
         persona_id="_eval",
-        chat_id=0,
+        chat_id=EVAL_CHAT,
+        endpoint=VendorEndpoint(
+            model=(os.environ.get(model_env) or None) if model_env else None,
+            api_key=os.environ.get(agent_cls.API_KEY_ENV),
+            base_url=(os.environ.get(agent_cls.BASE_URL_ENV) or None
+                      if agent_cls.BASE_URL_ENV else None),
+        ),
         connectors=fakes,
         persona=persona,
-        model=(os.environ.get(model_env) or None) if model_env else None,
-        api_key=os.environ.get(agent_cls.API_KEY_ENV),
-        base_url=(os.environ.get(agent_cls.BASE_URL_ENV) or None
-                  if agent_cls.BASE_URL_ENV else None),
     )
     try:
         await agent.start()
@@ -153,7 +162,7 @@ async def run_case(vendor: str, case: EvalCase) -> CaseResult:
         # is exactly how a real multi-turn conversation reaches them.
         for role, content in case.history:
             await history.append(
-                persona_id="_eval", chat_id=0, role=role, content=content,
+                persona_id="_eval", chat_id=EVAL_CHAT, role=role, content=content,
             )
         reply = None
         for attempt in range(3):
@@ -179,7 +188,7 @@ async def run_case(vendor: str, case: EvalCase) -> CaseResult:
             await agent.stop()
 
     called = [name for f in fakes for name, _ in f.calls]
-    passed, detail = judge(case, called, reply)
+    passed, detail = judge(case, called, reply or "")
     return CaseResult(vendor, case, passed, detail)
 
 
