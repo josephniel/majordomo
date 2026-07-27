@@ -92,7 +92,7 @@ class TestWebhookServer:
         assert len(fired) == 2
 
     def test_tokenless_server_refused(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="non-empty token"):
             WebhookServer(token="", triggers={})
 
 

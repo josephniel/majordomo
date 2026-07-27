@@ -529,6 +529,15 @@ class TaskScheduler(Faculty):
     def shutdown(self) -> None:
         self._runtime.shutdown()
 
+    def all_schedules(self) -> list[ScheduledTask]:
+        """Every schedule in the store, by name, without starting the scheduler.
+
+        For inspecting a persona that is not running: reading the JSON is what
+        start() would do anyway, minus APScheduler.
+        """
+        self._load()
+        return sorted(self._schedules.values(), key=lambda s: s.name)
+
     def schedules_for_chat(self, chat_id: ConversationRef) -> list[ScheduledTask]:
         """Public accessor for /status."""
         return self._runtime.list_for_chat(chat_id)

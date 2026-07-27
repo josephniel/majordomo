@@ -9,14 +9,14 @@ pytestmark = pytest.mark.integration
 
 
 async def seed(history, persona_id, n=6, prefix="turn"):
-    ids = []
-    for i in range(n):
-        ids.append(await history.append(
+    return [
+        await history.append(
             persona_id=persona_id, chat_id=CHAT_ID,
             role="user" if i % 2 == 0 else "assistant",
             content=f"{prefix} {i} about mangoes",
-        ))
-    return ids
+        )
+        for i in range(n)
+    ]
 
 
 class TestAppendRecent:

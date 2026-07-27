@@ -1,9 +1,9 @@
-from ports import FactCandidate
-
 """MemoryDatabase against live Postgres with REAL local embeddings —
 dedup, hybrid recall (keyword / natural-language / semantic / multilingual),
 supersession, soft-delete, rollups."""
 import pytest
+
+from ports import FactCandidate
 
 pytestmark = pytest.mark.integration
 

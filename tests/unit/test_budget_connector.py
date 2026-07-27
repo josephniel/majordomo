@@ -1,5 +1,6 @@
 """connectors.budget — budget-tracker REST connector."""
 import json
+from typing import ClassVar
 
 import httpx
 
@@ -203,7 +204,7 @@ class TestContract:
         class FakeProfile:
             name = "budget"
             enabled = True
-            env = {}  # no BUDGET_API_KEY
+            env: ClassVar[dict[str, str]] = {}  # no BUDGET_API_KEY
 
         class FakeRegistry:
             def load_all(self):

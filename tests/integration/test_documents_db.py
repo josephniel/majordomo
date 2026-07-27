@@ -68,7 +68,7 @@ class TestDocumentStore:
         assert await store.search(persona_id, "marketing budget") == []
 
     async def test_empty_text_rejected(self, store, persona_id):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="no extractable text"):
             await store.ingest(
                 persona_id=persona_id, name="e.txt", mime="text/plain", text="  ",
             )

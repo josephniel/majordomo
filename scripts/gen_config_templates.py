@@ -82,8 +82,7 @@ def render(node: dict, indent: int = 0) -> list[str]:
             continue
         s: Setting = value
         if s.doc:
-            for line in _wrap(s.doc, 72 - len(pad)):
-                lines.append(f"{pad}# {line}")
+            lines.extend(f"{pad}# {line}" for line in _wrap(s.doc, 72 - len(pad)))
         lines.append(f"{pad}# env fallback: {s.env}")
         lines.append(f"{pad}# {_example(s)}")
         lines.append("")

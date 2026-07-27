@@ -3,6 +3,7 @@ the orchestrator, /status proactive block, and container assembly."""
 import inspect
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 
@@ -124,7 +125,7 @@ class TestIngestAttachments:
 
 class FakeWebhookServer:
     port = 18790
-    trigger_names = ["alert"]
+    trigger_names: ClassVar[list[str]] = ["alert"]
 
     def __init__(self):
         self.fire = None

@@ -75,6 +75,17 @@ class RetentionJob:
     def policy(self) -> RetentionPolicy:
         return self._policy
 
+    async def connect(self) -> None:
+        """Open whichever arms are configured.
+
+        The scheduled path runs inside a process that already connected them;
+        the CLI does not, and reaching into the arms to do it for the job was
+        the only reason they were being touched from outside.
+        """
+        for arm in (self._comms, self._docs):
+            if arm is not None:
+                await arm.connect()
+
     async def run(self) -> dict[str, int]:
         """Prune every configured arm.
 

@@ -28,9 +28,11 @@ class TestCoreIsALeaf:
                     names = [node.module or ""]
                 else:
                     continue
-                for name in names:
-                    if name.split(".")[0] in OTHER_PACKAGES:
-                        offenders.append(f"{path.name}: {name}")
+                offenders.extend(
+                    f"{path.name}: {name}"
+                    for name in names
+                    if name.split(".")[0] in OTHER_PACKAGES
+                )
         assert not offenders, f"core/ must stay a leaf; found {offenders}"
 
 

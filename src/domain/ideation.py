@@ -154,9 +154,19 @@ class Ideator:
         self._reconciler = reconciler or Reconciler(memory, summarizer)
 
     async def run(
-        self, scope: str | None = None, domain_key: str | None = None,
+        self,
+        scope: str | None = None,
+        domain_key: str | None = None,
+        *,
+        dry_run: bool = False,
     ) -> list[Reconciliation]:
         """One ideation pass. Returns the decision for each proposal.
+
+        `dry_run` decides everything and writes nothing, which is how an
+        operator should be able to see what their model proposes before it goes
+        near their memory. It is a parameter rather than something the caller
+        arranges, because arranging it meant reaching in and swapping the
+        reconciler's apply out from under this method.
 
         Never raises: this runs unattended or from a CLI, and a bad model
         reply must not be an incident.
@@ -211,7 +221,7 @@ class Ideator:
                         MemoryVerdict.ADD, candidate,
                         reason="inference may not retract an observed fact",
                     )
-                entry = await self._reconciler.apply(decision)
+                entry = None if dry_run else await self._reconciler.apply(decision)
             except Exception:
                 log.exception("ideation: could not reconcile proposal")
                 continue

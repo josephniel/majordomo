@@ -56,14 +56,14 @@ class TestRejectsAmbiguity:
         ("telegram", "a#b"),       # thread separator in chat key
     ])
     def test_ambiguous_refs_rejected(self, bad):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=r"must not be empty|must not contain"):
             ConversationRef(*bad)
 
     def test_parse_rejects_a_bare_id(self):
         """A bare '12345' is exactly what the OLD system stored. Refusing it
         in parse() is what forces callers through coerce(), where the platform
         has to be stated."""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="not a conversation key"):
             ConversationRef.parse("12345")
 
 
@@ -82,7 +82,7 @@ class TestCoerce:
         assert ConversationRef.coerce(r, platform="telegram") is r
 
     def test_empty_rejected(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="from an empty value"):
             ConversationRef.coerce("   ", platform="telegram")
 
 

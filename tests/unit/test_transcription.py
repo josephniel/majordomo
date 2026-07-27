@@ -109,7 +109,7 @@ class TestCascade:
             await CascadingTranscriber([a]).transcribe(b"x")
 
     def test_empty_chain_rejected(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="at least one backend"):
             CascadingTranscriber([])
 
 

@@ -1,5 +1,7 @@
 """agents.chat_completions — pure logic: tool naming, error classification,
 context assembly, attachment handling. No network."""
+from typing import ClassVar
+
 import pytest
 
 from adapters.model import VendorEndpoint
@@ -352,7 +354,7 @@ class TestConstruction:
                 return {"role": "assistant", "content": ""}
 
         class _Resp:
-            choices = [type("C", (), {"message": _Msg()})()]
+            choices: ClassVar[list] = [type("C", (), {"message": _Msg()})()]
             usage = None
 
         class _Completions:

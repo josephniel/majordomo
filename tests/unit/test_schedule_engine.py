@@ -1,11 +1,16 @@
 """capabilities.schedule — ScheduleEngine validation, parsing, persistence."""
 import json
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from domain.schedule import ScheduledTask, ScheduleEngine
 from ports import ConversationRef
+
+
+def _local_now() -> datetime:
+    """Naive host-local now — what the schedule engine produces with no timezone set."""
+    return datetime.now(UTC).astimezone().replace(tzinfo=None)
 
 
 @pytest.fixture
@@ -44,17 +49,17 @@ class TestAddOnce:
     def test_relative_offsets(self, engine, when, delta):
         e = engine.add_once("once_rel", when, chat_id=1, prompt="p")
         run_at = datetime.fromisoformat(e.run_at)
-        expect = datetime.now() + delta
+        expect = _local_now() + delta
         assert abs((run_at - expect).total_seconds()) < 5
         assert e.is_one_shot
 
     def test_absolute_iso(self, engine):
-        future = (datetime.now() + timedelta(hours=1)).isoformat(timespec="minutes")
+        future = (_local_now() + timedelta(hours=1)).isoformat(timespec="minutes")
         e = engine.add_once("once_abs", future, chat_id=1, prompt="p")
         assert e.run_at.startswith(future[:16])
 
     def test_past_time_rejected(self, engine):
-        past = (datetime.now() - timedelta(hours=1)).isoformat(timespec="minutes")
+        past = (_local_now() - timedelta(hours=1)).isoformat(timespec="minutes")
         with pytest.raises(ValueError, match="past"):
             engine.add_once("x", past, chat_id=1, prompt="p")
 

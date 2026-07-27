@@ -1,5 +1,3 @@
-from ports import FactCandidate
-
 """cli._export_memory — one-way markdown export of the Postgres second
 brain into a greppable/diffable file tree (MEMORY.md index + per-fact files)."""
 from types import SimpleNamespace
@@ -7,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from cli import _export_memory
+from ports import FactCandidate
 
 pytestmark = pytest.mark.integration
 

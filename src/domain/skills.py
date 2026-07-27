@@ -132,7 +132,7 @@ class SkillsLibrary(Faculty):
 
     # ---- scanning ----
 
-    def _scan(self) -> list[Skill]:
+    def all_skills(self) -> list[Skill]:
         if not self._dir.is_dir():
             return []
         skills = []
@@ -165,7 +165,7 @@ class SkillsLibrary(Faculty):
         return total
 
     def system_prompt_section(self) -> str:
-        skills = self._scan()
+        skills = self.all_skills()
         lines = [
             "== Skills ==",
             "",
@@ -211,7 +211,7 @@ class SkillsLibrary(Faculty):
         )
         async def skill_read_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
             wanted = str(args.get("name") or "").strip()
-            skills = {s.name: s for s in outer._scan()}
+            skills = {s.name: s for s in outer.all_skills()}
             skill = skills.get(wanted)
             if skill is None:
                 return ToolResult.error(
@@ -318,7 +318,7 @@ class SkillsLibrary(Faculty):
         if not haystack:
             return ""
         picked: list[Skill] = []
-        for skill in self._scan():
+        for skill in self.all_skills():
             if skill.always or not skill.keywords:
                 continue
             if any(k in haystack for k in skill.keywords):

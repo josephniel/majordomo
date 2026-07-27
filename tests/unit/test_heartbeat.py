@@ -9,6 +9,7 @@ not about heartbeats specifically.
 """
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import UTC
 from types import SimpleNamespace
 
 import pytest
@@ -159,7 +160,9 @@ class TestScheduleTimezone:
         from datetime import datetime, timedelta
 
         store = tmp_path / "s.json"
-        naive_future = (datetime.now() + timedelta(hours=1)).isoformat(timespec="seconds")
+        # Naive host-local, which is what a pre-timezone schedules.json holds.
+        now = datetime.now(UTC).astimezone().replace(tzinfo=None)
+        naive_future = (now + timedelta(hours=1)).isoformat(timespec="seconds")
         import json
 
         store.write_text(
