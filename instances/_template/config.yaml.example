@@ -72,7 +72,7 @@ llm:
     # --------------------------------------------------------------
     background:
       # env fallback: BACKGROUND_LLM_CHAIN
-      # chain:
+      # chain: [gemini, claude, groq]
 
       # env fallback: BACKGROUND_MODEL
       # model:
@@ -83,7 +83,7 @@ llm:
     # --------------------------------------------------------------
     summarize:
       # env fallback: COMPACTION_LLM
-      # chain:
+      # chain: [gemini, claude, groq]
 
       # env fallback: COMPACTION_MODEL
       # model: claude-haiku-4-5
@@ -94,7 +94,7 @@ llm:
     # --------------------------------------------------------------
     ideate:
       # env fallback: IDEATE_LLM
-      # chain:
+      # chain: [gemini, claude, groq]
 
       # env fallback: IDEATE_MODEL
       # model:

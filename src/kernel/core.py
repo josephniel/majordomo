@@ -518,6 +518,24 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             finally:
                 if dedicated and agent is not None:
                     self._spawn_agent_stop(agent)
+                # A background fire runs a DIFFERENT system prompt (the
+                # reduced background_tools: toolset), so on a local backend
+                # holding one prompt-cache slot it evicts the chat
+                # conversation's prefix. The user pays for that on their next
+                # message: measured on gemma4:12b-mlx, prefill is ~106 tok/s
+                # cold and effectively free warm, so an ~8.5k-token chat
+                # prompt goes from instant to ~80 seconds.
+                #
+                # Restore it here, off everyone's critical path. Deliberately
+                # unconditional rather than gated on "is the vendor local":
+                # prewarm() is a 1-token call that hosted vendors don't
+                # implement at all, so the cost of being wrong is nil, while
+                # the cost of missing a local vendor is 80s of the user's
+                # time. Routing background to another vendor avoids the
+                # eviction outright, but that must stay opt-in — a local-only
+                # setup must never have its data sent to a hosted vendor to
+                # make things faster.
+                self._spawn_chat_prewarm(chat_id)
 
             if not dedicated:
                 self._persist_session_id(chat_id, agent)
@@ -576,6 +594,28 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._persist_session_id(chat_id, agent)
         self._spawn_agent_stop(agent)
         del self._agents[chat_id]
+
+    def _spawn_chat_prewarm(self, chat_id: ConversationRef) -> None:
+        """Re-cache this chat's prompt prefix after something else displaced it.
+
+        Only for a chat that already HAS an agent: building one here would
+        create an agent for a chat nobody is talking in, purely to warm a
+        cache nobody is about to use.
+        """
+        agent = self._agents.get(chat_id)
+        warm = getattr(agent, "prewarm", None)
+        if warm is None:
+            return
+
+        async def _warm() -> None:
+            try:
+                await warm()
+            except Exception:
+                log.debug("post-trigger prewarm failed (ignored)", exc_info=True)
+
+        task = asyncio.create_task(_warm())
+        self._stale_agent_stops.add(task)
+        task.add_done_callback(self._stale_agent_stops.discard)
 
     def _spawn_agent_stop(self, agent: Agent) -> None:
         async def _stop() -> None:

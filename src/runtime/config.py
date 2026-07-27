@@ -278,20 +278,25 @@ SETTINGS: tuple[Setting, ...] = (
             "OLLAMA_VISION", as_opt_bool, None, Scope.PERSONA),
 
     # ---- per-role routing: persona scope ----
+    # Role chains use as_csv, exactly like llm.chain. They used as_lower and
+    # were split downstream, so a YAML LIST — the form llm.chain documents and
+    # every operator copies — stringified to "['gemini', 'groq']" and became
+    # three garbage vendor names. It failed silently: unknown vendors are
+    # dropped, so the role just quietly fell back to the chat chain.
     Setting("background_llm_chain", "llm.roles.background.chain",
-            "BACKGROUND_LLM_CHAIN", as_lower, "", Scope.PERSONA),
+            "BACKGROUND_LLM_CHAIN", as_csv, (), Scope.PERSONA),
     Setting("background_model", "llm.roles.background.model",
             "BACKGROUND_MODEL", as_str, "", Scope.PERSONA),
     Setting("heartbeat_model", "llm.roles.background.heartbeat_model",
             "HEARTBEAT_MODEL", as_str, "claude-haiku-4-5", Scope.PERSONA),
     Setting("compaction_llm", "llm.roles.summarize.chain",
-            "COMPACTION_LLM", as_lower, "", Scope.PERSONA),
+            "COMPACTION_LLM", as_csv, (), Scope.PERSONA),
     Setting("compaction_model", "llm.roles.summarize.model",
             "COMPACTION_MODEL", as_str, "claude-haiku-4-5", Scope.PERSONA),
     Setting("compaction_deep_model", "llm.roles.summarize.deep_model",
             "COMPACTION_DEEP_MODEL", as_str, "claude-sonnet-5", Scope.PERSONA),
     Setting("ideate_llm", "llm.roles.ideate.chain",
-            "IDEATE_LLM", as_lower, "", Scope.PERSONA),
+            "IDEATE_LLM", as_csv, (), Scope.PERSONA),
     Setting("ideate_model", "llm.roles.ideate.model",
             "IDEATE_MODEL", as_str, "", Scope.PERSONA),
 

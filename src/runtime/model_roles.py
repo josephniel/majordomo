@@ -65,10 +65,6 @@ class RoleChain:
         return RoleChain(self.role, chat.chain, self.model)
 
 
-def _csv(v: str) -> tuple[str, ...]:
-    return tuple(x.strip().lower() for x in (v or "").split(",") if x.strip())
-
-
 def _vendor_safe_model(model: str | None, chain: tuple[str, ...]) -> str | None:
     """Drop a model override that the leading vendor could not possibly serve.
 
@@ -99,7 +95,7 @@ def resolve_roles(s: RuntimeSettings) -> dict[ModelRole, RoleChain]:
     # The legacy variable named a Claude model, so it only applies when the
     # resolved chain actually leads with claude; otherwise honouring it would
     # hand e.g. Ollama a model name it has never heard of.
-    bg_chain = _csv(s.background_llm_chain)
+    bg_chain = s.background_llm_chain
     bg_model = s.background_model or None
     background = RoleChain(ModelRole.BACKGROUND, bg_chain, bg_model)
     background = background.with_fallback(chat)
@@ -113,7 +109,7 @@ def resolve_roles(s: RuntimeSettings) -> dict[ModelRole, RoleChain]:
     # SUMMARIZE — compaction and reflection. Fires constantly, so it is the
     # role most worth pinning to something cheap.
     summarize = RoleChain(
-        ModelRole.SUMMARIZE, _csv(s.compaction_llm), s.compaction_model or None,
+        ModelRole.SUMMARIZE, s.compaction_llm, s.compaction_model or None,
     ).with_fallback(background)
     summarize = RoleChain(
         ModelRole.SUMMARIZE,
@@ -124,7 +120,7 @@ def resolve_roles(s: RuntimeSettings) -> dict[ModelRole, RoleChain]:
     # IDEATE — offline memory synthesis (Phase 7). Wants the strongest model
     # available rather than the cheapest, so it defaults to chat, not
     # background.
-    ideate = RoleChain(ModelRole.IDEATE, _csv(s.ideate_llm), s.ideate_model or None)
+    ideate = RoleChain(ModelRole.IDEATE, s.ideate_llm, s.ideate_model or None)
     ideate = ideate.with_fallback(chat)
     ideate = RoleChain(
         ModelRole.IDEATE, ideate.chain, _vendor_safe_model(ideate.model, ideate.chain)
