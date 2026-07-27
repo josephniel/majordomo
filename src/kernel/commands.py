@@ -161,7 +161,7 @@ class CommandsMixin:
                 on = sum(1 for s in scheds if s.enabled)
                 lines.append(f"Schedules: {len(scheds)} ({on} enabled)")
             except Exception:
-                pass
+                log.debug("scheduler could not report schedules for /status", exc_info=True)
 
         if self._conversation_history is not None:
             try:

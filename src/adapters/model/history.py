@@ -26,6 +26,7 @@ read from it.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -34,6 +35,8 @@ from typing import Any
 import asyncpg
 
 from ports import ConversationRef, chat_key
+
+_CHAT_ID_MIGRATION_SQL = Path(__file__).resolve().parents[1] / "store" / "chat_id_migration.sql"
 
 log = logging.getLogger(__name__)
 
@@ -167,9 +170,7 @@ class ConversationHistory:
         the rows survive but the lookup key no longer matches, which reads to
         the operator as the bot developing amnesia rather than as a failure.
         """
-        template = (
-            Path(__file__).resolve().parents[1] / "store" / "chat_id_migration.sql"
-        ).read_text(encoding="utf-8")
+        template = await asyncio.to_thread(_CHAT_ID_MIGRATION_SQL.read_text, encoding="utf-8")
         for table in self._CHAT_ID_TABLES:
             await conn.execute(
                 template.replace("{{TABLE}}", table).replace("{{PLATFORM}}", self._legacy_platform)
@@ -245,6 +246,8 @@ class ConversationHistory:
         (include_archived=True, so a compaction that ran in between can't hide turns from fact
         extraction).
         """
+        # One of two literals picked by a bool; every value is a bound parameter.
+        # One of two literals picked by a bool; every value is a bound parameter.
         archived_clause = "" if include_archived else "AND NOT archived"
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
@@ -253,7 +256,7 @@ class ConversationHistory:
                 WHERE persona_id = $1 AND chat_id = $2 {archived_clause} AND id > $3
                 ORDER BY id ASC
                 LIMIT $4
-                """,
+                """,  # noqa: S608 — archived_clause is one of two literals above
                 persona_id,
                 chat_key(chat_id),
                 after_id,

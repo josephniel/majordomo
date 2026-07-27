@@ -669,9 +669,14 @@ class MemoryDatabase:
             base_filters += f"\n  AND domain_key = ${len(params)}"
 
         vec_idx: int | None = None
+        model_idx: int | None = None
         if qpg:
             params.append(qpg)
             vec_idx = len(params)
+            # Bound, not interpolated: the model name comes from configuration,
+            # and docs.py already binds it for exactly this reason.
+            params.append(self._embed.model_name)
+            model_idx = len(params)
 
         # Which arms can fire at all. Fixed up front (not "which arms returned
         # rows") so the normalizer is deterministic and scores stay comparable
@@ -699,8 +704,10 @@ class MemoryDatabase:
                 )
             # ROW_NUMBER then filter: a bare LIMIT would truncate before the
             # window function has ordered anything.
+            # Every interpolation here is a module constant or an arm name
+            # chosen below; the query's values are all bound parameters.
             return (
-                f"{name} AS ("
+                f"{name} AS ("  # noqa: S608 — arm name and constants only; values are bound
                 f"SELECT id, rnk FROM ("
                 f"SELECT id, ROW_NUMBER() OVER (ORDER BY {order_by}, id) AS rnk "
                 f"FROM base WHERE {where}"
@@ -719,7 +726,7 @@ class MemoryDatabase:
             _arm(
                 "vec",
                 f"{vec_sim} DESC",
-                f"embedding IS NOT NULL AND embedding_model = '{self._embed.model_name}' "
+                f"embedding IS NOT NULL AND embedding_model = ${model_idx} "
                 f"AND {vec_sim} > {VEC_MIN_SIMILARITY}",
                 vec_on,
             ),
@@ -740,6 +747,8 @@ class MemoryDatabase:
         # the cross-encoder decides the final order.
         fetch_n = max(limit, self._rerank.candidates) if self._rerank.available() else limit
         params.append(fetch_n)
+        # Interpolates tuning constants and the arm SQL built above. Everything
+        # that varies per call — including the embedding model name — is bound.
         sql = f"""
 WITH base AS (
     SELECT * FROM memory_entries
@@ -770,7 +779,7 @@ LEFT JOIN trg ON trg.id = ids.id
 LEFT JOIN vec ON vec.id = ids.id
 ORDER BY match_score DESC, m.created_at DESC
 LIMIT ${len(params)}
-"""
+"""  # noqa: S608 — interpolates tuning constants and the arm SQL; values are bound
         async with self._acquire() as conn:
             rows = await conn.fetch(sql, *params)
 
@@ -818,7 +827,8 @@ LIMIT ${len(params)}
             args = ()
         async with self._acquire() as conn:
             rows = await conn.fetch(
-                f"SELECT id, title, content FROM memory_entries WHERE {where}", *args
+                # `where` is one of the two literals just above.
+                f"SELECT id, title, content FROM memory_entries WHERE {where}", *args  # noqa: S608
             )
         done = 0
         for r in rows:

@@ -548,7 +548,8 @@ the ledger books their share as expense and the rest as loans)."""
                 existing = json.loads(secrets_path.read_text(encoding="utf-8"))
                 base_url = existing.get("BUDGET_BASE_URL") or base_url
             except Exception:
-                pass
+                log.debug("could not read %s; using the default base url",
+                          secrets_path, exc_info=True)
 
         print(f"\nRotating budget tracker API key for {label} ({base_url}).")
         print("Mint a new key in Settings -> Integrations, revoke the old one after.")

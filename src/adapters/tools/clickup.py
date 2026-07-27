@@ -166,7 +166,7 @@ def _format_task_line(task: dict[str, Any], prefix: str = "- ") -> str:
             due_str = datetime.fromtimestamp(int(due) / 1000, tz=UTC).strftime("%Y-%m-%d")
             suffix = f" ({status}, due {due_str})"
         except Exception:
-            pass
+            log.debug("unparseable due_date %r; omitting it", due, exc_info=True)
     return f"{prefix}[{task_id}] {name}{suffix}"
 
 
@@ -424,7 +424,8 @@ class ClickUpConnector(Connector):
                 existing = json.loads(secrets_path.read_text(encoding="utf-8"))
                 existing_team_id = existing.get("CLICKUP_TEAM_ID")
             except Exception:
-                pass
+                log.debug("could not read %s; asking for the team id",
+                          secrets_path, exc_info=True)
 
         if existing_team_id is None:
             print(

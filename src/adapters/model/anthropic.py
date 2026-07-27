@@ -432,7 +432,7 @@ class AnthropicAgent(Agent):
         try:
             await self._client.__aexit__(None, None, None)
         except Exception:
-            pass
+            log.debug("error closing the Claude client; discarding it anyway", exc_info=True)
         finally:
             self._client = None
 
@@ -458,7 +458,8 @@ class AnthropicAgent(Agent):
     ) -> str:
         if self._client is None:
             await self.start()
-        assert self._client is not None
+        if self._client is None:  # start() always sets it; this keeps mypy honest
+            raise RuntimeError("Claude client is not running after start()")
 
         try:
             if attachments:

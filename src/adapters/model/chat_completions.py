@@ -86,8 +86,7 @@ def _signals_usage_limit(exc: BaseException) -> bool:
             if code in (408, 409, 429) or (isinstance(code, int) and code >= 500):
                 return True
     except Exception:
-        # openai unavailable for some reason — fall through to heuristics.
-        pass
+        log.debug("openai types unavailable; falling through to heuristics", exc_info=True)
 
     msg = (str(exc) or "").lower()
     if any(hint in msg for hint in _USAGE_LIMIT_HINTS):
@@ -141,7 +140,8 @@ def _fit_tool_name(name: str, taken: dict[str, Any]) -> str:
     if base not in taken:
         return base
     import hashlib
-    suffix = hashlib.sha1(name.encode()).hexdigest()[:6]
+    # Disambiguating a truncated tool name, not authenticating anything.
+    suffix = hashlib.sha1(name.encode(), usedforsecurity=False).hexdigest()[:6]
     return f"{name[:57]}_{suffix}"
 
 

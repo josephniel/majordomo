@@ -563,6 +563,8 @@ def _text_body(msg) -> str:
                         part.get_content_charset() or "utf-8", "replace"
                     )
                 except Exception:
+                    log.debug("could not decode message part; trying the next one",
+                              exc_info=True)
                     continue
         return ""
     try:

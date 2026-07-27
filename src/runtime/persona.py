@@ -19,6 +19,7 @@ DI factory that turns one Persona into a running ConversationOrchestrator.
 from __future__ import annotations
 
 import contextlib
+import logging
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +27,8 @@ import yaml
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+log = logging.getLogger(__name__)
 
 # enabled_connectors map values:
 #   True            -> connector active, READ-ONLY (all tools minus WRITE_TOOLS)
@@ -115,7 +118,6 @@ class Persona:
         unique. Collisions are almost certainly migration mistakes — warn
         loudly, last block wins.
         """
-        import logging
         blocks = [
             ("enabled_connectors", dict(cfg.get("enabled_connectors")
                                         or cfg.get("enabled_services") or {})),
@@ -127,7 +129,7 @@ class Persona:
         for block_name, block in blocks:
             for name, value in block.items():
                 if name in seen:
-                    logging.getLogger(__name__).warning(
+                    log.warning(
                         "%s: %r appears in both %r and %r blocks — using the "
                         "%r value", config_path, name, seen[name], block_name,
                         block_name,
@@ -221,8 +223,7 @@ class Persona:
                 # Can't enumerate this provider's tools, so we can't compute
                 # "everything except writes". FAIL CLOSED: a read-only grant
                 # must never silently become read-write.
-                import logging
-                logging.getLogger(__name__).warning(
+                log.warning(
                     "connector %r: tools not enumerable; read-only grant "
                     "resolves to NO tools (fail-closed)", name,
                 )
@@ -239,7 +240,7 @@ class Persona:
             for specs in connector.builtin_servers().values():
                 names |= {s.name for s in specs}
         except Exception:
-            pass
+            log.debug("connector %r has no readable builtin_servers", connector, exc_info=True)
         with contextlib.suppress(Exception):
             names |= {t.name for t in connector.builtin_tools()}
         return names

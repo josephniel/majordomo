@@ -151,7 +151,8 @@ script instead of many small runs."""
             "--cpus", "1",
             "--pids-limit", "128",
             "--read-only",
-            "--tmpfs", "/tmp:rw,size=64m",
+            # /tmp INSIDE the sandbox container, sized and wiped per run.
+            "--tmpfs", "/tmp:rw,size=64m",  # noqa: S108
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
             "-v", f"{run_dir}:/work",

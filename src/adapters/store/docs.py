@@ -308,7 +308,7 @@ class DocumentStore:
             WHERE c.persona_id = $1
             ORDER BY score DESC
             LIMIT $3
-        """
+        """  # noqa: S608 — vec_expr is one of two literals; values are bound
         args: list[Any] = [persona_id, query, int(limit)]
         if vec_literal:
             args += [self._embed.model_name, vec_literal]

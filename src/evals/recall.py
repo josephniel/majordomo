@@ -343,7 +343,9 @@ async def evaluate(
         return report
     finally:
         try:
-            async with db._acquire() as conn:
+            # The eval owns this persona's rows and has to drop them; the port
+            # deliberately exposes no "run arbitrary SQL".
+            async with db._acquire() as conn:  # noqa: SLF001
                 await conn.execute("DELETE FROM memory_entries WHERE persona_id = $1", persona_id)
         finally:
             await db.close()

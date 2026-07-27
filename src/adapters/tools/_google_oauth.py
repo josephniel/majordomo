@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-TOKEN_URL = "https://oauth2.googleapis.com/token"
+TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105 — an endpoint, not a secret
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 
 DEFAULT_REDIRECT_PORT = 8765

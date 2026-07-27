@@ -14,6 +14,7 @@ pattern as the write-approval gate.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -69,8 +70,8 @@ class FileCourier(Faculty):
         if not raw:
             return ToolResult.error("path is empty")
         try:
-            path = Path(raw).resolve()
-            allowed_root = self._data_dir.resolve()
+            path = await asyncio.to_thread(Path(raw).resolve)
+            allowed_root = await asyncio.to_thread(self._data_dir.resolve)
         except OSError as e:
             return ToolResult.error(f"bad path: {e}")
         if not path.is_relative_to(allowed_root):

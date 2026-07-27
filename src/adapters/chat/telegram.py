@@ -294,7 +294,7 @@ class TelegramPlatform(ChatPlatform):
             raise RuntimeError("TelegramPlatform.send_file called before run()")
         p = Path(path)
         try:
-            size = p.stat().st_size
+            size = (await asyncio.to_thread(p.stat)).st_size
         except OSError:
             log.warning("send_file: %s does not exist", path)
             return False
@@ -320,7 +320,9 @@ class TelegramPlatform(ChatPlatform):
         self,
         chat_id: ConversationRef,
         text: str,
-        timeout: float = APPROVAL_TIMEOUT_SECONDS,
+        # Not a cancellation scope: expiry AUTO-DENIES, which is a product
+        # decision the caller can tune, so it stays a parameter.
+        timeout: float = APPROVAL_TIMEOUT_SECONDS,  # noqa: ASYNC109
     ) -> bool:
         """Inline Approve/Deny keyboard; blocks until tapped or timeout.
 
