@@ -99,3 +99,21 @@ class TestBackgroundView:
         p.background_view()
         assert p.enabled_connectors == {"svc": "read_write"}
         assert p.allowed_tool_names(RWConnector()) is None  # still full access
+
+
+class TestTheConfigFilenames:
+    """These names are what an existing install has on disk.
+
+    connectors_yaml once pointed at "adapters.tools.yaml" — the package rename
+    connectors/ -> adapters/tools/ caught the string literal too. Nothing
+    failed loudly: the registry looked for a file nobody has, found no enabled
+    profiles, and every service connector contributed zero tools in silence.
+    """
+
+    def test_connectors_yaml_is_the_file_users_actually_have(self, tmp_path):
+        p = Persona(id="x", dir=tmp_path, name="X", system_prompt="")
+        assert p.connectors_yaml.name == "connectors.yaml"
+
+    def test_the_other_per_persona_filenames(self, tmp_path):
+        p = Persona(id="x", dir=tmp_path, name="X", system_prompt="")
+        assert p.platform_yaml.name == "platform.yaml"

@@ -623,3 +623,49 @@ class TestBackgroundToolView:
             self._persona(tmp_path, background_tools={"files": True})
         )
         assert runtime.background_persona.enabled_connectors == {"files": True}
+
+
+class TestProvidersAreWarmedAtBoot:
+    """Expensive priming belongs to boot, not to somebody's first message.
+
+    The embedding model and reranker load lazily. "Lazily" used to mean "on the
+    first user turn", which put a ~600MB load in the middle of a real
+    conversation after every restart.
+    """
+
+    async def test_every_provider_is_warmed(self, tmp_path):
+        from adapters.tools import Connector
+
+        warmed = []
+
+        class Warmable(Connector):
+            def __init__(self, label):
+                self.name = label
+
+            async def warmup(self):
+                warmed.append(self.name)
+
+        orch, _, _ = _orch(tmp_path, connectors=[Warmable("a"), Warmable("b")])
+        await orch._warm_providers()
+        assert sorted(warmed) == ["a", "b"]
+
+    async def test_one_failing_provider_does_not_block_the_others(self, tmp_path):
+        from adapters.tools import Connector
+
+        warmed = []
+
+        class Boom(Connector):
+            name = "boom"
+
+            async def warmup(self):
+                raise RuntimeError("model file corrupt")
+
+        class Fine(Connector):
+            name = "fine"
+
+            async def warmup(self):
+                warmed.append("fine")
+
+        orch, _, _ = _orch(tmp_path, connectors=[Boom(), Fine()])
+        await orch._warm_providers()          # must not raise
+        assert warmed == ["fine"]

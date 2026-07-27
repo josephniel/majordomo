@@ -949,6 +949,17 @@ class MemoryDatabase:
             )
         return len(rows)
 
+    async def warmup(self) -> None:
+        """Load the retrieval models before anyone is waiting on a query.
+
+        Both are lazy by design — importing fastembed pulls in onnxruntime, and
+        a persona with memory disabled should never pay that. But "lazy" used
+        to mean "on the first user turn", which put a ~600MB model load in the
+        middle of somebody's first message.
+        """
+        await asyncio.to_thread(self._embed.warmup)
+        await asyncio.to_thread(self._rerank.warmup)
+
     # ---- internals ----
 
     def _acquire(self) -> asyncpg.pool.PoolAcquireContext:

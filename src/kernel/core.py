@@ -228,9 +228,32 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 log.exception("comms relay start failed")
         # Layer 4: probe that the chain's vendors actually call tools. Runs
         # once, shortly after boot, off the hot path.
-        canary = asyncio.create_task(self._startup_canary())
-        self._stale_agent_stops.add(canary)
-        canary.add_done_callback(self._stale_agent_stops.discard)
+        # Two independent warmups, both started the moment the bot is live and
+        # neither blocking it: the providers' own priming (local retrieval
+        # models — CPU and disk) and the vendor canary + prompt cache
+        # (network). They contend for nothing, so they run together.
+        for coro in (self._warm_providers(), self._startup_canary()):
+            task = asyncio.create_task(coro)
+            self._stale_agent_stops.add(task)
+            task.add_done_callback(self._stale_agent_stops.discard)
+
+    async def _warm_providers(self) -> None:
+        """Ask every provider to prime itself, in parallel.
+
+        This used to be nobody's job, so the first turn after a restart paid to
+        load the embedding model and the reranker while the user watched a
+        typing indicator. One slow or broken provider must not hold up the
+        others, hence gather(return_exceptions=True).
+        """
+        results = await asyncio.gather(
+            *(c.warmup() for c in self._connectors), return_exceptions=True
+        )
+        for provider, outcome in zip(self._connectors, results, strict=True):
+            if isinstance(outcome, BaseException):
+                log.warning(
+                    "warmup failed for %s: %s", getattr(provider, "name", "?"), outcome
+                )
+        log.info("provider warmup complete (%d providers)", len(self._connectors))
 
     async def _startup_canary(self) -> None:
         await asyncio.sleep(20)  # let startup settle; don't compete with first turns

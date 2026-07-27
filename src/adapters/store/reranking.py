@@ -120,6 +120,11 @@ class Reranker:
     def available(self) -> bool:
         return self.config.enabled and not self._unavailable
 
+    def warmup(self) -> None:
+        """Load the cross-encoder now. Blocking; safe to call when disabled."""
+        if self.config.enabled:
+            self._model()
+
     def _model(self) -> TextCrossEncoder | None:
         """Lazily load the cross-encoder.
 

@@ -167,6 +167,14 @@ class Embedder:
                     self._loaded = TextEmbedding(model_name=self.model_name)
         return self._loaded
 
+    def warmup(self) -> None:
+        """Load the model now, so the first real query doesn't pay for it.
+
+        Blocking and CPU/disk-bound (~600MB off disk on a cold cache) — call it
+        from a thread. Idempotent: `_model` is the same double-checked load.
+        """
+        self._model()
+
     def embed_query(self, text: str) -> list[float]:
         """Embed a SEARCH QUERY (short, interrogative).
 
