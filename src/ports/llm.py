@@ -18,9 +18,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from .conversation import ConversationRef
     from .messaging import Attachment
 
 
@@ -49,6 +50,36 @@ class Summarizer(ABC):
         `deep=True` picks a more capable model. Returns empty string on failure so callers can treat
         compaction as best-effort.
         """
+
+
+@runtime_checkable
+class ConversationMirror(Protocol):
+    """The conversation record an agent reads and writes, as agents use it.
+
+    Two classes implement this and neither inherits the other:
+    ConversationHistory (Postgres, the real mirror) and
+    EphemeralConversationHistory (in-memory, so a delegate's turns stay out of
+    the chat record). They were duck-typed siblings, so every signature saying
+    "ConversationHistory" was quietly wrong for half its callers.
+    """
+
+    async def connect(self) -> None: ...
+    async def close(self) -> None: ...
+    async def append(
+        self,
+        *,
+        persona_id: str,
+        chat_id: ConversationRef,
+        role: str,
+        content: str,
+        metadata: dict[str, Any] | None = ...,
+    ) -> int: ...
+    async def recent(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
+    async def rows_between(self, *args: Any, **kwargs: Any) -> list[dict[str, Any]]: ...
+    async def total_chars(self, *args: Any, **kwargs: Any) -> int: ...
+    async def compact(self, *args: Any, **kwargs: Any) -> Any: ...
+    async def log_turn(self, *args: Any, **kwargs: Any) -> Any: ...
+    async def reset(self, persona_id: str, chat_id: ConversationRef) -> int: ...
 
 
 class PersonaLike(Protocol):

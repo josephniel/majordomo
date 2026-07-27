@@ -24,7 +24,7 @@ from ports.messaging import Attachment
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from ports import Connector, ServiceCatalog
+    from ports import ServiceCatalog, ToolProviderView
 
 __all__ = [
     "Agent",
@@ -82,7 +82,7 @@ class ContextBuilder:
     def __init__(
         self,
         config: ServiceCatalog,
-        connectors: list[Connector],
+        connectors: Sequence[ToolProviderView],
         persona: PersonaLike,
         platform_context: str = "",
     ) -> None:

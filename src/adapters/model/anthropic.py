@@ -31,10 +31,10 @@ from claude_agent_sdk import (
 )
 
 from ports import (
-    Connector,
     ConversationRef,
     ServiceCatalog,
     ToolContext,
+    ToolProviderView,
     ToolSpec,
     as_tool_result,
 )
@@ -50,7 +50,7 @@ from .base import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Sequence
 
 log = logging.getLogger(__name__)
 
@@ -255,7 +255,7 @@ class AnthropicOptionsBuilder:
         self,
         context_builder: ContextBuilder,
         config: ServiceCatalog,
-        connectors: list[Connector],
+        connectors: Sequence[ToolProviderView],
         persona: PersonaLike,
         model: str | None = None,
         max_turns: int | None = None,

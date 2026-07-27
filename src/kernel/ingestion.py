@@ -16,13 +16,13 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from adapters.chat import InboundMessage
-    from ports import ToolProvider
+    from ports import ToolProviderView
 
 log = logging.getLogger(__name__)
 
 
 async def ingest_attachments(
-    connectors: Sequence[ToolProvider],
+    connectors: Sequence[ToolProviderView],
     chat_id: ConversationRef,
     text: str,
     msg: InboundMessage,

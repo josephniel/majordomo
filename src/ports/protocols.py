@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from .conversation import ConversationRef
+    from .tools import ToolSpec
 
 
 @runtime_checkable
@@ -59,6 +60,37 @@ class AttachmentIngestor(Protocol):
     async def ingest_attachment(
         self, chat_id: ConversationRef, filename: str, mime: str, data: bytes,
     ) -> str | None: ...
+
+
+@runtime_checkable
+class ToolProviderView(Protocol):
+    """A tool provider as its CONSUMERS see it: the surface, not the base class.
+
+    ToolProvider is a base class with defaults, which faculties and connectors
+    inherit. GatedToolProvider deliberately does not: it is a read-through view
+    that delegates through __getattr__, and inheriting would let the base's
+    default builtin_tools/context_version shadow the real ones underneath it.
+
+    So the two are not related by inheritance, and a signature naming the base
+    class excludes the gated view — which is precisely what the composition
+    root passes to every agent builder. This is the shape they both have.
+    """
+
+    name: str
+
+    # Routing hints the tool-subsetting pass reads off a provider.
+    ALWAYS_ATTACH: bool
+    TRIGGER_KEYWORDS: tuple[str, ...]
+
+    def builtin_tools(self) -> list[ToolSpec]: ...
+    async def status_line(self) -> str | None: ...
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]: ...
+    def system_prompt_section(self) -> str: ...
+    def context_version(self) -> int: ...
+    def owns_profile(self, profile_name: str) -> bool: ...
+    def tool_status(self, profile: str, local: str, args: dict[str, Any]) -> str | None: ...
+    async def on_chat_startup(self) -> None: ...
+    async def on_chat_shutdown(self) -> None: ...
 
 
 @runtime_checkable

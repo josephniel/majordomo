@@ -217,6 +217,7 @@ module = [
     "domain.*",
     "kernel.*",
     "ports.*",
+    "runtime.*",
     "adapters.chat.*",
     "adapters.model.*",
     "adapters.comms.*",

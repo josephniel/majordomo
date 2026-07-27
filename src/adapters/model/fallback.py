@@ -36,17 +36,13 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
 
-from ports import ConversationRef, SessionResettable, ToolCallProbe
+from ports import ConversationMirror, ConversationRef, SessionResettable, ToolCallProbe
 
 from .base import Agent, Attachment, Summarizer, ToolUseCallback, UsageLimitError
 from .health import VendorHealthBoard
-
-if TYPE_CHECKING:
-    from .history import ConversationHistory
-
 from .history import TurnRecord
 
 log = logging.getLogger(__name__)
@@ -113,7 +109,7 @@ class _ToolTrace:
 
     def __init__(
         self,
-        history: ConversationHistory,
+        history: ConversationMirror,
         persona_id: str,
         chat_id: ConversationRef,
         on_tool_use: ToolUseCallback | None,
@@ -154,7 +150,7 @@ class CascadingAgent(Agent):
     def __init__(
         self,
         chain: list[tuple[str, Agent]],
-        history: ConversationHistory,
+        history: ConversationMirror,
         persona_id: str,
         chat_id: ConversationRef,
         summarizer: Summarizer,

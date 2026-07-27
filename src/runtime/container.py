@@ -56,13 +56,14 @@ from adapters.tools import (
 from domain import (
     DocumentLibrary,
     FileCourier,
+    LongTermMemory,
     ReflectionEngine,
     ScheduleEngine,
     TaskScheduler,
 )
 from kernel.core import ConversationOrchestrator, OptionalSubsystems
 from kernel.sessions import SessionStore
-from ports import ConversationRef, ModelRole
+from ports import ConversationMirror, ConversationRef, ModelRole, ToolProviderView
 
 from .config import SHARED_ENV_FILENAME
 from .model_roles import RoleChain, resolve_roles
@@ -72,7 +73,7 @@ from .settings import RuntimeSettings
 from .vendors import VENDORS, VENDORS_BY_NAME
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import Awaitable, Callable, Iterable, Sequence
     from pathlib import Path
 
     from adapters.chat.transcription import CascadingTranscriber
@@ -284,7 +285,7 @@ class PersonaRuntime:
             return None
         return ReflectionEngine(
             history=self.conversation_history,
-            memory=self.provider("memory"),
+            memory=self._memory_faculty(),
             summarizer=self.summarizer,
             persona_id=self.persona.id,
         )
@@ -353,7 +354,7 @@ class PersonaRuntime:
         return [*self.active_connectors, *self.active_faculties]
 
     @cached_property
-    def gated_services(self) -> list[ToolProvider]:
+    def gated_services(self) -> Sequence[ToolProviderView]:
         """The view AGENT BUILDERS consume, with WRITE_TOOLS behind the gate.
 
         Layer 5. Same objects as active_services when the persona opts out of
@@ -362,7 +363,21 @@ class PersonaRuntime:
         gate = self.approval_gate
         if gate is None:
             return self.active_services
-        return [GatedToolProvider(c, gate) for c in self.active_services]
+        gated: list[ToolProviderView] = []
+        gated.extend(GatedToolProvider(c, gate) for c in self.active_services)
+        return gated
+
+    def _memory_faculty(self) -> LongTermMemory:
+        """Return the memory provider as the faculty it is.
+
+        provider() answers ToolProvider because that is what the registry
+        promises; reflection and ideation need the faculty's own surface, and
+        a persona without memory never reaches here (callers check first).
+        """
+        memory = self.provider("memory")
+        if not isinstance(memory, LongTermMemory):
+            raise TypeError(f"the 'memory' provider is a {type(memory).__name__}")
+        return memory
 
     # ---- platform ----
 
@@ -600,7 +615,7 @@ class PersonaRuntime:
         self,
         chat_id: ConversationRef,
         session_id: str | None = None,
-        history: ConversationHistory | None = None,
+        history: ConversationMirror | None = None,
         persona_override: Persona | None = None,
         role: ModelRole = ModelRole.CHAT,
     ) -> Agent:
@@ -960,7 +975,7 @@ class PersonaRuntime:
             document_store=docs_store,
         )
 
-    def _watch_chat_id(self, cfg: dict[str, Any], label: str) -> int | None:
+    def _watch_chat_id(self, cfg: dict[str, Any], label: str) -> ConversationRef | None:
         chat_id = cfg.get("chat_id") or self._default_operator_chat_id()
         if chat_id is None:
             log.warning(

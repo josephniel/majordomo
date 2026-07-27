@@ -25,7 +25,17 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
-from ports import Connector, ConversationRef, ToolContext, ToolSpec, as_tool_result
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+from ports import (
+    ConversationMirror,
+    ConversationRef,
+    ToolContext,
+    ToolProviderView,
+    ToolSpec,
+    as_tool_result,
+)
 
 from .base import (
     Agent,
@@ -36,10 +46,6 @@ from .base import (
     ToolUseCallback,
     UsageLimitError,
 )
-
-if TYPE_CHECKING:
-
-    from .history import ConversationHistory
 
 log = logging.getLogger(__name__)
 
@@ -318,11 +324,11 @@ class ChatCompletionsAgent(Agent):
     def __init__(
         self,
         context_builder: ContextBuilder,
-        history: ConversationHistory,
+        history: ConversationMirror,
         persona_id: str,
         chat_id: ConversationRef,
         endpoint: VendorEndpoint | None = None,
-        connectors: list[Connector] | None = None,
+        connectors: Sequence[ToolProviderView] | None = None,
         persona: PersonaLike | None = None,
         external_tools_provider: Any | None = None,
     ) -> None:
@@ -403,7 +409,7 @@ class ChatCompletionsAgent(Agent):
         server = prefixed_name.rsplit("__", 1)[0]
         for c in self._connectors:
             if c.owns_profile(server):
-                return c.name
+                return str(c.name)
         return server
 
     def _select_tools(self, text: str) -> list[dict[str, Any]] | None:

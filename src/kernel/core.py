@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     from adapters.model import Agent, Attachment, ConversationHistory, ToolUseCallback
     from adapters.tools import ServiceRegistry, WriteApprovalGate
     from domain import ReflectionEngine
-    from ports import ToolProvider
+    from ports import ToolProviderView
 
     from .sessions import SessionStore
 
@@ -114,7 +114,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         agent_factory: Callable[..., Agent],
         session_store: SessionStore,
         config: ServiceRegistry,
-        connectors_list: Sequence[ToolProvider],
+        connectors_list: Sequence[ToolProviderView],
         persona_id: str,
         optional: OptionalSubsystems | None = None,
     ) -> None:
