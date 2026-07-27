@@ -30,6 +30,8 @@ import httpx
 if TYPE_CHECKING:
     from pathlib import Path
 
+from ._http import HTTP_OK
+
 log = logging.getLogger(__name__)
 
 TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105 — an endpoint, not a secret
@@ -75,7 +77,7 @@ class GoogleOAuthClient:
                     "client_secret": self.client_secret,
                 },
             )
-            if r.status_code != 200:
+            if r.status_code != HTTP_OK:
                 raise GoogleOAuthError(
                     f"token refresh failed: {r.status_code} {r.text[:300]}"
                 )
@@ -146,7 +148,7 @@ class GoogleOAuthClient:
                 f"could not bind to localhost:{port} for OAuth callback: {e}. "
                 "If a different process is using that port, kill it: "
                 f"`lsof -i :{port} -P -n` then `kill <pid>`."
-            )
+            ) from e
 
         try:
             print(f"\nOpen this URL in your browser to authenticate:\n  {auth_url}\n")
@@ -176,7 +178,7 @@ class GoogleOAuthClient:
                     "grant_type": "authorization_code",
                 },
             )
-        if r.status_code != 200:
+        if r.status_code != HTTP_OK:
             raise GoogleOAuthError(
                 f"token exchange failed: {r.status_code} {r.text[:300]}"
             )

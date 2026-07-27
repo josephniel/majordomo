@@ -24,6 +24,7 @@ from ._google_oauth import (
     GoogleOAuthClient,
     GoogleOAuthError,
 )
+from ._http import HTTP_NO_CONTENT, api_errors
 
 if TYPE_CHECKING:
     from .registry import ServiceRegistry
@@ -60,7 +61,7 @@ class CalendarClient:
                 json=json_body,
             )
             r.raise_for_status()
-            if r.status_code == 204 or not r.text:
+            if r.status_code == HTTP_NO_CONTENT or not r.text:
                 return {}
             return r.json()
 
@@ -155,8 +156,10 @@ def _format_event_full(ev: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _format_http_error(e: httpx.HTTPStatusError) -> str:
-    return f"Calendar API error {e.response.status_code}: {(e.response.text or '')[:300]}"
+_VENDOR = "Calendar"
+
+# Every handler below whose failure story is just "the API said no" wears this.
+_guarded = api_errors(_VENDOR)
 
 
 class GoogleCalendarConnector(Connector):
@@ -380,23 +383,19 @@ class GoogleCalendarConnector(Connector):
             "primary calendar always has id 'primary'.",
             {},
         )
+        @_guarded
         async def list_calendars_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                resp = await client.list_calendars()
-                items = resp.get("items", [])
-                if not items:
-                    return ToolResult.ok("No calendars.")
-                lines = []
-                for c in items:
-                    cid = c.get("id", "?")
-                    name = c.get("summary", "(unnamed)")
-                    primary = " (primary)" if c.get("primary") else ""
-                    lines.append(f"- [{cid}] {name}{primary}")
-                return ToolResult.ok("\n".join(lines))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            resp = await client.list_calendars()
+            items = resp.get("items", [])
+            if not items:
+                return ToolResult.ok("No calendars.")
+            lines = []
+            for c in items:
+                cid = c.get("id", "?")
+                name = c.get("summary", "(unnamed)")
+                primary = " (primary)" if c.get("primary") else ""
+                lines.append(f"- [{cid}] {name}{primary}")
+            return ToolResult.ok("\n".join(lines))
 
         @tool(
             "list_events",
@@ -414,24 +413,20 @@ class GoogleCalendarConnector(Connector):
                 "query": str,
             },
         )
+        @_guarded
         async def list_events_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                resp = await client.list_events(
-                    calendar_id=args.get("calendar_id") or "primary",
-                    max_results=max(1, min(int(args.get("max_results", 25) or 25), 250)),
-                    time_min=args.get("time_min") or None,
-                    time_max=args.get("time_max") or None,
-                    query=args.get("query") or None,
-                )
-                items = resp.get("items", [])
-                if not items:
-                    return ToolResult.ok("No events found.")
-                text = "\n".join(_format_event_summary(ev) for ev in items)
-                return ToolResult.ok(text)
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            resp = await client.list_events(
+                calendar_id=args.get("calendar_id") or "primary",
+                max_results=max(1, min(int(args.get("max_results", 25) or 25), 250)),
+                time_min=args.get("time_min") or None,
+                time_max=args.get("time_max") or None,
+                query=args.get("query") or None,
+            )
+            items = resp.get("items", [])
+            if not items:
+                return ToolResult.ok("No events found.")
+            text = "\n".join(_format_event_summary(ev) for ev in items)
+            return ToolResult.ok(text)
 
         @tool(
             "get_event",
@@ -440,17 +435,13 @@ class GoogleCalendarConnector(Connector):
             "list_events).",
             {"calendar_id": str, "event_id": str},
         )
+        @_guarded
         async def get_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                ev = await client.get_event(
-                    calendar_id=args.get("calendar_id") or "primary",
-                    event_id=args["event_id"],
-                )
-                return ToolResult.ok(_format_event_full(ev))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            ev = await client.get_event(
+                calendar_id=args.get("calendar_id") or "primary",
+                event_id=args["event_id"],
+            )
+            return ToolResult.ok(_format_event_full(ev))
 
         def _when(v: str) -> dict[str, Any]:
             v = (v or "").strip()
@@ -496,20 +487,16 @@ class GoogleCalendarConnector(Connector):
                 "timezone": str,
             },
         )
+        @_guarded
         async def create_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                body = _event_body(args)
-                if not body.get("start") or not body.get("end"):
-                    return ToolResult.error("error: start and end are required")
-                ev = await client.create_event(args.get("calendar_id") or "primary", body)
-                return ToolResult.ok(
-                    f"created event [{ev.get('id', '?')}] {ev.get('summary', '')} "
-                    f"— {_event_when(ev)}"
-                )
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            body = _event_body(args)
+            if not body.get("start") or not body.get("end"):
+                return ToolResult.error("error: start and end are required")
+            ev = await client.create_event(args.get("calendar_id") or "primary", body)
+            return ToolResult.ok(
+                f"created event [{ev.get('id', '?')}] {ev.get('summary', '')} "
+                f"— {_event_when(ev)}"
+            )
 
         @tool(
             "update_event",
@@ -529,22 +516,18 @@ class GoogleCalendarConnector(Connector):
                 "timezone": str,
             },
         )
+        @_guarded
         async def update_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                body = _event_body(args)
-                if not body:
-                    return ToolResult.error("error: nothing to update")
-                ev = await client.update_event(
-                    args.get("calendar_id") or "primary", args["event_id"], body
-                )
-                return ToolResult.ok(
-                    f"updated event [{ev.get('id', '?')}] {ev.get('summary', '')} "
-                    f"— {_event_when(ev)}"
-                )
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            body = _event_body(args)
+            if not body:
+                return ToolResult.error("error: nothing to update")
+            ev = await client.update_event(
+                args.get("calendar_id") or "primary", args["event_id"], body
+            )
+            return ToolResult.ok(
+                f"updated event [{ev.get('id', '?')}] {ev.get('summary', '')} "
+                f"— {_event_when(ev)}"
+            )
 
         @tool(
             "delete_event",
@@ -553,14 +536,10 @@ class GoogleCalendarConnector(Connector):
             "clearly asked to delete/cancel the event.",
             {"event_id": str, "calendar_id": str},
         )
+        @_guarded
         async def delete_event_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                await client.delete_event(args.get("calendar_id") or "primary", args["event_id"])
-                return ToolResult.ok(f"deleted event {args['event_id']}")
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            await client.delete_event(args.get("calendar_id") or "primary", args["event_id"])
+            return ToolResult.ok(f"deleted event {args['event_id']}")
 
         return [
             list_calendars_tool,

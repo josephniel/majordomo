@@ -31,6 +31,7 @@ from ._google_oauth import (
     GoogleOAuthClient,
     GoogleOAuthError,
 )
+from ._http import HTTP_NO_CONTENT, api_errors
 
 if TYPE_CHECKING:
     from .registry import ServiceRegistry
@@ -74,7 +75,7 @@ class GmailClient:
                 json=json,
             )
             r.raise_for_status()
-            if r.status_code == 204 or not r.text:
+            if r.status_code == HTTP_NO_CONTENT or not r.text:
                 return {}
             return r.json()
 
@@ -178,8 +179,10 @@ def _format_message_full(msg: dict[str, Any], body_limit: int = 5000) -> str:
     )
 
 
-def _format_http_error(e: httpx.HTTPStatusError) -> str:
-    return f"Gmail API error {e.response.status_code}: {(e.response.text or '')[:300]}"
+_VENDOR = "Gmail"
+
+# Every handler below whose failure story is just "the API said no" wears this.
+_guarded = api_errors(_VENDOR)
 
 
 def _build_raw_email(
@@ -420,23 +423,19 @@ class GmailConnector(Connector):
             "Args: query (Gmail search string), max_results (default 25, max 100).",
             {"query": str, "max_results": int},
         )
+        @_guarded
         async def search_emails_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                query = args.get("query", "")
-                max_results = max(1, min(int(args.get("max_results", 25) or 25), 100))
-                list_resp = await client.search_messages(query, max_results)
-                refs = list_resp.get("messages", [])
-                if not refs:
-                    return ToolResult.ok("No matching messages.")
-                msgs = await asyncio.gather(
-                    *[client.get_message(ref["id"], fmt="metadata") for ref in refs[:max_results]]
-                )
-                text = "\n".join(_format_message_summary(m) for m in msgs)
-                return ToolResult.ok(text)
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            query = args.get("query", "")
+            max_results = max(1, min(int(args.get("max_results", 25) or 25), 100))
+            list_resp = await client.search_messages(query, max_results)
+            refs = list_resp.get("messages", [])
+            if not refs:
+                return ToolResult.ok("No matching messages.")
+            msgs = await asyncio.gather(
+                *[client.get_message(ref["id"], fmt="metadata") for ref in refs[:max_results]]
+            )
+            text = "\n".join(_format_message_summary(m) for m in msgs)
+            return ToolResult.ok(text)
 
         @tool(
             "read_email",
@@ -445,14 +444,10 @@ class GmailConnector(Connector):
             "To, Subject, Date, and decoded body (truncated at 5000 chars).",
             {"message_id": str},
         )
+        @_guarded
         async def read_email_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                msg = await client.get_message(args["message_id"], fmt="full")
-                return ToolResult.ok(_format_message_full(msg))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            msg = await client.get_message(args["message_id"], fmt="full")
+            return ToolResult.ok(_format_message_full(msg))
 
         @tool(
             "list_email_labels",
@@ -460,40 +455,32 @@ class GmailConnector(Connector):
             "labels). Useful for filtering with search_emails 'label:LabelName'.",
             {},
         )
+        @_guarded
         async def list_email_labels_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                resp = await client.list_labels()
-                labels = resp.get("labels", [])
-                if not labels:
-                    return ToolResult.ok("No labels.")
-                lines = []
-                for lbl in labels:
-                    name = lbl.get("name", "?")
-                    lid = lbl.get("id", "?")
-                    typ = lbl.get("type", "user")
-                    lines.append(f"- {name} ({typ}, id={lid})")
-                return ToolResult.ok("\n".join(lines))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            resp = await client.list_labels()
+            labels = resp.get("labels", [])
+            if not labels:
+                return ToolResult.ok("No labels.")
+            lines = []
+            for lbl in labels:
+                name = lbl.get("name", "?")
+                lid = lbl.get("id", "?")
+                typ = lbl.get("type", "user")
+                lines.append(f"- {name} ({typ}, id={lid})")
+            return ToolResult.ok("\n".join(lines))
 
         @tool(
             "list_filters",
             "List the user's Gmail filters (the rules that auto-label/forward/etc. incoming mail).",
             {},
         )
+        @_guarded
         async def list_filters_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                resp = await client.list_filters()
-                filters = resp.get("filter", [])
-                if not filters:
-                    return ToolResult.ok("No filters configured.")
-                return ToolResult.ok(json.dumps(filters, indent=2)[:4000])
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            resp = await client.list_filters()
+            filters = resp.get("filter", [])
+            if not filters:
+                return ToolResult.ok("No filters configured.")
+            return ToolResult.ok(json.dumps(filters, indent=2)[:4000])
 
         @tool(
             "mark_as_read",
@@ -501,14 +488,10 @@ class GmailConnector(Connector):
             "message_id (the value in [brackets] from search_emails).",
             {"message_id": str},
         )
+        @_guarded
         async def mark_as_read_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                await client.mark_message_read(args["message_id"])
-                return ToolResult.ok(f"marked {args['message_id']} as read")
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            await client.mark_message_read(args["message_id"])
+            return ToolResult.ok(f"marked {args['message_id']} as read")
 
         @tool(
             "send_email",
@@ -520,21 +503,17 @@ class GmailConnector(Connector):
             "bcc (optional, comma-separated).",
             {"to": str, "subject": str, "body": str, "cc": str, "bcc": str},
         )
+        @_guarded
         async def send_email_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                result = await client.send_message(
-                    to=args["to"],
-                    subject=args.get("subject", ""),
-                    body=args.get("body", ""),
-                    cc=args.get("cc", ""),
-                    bcc=args.get("bcc", ""),
-                )
-                msg_id = result.get("id", "?")
-                return ToolResult.ok(f"sent (message id={msg_id}) to {args['to']}")
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            result = await client.send_message(
+                to=args["to"],
+                subject=args.get("subject", ""),
+                body=args.get("body", ""),
+                cc=args.get("cc", ""),
+                bcc=args.get("bcc", ""),
+            )
+            msg_id = result.get("id", "?")
+            return ToolResult.ok(f"sent (message id={msg_id}) to {args['to']}")
 
         return [
             search_emails_tool,

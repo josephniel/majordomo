@@ -23,6 +23,8 @@ import httpx
 
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
+from ._http import HTTP_NO_CONTENT, api_errors, format_http_error
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -72,7 +74,7 @@ class BudgetClient:
                 json=body,
             )
             response.raise_for_status()
-            if response.status_code == 204 or not response.text:
+            if response.status_code == HTTP_NO_CONTENT or not response.text:
                 return {}
             return response.json()
 
@@ -109,8 +111,10 @@ class BudgetClient:
 
 # ---- formatting helpers ----
 
-def _format_http_error(e: httpx.HTTPStatusError) -> str:
-    return f"Budget API error {e.response.status_code}: {(e.response.text or '')[:300]}"
+_VENDOR = "Budget"
+
+# Every handler below whose failure story is just "the API said no" wears this.
+_guarded = api_errors(_VENDOR)
 
 
 def _format_account(a: dict[str, Any]) -> str:
@@ -242,18 +246,14 @@ the ledger books their share as expense and the rest as loans)."""
             "Needed to pick the account_id for record_transaction.",
             {},
         )
+        @_guarded
         async def list_accounts_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                accounts = await client.list_accounts()
-                if not accounts:
-                    return ToolResult.ok(
-                        "No accounts yet — create one in the budget tracker UI first."
-                    )
-                return ToolResult.ok("\n".join(_format_account(a) for a in accounts))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            accounts = await client.list_accounts()
+            if not accounts:
+                return ToolResult.ok(
+                    "No accounts yet — create one in the budget tracker UI first."
+                )
+            return ToolResult.ok("\n".join(_format_account(a) for a in accounts))
 
         @tool(
             "list_tags",
@@ -262,18 +262,14 @@ the ledger books their share as expense and the rest as loans)."""
             "record_transaction.",
             {},
         )
+        @_guarded
         async def list_tags_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                tags = await client.list_tags()
-                if not tags:
-                    return ToolResult.ok(
-                        "No tags yet — create some in the budget tracker UI first."
-                    )
-                return ToolResult.ok("\n".join(_format_tags(tags)))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            tags = await client.list_tags()
+            if not tags:
+                return ToolResult.ok(
+                    "No tags yet — create some in the budget tracker UI first."
+                )
+            return ToolResult.ok("\n".join(_format_tags(tags)))
 
         @tool(
             "recent_transactions",
@@ -287,19 +283,15 @@ the ledger books their share as expense and the rest as loans)."""
                 },
             },
         )
+        @_guarded
         async def recent_transactions_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                limit = max(1, min(int(args.get("limit") or 10), 50))
-                account_id = int(args["account_id"]) if args.get("account_id") else None
-                resp = await client.list_transactions(account_id=account_id, page_size=limit)
-                items = resp.get("items") or resp.get("transactions") or []
-                if not items:
-                    return ToolResult.ok("(no transactions)")
-                return ToolResult.ok("\n".join(_format_transaction(t) for t in items))
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
+            limit = max(1, min(int(args.get("limit") or 10), 50))
+            account_id = int(args["account_id"]) if args.get("account_id") else None
+            resp = await client.list_transactions(account_id=account_id, page_size=limit)
+            items = resp.get("items") or resp.get("transactions") or []
+            if not items:
+                return ToolResult.ok("(no transactions)")
+            return ToolResult.ok("\n".join(_format_transaction(t) for t in items))
 
         @tool(
             "record_transaction",
@@ -364,7 +356,7 @@ the ledger books their share as expense and the rest as loans)."""
             except KeyError as e:
                 return ToolResult.error(f"error: missing required arg {e}")
             except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
+                return ToolResult.error(format_http_error(_VENDOR, e))
             except Exception as e:
                 return ToolResult.error(f"error: {e}")
 
@@ -450,7 +442,7 @@ the ledger books their share as expense and the rest as loans)."""
             except KeyError as e:
                 return ToolResult.error(f"error: missing required arg {e}")
             except httpx.HTTPStatusError as e:
-                return ToolResult.error(_format_http_error(e))
+                return ToolResult.error(format_http_error(_VENDOR, e))
             except Exception as e:
                 return ToolResult.error(f"error: {e}")
 
