@@ -58,7 +58,7 @@ class RuntimeContext(Protocol):
     """The slice of the composition root a provider builder is allowed to see.
 
     Structural on purpose. This module is imported BY the composition root, so
-    naming RuntimeContext here would be the one genuine import cycle in the
+    naming PersonaRuntime here would be the one genuine import cycle in the
     codebase — and the cycle was the smaller problem. A builder that can reach
     the whole runtime can reach anything; this says, in one place, that the
     eight members below are the entire contract, and adding a ninth is a

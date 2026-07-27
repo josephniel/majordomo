@@ -54,10 +54,10 @@ class Summarizer(ABC):
 class PersonaLike(Protocol):
     """The fields agents need from a persona.
 
-    Defined structurally so the agents package doesn't have to import
-    `personas.Persona` (which would form a cycle: personas.container imports
-    agents). The real Persona dataclass satisfies this Protocol, no
-    inheritance required.
+    Defined structurally so `adapters.model` never has to import
+    `runtime.Persona` — which the layer rule forbids outright, and which would
+    also be circular, since runtime.container imports the adapters. The real
+    Persona dataclass satisfies this Protocol, no inheritance required.
     """
 
     system_prompt: str

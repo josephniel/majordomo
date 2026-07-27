@@ -38,11 +38,15 @@ from ports import (
     tool,
 )
 
-from .memory import staleness_suffix
+from .staleness import staleness_suffix
 
 if TYPE_CHECKING:
     from adapters.model.history import ConversationHistory
 
+    # Type-only, and the only edge back to the faculty. At runtime the
+    # dependency runs one way — memory.py imports this module to build its
+    # tools — so there is no cycle to break here, just one component whose
+    # faculty and tool surface live in two files.
     from .memory import LongTermMemory
 
 

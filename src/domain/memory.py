@@ -53,7 +53,10 @@ from ports import (
     ToolSpec,
 )
 
-if TYPE_CHECKING:  # avoid an import cycle at runtime; duck-typed otherwise
+from .memory_tools import build_memory_tools
+from .staleness import staleness_suffix
+
+if TYPE_CHECKING:
     from collections.abc import Coroutine
     from uuid import UUID
 
@@ -121,32 +124,6 @@ MEMORY_CONTEXT_CHAR_LIMIT = 6000  # ≈ 1500 tokens
 # Auto-compact when this many new entries accumulate in a compartment since
 # the last compaction. Per-compartment, count-based.
 AUTO_COMPACT_THRESHOLD = 30
-
-# A volatile fact unconfirmed for this long is flagged for re-verification.
-STALE_AFTER_DAYS = 30
-
-
-def staleness_suffix(entry: MemoryEntry) -> str:
-    """Build the re-verification note a stale volatile fact should carry.
-
-    Fires for a volatile fact not confirmed within STALE_AFTER_DAYS. Empty for
-    stable or fresh facts.
-
-    Module-level so the tool surface can render the same warning without
-    reaching into the faculty for it. A volatile fact shown WITHOUT this
-    suffix reads as current, which is the failure mode the flag exists to
-    prevent — so every path that renders a fact to the model owes it.
-    """
-    if not entry.volatile:
-        return ""
-    ref = entry.verified_at or entry.created_at
-    if ref is None:
-        return ""
-    age_days = (datetime.now(UTC) - ref).days
-    if age_days >= STALE_AFTER_DAYS:
-        return f"  ⚠ unverified for {age_days}d — confirm before trusting"
-    return ""
-
 
 class LongTermMemory(Faculty):
     name = "memory"
@@ -582,7 +559,6 @@ Three principles:
 
     def builtin_tools(self) -> list[ToolSpec]:
         if self._tools_cache is None:
-            from .memory_tools import build_memory_tools  # deferred: cycle
             self._tools_cache = build_memory_tools(self, history=self._history)
         return list(self._tools_cache)
 
