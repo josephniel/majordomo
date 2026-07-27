@@ -76,33 +76,22 @@ def _label(entry: MemoryEntry) -> str:
 _MAX_TURN_PREVIEW = 400
 
 
-def build_memory_tools(
-    mem: LongTermMemory,
-    *,
-    history: ConversationHistory | None = None,
-) -> list[ToolSpec]:
-    """Every memory tool, bound to one faculty instance.
+async def _resolve(mem: LongTermMemory, raw: Any) -> tuple[UUID | None, str]:
+    """Model-supplied id → an id that is safe to act on.
 
-    `history` is optional and adds `history_search`. It is passed explicitly
-    rather than read off `mem` so this module has exactly one collaborator
-    it can mutate state through.
+    Two failure modes, both real: a malformed UUID, and a well-formed one
+    that names another persona's entry or an already-superseded row. The
+    ownership half is enforced by the faculty; parsing is ours.
     """
+    eid = _uuid(raw)
+    if eid is None:
+        return None, f"{raw!r} is not a valid UUID (use memory_recall to find ids)"
+    entry, reason = await mem.resolve_active(eid)
+    return (eid, "") if entry is not None else (None, reason)
 
-    async def _resolve(raw: Any) -> tuple[UUID | None, str]:
-        """Model-supplied id → an id that is safe to act on.
 
-        Two failure modes, both real: a malformed UUID, and a well-formed one
-        that names another persona's entry or an already-superseded row. The
-        ownership half is enforced by the faculty; parsing is ours.
-        """
-        eid = _uuid(raw)
-        if eid is None:
-            return None, f"{raw!r} is not a valid UUID (use memory_recall to find ids)"
-        entry, reason = await mem.resolve_active(eid)
-        return (eid, "") if entry is not None else (None, reason)
-
-    # ---- write ----
-
+def _capture_tools(mem: LongTermMemory) -> list[ToolSpec]:
+    """Put a fact in, and get facts back out."""
     @tool(
         "memory_save",
         "Save one atomic fact to long-term memory. Be conservative — only "
@@ -217,6 +206,14 @@ def build_memory_tools(
 
     # ---- replacement & retraction ----
 
+    return [
+        memory_save_tool,
+        memory_recall_tool,
+    ]
+
+
+def _revise_tools(mem: LongTermMemory) -> list[ToolSpec]:
+    """Change what is remembered: supersede, retract, compact."""
     @tool(
         "memory_update",
         "Supersede an existing memory with revised content. Use when a "
@@ -232,7 +229,7 @@ def build_memory_tools(
         },
     )
     async def memory_update_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-        eid, err = await _resolve(args.get("id"))
+        eid, err = await _resolve(mem, args.get("id"))
         if err:
             return _err(err)
         content = (args.get("content") or "").strip()
@@ -258,7 +255,7 @@ def build_memory_tools(
         },
     )
     async def memory_forget_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-        eid, err = await _resolve(args.get("id"))
+        eid, err = await _resolve(mem, args.get("id"))
         if err:
             return _err(err)
         try:
@@ -305,6 +302,28 @@ def build_memory_tools(
 
     # ---- graph ----
 
+    return [
+        memory_update_tool,
+        memory_forget_tool,
+        memory_compact_tool,
+    ]
+
+
+async def _resolve_pair(
+    mem: LongTermMemory, args: dict[str, Any]
+) -> tuple[UUID | None, UUID | None, str]:
+    """Resolve both ends of an edge; (None, None, reason) on the first failure."""
+    from_id, err = await _resolve(mem, args.get("from_id"))
+    if err:
+        return None, None, err
+    to_id, err = await _resolve(mem, args.get("to_id"))
+    if err:
+        return None, None, err
+    return from_id, to_id, ""
+
+
+def _link_tools(mem: LongTermMemory) -> list[ToolSpec]:
+    """Edges between facts."""
     @tool(
         "memory_link",
         "Connect two related memories so they surface together on recall. "
@@ -329,10 +348,7 @@ def build_memory_tools(
         relation = (args.get("relation") or "relates_to").strip().lower()
         if relation not in LINK_RELATIONS:
             return _err(f"relation must be one of {'/'.join(LINK_RELATIONS)}")
-        from_id, err = await _resolve(args.get("from_id"))
-        if err:
-            return _err(err)
-        to_id, err = await _resolve(args.get("to_id"))
+        from_id, to_id, err = await _resolve_pair(mem, args)
         if err:
             return _err(err)
         if from_id == to_id:
@@ -382,6 +398,14 @@ def build_memory_tools(
 
     # ---- annotation ----
 
+    return [
+        memory_link_tool,
+        memory_unlink_tool,
+    ]
+
+
+def _flag_tools(mem: LongTermMemory) -> list[ToolSpec]:
+    """Per-fact flags: pinning, and re-confirming a volatile fact."""
     @tool(
         "memory_pin",
         "Pin a fact so it stays in your always-on context verbatim — use "
@@ -410,7 +434,7 @@ def build_memory_tools(
         return await _set_pinned(args.get("id"), False, "unpinned")
 
     async def _set_pinned(raw_id: Any, pinned: bool, verb: str) -> ToolResult:
-        eid, err = await _resolve(raw_id)
+        eid, err = await _resolve(mem, raw_id)
         if err:
             return _err(err)
         try:
@@ -433,7 +457,7 @@ def build_memory_tools(
         },
     )
     async def memory_verify_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-        eid, err = await _resolve(args.get("id"))
+        eid, err = await _resolve(mem, args.get("id"))
         if err:
             return _err(err)
         try:
@@ -442,17 +466,29 @@ def build_memory_tools(
             return _err(str(e))
         return ToolResult.ok(f"verified {eid}") if ok else _err(f"no active entry with id={eid}")
 
-    tools: list[ToolSpec] = [
-        memory_save_tool,
-        memory_recall_tool,
-        memory_update_tool,
-        memory_forget_tool,
-        memory_compact_tool,
-        memory_link_tool,
-        memory_unlink_tool,
+    return [
         memory_pin_tool,
         memory_unpin_tool,
         memory_verify_tool,
+    ]
+
+
+def build_memory_tools(
+    mem: LongTermMemory,
+    *,
+    history: ConversationHistory | None = None,
+) -> list[ToolSpec]:
+    """Every memory tool, bound to one faculty instance.
+
+    `history` is optional and adds `history_search`. It is passed explicitly
+    rather than read off `mem` so this module has exactly one collaborator
+    it can mutate state through.
+    """
+    tools: list[ToolSpec] = [
+        *_capture_tools(mem),
+        *_revise_tools(mem),
+        *_link_tools(mem),
+        *_flag_tools(mem),
     ]
 
     if history is not None:
