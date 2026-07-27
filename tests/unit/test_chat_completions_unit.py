@@ -1,5 +1,6 @@
 """agents.chat_completions — pure logic: tool naming, error classification,
 context assembly, attachment handling. No network."""
+from adapters.model import VendorEndpoint
 import pytest
 
 from adapters.model.base import Attachment
@@ -15,10 +16,16 @@ from adapters.model.chat_completions import (
 from adapters.tools.base import ToolSpec
 
 
-def make_agent(cls=OpenAIAgent, **kw):
+def make_agent(cls=OpenAIAgent, **endpoint_kw):
+    """An agent wired to nothing, with only its endpoint configurable."""
     return cls(
-        context_builder=None, history=None, persona_id="p", chat_id=1,
-        connectors=[], persona=None, api_key="test-key", **kw,
+        context_builder=None,
+        history=None,
+        persona_id="p",
+        chat_id=1,
+        endpoint=VendorEndpoint(api_key="test-key", **endpoint_kw),
+        connectors=[],
+        persona=None,
     )
 
 
@@ -362,8 +369,7 @@ class TestConstruction:
         assert out == "", f"expected empty string, got {out!r}"
 
     def test_explicit_base_url_overrides_default(self):
-        agent = OllamaAgent(context_builder=None, history=None, persona_id="p",
-                            chat_id=1, base_url="http://box.lan:11434/v1")
+        agent = OllamaAgent(context_builder=None, history=None, persona_id='p', chat_id=1, endpoint=VendorEndpoint(base_url='http://box.lan:11434/v1'))
         assert agent._base_url == "http://box.lan:11434/v1"
 
     def test_session_id_is_none(self):
@@ -405,11 +411,7 @@ class TestSendContract:
 
     async def _send(self, history, text, current_row_id=None):
         from adapters.model.chat_completions import OpenAIAgent
-        agent = OpenAIAgent(
-            context_builder=self._Composer(), history=history,
-            persona_id="p", chat_id=1, connectors=[], persona=None,
-            api_key="test-key",
-        )
+        agent = OpenAIAgent(context_builder=self._Composer(), history=history, persona_id='p', chat_id=1, connectors=[], persona=None, endpoint=VendorEndpoint(api_key='test-key'))
         client = self._CapturingClient()
         agent._client = client
         await agent.send(text, current_row_id=current_row_id)
@@ -465,13 +467,16 @@ class TestMaxTokens:
         def build(self):
             return "SYSTEM"
 
-    async def _captured_kwargs(self, **agent_kw):
+    async def _captured_kwargs(self, **endpoint_kw):
         from adapters.model.history import EphemeralConversationHistory
         agent = OpenAIAgent(
             context_builder=self._Composer(),
             history=EphemeralConversationHistory(),
-            persona_id="p", chat_id=1, connectors=[], persona=None,
-            api_key="test-key", **agent_kw,
+            persona_id="p",
+            chat_id=1,
+            endpoint=VendorEndpoint(api_key="test-key", **endpoint_kw),
+            connectors=[],
+            persona=None,
         )
         client = TestSendContract._CapturingClient()
         agent._client = client

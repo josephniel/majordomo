@@ -34,6 +34,7 @@ from .chat_completions import (
     GroqAgent,
     OllamaAgent,
     OpenAIAgent,
+    VendorEndpoint,
 )
 from .external_mcp import ExternalMCPManager
 from .fallback import CascadingAgent
@@ -61,6 +62,7 @@ __all__ = [
     "ToolUseCallback",
     "TurnRecord",
     "UsageLimitError",
+    "VendorEndpoint",
     "VendorHealthBoard",
     "summarize_with_subscription_auth",
 ]

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace
 from functools import cached_property
 from typing import TYPE_CHECKING, Any
 
@@ -34,6 +35,7 @@ from adapters.model import (
     ConversationHistory,
     ExternalMCPManager,
     Summarizer,
+    VendorEndpoint,
     VendorHealthBoard,
 )
 from adapters.model.anthropic import AnthropicOptionsBuilder, SubscriptionAuthSummarizer
@@ -624,19 +626,18 @@ class PersonaRuntime:
                 }
             external_provider = _gated_external
 
-        def _oai(cls: type[Any], **extra: Any) -> Any:
+        def _oai(cls: type[Any], endpoint: VendorEndpoint) -> Any:
             return cls(
                 context_builder=context_builder,
                 history=hist,
                 persona_id=self.persona.id,
                 chat_id=chat_id,
+                endpoint=replace(endpoint, max_tokens=self.settings.llm_max_output_tokens),
                 connectors=self.gated_services,
                 persona=persona,
                 # External stdio MCP servers reach the non-Claude vendors
                 # through this hook (Claude mounts them natively).
                 external_tools_provider=external_provider,
-                max_tokens=self.settings.llm_max_output_tokens,
-                **extra,
             )
 
         s = self.settings
@@ -666,12 +667,13 @@ class PersonaRuntime:
                     builder, session_id=session_id, chat_id=chat_id,
                 )
             else:
-                available[v.name] = _oai(
-                    v.backend, model=role_chain.model or v.model(s), api_key=v.api_key(s),
+                available[v.name] = _oai(v.backend, VendorEndpoint(
+                    model=role_chain.model or v.model(s),
+                    api_key=v.api_key(s),
                     base_url=v.base_url(s),
                     extra_completion_kwargs=v.extra_kwargs(s),
                     supports_vision=v.supports_vision(s),
-                )
+                ))
 
         if not available:
             raise RuntimeError(

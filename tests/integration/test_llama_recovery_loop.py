@@ -1,5 +1,6 @@
 """End-to-end: the tool loop recovers a Groq tool_use_failed 400 by parsing
 the failed generation, running the tool, and producing a final answer."""
+from adapters.model import VendorEndpoint
 import pytest
 
 from adapters.model.chat_completions import GroqAgent
@@ -66,8 +67,7 @@ class RecordingConnector(Connector):
 
 async def test_loop_recovers_and_runs_the_tool():
     conn = RecordingConnector()
-    agent = GroqAgent(context_builder=None, history=None, persona_id="p", chat_id=1,
-                      connectors=[conn], persona=None, api_key="k")
+    agent = GroqAgent(context_builder=None, history=None, persona_id='p', chat_id=1, connectors=[conn], persona=None, endpoint=VendorEndpoint(api_key='k'))
     fg = ('<function=memory__memory_save {"scope": "user", '
           '"content": "favorite fruit is mango"}>')
     agent._client = FakeClient(fg)
@@ -90,8 +90,7 @@ async def test_loop_recovers_and_runs_the_tool():
 async def test_canary_treats_recoverable_malformed_call_as_pass():
     """The canary must not report FAIL for a tool_use_failed the live loop
     would recover — that would misreport a working Groq as broken on /status."""
-    agent = GroqAgent(context_builder=None, history=None, persona_id="p", chat_id=1,
-                      connectors=[RecordingConnector()], persona=None, api_key="k")
+    agent = GroqAgent(context_builder=None, history=None, persona_id='p', chat_id=1, connectors=[RecordingConnector()], persona=None, endpoint=VendorEndpoint(api_key='k'))
 
     class MalformedPingClient:
         class chat:
@@ -106,8 +105,7 @@ async def test_canary_treats_recoverable_malformed_call_as_pass():
 
 
 async def test_canary_fails_on_genuine_no_tool_call():
-    agent = GroqAgent(context_builder=None, history=None, persona_id="p", chat_id=1,
-                      connectors=[RecordingConnector()], persona=None, api_key="k")
+    agent = GroqAgent(context_builder=None, history=None, persona_id='p', chat_id=1, connectors=[RecordingConnector()], persona=None, endpoint=VendorEndpoint(api_key='k'))
 
     class NoToolClient:
         class chat:
@@ -122,8 +120,7 @@ async def test_canary_fails_on_genuine_no_tool_call():
 
 async def test_unrecoverable_400_still_raises():
     conn = RecordingConnector()
-    agent = GroqAgent(context_builder=None, history=None, persona_id="p", chat_id=1,
-                      connectors=[conn], persona=None, api_key="k")
+    agent = GroqAgent(context_builder=None, history=None, persona_id='p', chat_id=1, connectors=[conn], persona=None, endpoint=VendorEndpoint(api_key='k'))
 
     class AlwaysBadClient:
         class chat:

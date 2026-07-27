@@ -3,6 +3,7 @@
 Routing is provider-declared (ToolProvider.TRIGGER_KEYWORDS/ALWAYS_ATTACH);
 the agent holds no per-service keyword tables.
 """
+from adapters.model import VendorEndpoint
 import pytest
 
 from adapters.model.chat_completions import (
@@ -46,8 +47,7 @@ def make_agent(cls=GroqAgent):
         FakeConnector("yahoo", ["get_quote"],
                       keywords=("stock", "ticker")),
     ]
-    return cls(context_builder=None, history=None, persona_id="p", chat_id=1,
-               connectors=connectors, persona=None, api_key="k")
+    return cls(context_builder=None, history=None, persona_id='p', chat_id=1, connectors=connectors, persona=None, endpoint=VendorEndpoint(api_key='k'))
 
 
 def selected_connectors(agent, text):

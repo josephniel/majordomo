@@ -22,6 +22,7 @@ import contextlib
 import json
 import logging
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from ports import Connector, ConversationRef, ToolContext, ToolSpec, as_tool_result
@@ -235,6 +236,24 @@ def _extract_text_from_tool_result(result: Any) -> str:
     return as_tool_result(result).text or "(empty)"
 
 
+@dataclass(frozen=True)
+class VendorEndpoint:
+    """Where a chat-completions vendor lives, and how it wants to be called.
+
+    One value rather than six constructor arguments, because they travel
+    together: VendorSpec produces exactly this set, the composition root passes
+    exactly this set, and every one of them defaults to "trust the backend
+    class" — which is a property of the group, not of each field separately.
+    """
+
+    model: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    max_tokens: int | None = None
+    extra_completion_kwargs: dict[str, Any] | None = None
+    supports_vision: bool | None = None
+
+
 class ChatCompletionsAgent(Agent):
     """Base implementation for any vendor speaking the OpenAI Chat Completions API.
 
@@ -282,16 +301,18 @@ class ChatCompletionsAgent(Agent):
         history: ConversationHistory,
         persona_id: str,
         chat_id: ConversationRef,
+        endpoint: VendorEndpoint | None = None,
         connectors: list[Connector] | None = None,
         persona: PersonaLike | None = None,
-        model: str | None = None,
-        api_key: str | None = None,
-        base_url: str | None = None,
         external_tools_provider: Any | None = None,
-        max_tokens: int | None = None,
-        extra_completion_kwargs: dict[str, Any] | None = None,
-        supports_vision: bool | None = None,
     ) -> None:
+        endpoint = endpoint or VendorEndpoint()
+        model = endpoint.model
+        api_key = endpoint.api_key
+        base_url = endpoint.base_url
+        max_tokens = endpoint.max_tokens
+        extra_completion_kwargs = endpoint.extra_completion_kwargs
+        supports_vision = endpoint.supports_vision
         self._composer = context_builder
         self._history = history
         self._persona_id = persona_id
