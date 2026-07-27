@@ -167,9 +167,10 @@ class WebhookServer:
                 )
                 self._reply(202, {"ok": True, "trigger": name})
 
-        self._httpd = _QuietHTTPServer((self._host, self._port), Handler)
+        httpd = _QuietHTTPServer((self._host, self._port), Handler)
+        self._httpd = httpd
         self._thread = threading.Thread(
-            target=lambda: self._httpd.serve_forever(poll_interval=0.1),
+            target=lambda: httpd.serve_forever(poll_interval=0.1),
             name="webhook-server",
             daemon=True,
         )

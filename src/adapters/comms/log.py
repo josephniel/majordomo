@@ -116,8 +116,19 @@ class CommsLog:
         )
         await self.init_schema()
 
+    def _acquire(self) -> asyncpg.pool.PoolAcquireContext:
+        """Take a pooled connection, or say clearly that connect() was never called.
+
+        Without this every method reads self._pool.acquire() on a pool that is
+        None until connect(), and the failure is an AttributeError naming
+        NoneType rather than the mistake.
+        """
+        if self._pool is None:
+            raise RuntimeError("CommsLog.connect() not called yet")
+        return self._pool.acquire()
+
     async def init_schema(self) -> None:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             await conn.execute(_SCHEMA)
 
     async def close(self) -> None:
@@ -140,7 +151,7 @@ class CommsLog:
         from_username: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             return await conn.fetchval(
                 """
                 INSERT INTO comms_log
@@ -156,14 +167,14 @@ class CommsLog:
     # ---- read ----
 
     async def read_recent(self, limit: int = 100) -> list[dict[str, Any]]:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM comms_log ORDER BY ts DESC LIMIT $1", limit,
             )
         return [dict(r) for r in rows]
 
     async def fetch_entry(self, entry_id: int) -> dict[str, Any] | None:
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM comms_log WHERE id = $1", entry_id,
             )
@@ -177,7 +188,7 @@ class CommsLog:
         """
         if older_than_days <= 0:
             return 0
-        async with self._pool.acquire() as conn:
+        async with self._acquire() as conn:
             result = await conn.execute(
                 "DELETE FROM comms_log WHERE ts < NOW() - make_interval(days => $1)",
                 older_than_days,

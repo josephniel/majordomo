@@ -93,8 +93,11 @@ class ExternalMCPManager:
             args=list(entry.args or []),
             env=dict(entry.env or {}) or None,
         )
-        read, write = await self._stack.enter_async_context(stdio_client(params))
-        session = await self._stack.enter_async_context(ClientSession(read, write))
+        stack = self._stack
+        if stack is None:
+            raise RuntimeError("ExternalMCPManager.start() not called yet")
+        read, write = await stack.enter_async_context(stdio_client(params))
+        session = await stack.enter_async_context(ClientSession(read, write))
         await session.initialize()
         listed = await session.list_tools()
 

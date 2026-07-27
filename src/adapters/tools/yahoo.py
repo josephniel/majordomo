@@ -572,18 +572,20 @@ def _text_body(msg: EmailMessage) -> str:
             disp = str(part.get("Content-Disposition", "")).lower()
             if part.get_content_type() == "text/plain" and "attachment" not in disp:
                 try:
-                    return (part.get_payload(decode=True) or b"").decode(
-                        part.get_content_charset() or "utf-8", "replace"
-                    )
+                    body = part.get_payload(decode=True)
+                    if not isinstance(body, bytes):
+                        continue  # multipart nesting: no bytes at this level
+                    return body.decode(part.get_content_charset() or "utf-8", "replace")
                 except Exception:
                     log.debug("could not decode message part; trying the next one",
                               exc_info=True)
                     continue
         return ""
     try:
-        return (msg.get_payload(decode=True) or b"").decode(
-            msg.get_content_charset() or "utf-8", "replace"
-        )
+        body = msg.get_payload(decode=True)
+        if not isinstance(body, bytes):
+            return ""
+        return body.decode(msg.get_content_charset() or "utf-8", "replace")
     except Exception:
         return ""
 

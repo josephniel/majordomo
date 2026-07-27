@@ -651,6 +651,8 @@ class CascadingAgent(Agent):
         if self._started.get(vendor):
             return
         agent = self._agent_by_name(vendor)
+        if agent is None:
+            raise KeyError(f"{vendor!r} is not in this chain")
         await agent.start()
         self._started[vendor] = True
 
