@@ -41,6 +41,14 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+# What backfill_embeddings re-embeds: everything missing an embedding, or --
+# with force -- everything not embedded by the model named in $1.
+_UNEMBEDDED = "SELECT id, title, content FROM memory_entries WHERE embedding IS NULL"
+_UNEMBEDDED_FOR_MODEL = (
+    "SELECT id, title, content FROM memory_entries "
+    "WHERE embedding IS NULL OR embedding_model IS DISTINCT FROM $1"
+)
+
 
 def redact_dsn(dsn: str) -> str:
     """Strip the password out of a DSN.
@@ -172,6 +180,84 @@ def _entry(row: asyncpg.Record) -> MemoryEntry:
             and row["confidence"] is not None else 1.0
         ),
     )
+
+
+
+# The recall query, whole. Three ranked arms over one candidate base, fused with
+# weighted RRF and nudged by recency.
+#
+# An arm switches off by having its parameter bound to NULL, which is why this
+# can be one static statement rather than a string assembled per call: the
+# planner sees the same text every time, and so does anyone reading it.
+_RECALL_SQL = """
+WITH base AS (
+    SELECT * FROM memory_entries
+    WHERE persona_id = $1 AND superseded_by IS NULL
+      -- Bi-temporal gate. All three arms rank the same `base`, so putting
+      -- expiry here covers every retrieval path at once rather than needing
+      -- the predicate repeated (and eventually forgotten) in one of them.
+      --
+      -- valid_to is NULL for almost every fact — "no known end" — and the
+      -- partial index makes the exception cheap. What this stops is the case
+      -- write-time reasoning gets wrong: "the user is on leave 12-19 Aug" is
+      -- the freshest un-superseded fact on 25 Aug, so without this it is
+      -- still recalled, still injected, and still acted on.
+      AND (valid_to IS NULL OR valid_to > NOW())
+      AND (valid_from IS NULL OR valid_from <= NOW())
+      AND ($4::text IS NULL OR scope = $4)
+      AND ($5::text IS NULL OR domain_key = $5)
+),
+-- Every tuning parameter is cast explicitly: left to infer, Postgres reads
+-- them from the bigint rank arithmetic around them and silently truncates
+-- max_rrf (~0.0098) to zero.
+--
+-- ROW_NUMBER then filter: a bare LIMIT would truncate before the window
+-- function has ordered anything.
+fts AS (
+    SELECT id, rnk FROM (
+        SELECT id, ROW_NUMBER() OVER (
+            ORDER BY ts_rank(content_tsv, to_tsquery('english', $3)) DESC, id
+        ) AS rnk
+        FROM base
+        WHERE $3::text IS NOT NULL AND content_tsv @@ to_tsquery('english', $3)
+    ) x WHERE rnk <= $9::bigint
+),
+trg AS (
+    SELECT id, rnk FROM (
+        SELECT id, ROW_NUMBER() OVER (ORDER BY similarity(content, $2) DESC, id) AS rnk
+        FROM base WHERE content % $2
+    ) x WHERE rnk <= $9::bigint
+),
+vec AS (
+    SELECT id, rnk FROM (
+        SELECT id, ROW_NUMBER() OVER (
+            ORDER BY (1 - (embedding <=> $6::vector)) DESC, id
+        ) AS rnk
+        FROM base
+        WHERE $6::vector IS NOT NULL
+          AND embedding IS NOT NULL
+          AND embedding_model = $7
+          AND (1 - (embedding <=> $6::vector)) > $8::float8
+    ) x WHERE rnk <= $9::bigint
+),
+ids AS (
+    SELECT id FROM fts UNION SELECT id FROM trg UNION SELECT id FROM vec
+)
+SELECT m.*, LEAST(
+    1.0,
+    (COALESCE($11::float8 / ($10::float8 + fts.rnk), 0)
+     + COALESCE($12::float8 / ($10::float8 + trg.rnk), 0)
+     + COALESCE($13::float8 / ($10::float8 + vec.rnk), 0)) / $14::float8
+    + $15::float8 * EXP(-EXTRACT(EPOCH FROM (NOW() - m.created_at)) / ($16::float8 * 86400.0))
+) AS match_score
+FROM ids
+JOIN base m USING (id)
+LEFT JOIN fts ON fts.id = ids.id
+LEFT JOIN trg ON trg.id = ids.id
+LEFT JOIN vec ON vec.id = ids.id
+ORDER BY match_score DESC, m.created_at DESC
+LIMIT $17::bigint
+"""
 
 
 class MemoryDatabase:
@@ -656,130 +742,51 @@ class MemoryDatabase:
         tokens = re.findall(r"\w+", query, flags=re.UNICODE)[:12]
         or_query = " | ".join(tokens) if tokens else ""
 
-        params: list[Any] = [persona_id, query, or_query]
+        # One statement, always the same shape. Everything that varies between
+        # calls is a bound parameter -- including which arms can fire, which is
+        # expressed as "this parameter is NULL" rather than as absent SQL.
+        #
+        # The arms were assembled from fragments before. That made the text a
+        # different string per call, which costs a plan every time and puts the
+        # statement the database runs somewhere no reader can see it whole.
+        fts_query = or_query or None
+        vector = qpg or None
 
-        # Compartment filters apply to the shared candidate base, so every arm
-        # ranks the same population.
-        base_filters = ""
-        if scope is not None:
-            params.append(scope)
-            base_filters += f"\n  AND scope = ${len(params)}"
-        if domain_key is not None:
-            params.append(domain_key)
-            base_filters += f"\n  AND domain_key = ${len(params)}"
-
-        vec_idx: int | None = None
-        model_idx: int | None = None
-        if qpg:
-            params.append(qpg)
-            vec_idx = len(params)
-            # Bound, not interpolated: the model name comes from configuration,
-            # and docs.py already binds it for exactly this reason.
-            params.append(self._embed.model_name)
-            model_idx = len(params)
-
-        # Which arms can fire at all. Fixed up front (not "which arms returned
-        # rows") so the normalizer is deterministic and scores stay comparable
-        # between queries run under the same configuration.
-        fts_on = bool(or_query)
-        trg_on = True
-        vec_on = vec_idx is not None
+        # Which arms can fire. Fixed up front (not "which arms returned rows")
+        # so the normalizer is deterministic and scores stay comparable between
+        # queries run under the same configuration.
         active_weight = (
-            (RRF_WEIGHT_FTS if fts_on else 0.0)
-            + (RRF_WEIGHT_TRG if trg_on else 0.0)
-            + (RRF_WEIGHT_VEC if vec_on else 0.0)
+            (RRF_WEIGHT_FTS if fts_query else 0.0)
+            + RRF_WEIGHT_TRG
+            + (RRF_WEIGHT_VEC if vector else 0.0)
         )
         max_rrf = (active_weight or 1.0) * (1.0 / (RRF_K + 1))
-
-        def _arm(name: str, order_by: str, where: str, enabled: bool) -> str:
-            """One ranked candidate arm.
-
-            Disabled arms still exist as empty relations so the fusion join below stays a single
-            static shape.
-            """
-            if not enabled:
-                return (
-                    f"{name} AS (SELECT NULL::uuid AS id, NULL::bigint AS rnk "
-                    f"WHERE false)"
-                )
-            # ROW_NUMBER then filter: a bare LIMIT would truncate before the
-            # window function has ordered anything.
-            # Every interpolation here is a module constant or an arm name
-            # chosen below; the query's values are all bound parameters.
-            return (
-                f"{name} AS ("  # noqa: S608 — arm name and constants only; values are bound
-                f"SELECT id, rnk FROM ("
-                f"SELECT id, ROW_NUMBER() OVER (ORDER BY {order_by}, id) AS rnk "
-                f"FROM base WHERE {where}"
-                f") x WHERE rnk <= {RRF_CANDIDATES})"
-            )
-
-        vec_sim = f"(1 - (embedding <=> ${vec_idx}::vector))" if vec_on else "0"
-        arms = [
-            _arm(
-                "fts",
-                "ts_rank(content_tsv, to_tsquery('english', $3)) DESC",
-                "content_tsv @@ to_tsquery('english', $3)",
-                fts_on,
-            ),
-            _arm("trg", "similarity(content, $2) DESC", "content % $2", trg_on),
-            _arm(
-                "vec",
-                f"{vec_sim} DESC",
-                f"embedding IS NOT NULL AND embedding_model = ${model_idx} "
-                f"AND {vec_sim} > {VEC_MIN_SIMILARITY}",
-                vec_on,
-            ),
-        ]
-
-        recency = (
-            f"{RECENCY_BOOST_MAX} * EXP(-EXTRACT(EPOCH FROM (NOW() - m.created_at))"
-            f" / ({RECENCY_HALFLIFE_DAYS} * 86400.0))"
-        )
-        rrf = (
-            f"(COALESCE({RRF_WEIGHT_FTS} / ({RRF_K} + fts.rnk), 0)"
-            f" + COALESCE({RRF_WEIGHT_TRG} / ({RRF_K} + trg.rnk), 0)"
-            f" + COALESCE({RRF_WEIGHT_VEC} / ({RRF_K} + vec.rnk), 0)) / {max_rrf}"
-        )
 
         # Pull a deeper slice than the caller asked for when a reranker will
         # re-sort it — fusion only has to get the right answer into the pool,
         # the cross-encoder decides the final order.
         fetch_n = max(limit, self._rerank.candidates) if self._rerank.available() else limit
-        params.append(fetch_n)
-        # Interpolates tuning constants and the arm SQL built above. Everything
-        # that varies per call — including the embedding model name — is bound.
-        sql = f"""
-WITH base AS (
-    SELECT * FROM memory_entries
-    WHERE persona_id = $1 AND superseded_by IS NULL
-      -- Bi-temporal gate. All three arms rank the same `base`, so putting
-      -- expiry here covers every retrieval path at once rather than needing
-      -- the predicate repeated (and eventually forgotten) in one of them.
-      --
-      -- valid_to is NULL for almost every fact — "no known end" — and the
-      -- partial index makes the exception cheap. What this stops is the case
-      -- write-time reasoning gets wrong: "the user is on leave 12-19 Aug" is
-      -- the freshest un-superseded fact on 25 Aug, so without this it is
-      -- still recalled, still injected, and still acted on.
-      AND (valid_to IS NULL OR valid_to > NOW())
-      AND (valid_from IS NULL OR valid_from <= NOW()){base_filters}
-),
-{arms[0]},
-{arms[1]},
-{arms[2]},
-ids AS (
-    SELECT id FROM fts UNION SELECT id FROM trg UNION SELECT id FROM vec
-)
-SELECT m.*, LEAST(1.0, {rrf} + {recency}) AS match_score
-FROM ids
-JOIN base m USING (id)
-LEFT JOIN fts ON fts.id = ids.id
-LEFT JOIN trg ON trg.id = ids.id
-LEFT JOIN vec ON vec.id = ids.id
-ORDER BY match_score DESC, m.created_at DESC
-LIMIT ${len(params)}
-"""  # noqa: S608 — interpolates tuning constants and the arm SQL; values are bound
+
+        params: list[Any] = [
+            persona_id,             # $1
+            query,                  # $2  trigram probe
+            fts_query,              # $3  OR-of-tokens tsquery, NULL to skip the arm
+            scope,                  # $4  NULL = no compartment filter
+            domain_key,             # $5
+            vector,                 # $6  NULL to skip the vector arm
+            self._embed.model_name,  # $7
+            VEC_MIN_SIMILARITY,     # $8
+            RRF_CANDIDATES,         # $9
+            RRF_K,                  # $10
+            RRF_WEIGHT_FTS,         # $11
+            RRF_WEIGHT_TRG,         # $12
+            RRF_WEIGHT_VEC,         # $13
+            max_rrf,                # $14
+            RECENCY_BOOST_MAX,      # $15
+            RECENCY_HALFLIFE_DAYS,  # $16
+            fetch_n,                # $17
+        ]
+        sql = _RECALL_SQL
         async with self._acquire() as conn:
             rows = await conn.fetch(sql, *params)
 
@@ -820,16 +827,13 @@ LIMIT ${len(params)}
         Returns the count re-embedded.
         """
         if force:
-            where = "embedding IS NULL OR embedding_model IS DISTINCT FROM $1"
+            sql = _UNEMBEDDED_FOR_MODEL
             args: tuple[Any, ...] = (self._embed.model_name,)
         else:
-            where = "embedding IS NULL"
+            sql = _UNEMBEDDED
             args = ()
         async with self._acquire() as conn:
-            rows = await conn.fetch(
-                # `where` is one of the two literals just above.
-                f"SELECT id, title, content FROM memory_entries WHERE {where}", *args  # noqa: S608
-            )
+            rows = await conn.fetch(sql, *args)
         done = 0
         for r in rows:
             text = f"{r['title']}\n{r['content']}" if r["title"] else r["content"]
@@ -913,14 +917,16 @@ LIMIT ${len(params)}
         async with self._acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO memory_core (persona_id, scope, domain_key, summary, last_source_count, last_compacted_at)
+                INSERT INTO memory_core
+                    (persona_id, scope, domain_key, summary,
+                     last_source_count, last_compacted_at)
                 VALUES ($1, $2, $3, $4, $5, NOW())
                 ON CONFLICT (persona_id, scope, domain_key)
                 DO UPDATE SET
                     summary = EXCLUDED.summary,
                     last_source_count = EXCLUDED.last_source_count,
                     last_compacted_at = NOW()
-                """,  # noqa: E501 — SQL text; wrapping the statement to fit the column limit hurts it
+                """,
                 persona_id, scope, domain_key, summary, source_count,
             )
 

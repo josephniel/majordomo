@@ -70,7 +70,9 @@ BEGIN
        AND NOT attisdropped;
 
     IF current_dim IS NOT NULL AND current_dim > 0 AND current_dim <> {{EMBED_DIM}} THEN
-        RAISE NOTICE 'document_chunks.embedding: % -> {{EMBED_DIM}} dims; clearing stale vectors', current_dim;
+        RAISE NOTICE
+            'document_chunks.embedding: % -> {{EMBED_DIM}} dims; clearing stale vectors',
+            current_dim;
         DROP INDEX IF EXISTS document_chunks_embedding_hnsw_idx;
         ALTER TABLE document_chunks
             ALTER COLUMN embedding TYPE vector({{EMBED_DIM}}) USING NULL;
@@ -110,7 +112,36 @@ BEGIN
 EXCEPTION WHEN OTHERS THEN
     RAISE NOTICE 'skipping HNSW index on document_chunks.embedding: %', SQLERRM;
 END $$;
-"""  # noqa: E501 — SQL text; wrapping the statement to fit the column limit hurts it
+"""
+
+
+# doc_search, in its two forms. Written out rather than assembled from a
+# fragment, so the statement in the file is the statement the database runs.
+# Everything variable is a bound parameter, including the embedding model name:
+# a future model rename can neither break nor inject the query.
+_CHUNK_SEARCH_TRIGRAM = """
+    SELECT c.doc_id, d.name AS doc_name, c.chunk_index, c.content,
+           similarity(c.content, $2) AS score
+    FROM document_chunks c
+    JOIN documents d ON d.id = c.doc_id
+    WHERE c.persona_id = $1
+    ORDER BY score DESC
+    LIMIT $3
+"""
+_CHUNK_SEARCH_HYBRID = """
+    SELECT c.doc_id, d.name AS doc_name, c.chunk_index, c.content,
+           GREATEST(
+               similarity(c.content, $2),
+               CASE WHEN c.embedding IS NOT NULL AND c.embedding_model = $4
+                    THEN (1 - (c.embedding <=> $5::vector))
+                    ELSE 0.0 END
+           ) AS score
+    FROM document_chunks c
+    JOIN documents d ON d.id = c.doc_id
+    WHERE c.persona_id = $1
+    ORDER BY score DESC
+    LIMIT $3
+"""
 
 
 def chunk_text(text: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[str]:
@@ -296,23 +327,7 @@ class DocumentStore:
         # Query side: asymmetric encoder (see storage.embeddings).
         vec_literal = await asyncio.to_thread(
             lambda: _to_pgvector(self._embed.embed_query(query)))
-        # Everything variable is a bound parameter — even the (currently
-        # constant) embedding model name, so a future model rename can't
-        # break or inject the query.
-        vec_expr = (
-            "(CASE WHEN c.embedding IS NOT NULL AND c.embedding_model = $4 "
-            "THEN (1 - (c.embedding <=> $5::vector)) ELSE 0.0 END)"
-            if vec_literal else "0.0"
-        )
-        sql = f"""
-            SELECT c.doc_id, d.name AS doc_name, c.chunk_index, c.content,
-                   GREATEST(similarity(c.content, $2), {vec_expr}) AS score
-            FROM document_chunks c
-            JOIN documents d ON d.id = c.doc_id
-            WHERE c.persona_id = $1
-            ORDER BY score DESC
-            LIMIT $3
-        """  # noqa: S608 — vec_expr is one of two literals; values are bound
+        sql = _CHUNK_SEARCH_HYBRID if vec_literal else _CHUNK_SEARCH_TRIGRAM
         args: list[Any] = [persona_id, query, int(limit)]
         if vec_literal:
             args += [self._embed.model_name, vec_literal]

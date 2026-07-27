@@ -175,11 +175,12 @@ class RecallReport:
             for r in self.results:
                 mark = "PASS" if r.hit_at(K_AUTO) else "MISS"
                 rank = r.first_expected_rank
+                top = list(zip(r.ranked_keys[:5],
+                               [round(s, 4) for s in r.scores[:5]], strict=False))
                 lines.append(
                     f"  [{mark}] {r.case.query!r}\n"
                     f"         want {r.case.expect}  rank={rank}\n"
-                    f"         got  "
-                    f"{list(zip(r.ranked_keys[:5], [round(s, 4) for s in r.scores[:5]], strict=False))}"  # noqa: E501 — an f-string placeholder cannot be wrapped
+                    f"         got  {top}"
                 )
         elif self.misses:
             lines.append("")

@@ -40,6 +40,21 @@ _CHAT_ID_MIGRATION_SQL = Path(__file__).resolve().parents[1] / "store" / "chat_i
 
 log = logging.getLogger(__name__)
 
+# rows_between, in its two forms. Spelled out rather than assembled, so the
+# statement a reader sees is the statement the database gets.
+_ROWS_BETWEEN_ALL = """
+    SELECT * FROM chat_history
+    WHERE persona_id = $1 AND chat_id = $2 AND id > $3
+    ORDER BY id ASC
+    LIMIT $4
+"""
+_ROWS_BETWEEN_ACTIVE = """
+    SELECT * FROM chat_history
+    WHERE persona_id = $1 AND chat_id = $2 AND NOT archived AND id > $3
+    ORDER BY id ASC
+    LIMIT $4
+"""
+
 
 _SCHEMA = """
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
@@ -246,17 +261,10 @@ class ConversationHistory:
         (include_archived=True, so a compaction that ran in between can't hide turns from fact
         extraction).
         """
-        # One of two literals picked by a bool; every value is a bound parameter.
-        # One of two literals picked by a bool; every value is a bound parameter.
-        archived_clause = "" if include_archived else "AND NOT archived"
+        sql = _ROWS_BETWEEN_ALL if include_archived else _ROWS_BETWEEN_ACTIVE
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                f"""
-                SELECT * FROM chat_history
-                WHERE persona_id = $1 AND chat_id = $2 {archived_clause} AND id > $3
-                ORDER BY id ASC
-                LIMIT $4
-                """,  # noqa: S608 — archived_clause is one of two literals above
+                sql,
                 persona_id,
                 chat_key(chat_id),
                 after_id,

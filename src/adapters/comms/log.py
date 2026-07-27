@@ -144,10 +144,11 @@ class CommsLog:
             return await conn.fetchval(
                 """
                 INSERT INTO comms_log
-                    (instance, direction, text, chat_id, message_id, from_user, from_username, metadata)
+                    (instance, direction, text, chat_id, message_id,
+                     from_user, from_username, metadata)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
                 RETURNING id
-                """,  # noqa: E501 — SQL text; wrapping the statement to fit the column limit hurts it
+                """,
                 instance, direction, text, chat_id, message_id,
                 from_user, from_username, metadata or {},
             )
