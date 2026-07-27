@@ -43,6 +43,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from fastembed.rerank.cross_encoder import TextCrossEncoder
+
 log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "Xenova/ms-marco-MiniLM-L-12-v2"
@@ -102,7 +104,7 @@ class Reranker:
 
     def __init__(self, config: RerankConfig | None = None) -> None:
         self.config = config or RerankConfig()
-        self._loaded = None
+        self._loaded: TextCrossEncoder | None = None
         self._unavailable = False
         self._lock = threading.Lock()
 
@@ -118,7 +120,7 @@ class Reranker:
     def available(self) -> bool:
         return self.config.enabled and not self._unavailable
 
-    def _model(self):
+    def _model(self) -> TextCrossEncoder | None:
         """Lazily load the cross-encoder.
 
         Returns None (once, loudly) if it can't be loaded — reranking is an enhancement, not a

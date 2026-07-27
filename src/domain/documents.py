@@ -88,7 +88,7 @@ Prefer doc_search over asking the user to re-send anything."""
     async def on_chat_shutdown(self) -> None:
         await self._store.close()
 
-    async def status_line(self):
+    async def status_line(self) -> str:
         try:
             docs = await self._store.list_docs(self._persona_id)
         except Exception:

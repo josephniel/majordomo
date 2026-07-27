@@ -70,8 +70,15 @@ from .settings import RuntimeSettings
 from .vendors import VENDORS, VENDORS_BY_NAME
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Callable, Iterable
     from pathlib import Path
+
+    from adapters.chat.transcription import CascadingTranscriber
+    from adapters.comms.status_report import StatusReporter
+    from adapters.trigger.retention import RetentionJob
+    from adapters.trigger.webhook import WebhookServer
+    from domain.triggers import HeartbeatSource, WatchSource
+    from ports import ToolSpec
 
 log = logging.getLogger(__name__)
 
@@ -136,7 +143,7 @@ class PersonaRuntime:
         return Reranker(self.settings.rerank)
 
     @cached_property
-    def transcriber(self):
+    def transcriber(self) -> CascadingTranscriber | None:
         """Voice-note transcription chain, or None when no vendor has a key.
 
         Built here rather than inside the chat platform: the platform was
@@ -211,7 +218,7 @@ class PersonaRuntime:
         )
 
     @cached_property
-    def status_reporter(self):
+    def status_reporter(self) -> StatusReporter | None:
         """Push channel to the cross-project status dashboard (status.example.com).
 
         None when STATUS_PUSH_URL is unset. Carries both the persona heartbeat (liveness on the
@@ -609,7 +616,7 @@ class PersonaRuntime:
         external_provider = self.external_mcp.get_tool_specs
         gate = self.approval_gate
         if gate is not None:
-            async def _gated_external():
+            async def _gated_external() -> dict[str, ToolSpec]:
                 specs = await self.external_mcp.get_tool_specs()
                 return {
                     name: gate.wrap_spec("external", spec)
@@ -783,7 +790,7 @@ class PersonaRuntime:
         )
 
     @cached_property
-    def context_injector(self):
+    def context_injector(self) -> Callable[[str], Awaitable[str]] | None:
         """Per-turn context injection: memory auto-RAG plus skill notes.
 
         Composed into the single recaller hook CascadingAgent takes. One
@@ -863,7 +870,7 @@ class PersonaRuntime:
     # in exactly one place: ModelRole.BACKGROUND.
 
     @cached_property
-    def heartbeat_source(self):
+    def heartbeat_source(self) -> HeartbeatSource | None:
         """Proactive check-in from persona.yaml.
 
         The conversation defaults to the first allowed user's DM (on Telegram, DM chat_id ==
@@ -917,7 +924,7 @@ class PersonaRuntime:
         return self._conversation(ids[0]) if ids else None
 
     @cached_property
-    def retention_job(self):
+    def retention_job(self) -> RetentionJob | None:
         """Daily prune of the growth tables.
 
         Documents arm is off unless RETENTION_DOCS_DAYS is set — see adapters/trigger/retention.py.
@@ -955,7 +962,7 @@ class PersonaRuntime:
         return self._conversation(chat_id) if chat_id is not None else None
 
     @cached_property
-    def mail_watch_source(self):
+    def mail_watch_source(self) -> WatchSource | None:
         """Push-style mail alerts.
 
         None unless persona.yaml has mail_watch and the gmail connector is enabled.
@@ -982,7 +989,7 @@ class PersonaRuntime:
         )
 
     @cached_property
-    def splitwise_watch_source(self):
+    def splitwise_watch_source(self) -> WatchSource | None:
         """Splitwise expense mirroring (no webhooks upstream — polling).
 
         None unless persona.yaml has splitwise_watch and both the splitwise and budget connectors
@@ -1019,7 +1026,7 @@ class PersonaRuntime:
         )
 
     @cached_property
-    def webhook_server(self):
+    def webhook_server(self) -> WebhookServer | None:
         """Event-driven triggers.
 
         None unless persona.yaml configures webhooks AND WEBHOOK_TOKEN is set (refuse to run

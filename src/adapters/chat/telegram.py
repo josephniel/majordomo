@@ -44,7 +44,7 @@ from .base import (
 from .transcription import CascadingTranscriber, filename_for_mime
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
     from types import TracebackType
 
     from telegram import Bot, Chat, Message, User
@@ -491,7 +491,7 @@ class TelegramPlatform(ChatPlatform):
 
     # ---- PTB → port translation ----
 
-    def _create_command_handler(self, command: str):
+    def _create_command_handler(self, command: str) -> Callable[..., Awaitable[None]]:
         async def handler(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
             user = update.effective_user
             chat = update.effective_chat

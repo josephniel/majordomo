@@ -206,7 +206,7 @@ class SubscriptionAuthSummarizer(Summarizer):
         )
 
 
-def _to_claude_sdk_tool(spec: ToolSpec, ctx: ToolContext):
+def _to_claude_sdk_tool(spec: ToolSpec, ctx: ToolContext) -> Any:
     """Translate a vendor-neutral ToolSpec into a claude_agent_sdk @tool.
 
     The SDK's `@tool` decorator wraps an async handler with metadata it uses
@@ -219,7 +219,7 @@ def _to_claude_sdk_tool(spec: ToolSpec, ctx: ToolContext):
     agent's chat scope, bound per mount since each agent is chat-scoped.
     """
     @_claude_sdk_tool(spec.name, spec.description, spec.json_schema())
-    async def _wrapped(args: dict[str, Any]):
+    async def _wrapped(args: dict[str, Any]) -> dict[str, Any]:
         return _mcp_content(await spec.handler(args, ctx))
     return _wrapped
 

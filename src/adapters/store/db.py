@@ -931,7 +931,7 @@ LIMIT ${len(params)}
 
     # ---- internals ----
 
-    def _acquire(self):
+    def _acquire(self) -> asyncpg.pool.PoolAcquireContext:
         if self._pool is None:
             raise RuntimeError("MemoryDatabase.connect() not called yet")
         return self._pool.acquire()

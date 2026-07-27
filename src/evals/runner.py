@@ -83,7 +83,7 @@ class CaseResult:
 class _EvalRegistry:
     """ServiceRegistry stand-in: no external profiles exist in evals."""
 
-    def load_enabled(self):
+    def load_enabled(self) -> list[Any]:
         return []
 
 

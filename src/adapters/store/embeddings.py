@@ -65,6 +65,10 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from fastembed import TextEmbedding
 
 log = logging.getLogger(__name__)
 
@@ -123,7 +127,7 @@ class Embedder:
     def __init__(self, model: str | None = None) -> None:
         self.model_name = (model or "").strip() or DEFAULT_MODEL
         self._dim: int | None = None
-        self._loaded = None
+        self._loaded: TextEmbedding | None = None
         self._lock = threading.Lock()
 
     def __repr__(self) -> str:
@@ -152,7 +156,7 @@ class Embedder:
             self._dim = _resolve_dim(self.model_name)
         return self._dim
 
-    def _model(self):
+    def _model(self) -> TextEmbedding:
         if self._loaded is None:
             with self._lock:
                 if self._loaded is None:

@@ -20,7 +20,9 @@ class RecordingConnector(Connector):
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def _recording_tool(self, name: str, description: str, parameters: dict[str, Any], reply: str):
+    def _recording_tool(
+        self, name: str, description: str, parameters: dict[str, Any], reply: str
+    ) -> ToolSpec:
         outer = self
 
         @tool(name, description, parameters)

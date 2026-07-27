@@ -644,7 +644,9 @@ class EphemeralConversationHistory:
         self._rows.append(row)
         return row["id"]
 
-    def _match(self, persona_id: str, chat_id: ConversationRef, include_archived: bool = False):
+    def _match(
+        self, persona_id: str, chat_id: ConversationRef, include_archived: bool = False
+    ) -> list[dict[str, Any]]:
         # Normalize on BOTH sides: append() stores the rendered key, so
         # comparing against a raw ref here silently matched nothing.
         wanted = chat_key(chat_id)

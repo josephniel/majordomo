@@ -529,7 +529,7 @@ Three principles:
         """ContextInjector protocol — per-turn memory recall."""
         return await self.auto_recall(text)
 
-    async def status_line(self):
+    async def status_line(self) -> str:
         try:
             counts = await self._db.counts_by_scope(self._persona_id)
         except Exception:
