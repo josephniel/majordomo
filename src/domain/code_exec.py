@@ -53,6 +53,44 @@ _LANG_COMMANDS = {
 }
 
 
+def _read_request(args: dict[str, Any]) -> tuple[tuple[str, str, int] | None, str]:
+    """Validate a run_code call into (language, code, timeout), or say why not."""
+    language = str(args.get("language") or "").strip().lower()
+    code = str(args.get("code") or "")
+    if language not in _LANG_COMMANDS:
+        return None, f"unsupported language {language!r} (python or bash)"
+    if not code.strip():
+        return None, "code is empty"
+    if len(code) > MAX_CODE_CHARS:
+        return None, f"code too large ({len(code)} chars; max {MAX_CODE_CHARS})"
+    if shutil.which("docker") is None:
+        return None, "docker is not available on this host; run_code is disabled"
+    try:
+        timeout = int(args.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_TIMEOUT_SECONDS
+    return (language, code, max(1, min(timeout, MAX_TIMEOUT_SECONDS))), ""
+
+
+def _render_run(
+    *, returncode: int | None, timeout: int, out: str, err: str, artifacts: list[str]
+) -> ToolResult:
+    """Turn a finished container into the answer the model reads."""
+    parts = []
+    if returncode == _TIMEOUT_EXIT_CODE:
+        parts.append(f"execution timed out after {timeout}s (killed in-container)")
+    if out.strip():
+        parts.append(f"stdout:\n{out}")
+    if err.strip():
+        parts.append(f"stderr:\n{err}")
+    if not parts:
+        parts.append("(no output)")
+    parts.append(f"exit code: {returncode}")
+    if artifacts:
+        parts.append("files created:\n" + "\n".join(artifacts))
+    return ToolResult("\n\n".join(parts), is_error=returncode != 0)
+
+
 class CodeExecutor(Faculty):
     name = "code"
     TRIGGER_KEYWORDS = ("code", "run", "script", "python", "compute",
@@ -115,36 +153,9 @@ script instead of many small runs."""
 
     # ---- execution ----
 
-    async def _run(self, args: dict[str, Any]) -> ToolResult:
-        language = str(args.get("language") or "").strip().lower()
-        code = str(args.get("code") or "")
-        if language not in _LANG_COMMANDS:
-            return ToolResult.error(f"unsupported language {language!r} (python or bash)")
-        if not code.strip():
-            return ToolResult.error("code is empty")
-        if len(code) > MAX_CODE_CHARS:
-            return ToolResult.error(f"code too large ({len(code)} chars; max {MAX_CODE_CHARS})")
-        try:
-            timeout = int(args.get("timeout_seconds") or DEFAULT_TIMEOUT_SECONDS)
-        except (TypeError, ValueError):
-            timeout = DEFAULT_TIMEOUT_SECONDS
-        timeout = max(1, min(timeout, MAX_TIMEOUT_SECONDS))
-
-        if shutil.which("docker") is None:
-            return ToolResult.error("docker is not available on this host; run_code is disabled")
-
-        run_id = uuid.uuid4().hex[:12]
-        run_dir = self._runs_dir / run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        script_name, command = _LANG_COMMANDS[language]
-        (run_dir / script_name).write_text(code, encoding="utf-8")
-        # In-container `timeout` is the primary bound: it survives bot
-        # restarts/crashes, so an approved infinite loop can't keep a CPU
-        # pinned as an orphan (--rm then reaps the container itself).
-        command = ["timeout", str(timeout), *command]
-
-        container = f"tc-code-{run_id}"
-        docker_cmd = [
+    def _docker_argv(self, container: str, run_dir: Path, command: list[str]) -> list[str]:
+        """Spell out the sandbox: no network, no caps, read-only, everything capped."""
+        return [
             "docker", "run",
             "--rm",
             "--name", container,
@@ -168,6 +179,25 @@ script instead of many small runs."""
             self._image,
             *command,
         ]
+
+    async def _run(self, args: dict[str, Any]) -> ToolResult:
+        request, why = _read_request(args)
+        if request is None:
+            return ToolResult.error(why)
+        language, code, timeout = request
+
+        run_id = uuid.uuid4().hex[:12]
+        run_dir = self._runs_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        script_name, command = _LANG_COMMANDS[language]
+        (run_dir / script_name).write_text(code, encoding="utf-8")
+        # In-container `timeout` is the primary bound: it survives bot
+        # restarts/crashes, so an approved infinite loop can't keep a CPU
+        # pinned as an orphan (--rm then reaps the container itself).
+        command = ["timeout", str(timeout), *command]
+
+        container = f"tc-code-{run_id}"
+        docker_cmd = self._docker_argv(container, run_dir, command)
         log.info("run_code %s: language=%s timeout=%ds dir=%s",
                  run_id, language, timeout, run_dir)
         # Container output goes to FILES, never to in-process pipes: a
@@ -201,28 +231,18 @@ script instead of many small runs."""
         except Exception as e:
             return ToolResult.error(f"could not start the sandbox: {e}")
 
-        timed_out = proc.returncode == _TIMEOUT_EXIT_CODE
-        out = _read_head(out_path)
-        err = _read_head(err_path)
         artifacts = sorted(
             str(p) for p in run_dir.rglob("*")
             if p.is_file() and p.name not in (script_name, "_stdout.log", "_stderr.log")
         )
         self._prune_old_runs()
-
-        parts = []
-        if timed_out:
-            parts.append(f"execution timed out after {timeout}s (killed in-container)")
-        if out.strip():
-            parts.append(f"stdout:\n{out}")
-        if err.strip():
-            parts.append(f"stderr:\n{err}")
-        if not parts:
-            parts.append("(no output)")
-        parts.append(f"exit code: {proc.returncode}")
-        if artifacts:
-            parts.append("files created:\n" + "\n".join(artifacts))
-        return ToolResult("\n\n".join(parts), is_error=proc.returncode != 0)
+        return _render_run(
+            returncode=proc.returncode,
+            timeout=timeout,
+            out=_read_head(out_path),
+            err=_read_head(err_path),
+            artifacts=artifacts,
+        )
 
     async def _force_remove(self, container: str) -> None:
         try:
