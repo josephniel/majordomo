@@ -486,6 +486,45 @@ class TelegramPlatform(ChatPlatform):
             ))
         return handler
 
+    async def _readable_text(self, msg: Message, bot: Bot) -> str | None:
+        """Read the user's words off a message, or None when there is nothing to act on.
+
+        None also covers the cases already answered for the user: a voice note
+        that could not be transcribed, and a video we have to decline.
+        """
+        # Voice/audio transcribes when a transcriber is configured; a None
+        # return means the user already got a rejection/error reply.
+        voice_text: str | None = None
+        if msg.voice or msg.audio:
+            voice_text = await self._transcribe_voice(msg, bot)
+            if voice_text is None:
+                return None
+        if msg.video or msg.video_note:
+            await msg.reply_text(
+                "Videos aren't supported. I can read images, PDFs, and voice notes."
+            )
+            return None
+        if msg.sticker or msg.animation:
+            return None  # silently ignore stickers/gifs
+        return voice_text or msg.text or msg.caption or ""
+
+    async def _mirror_inbound(self, chat: Chat, msg: Message, user: User, text: str) -> None:
+        """Put a control-room message on the comms log, so peer bots see it."""
+        if self._comms_log is None:
+            return
+        try:
+            await self._comms_log.append(
+                instance=self._persona_id,
+                direction="in",
+                text=text,
+                chat_id=_ref(chat.id),
+                message_id=msg.message_id,
+                from_user=user.id,
+                from_username=user.username,
+            )
+        except Exception:
+            log.exception("could not append inbound to comms_log")
+
     async def _handle_message_update(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -501,24 +540,10 @@ class TelegramPlatform(ChatPlatform):
             )
             return
 
-        is_control_room = self._is_control_room(chat.id)
+        text = await self._readable_text(msg, context.bot)
+        if text is None:
+            return  # unsupported, or the user already got an answer
 
-        # Voice/audio transcribe when a transcriber is configured; a None
-        # return means the user already got a rejection/error reply.
-        voice_text: str | None = None
-        if msg.voice or msg.audio:
-            voice_text = await self._transcribe_voice(msg, context.bot)
-            if voice_text is None:
-                return
-        if msg.video or msg.video_note:
-            await msg.reply_text(
-                "Videos aren't supported. I can read images, PDFs, and voice notes."
-            )
-            return
-        if msg.sticker or msg.animation:
-            return  # silently ignore stickers/gifs
-
-        text = voice_text or msg.text or msg.caption or ""
         attachments, complaints = await self._extract_attachments(msg, context.bot)
         for c in complaints:
             await msg.reply_text(c)
@@ -526,26 +551,14 @@ class TelegramPlatform(ChatPlatform):
         if not text and not attachments:
             return
 
-        # In control room, prefix text with the sender label so the agent
-        # can tell who's talking and decide whether the message is for it.
-        if is_control_room and text:
-            sender_label = f"@{user.username}" if user.username else f"user-{user.id}"
-            text = f"[{sender_label}]: {text}"
-
-        # Mirror the inbound to the comms log so peer bots get the NOTIFY.
-        if is_control_room and self._comms_log is not None:
-            try:
-                await self._comms_log.append(
-                    instance=self._persona_id,
-                    direction="in",
-                    text=text,
-                    chat_id=_ref(chat.id),
-                    message_id=msg.message_id,
-                    from_user=user.id,
-                    from_username=user.username,
-                )
-            except Exception:
-                log.exception("could not append inbound to comms_log")
+        if self._is_control_room(chat.id):
+            # Prefix the sender label so the agent can tell who is talking and
+            # decide whether the message is for it, then mirror the labelled
+            # text to the comms log so peer bots get the NOTIFY.
+            if text:
+                sender = f"@{user.username}" if user.username else f"user-{user.id}"
+                text = f"[{sender}]: {text}"
+            await self._mirror_inbound(chat, msg, user, text)
 
         if self._on_message is None:
             return

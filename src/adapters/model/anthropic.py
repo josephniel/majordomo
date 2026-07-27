@@ -449,6 +449,29 @@ class AnthropicAgent(Agent):
         with contextlib.suppress(Exception):
             await self._client.interrupt()
 
+    async def _collect_reply(self, client: Any, on_tool_use: ToolUseCallback | None) -> str:
+        """Drain the SDK's response stream into the reply, noting tool calls as they pass.
+
+        Returns the empty string for a blank turn rather than a placeholder —
+        same contract as the chat-completions agents, because CascadingAgent's
+        empty-reply failover has to be able to see it.
+        """
+        parts: list[str] = []
+        async for msg in client.receive_response():
+            if isinstance(msg, ResultMessage):
+                self._session_id = msg.session_id
+                self._capture_usage(msg)
+                continue
+            if not isinstance(msg, AssistantMessage):
+                continue
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    parts.append(block.text)
+                elif isinstance(block, ToolUseBlock) and on_tool_use is not None:
+                    with contextlib.suppress(Exception):
+                        await on_tool_use(block.name, dict(block.input or {}))
+        return "".join(parts).strip()
+
     async def send(
         self,
         text: str,
@@ -469,24 +492,8 @@ class AnthropicAgent(Agent):
                 await self._client.query(self._stream_multimodal(text, attachments))
             else:
                 await self._client.query(text)
-
             self.last_turn_usage = {}
-            parts: list[str] = []
-            async for msg in self._client.receive_response():
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            parts.append(block.text)
-                        elif isinstance(block, ToolUseBlock) and on_tool_use is not None:
-                            with contextlib.suppress(Exception):
-                                await on_tool_use(block.name, dict(block.input or {}))
-                elif isinstance(msg, ResultMessage):
-                    self._session_id = msg.session_id
-                    self._capture_usage(msg)
-            # Empty string, not a placeholder — same contract as the
-            # chat-completions agents: a blank turn must stay visibly blank so
-            # CascadingAgent's empty-reply failover can see it.
-            return "".join(parts).strip()
+            return await self._collect_reply(self._client, on_tool_use)
         except asyncio.CancelledError:
             raise
         except Exception as e:
