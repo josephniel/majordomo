@@ -367,6 +367,131 @@ class ScheduleEngine:
                 self._persist()
 
 
+def _creating_tools(runtime: ScheduleEngine, legacy_platform: str) -> list[ToolSpec]:
+    """Put something on the calendar: a recurring job, or a one-shot reminder.
+
+    `legacy_platform` names the platform that wrote pre-migration rows, so a
+    bare chat id from config still resolves to the right conversation.
+    """
+    @tool(
+        "schedule_create",
+        "Create a recurring scheduled task that fires a prompt against this "
+        "conversation on a cron schedule. The schedule fires for the current "
+        "chat. Args: name (snake_case identifier), cron (5-field cron "
+        "expression like '0 8 * * 1-5' for 8am weekdays), prompt (the text to "
+        "send to yourself when the schedule fires; phrase it as concrete "
+        "instructions to your future self), description (human-readable, "
+        "optional).",
+        {"name": str, "cron": str, "prompt": str, "description": str},
+    )
+    async def schedule_create_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        chat_id = ctx.chat_id
+        if chat_id is None:
+            return ToolResult.error("no current chat context (cannot create schedule)")
+        try:
+            entry = runtime.add(
+                name=args["name"],
+                cron=args["cron"],
+                chat_id=ConversationRef.coerce(chat_id, platform=legacy_platform),
+                prompt=args["prompt"],
+                description=args.get("description", ""),
+            )
+            return ToolResult.ok(
+                f"created schedule {entry.name!r} ({entry.cron}) — "
+                f"{entry.description or '(no description)'}"
+            )
+        except (ValueError, KeyError) as e:
+            return ToolResult.error(f"error: {e}")
+
+    @tool(
+        "schedule_once",
+        "Create a ONE-SHOT reminder that fires a single time then removes "
+        "itself (use this for 'remind me in 20 minutes' / 'at 5pm today'). "
+        "Args: name (snake_case), when (either a relative offset like '+20m', "
+        "'+2h', '+30s', '+1d', OR an absolute local ISO datetime like "
+        "'2026-07-21T17:00'), prompt (concrete instructions to your future "
+        "self), description (optional). Prefer relative offsets for 'in N ...'.",
+        {"name": str, "when": str, "prompt": str, "description": str},
+    )
+    async def schedule_once_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        chat_id = ctx.chat_id
+        if chat_id is None:
+            return ToolResult.error("no current chat context (cannot create reminder)")
+        try:
+            entry = runtime.add_once(
+                name=args["name"],
+                when=args["when"],
+                chat_id=ConversationRef.coerce(chat_id, platform=legacy_platform),
+                prompt=args["prompt"],
+                description=args.get("description", ""),
+            )
+            return ToolResult.ok(
+                f"one-shot reminder {entry.name!r} set for {entry.run_at} — "
+                f"{entry.description or '(no description)'}"
+            )
+        except (ValueError, KeyError) as e:
+            return ToolResult.error(f"error: {e}")
+
+    return [
+        schedule_create_tool,
+        schedule_once_tool,
+    ]
+
+
+def _managing_tools(runtime: ScheduleEngine) -> list[ToolSpec]:
+    """See what is scheduled, and remove or pause it."""
+    @tool(
+        "schedule_list",
+        "List all scheduled tasks for the current chat.",
+        {},
+    )
+    async def schedule_list_tool(_args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        chat_id = ctx.chat_id
+        if chat_id is None:
+            return ToolResult.error("no current chat context")
+        items = runtime.list_for_chat(chat_id)
+        if not items:
+            return ToolResult.ok("(no schedules for this chat)")
+        lines = []
+        for s in items:
+            status = "ON " if s.enabled else "OFF"
+            lines.append(
+                f"[{status}] {s.name}: {s.cron} — {s.description or '(no description)'}"
+            )
+        return ToolResult.ok("\n".join(lines))
+
+    @tool(
+        "schedule_remove",
+        "Permanently delete a scheduled task by name.",
+        {"name": str},
+    )
+    async def schedule_remove_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        try:
+            runtime.remove(args["name"])
+            return ToolResult.ok(f"removed schedule: {args['name']}")
+        except KeyError as e:
+            return ToolResult.error(f"error: {e}")
+
+    @tool(
+        "schedule_set_enabled",
+        "Pause or resume a scheduled task without deleting it.",
+        {"name": str, "enabled": bool},
+    )
+    async def schedule_set_enabled_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        try:
+            runtime.set_enabled(args["name"], bool(args["enabled"]))
+            action = "enabled" if args["enabled"] else "disabled"
+            return ToolResult.ok(f"{action}: {args['name']}")
+        except KeyError as e:
+            return ToolResult.error(f"error: {e}")
+
+    return [
+        schedule_list_tool,
+        schedule_remove_tool,
+        schedule_set_enabled_tool,
+    ]
+
+
 class TaskScheduler(Faculty):
     name = "schedule"
     ALWAYS_ATTACH = True  # relevant to almost any turn, cheap schemas
@@ -431,114 +556,8 @@ class TaskScheduler(Faculty):
     def _build_tools(self) -> list[Any]:
         runtime = self._runtime
 
-        @tool(
-            "schedule_create",
-            "Create a recurring scheduled task that fires a prompt against this "
-            "conversation on a cron schedule. The schedule fires for the current "
-            "chat. Args: name (snake_case identifier), cron (5-field cron "
-            "expression like '0 8 * * 1-5' for 8am weekdays), prompt (the text to "
-            "send to yourself when the schedule fires; phrase it as concrete "
-            "instructions to your future self), description (human-readable, "
-            "optional).",
-            {"name": str, "cron": str, "prompt": str, "description": str},
-        )
-        async def schedule_create_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-            chat_id = ctx.chat_id
-            if chat_id is None:
-                return ToolResult.error("no current chat context (cannot create schedule)")
-            try:
-                entry = runtime.add(
-                    name=args["name"],
-                    cron=args["cron"],
-                    chat_id=ConversationRef.coerce(chat_id, platform=self._legacy_platform),
-                    prompt=args["prompt"],
-                    description=args.get("description", ""),
-                )
-                return ToolResult.ok(
-                    f"created schedule {entry.name!r} ({entry.cron}) — "
-                    f"{entry.description or '(no description)'}"
-                )
-            except (ValueError, KeyError) as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "schedule_once",
-            "Create a ONE-SHOT reminder that fires a single time then removes "
-            "itself (use this for 'remind me in 20 minutes' / 'at 5pm today'). "
-            "Args: name (snake_case), when (either a relative offset like '+20m', "
-            "'+2h', '+30s', '+1d', OR an absolute local ISO datetime like "
-            "'2026-07-21T17:00'), prompt (concrete instructions to your future "
-            "self), description (optional). Prefer relative offsets for 'in N ...'.",
-            {"name": str, "when": str, "prompt": str, "description": str},
-        )
-        async def schedule_once_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-            chat_id = ctx.chat_id
-            if chat_id is None:
-                return ToolResult.error("no current chat context (cannot create reminder)")
-            try:
-                entry = runtime.add_once(
-                    name=args["name"],
-                    when=args["when"],
-                    chat_id=ConversationRef.coerce(chat_id, platform=self._legacy_platform),
-                    prompt=args["prompt"],
-                    description=args.get("description", ""),
-                )
-                return ToolResult.ok(
-                    f"one-shot reminder {entry.name!r} set for {entry.run_at} — "
-                    f"{entry.description or '(no description)'}"
-                )
-            except (ValueError, KeyError) as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "schedule_list",
-            "List all scheduled tasks for the current chat.",
-            {},
-        )
-        async def schedule_list_tool(_args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-            chat_id = ctx.chat_id
-            if chat_id is None:
-                return ToolResult.error("no current chat context")
-            items = runtime.list_for_chat(chat_id)
-            if not items:
-                return ToolResult.ok("(no schedules for this chat)")
-            lines = []
-            for s in items:
-                status = "ON " if s.enabled else "OFF"
-                lines.append(
-                    f"[{status}] {s.name}: {s.cron} — {s.description or '(no description)'}"
-                )
-            return ToolResult.ok("\n".join(lines))
-
-        @tool(
-            "schedule_remove",
-            "Permanently delete a scheduled task by name.",
-            {"name": str},
-        )
-        async def schedule_remove_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                runtime.remove(args["name"])
-                return ToolResult.ok(f"removed schedule: {args['name']}")
-            except KeyError as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "schedule_set_enabled",
-            "Pause or resume a scheduled task without deleting it.",
-            {"name": str, "enabled": bool},
-        )
-        async def schedule_set_enabled_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                runtime.set_enabled(args["name"], bool(args["enabled"]))
-                action = "enabled" if args["enabled"] else "disabled"
-                return ToolResult.ok(f"{action}: {args['name']}")
-            except KeyError as e:
-                return ToolResult.error(f"error: {e}")
 
         return [
-            schedule_create_tool,
-            schedule_once_tool,
-            schedule_list_tool,
-            schedule_remove_tool,
-            schedule_set_enabled_tool,
+            *_creating_tools(runtime, self._legacy_platform),
+            *_managing_tools(runtime),
         ]

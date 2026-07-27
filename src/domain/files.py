@@ -28,6 +28,26 @@ log = logging.getLogger(__name__)
 FileSender = Callable[[ConversationRef, str, str | None], Awaitable[bool]]
 
 
+async def _sendable_path(raw: str, data_dir: Path) -> tuple[Path | None, str]:
+    """Resolve `raw` and confirm it names a real file inside the data dir.
+
+    Returns (path, "") when it does, or (None, reason) — the reason goes to the
+    model, so it says which rule was broken rather than just "no".
+    """
+    if not raw:
+        return None, "path is empty"
+    try:
+        path = await asyncio.to_thread(Path(raw).resolve)
+        allowed_root = await asyncio.to_thread(data_dir.resolve)
+    except OSError as e:
+        return None, f"bad path: {e}"
+    if not path.is_relative_to(allowed_root):
+        return None, f"refusing: only files under {allowed_root} can be sent"
+    if not path.is_file():
+        return None, f"no such file: {path}"
+    return path, ""
+
+
 class FileCourier(Faculty):
     name = "files"
     TRIGGER_KEYWORDS = ("file", "send", "download", "csv", "chart",
@@ -66,20 +86,9 @@ class FileCourier(Faculty):
         chat_id = ctx.chat_id
         if chat_id is None:
             return ToolResult.error("no chat context to send the file to")
-        raw = str(args.get("path") or "").strip()
-        if not raw:
-            return ToolResult.error("path is empty")
-        try:
-            path = await asyncio.to_thread(Path(raw).resolve)
-            allowed_root = await asyncio.to_thread(self._data_dir.resolve)
-        except OSError as e:
-            return ToolResult.error(f"bad path: {e}")
-        if not path.is_relative_to(allowed_root):
-            return ToolResult.error(
-                f"refusing: only files under {allowed_root} can be sent"
-            )
-        if not path.is_file():
-            return ToolResult.error(f"no such file: {path}")
+        path, why = await _sendable_path(str(args.get("path") or "").strip(), self._data_dir)
+        if path is None:
+            return ToolResult.error(why)
         caption = str(args.get("caption") or "").strip() or None
         try:
             delivered = await self._sender(chat_id, str(path), caption)

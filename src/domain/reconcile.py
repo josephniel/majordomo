@@ -98,6 +98,42 @@ def _render_existing(neighbours: list[MemoryEntry]) -> str:
     return "\n".join(lines)
 
 
+def _first_json_object(raw: str) -> tuple[dict[str, Any] | None, str]:
+    """Pull the first {...} object out of a model reply, fences and preamble and all."""
+    text = (raw or "").strip()
+    if not text:
+        return None, "empty reply"
+    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return None, "no JSON object in reply"
+    try:
+        obj = json.loads(match.group(0))
+    except (ValueError, TypeError):
+        return None, "unparseable JSON"
+    if not isinstance(obj, dict):
+        return None, "JSON was not an object"
+    return obj, ""
+
+
+def _untrustworthy_target(
+    verdict: MemoryVerdict, target: UUID | None, neighbours: list[MemoryEntry]
+) -> str:
+    """Why a destructive verdict cannot be acted on, or "" if it can.
+
+    A verdict with no target is not actionable, and guessing which fact was
+    meant is exactly the improvisation that loses data. A target the model was
+    never shown is invented, and acting on it would destroy an unrelated fact.
+    """
+    if verdict not in (MemoryVerdict.UPDATE, MemoryVerdict.DELETE):
+        return ""
+    if target is None:
+        return f"{verdict} named no target"
+    if target not in {e.id for e in neighbours}:
+        return f"{verdict} targeted id={target}, which was not in the candidate set"
+    return ""
+
+
 def _parse_verdict(raw: str) -> tuple[MemoryVerdict | None, UUID | None, str]:
     """Pull a verdict out of a model's reply.
 
@@ -107,20 +143,9 @@ def _parse_verdict(raw: str) -> tuple[MemoryVerdict | None, UUID | None, str]:
     (None, ...) and the caller falls back to ADD — never to a destructive
     verdict.
     """
-    text = (raw or "").strip()
-    if not text:
-        return None, None, "empty reply"
-    # Strip code fences, then take the first {...} block.
-    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
-    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if not match:
-        return None, None, "no JSON object in reply"
-    try:
-        obj = json.loads(match.group(0))
-    except (ValueError, TypeError):
-        return None, None, "unparseable JSON"
-    if not isinstance(obj, dict):
-        return None, None, "JSON was not an object"
+    obj, why = _first_json_object(raw)
+    if obj is None:
+        return None, None, why
 
     try:
         verdict = MemoryVerdict(str(obj.get("verdict", "")).strip().lower())
@@ -192,25 +217,10 @@ class Reconciler:
             return Reconciliation(MemoryVerdict.ADD, candidate,
                                   reason=f"unusable verdict ({reason})")
 
-        if verdict in (MemoryVerdict.UPDATE, MemoryVerdict.DELETE):
-            known = {e.id for e in neighbours}
-            if target is None:
-                # A destructive verdict with no target is not actionable, and
-                # guessing which fact was meant is exactly the kind of
-                # improvisation that loses data.
-                log.warning("reconcile: %s verdict with no target_id; adding", verdict)
-                return Reconciliation(MemoryVerdict.ADD, candidate,
-                                      reason=f"{verdict} named no target")
-            if target not in known:
-                # Hallucinated id. The model can only legitimately name a fact
-                # it was shown, so anything else is invented — and acting on
-                # an invented id would destroy an unrelated fact.
-                log.warning(
-                    "reconcile: %s verdict targets id=%s which was not in the "
-                    "candidate set; adding instead", verdict, target,
-                )
-                return Reconciliation(MemoryVerdict.ADD, candidate,
-                                      reason=f"{verdict} targeted an unknown id")
+        untrustworthy = _untrustworthy_target(verdict, target, neighbours)
+        if untrustworthy:
+            log.warning("reconcile: %s; adding instead", untrustworthy)
+            return Reconciliation(MemoryVerdict.ADD, candidate, reason=untrustworthy)
 
         return Reconciliation(verdict, candidate, target_id=target, reason=reason)
 
