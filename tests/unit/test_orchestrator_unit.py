@@ -6,7 +6,7 @@ import time
 import pytest
 
 from adapters.tools.base import Connector
-from kernel.core import ConversationOrchestrator, OptionalSubsystems, RATE_LIMIT_MAX_TURNS
+from kernel.core import RATE_LIMIT_MAX_TURNS, ConversationOrchestrator, OptionalSubsystems
 from kernel.sessions import SessionStore
 
 
@@ -79,7 +79,10 @@ class TestToolStatusText:
         assert orch._format_tool_status("mcp__versioned__do_thing", {}) == "Doing the thing"
 
     def test_unknown_tool_generic_fallback(self, orch):
-        assert orch._format_tool_status("mcp__versioned__mystery", {}) == "Working on versioned/mystery"
+        assert (
+            orch._format_tool_status("mcp__versioned__mystery", {})
+            == "Working on versioned/mystery"
+        )
 
     def test_non_mcp_tool(self, orch):
         assert orch._format_tool_status("WebSearch", {}) == "Working on WebSearch"
@@ -95,6 +98,7 @@ class TestContextVersionRefresh:
         # async: the rebuild path spawns the old agent's teardown as a task,
         # exactly as it runs in production (always inside the event loop).
         import asyncio
+
         a1 = orch._get_agent(1)
         orch._test_connector.v += 1  # memory recompacted, say
         orch._refresh_agent_if_stale(1)
@@ -120,8 +124,10 @@ class TestHallucinationDetector:
     class FakeReflection:
         def __init__(self):
             self.runs = []
+
         async def run_reflection(self, chat_id):
             self.runs.append(chat_id)
+
         def note_activity(self, chat_id): ...
         def shutdown(self): ...
 
@@ -133,8 +139,17 @@ class TestHallucinationDetector:
     def _orch_with_reflection(self, tmp_path):
         from kernel.core import ConversationOrchestrator
         from kernel.sessions import SessionStore
+
         refl = self.FakeReflection()
-        o = ConversationOrchestrator(platform=object(), agent_factory=lambda **k: None, session_store=SessionStore(tmp_path / 's.json'), config=object(), connectors_list=[], persona_id='t', optional=OptionalSubsystems(reflection=refl))
+        o = ConversationOrchestrator(
+            platform=object(),
+            agent_factory=lambda **k: None,
+            session_store=SessionStore(tmp_path / "s.json"),
+            config=object(),
+            connectors_list=[],
+            persona_id="t",
+            optional=OptionalSubsystems(reflection=refl),
+        )
         return o, refl
 
     async def test_claim_without_tool_call_triggers_reflection(self, tmp_path):
@@ -162,14 +177,17 @@ class TestScheduleHallucinationRecovery:
 
     class FakePlatform:
         max_message_length = 4000
+
         def __init__(self):
             self.sent = []
+
         async def send_text(self, chat_id, text, reply_to=None):
             self.sent.append(text)
 
     class ScriptedAgent:
         """Agent whose corrective turn replies `retry_reply` and reports
         `retry_tools` as the tools called during that retry."""
+
         def __init__(self, first_tools=(), retry_reply="Reminder set!", retry_tools=()):
             self.session_id = None
             self.last_turn_tool_calls = len(first_tools)
@@ -177,6 +195,7 @@ class TestScheduleHallucinationRecovery:
             self._retry_reply = retry_reply
             self._retry_tools = tuple(retry_tools)
             self.prompts = []
+
         async def send(self, text, **kwargs):
             self.prompts.append(text)
             self.last_turn_tool_names = self._retry_tools
@@ -185,18 +204,20 @@ class TestScheduleHallucinationRecovery:
     class FakeSchedulerProvider:
         """Declares which of its tools satisfy a schedule claim, like the
         real TaskScheduler/calendar providers do."""
-        SCHEDULE_CLAIM_TOOLS = frozenset(
-            {"schedule_once", "schedule_create", "create_event"}
-        )
+
+        SCHEDULE_CLAIM_TOOLS = frozenset({"schedule_once", "schedule_create", "create_event"})
 
     def _orch(self, tmp_path):
         platform = self.FakePlatform()
         o = ConversationOrchestrator(
-            platform=platform, agent_factory=lambda **k: None,
-            session_store=SessionStore(tmp_path / "s.json"), config=object(),
+            platform=platform,
+            agent_factory=lambda **k: None,
+            session_store=SessionStore(tmp_path / "s.json"),
+            config=object(),
             # The scheduler is discovered through the connectors' declared
             # SCHEDULE_CLAIM_TOOLS, not from a separate handle.
-            connectors_list=[self.FakeSchedulerProvider()], persona_id="t",
+            connectors_list=[self.FakeSchedulerProvider()],
+            persona_id="t",
         )
         return o, platform
 
@@ -227,9 +248,11 @@ class TestScheduleHallucinationRecovery:
 
     async def test_erroring_retry_still_corrects_the_user(self, tmp_path):
         orch, platform = self._orch(tmp_path)
+
         class ExplodingAgent(self.ScriptedAgent):
             async def send(self, text, **kwargs):
                 raise RuntimeError("all vendors down")
+
         agent = ExplodingAgent()
         await orch._recover_missed_schedule(5, "I'll remind you at 6pm!", agent)
         assert len(platform.sent) == 1
@@ -252,9 +275,12 @@ class TestScheduleHallucinationRecovery:
     async def test_no_trigger_without_scheduler(self, tmp_path):
         platform = self.FakePlatform()
         orch = ConversationOrchestrator(
-            platform=platform, agent_factory=lambda **k: None,
-            session_store=SessionStore(tmp_path / "s.json"), config=object(),
-            connectors_list=[], persona_id="t",
+            platform=platform,
+            agent_factory=lambda **k: None,
+            session_store=SessionStore(tmp_path / "s.json"),
+            config=object(),
+            connectors_list=[],
+            persona_id="t",
         )
         agent = self.ScriptedAgent()
         await orch._recover_missed_schedule(5, "I'll remind you at 6pm!", agent)
@@ -263,9 +289,12 @@ class TestScheduleHallucinationRecovery:
 
     async def test_skips_agents_without_tool_name_tracking(self, tmp_path):
         orch, platform = self._orch(tmp_path)
+
         class BareAgent:
             session_id = None
+
             async def send(self, text, **kwargs):
                 raise AssertionError("must not be called")
+
         await orch._recover_missed_schedule(5, "I'll remind you at 6pm!", BareAgent())
         assert platform.sent == []

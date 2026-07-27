@@ -3,9 +3,9 @@
 Routing is provider-declared (ToolProvider.TRIGGER_KEYWORDS/ALWAYS_ATTACH);
 the agent holds no per-service keyword tables.
 """
-from adapters.model import VendorEndpoint
 import pytest
 
+from adapters.model import VendorEndpoint
 from adapters.model.chat_completions import (
     ChatCompletionsAgent,
     DeepSeekAgent,
@@ -47,7 +47,15 @@ def make_agent(cls=GroqAgent):
         FakeConnector("yahoo", ["get_quote"],
                       keywords=("stock", "ticker")),
     ]
-    return cls(context_builder=None, history=None, persona_id='p', chat_id=1, connectors=connectors, persona=None, endpoint=VendorEndpoint(api_key='k'))
+    return cls(
+        context_builder=None,
+        history=None,
+        persona_id="p",
+        chat_id=1,
+        connectors=connectors,
+        persona=None,
+        endpoint=VendorEndpoint(api_key="k"),
+    )
 
 
 def selected_connectors(agent, text):
@@ -60,9 +68,7 @@ ALWAYS_ON = {"memory", "schedule"}
 
 
 class TestSubsetting:
-    @pytest.mark.parametrize(
-        "cls", [GroqAgent, GeminiAgent, OpenAIAgent, DeepSeekAgent]
-    )
+    @pytest.mark.parametrize("cls", [GroqAgent, GeminiAgent, OpenAIAgent, DeepSeekAgent])
     def test_every_vendor_subsets(self, cls):
         # The full ~60-tool schema is billed on every turn, so all vendors
         # subset — free tiers for quota, paid tiers for cost.

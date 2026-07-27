@@ -5,13 +5,12 @@ applied only where a handler remembered to invoke it. The tests here pin the
 handlers to the faculty's public operations — most importantly the ownership
 check, which several id-taking tools used to skip entirely.
 """
-from ports import FactCandidate
 import uuid
 
 import pytest
 
 from domain.memory import LongTermMemory
-from ports import ToolContext
+from ports import FactCandidate, ToolContext
 from tests.fakes.memory_store import FakeMemoryStore
 
 

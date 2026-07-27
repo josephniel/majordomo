@@ -1,8 +1,8 @@
 """End-to-end: the tool loop recovers a Groq tool_use_failed 400 by parsing
 the failed generation, running the tool, and producing a final answer."""
-from adapters.model import VendorEndpoint
 import pytest
 
+from adapters.model import VendorEndpoint
 from adapters.model.chat_completions import GroqAgent
 from ports import Connector, ToolResult, tool
 
@@ -67,13 +67,22 @@ class RecordingConnector(Connector):
 
 async def test_loop_recovers_and_runs_the_tool():
     conn = RecordingConnector()
-    agent = GroqAgent(context_builder=None, history=None, persona_id='p', chat_id=1, connectors=[conn], persona=None, endpoint=VendorEndpoint(api_key='k'))
-    fg = ('<function=memory__memory_save {"scope": "user", '
-          '"content": "favorite fruit is mango"}>')
+    agent = GroqAgent(
+        context_builder=None,
+        history=None,
+        persona_id="p",
+        chat_id=1,
+        connectors=[conn],
+        persona=None,
+        endpoint=VendorEndpoint(api_key="k"),
+    )
+    fg = '<function=memory__memory_save {"scope": "user", "content": "favorite fruit is mango"}>'
     agent._client = FakeClient(fg)
 
     seen_tools = []
-    async def on_tool(name, args): seen_tools.append(name)
+
+    async def on_tool(name, args):
+        seen_tools.append(name)
 
     messages = [{"role": "user", "content": "remember my favorite fruit is mango"}]
     reply = await agent._run_tool_loop(messages, on_tool, agent._openai_tools)
@@ -90,7 +99,15 @@ async def test_loop_recovers_and_runs_the_tool():
 async def test_canary_treats_recoverable_malformed_call_as_pass():
     """The canary must not report FAIL for a tool_use_failed the live loop
     would recover — that would misreport a working Groq as broken on /status."""
-    agent = GroqAgent(context_builder=None, history=None, persona_id='p', chat_id=1, connectors=[RecordingConnector()], persona=None, endpoint=VendorEndpoint(api_key='k'))
+    agent = GroqAgent(
+        context_builder=None,
+        history=None,
+        persona_id="p",
+        chat_id=1,
+        connectors=[RecordingConnector()],
+        persona=None,
+        endpoint=VendorEndpoint(api_key="k"),
+    )
 
     class MalformedPingClient:
         class chat:
@@ -98,6 +115,7 @@ async def test_canary_treats_recoverable_malformed_call_as_pass():
                 @staticmethod
                 async def create(**kwargs):
                     raise FakeBadRequest('<function=ping {"ok": true}>')
+
     agent._client = MalformedPingClient()
     ok, detail = await agent.probe_tool_calling()
     assert ok is True
@@ -105,7 +123,15 @@ async def test_canary_treats_recoverable_malformed_call_as_pass():
 
 
 async def test_canary_fails_on_genuine_no_tool_call():
-    agent = GroqAgent(context_builder=None, history=None, persona_id='p', chat_id=1, connectors=[RecordingConnector()], persona=None, endpoint=VendorEndpoint(api_key='k'))
+    agent = GroqAgent(
+        context_builder=None,
+        history=None,
+        persona_id="p",
+        chat_id=1,
+        connectors=[RecordingConnector()],
+        persona=None,
+        endpoint=VendorEndpoint(api_key="k"),
+    )
 
     class NoToolClient:
         class chat:
@@ -113,6 +139,7 @@ async def test_canary_fails_on_genuine_no_tool_call():
                 @staticmethod
                 async def create(**kwargs):
                     return _Resp(_Msg(content="I won't call the tool.", tool_calls=None))
+
     agent._client = NoToolClient()
     ok, _detail = await agent.probe_tool_calling()
     assert ok is False
@@ -120,7 +147,15 @@ async def test_canary_fails_on_genuine_no_tool_call():
 
 async def test_unrecoverable_400_still_raises():
     conn = RecordingConnector()
-    agent = GroqAgent(context_builder=None, history=None, persona_id='p', chat_id=1, connectors=[conn], persona=None, endpoint=VendorEndpoint(api_key='k'))
+    agent = GroqAgent(
+        context_builder=None,
+        history=None,
+        persona_id="p",
+        chat_id=1,
+        connectors=[conn],
+        persona=None,
+        endpoint=VendorEndpoint(api_key="k"),
+    )
 
     class AlwaysBadClient:
         class chat:
@@ -128,7 +163,7 @@ async def test_unrecoverable_400_still_raises():
                 @staticmethod
                 async def create(**kwargs):
                     raise RuntimeError("400 - genuinely malformed request, no tools")
+
     agent._client = AlwaysBadClient()
     with pytest.raises(RuntimeError):
-        await agent._run_tool_loop([{"role": "user", "content": "hi"}], None,
-                                   agent._openai_tools)
+        await agent._run_tool_loop([{"role": "user", "content": "hi"}], None, agent._openai_tools)

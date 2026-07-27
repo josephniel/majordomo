@@ -15,7 +15,11 @@ def _expense(eid=1, updated="2026-07-23T10:00:00Z", cost="1385.0", deleted=False
         "deleted_at": "2026-07-23T11:00:00Z" if deleted else None,
         "payment": payment,
         "users": [
-            {"user": {"id": 7, "first_name": "Joseph"}, "paid_share": "1385.0", "owed_share": "600.0"},
+            {
+                "user": {"id": 7, "first_name": "Joseph"},
+                "paid_share": "1385.0",
+                "owed_share": "600.0",
+            },
             {"user": {"id": 8, "first_name": "Paul"}, "paid_share": "0.0", "owed_share": "785.0"},
         ],
     }
@@ -89,9 +93,14 @@ class TestCheck:
         assert await w.check() is not None
 
     async def test_deleted_and_payment_flags(self, tmp_path):
-        w = make_watcher(tmp_path, {"splitwise": FakeClient(
-            [_expense(eid=1, deleted=True), _expense(eid=2, payment=True)]
-        )})
+        w = make_watcher(
+            tmp_path,
+            {
+                "splitwise": FakeClient(
+                    [_expense(eid=1, deleted=True), _expense(eid=2, payment=True)]
+                )
+            },
+        )
         block = await w.check()
         assert "DELETED" in block
         assert "settle-up payment" in block
@@ -123,6 +132,7 @@ class TestCheck:
 
     async def test_fresh_poll_logs_observability_line(self, tmp_path, caplog):
         import logging
+
         w = make_watcher(tmp_path, {"splitwise": FakeClient([_expense()])})
         with caplog.at_level(logging.INFO):
             await w.check()

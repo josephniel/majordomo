@@ -1,8 +1,8 @@
 """agents.chat_completions — pure logic: tool naming, error classification,
 context assembly, attachment handling. No network."""
-from adapters.model import VendorEndpoint
 import pytest
 
+from adapters.model import VendorEndpoint
 from adapters.model.base import Attachment
 from adapters.model.chat_completions import (
     DeepSeekAgent,
@@ -411,7 +411,15 @@ class TestSendContract:
 
     async def _send(self, history, text, current_row_id=None):
         from adapters.model.chat_completions import OpenAIAgent
-        agent = OpenAIAgent(context_builder=self._Composer(), history=history, persona_id='p', chat_id=1, connectors=[], persona=None, endpoint=VendorEndpoint(api_key='test-key'))
+        agent = OpenAIAgent(
+            context_builder=self._Composer(),
+            history=history,
+            persona_id="p",
+            chat_id=1,
+            endpoint=VendorEndpoint(api_key="test-key"),
+            connectors=[],
+            persona=None,
+        )
         client = self._CapturingClient()
         agent._client = client
         await agent.send(text, current_row_id=current_row_id)
@@ -419,9 +427,13 @@ class TestSendContract:
 
     async def test_text_is_the_wire_message_memory_block_included(self):
         from adapters.model.history import EphemeralConversationHistory
+
         history = EphemeralConversationHistory()
         row_id = await history.append(
-            persona_id="p", chat_id=1, role="user", content="raw user text",
+            persona_id="p",
+            chat_id=1,
+            role="user",
+            content="raw user text",
         )
         composed = "[Relevant memories]\nfact\n\nraw user text"
         messages = await self._send(history, composed, current_row_id=row_id)
@@ -432,6 +444,7 @@ class TestSendContract:
 
     async def test_history_rows_still_replayed(self):
         from adapters.model.history import EphemeralConversationHistory
+
         history = EphemeralConversationHistory()
         await history.append(persona_id="p", chat_id=1, role="user", content="earlier q")
         await history.append(persona_id="p", chat_id=1, role="assistant", content="earlier a")
@@ -445,6 +458,7 @@ class TestSendContract:
     async def test_direct_caller_without_mirror_still_works(self):
         """Eval-harness style: nobody mirrored anything — text still lands."""
         from adapters.model.history import EphemeralConversationHistory
+
         messages = await self._send(EphemeralConversationHistory(), "hello")
         assert messages[-1] == {"role": "user", "content": "hello"}
 
@@ -452,11 +466,16 @@ class TestSendContract:
         """Mid-turn failover: mirror ends with tool-call system rows. The
         old last-row heuristic double-appended here."""
         from adapters.model.history import EphemeralConversationHistory
+
         history = EphemeralConversationHistory()
         row_id = await history.append(persona_id="p", chat_id=1, role="user", content="do it")
-        await history.append(persona_id="p", chat_id=1, role="system",
-                             content="[tool] schedule_once {}",
-                             metadata={"tool_use": "schedule_once"})
+        await history.append(
+            persona_id="p",
+            chat_id=1,
+            role="system",
+            content="[tool] schedule_once {}",
+            metadata={"tool_use": "schedule_once"},
+        )
         messages = await self._send(history, "do it", current_row_id=row_id)
         user_msgs = [m for m in messages if m["role"] == "user"]
         assert len(user_msgs) == 1
@@ -469,6 +488,7 @@ class TestMaxTokens:
 
     async def _captured_kwargs(self, **endpoint_kw):
         from adapters.model.history import EphemeralConversationHistory
+
         agent = OpenAIAgent(
             context_builder=self._Composer(),
             history=EphemeralConversationHistory(),
@@ -495,5 +515,6 @@ class TestMaxTokens:
 class TestExtractToolResultCanonical:
     def test_tool_result_passthrough(self):
         from ports import ToolResult
+
         assert _extract_text_from_tool_result(ToolResult.ok("hi")) == "hi"
         assert _extract_text_from_tool_result(ToolResult.ok("")) == "(empty)"

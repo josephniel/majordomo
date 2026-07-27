@@ -9,7 +9,6 @@ So most of what is tested here is containment — labelling, confidence,
 inability to retract an observed fact, and the id check that stops an
 inference from citing evidence it was never shown.
 """
-from ports import FactCandidate
 import json
 
 import pytest
@@ -17,7 +16,7 @@ import pytest
 from domain.ideation import IDEATION_CONFIDENCE, Ideator
 from domain.memory import LongTermMemory
 from domain.reconcile import Reconciler
-from ports import MemoryVerdict
+from ports import FactCandidate, MemoryVerdict
 from tests.fakes.memory_store import FakeMemoryStore
 
 

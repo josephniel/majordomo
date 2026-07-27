@@ -55,13 +55,20 @@ class FakeAgent:
 def _orch(tmp_path, gate=None, reply="ok"):
     platform = FakePlatform()
     agent = FakeAgent(reply)
-    o = ConversationOrchestrator(platform=platform, agent_factory=lambda **k: agent, session_store=SessionStore(tmp_path / 's.json'), config=SimpleNamespace(get_mtime=lambda: 0.0), connectors_list=[], persona_id='t', optional=OptionalSubsystems(approval_gate=gate))
+    o = ConversationOrchestrator(
+        platform=platform,
+        agent_factory=lambda **k: agent,
+        session_store=SessionStore(tmp_path / "s.json"),
+        config=SimpleNamespace(get_mtime=lambda: 0.0),
+        connectors_list=[],
+        persona_id="t",
+        optional=OptionalSubsystems(approval_gate=gate),
+    )
     return o, platform, agent
 
 
 def _msg(text="are you there?"):
-    return InboundMessage(chat_id=CHAT, sender_id=7, text=text,
-                          attachments=None, message_id=11)
+    return InboundMessage(chat_id=CHAT, sender_id=7, text=text, attachments=None, message_id=11)
 
 
 class TestTheGatePublishesWhatItIsWaitingOn:
@@ -82,9 +89,7 @@ class TestTheGatePublishesWhatItIsWaitingOn:
             return ToolResult.ok("sent")
 
         gated = gate.wrap_spec("gmail", spec)
-        task = asyncio.create_task(
-            gated.handler({"to": "a@b.c"}, ToolContext(chat_id=CHAT))
-        )
+        task = asyncio.create_task(gated.handler({"to": "a@b.c"}, ToolContext(chat_id=CHAT)))
         await entered.wait()
 
         pending = gate.pending_for(CHAT)
@@ -133,7 +138,7 @@ class TestAMessageDuringAnApprovalIsAnswered:
         assert agent.prompts == [], "the message did not queue behind the lock"
 
     async def test_the_notice_names_the_stuck_write(self, tmp_path):
-        """"Please wait" is no better than the silence it replaces. The user
+        """ "Please wait" is no better than the silence it replaces. The user
         has to know WHICH message to go and tap."""
         orch, platform, _ = _orch(tmp_path, gate=self._blocked_gate())
         await orch._handle_message(_msg())
@@ -174,6 +179,7 @@ class TestNormalTrafficIsUnaffected:
             await asyncio.sleep(0.02)
             agent.prompts.append(text)
             return "done"
+
         agent.send = slow
 
         await asyncio.gather(
@@ -187,8 +193,11 @@ class TestNormalTrafficIsUnaffected:
         not mute the others."""
         gate = WriteApprovalGate()
         from adapters.tools.approvals import PendingApproval
+
         gate._pending[ConversationRef("telegram", "999")] = PendingApproval(
-            connector="gmail", tool="gmail_send", since=0.0,
+            connector="gmail",
+            tool="gmail_send",
+            since=0.0,
         )
         orch, _platform, agent = _orch(tmp_path, gate=gate)
         await orch._handle_message(_msg())

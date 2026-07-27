@@ -12,13 +12,12 @@ Two things are being protected here.
    live in the tool closure and could be skipped by any handler that talked
    to the store directly.
 """
-from ports import FactCandidate
 from datetime import UTC
 
 import pytest
 
 from domain.memory import LongTermMemory
-from ports import MemoryEntry, MemoryStore
+from ports import FactCandidate, MemoryEntry, MemoryStore
 from tests.fakes.memory_store import FakeMemoryStore
 
 
@@ -262,14 +261,18 @@ class TestBiTemporalValidity:
         """The other end of the window: a fact scheduled to become true is
         not true yet."""
         from datetime import datetime, timedelta
-        await mem.save_fact(FactCandidate('user', 'the user starts at the new company', valid_from=datetime.now(UTC) + timedelta(days=30)))
+        await mem.save_fact(FactCandidate(
+            "user",
+            "the user starts at the new company",
+            valid_from=datetime.now(UTC) + timedelta(days=30),
+        ))
         assert await mem.recall("where does the user start") == []
 
     async def test_superseding_closes_the_old_window(self, mem, store):
         """The replacement starts being true now; the old row keeps the
         window it actually covered. Copying valid_from forward would claim
         the corrected value had been true all along."""
-        _, old = await mem.save_fact(FactCandidate('user', 'the user drives a red car'))
+        _, old = await mem.save_fact(FactCandidate("user", "the user drives a red car"))
         new = await mem.update_fact(old.id, "the user drives a blue car")
         await mem.drain()
         assert store.entries[old.id].valid_to is not None
@@ -278,12 +281,16 @@ class TestBiTemporalValidity:
 
 class TestProvenance:
     async def test_the_write_path_records_who_claimed_it(self, mem, store):
-        _, e = await mem.save_fact(FactCandidate('user', 'extracted from a chat', provenance='reflection'))
+        _, e = await mem.save_fact(
+            FactCandidate("user", "extracted from a chat", provenance="reflection")
+        )
         assert store.entries[e.id].provenance == "reflection"
         assert not store.entries[e.id].is_inferred
 
     async def test_inferred_facts_are_distinguishable(self, mem, store):
-        _, e = await mem.save_fact(FactCandidate('user', 'an inference', provenance='ideation', confidence=0.6))
+        _, e = await mem.save_fact(
+            FactCandidate("user", "an inference", provenance="ideation", confidence=0.6)
+        )
         assert store.entries[e.id].is_inferred
         assert store.entries[e.id].confidence == 0.6
 
@@ -291,5 +298,5 @@ class TestProvenance:
         """Older rows only have the metadata copy, and the CLI still reads
         it — dropping it would silently blank provenance in `memory export`
         for everything written before the column existed."""
-        _, e = await mem.save_fact(FactCandidate('user', 'a fact', provenance='reflection'))
+        _, e = await mem.save_fact(FactCandidate("user", "a fact", provenance="reflection"))
         assert store.entries[e.id].metadata["source"] == "reflection"

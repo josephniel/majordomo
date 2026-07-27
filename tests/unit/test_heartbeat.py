@@ -50,7 +50,15 @@ class FakeAgent:
 def _orch(tmp_path, reply="done!", background_agent_factory=None):
     platform = FakePlatform()
     agent = FakeAgent(reply)
-    o = ConversationOrchestrator(platform=platform, agent_factory=lambda **k: agent, session_store=SessionStore(tmp_path / 's.json'), config=SimpleNamespace(get_mtime=lambda: 0.0), connectors_list=[], persona_id='t', optional=OptionalSubsystems(background_agent_factory=background_agent_factory))
+    o = ConversationOrchestrator(
+        platform=platform,
+        agent_factory=lambda **k: agent,
+        session_store=SessionStore(tmp_path / "s.json"),
+        config=SimpleNamespace(get_mtime=lambda: 0.0),
+        connectors_list=[],
+        persona_id="t",
+        optional=OptionalSubsystems(background_agent_factory=background_agent_factory),
+    )
     return o, platform, agent
 
 
@@ -79,8 +87,10 @@ class TestSystemCron:
             engine.add_system_cron("heartbeat", "0 8 * * *", cb)
             # Invisible to user-facing listing and never written to disk.
             assert engine.list_for_chat(0) == []
-            assert not (tmp_path / "schedules.json").exists() or \
-                "heartbeat" not in (tmp_path / "schedules.json").read_text()
+            assert (
+                not (tmp_path / "schedules.json").exists()
+                or "heartbeat" not in (tmp_path / "schedules.json").read_text()
+            )
         finally:
             engine.shutdown()
 
@@ -107,6 +117,7 @@ class TestScheduleTimezone:
     def test_absolute_when_interpreted_in_schedule_tz(self, tmp_path):
         from datetime import datetime, timedelta
         from zoneinfo import ZoneInfo
+
         engine = self._engine(tmp_path)
         manila = ZoneInfo("Asia/Manila")
         future_manila = datetime.now(manila) + timedelta(hours=2)
@@ -117,13 +128,16 @@ class TestScheduleTimezone:
     async def test_one_shot_future_in_manila_accepted(self, tmp_path):
         from datetime import datetime, timedelta
         from zoneinfo import ZoneInfo
+
         engine = self._engine(tmp_path)
         engine.start(lambda s: None)
         try:
-            when = (datetime.now(ZoneInfo("Asia/Manila")) + timedelta(hours=1))
+            when = datetime.now(ZoneInfo("Asia/Manila")) + timedelta(hours=1)
             entry = engine.add_once(
-                name="call_mama", when=when.strftime("%Y-%m-%dT%H:%M"),
-                chat_id=1, prompt="call mama",
+                name="call_mama",
+                when=when.strftime("%Y-%m-%dT%H:%M"),
+                chat_id=1,
+                prompt="call mama",
             )
             assert "+08:00" in entry.run_at
         finally:
@@ -143,13 +157,26 @@ class TestScheduleTimezone:
         """run_at rows persisted before a timezone was configured are naive —
         attaching them must localize, not raise aware-vs-naive TypeError."""
         from datetime import datetime, timedelta
+
         store = tmp_path / "s.json"
         naive_future = (datetime.now() + timedelta(hours=1)).isoformat(timespec="seconds")
         import json
-        store.write_text(json.dumps([{
-            "name": "legacy", "cron": "", "chat_id": 1, "prompt": "x",
-            "description": "", "enabled": True, "run_at": naive_future,
-        }]))
+
+        store.write_text(
+            json.dumps(
+                [
+                    {
+                        "name": "legacy",
+                        "cron": "",
+                        "chat_id": 1,
+                        "prompt": "x",
+                        "description": "",
+                        "enabled": True,
+                        "run_at": naive_future,
+                    }
+                ]
+            )
+        )
         engine = self._engine(tmp_path)
         engine.start(lambda s: None)  # must not raise
         engine.shutdown()
@@ -167,8 +194,8 @@ class TestHeartbeatSource:
             if exploding:
                 raise RuntimeError("yaml unreadable")
             return checklist or ""
-        return HeartbeatSource(cron="0 8 * * *", conversation=CHAT,
-                               prompt_loader=loader)
+
+        return HeartbeatSource(cron="0 8 * * *", conversation=CHAT, prompt_loader=loader)
 
     async def test_fires_the_checklist_with_its_preamble(self):
         emit = Emitter()
@@ -200,8 +227,7 @@ class TestHeartbeatSource:
         """Editing the checklist must take effect without a restart."""
         emit = Emitter()
         current = ["- first"]
-        src = HeartbeatSource(cron="0 8 * * *", conversation=CHAT,
-                              prompt_loader=lambda: current[0])
+        src = HeartbeatSource(cron="0 8 * * *", conversation=CHAT, prompt_loader=lambda: current[0])
         await src.start(TriggerContext(emit=emit, add_cron=lambda *a: None))
         await src._fire()
         current[0] = "- second"
@@ -221,17 +247,21 @@ class TestHeartbeatSource:
     async def test_registers_its_cron(self):
         registered = []
         src = self._source("- x")
-        await src.start(TriggerContext(
-            emit=Emitter(),
-            add_cron=lambda name, cron, cb: registered.append((name, cron)),
-        ))
+        await src.start(
+            TriggerContext(
+                emit=Emitter(),
+                add_cron=lambda name, cron, cb: registered.append((name, cron)),
+            )
+        )
         assert registered == [("heartbeat", "0 8 * * *")]
 
     async def test_a_failing_registrar_does_not_raise(self):
         """The port says start() must not raise: one broken trigger must not
         stop the bot from booting."""
+
         def boom(*a):
             raise RuntimeError("scheduler is dead")
+
         await self._source("- x").start(
             TriggerContext(emit=Emitter(), add_cron=boom)
         )  # must not raise
@@ -240,18 +270,26 @@ class TestHeartbeatSource:
 class TestTriggerTurnSilence:
     async def test_trigger_honors_silent(self, tmp_path):
         orch, platform, _agent = _orch(tmp_path, reply="<silent>")
-        assert await orch._run_trigger(TriggerEvent(
-            source="schedule:digest", conversation=CHAT, prompt="daily digest",
-            agent=TriggerAgent.CONVERSATION,
-        ))
+        assert await orch._run_trigger(
+            TriggerEvent(
+                source="schedule:digest",
+                conversation=CHAT,
+                prompt="daily digest",
+                agent=TriggerAgent.CONVERSATION,
+            )
+        )
         assert platform.sent == []
 
     async def test_trigger_still_delivers_text(self, tmp_path):
         orch, platform, _agent = _orch(tmp_path, reply="Here's your digest.")
-        assert await orch._run_trigger(TriggerEvent(
-            source="schedule:digest", conversation=CHAT, prompt="daily digest",
-            agent=TriggerAgent.CONVERSATION,
-        ))
+        assert await orch._run_trigger(
+            TriggerEvent(
+                source="schedule:digest",
+                conversation=CHAT,
+                prompt="daily digest",
+                agent=TriggerAgent.CONVERSATION,
+            )
+        )
         assert platform.sent == [(CHAT, "Here's your digest.")]
 
     async def test_delivery_failure_is_reported_to_the_source(self, tmp_path):
@@ -261,11 +299,19 @@ class TestTriggerTurnSilence:
 
         async def broken(*a, **kw):
             raise RuntimeError("telegram is down")
+
         platform.send_text = broken
 
-        assert await orch._run_trigger(TriggerEvent(
-            source="watch:mail", conversation=CHAT, prompt="new mail",
-        )) is False
+        assert (
+            await orch._run_trigger(
+                TriggerEvent(
+                    source="watch:mail",
+                    conversation=CHAT,
+                    prompt="new mail",
+                )
+            )
+            is False
+        )
 
 
 class TestDedicatedAgent:
@@ -287,13 +333,15 @@ class TestDedicatedAgent:
 
     async def test_background_agent_used_and_torn_down(self, tmp_path):
         bg = self.BgAgent()
-        orch, platform, chat_agent = _orch(
-            tmp_path, background_agent_factory=lambda chat_id: bg
+        orch, platform, chat_agent = _orch(tmp_path, background_agent_factory=lambda chat_id: bg)
+        await orch._run_trigger(
+            TriggerEvent(
+                source="heartbeat",
+                conversation=CHAT,
+                prompt="check things",
+                agent=TriggerAgent.DEDICATED,
+            )
         )
-        await orch._run_trigger(TriggerEvent(
-            source="heartbeat", conversation=CHAT, prompt="check things",
-            agent=TriggerAgent.DEDICATED,
-        ))
         assert bg.prompts, "dedicated agent served the fire"
         assert chat_agent.prompts == [], "chat agent untouched"
         assert platform.sent == [(CHAT, "2 urgent emails.")]
@@ -306,17 +354,25 @@ class TestDedicatedAgent:
         expensively is better than not at all, and it must not then treat the
         chat agent as throwaway."""
         orch, _platform, chat_agent = _orch(tmp_path, reply="ok")
-        assert await orch._run_trigger(TriggerEvent(
-            source="heartbeat", conversation=CHAT, prompt="check things",
-            agent=TriggerAgent.DEDICATED,
-        ))
+        assert await orch._run_trigger(
+            TriggerEvent(
+                source="heartbeat",
+                conversation=CHAT,
+                prompt="check things",
+                agent=TriggerAgent.DEDICATED,
+            )
+        )
         assert chat_agent.prompts == ["check things"]
 
     async def test_conversation_agent_persists_its_session(self, tmp_path):
         orch, _platform, chat_agent = _orch(tmp_path, reply="ok")
         chat_agent.session_id = "real-chat-session"
-        await orch._run_trigger(TriggerEvent(
-            source="schedule:digest", conversation=CHAT, prompt="digest",
-            agent=TriggerAgent.CONVERSATION,
-        ))
+        await orch._run_trigger(
+            TriggerEvent(
+                source="schedule:digest",
+                conversation=CHAT,
+                prompt="digest",
+                agent=TriggerAgent.CONVERSATION,
+            )
+        )
         assert orch._session_ids.get(CHAT) == "real-chat-session"

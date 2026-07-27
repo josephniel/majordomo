@@ -1,4 +1,5 @@
 from ports import FactCandidate
+
 """cli._export_memory — one-way markdown export of the Postgres second
 brain into a greppable/diffable file tree (MEMORY.md index + per-fact files)."""
 from types import SimpleNamespace
@@ -19,8 +20,14 @@ def _container(memdb, persona_id):
 
 class TestExport:
     async def test_writes_index_and_entry_files(self, memdb, persona_id, tmp_path):
-        a = await memdb.save_entry(persona_id, FactCandidate(scope='user', title='homelab', content='the user runs a homelab'))
-        await memdb.save_entry(persona_id, FactCandidate(scope='reference', content='dashboard at https://status.example.com'))
+        a = await memdb.save_entry(
+            persona_id,
+            FactCandidate(scope="user", title="homelab", content="the user runs a homelab"),
+        )
+        await memdb.save_entry(
+            persona_id,
+            FactCandidate(scope="reference", content="dashboard at https://status.example.com"),
+        )
         n = await _export_memory(_container(memdb, persona_id), str(tmp_path))
         assert n == 2
         index = (tmp_path / "MEMORY.md").read_text()
@@ -33,8 +40,13 @@ class TestExport:
         assert "scope: user" in body
 
     async def test_frontmatter_flags_and_links(self, memdb, persona_id, tmp_path):
-        a = await memdb.save_entry(persona_id, FactCandidate(scope='agent', content='config in src/settings.py', volatile=True))
-        b = await memdb.save_entry(persona_id, FactCandidate(scope='agent', content='the assistant replies in English'))
+        a = await memdb.save_entry(
+            persona_id,
+            FactCandidate(scope="agent", content="config in src/settings.py", volatile=True),
+        )
+        b = await memdb.save_entry(
+            persona_id, FactCandidate(scope="agent", content="the assistant replies in English")
+        )
         await memdb.set_pinned(a.id, True)
         await memdb.add_link(a.id, b.id, "relates_to")
         await _export_memory(_container(memdb, persona_id), str(tmp_path))
