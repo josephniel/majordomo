@@ -13,6 +13,7 @@ from .base import (
     OnCommand,
     OnLifecycle,
     OnMessage,
+    ReplyStream,
     StatusTracker,
 )
 from .config import PlatformConfig
@@ -41,6 +42,7 @@ __all__ = [
     "OnLifecycle",
     "OnMessage",
     "PlatformConfig",
+    "ReplyStream",
     "StatusTracker",
     "TelegramPlatform",
     "get_platform_cls",

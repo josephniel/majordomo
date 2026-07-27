@@ -116,6 +116,19 @@ ToolUseCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 # calls it, and detectors fall back to invocation-only evidence.
 ToolOutcomeCallback = Callable[[str, bool], Awaitable[None]]  # (tool_name, is_error)
 
+# Callback fired as a reply is generated, with the FULL text so far.
+#
+# Snapshots, not deltas, and that is the important part. CascadingAgent can
+# abandon a vendor mid-reply and hand the turn to the next one; with deltas the
+# consumer would have to be told to discard what it had already shown, and any
+# missed reset would splice two vendors' half-answers together. A snapshot is
+# idempotent — the next one simply replaces the last, so a failover mid-stream
+# is just a shorter snapshot arriving after a longer one.
+#
+# Consumers must therefore treat each call as "this is the whole reply now",
+# never as "append this".
+PartialReplyCallback = Callable[[str], Awaitable[None]]
+
 
 class UsageLimitError(Exception):
     """Vendor signaled it can't service this request now: rate-limit, overload, or quota exhausted.
@@ -176,6 +189,7 @@ class Agent(ABC):
         attachments: list[Attachment] | None = None,
         current_row_id: int | None = None,
         on_tool_outcome: ToolOutcomeCallback | None = None,
+        on_partial_reply: PartialReplyCallback | None = None,
     ) -> str:
         """Run one turn.
 
@@ -186,5 +200,11 @@ class Agent(ABC):
         `on_tool_outcome` fires per tool that returned. Implementations that
         cannot observe results may omit it entirely; callers must not treat
         silence as success.
+
+        `on_partial_reply` fires with the full text so far as it is generated.
+        Optional on every path: an implementation that cannot stream simply
+        never calls it, and the return value is unchanged either way — it is
+        always the complete reply, so a caller that ignores streaming behaves
+        exactly as before.
         """
         ...

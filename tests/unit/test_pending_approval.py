@@ -40,6 +40,11 @@ class FakePlatform:
     async def status_tracker(self, chat_id, fmt):
         yield SimpleNamespace(on_tool_use=lambda *a, **k: None)
 
+    def reply_stream(self, chat_id, reply_to=None):
+        # This platform doesn't stream; None is the documented answer and the
+        # orchestrator falls back to sending the finished reply.
+        return None
+
 
 class FakeAgent:
     def __init__(self, reply="ok"):

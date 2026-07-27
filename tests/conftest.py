@@ -141,7 +141,7 @@ class FakeAgent(Agent):
         self.interrupted += 1
 
     async def send(self, text, on_tool_use=None, attachments=None, current_row_id=None,
-                   on_tool_outcome=None):
+                   on_tool_outcome=None, on_partial_reply=None):
         self.sent.append(text)
         if self.fail == "limit":
             raise UsageLimitError(f"{self.name} rate limited")

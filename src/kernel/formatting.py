@@ -5,7 +5,9 @@ Anything platform-flavored (typing indicators, attachment extraction, status
 messages) lives in `adapters/chat/<name>.py`.
 
 Exported helpers:
+    strip_markdown(text)               — markdown -> plain text
     chunk_for_platform(text, limit)    — strip markdown + chunk to per-platform length
+    chunks_already_delivered(cs, n)    — how many chunks a stream already showed
     is_cancel_intent(text)             — short cancel-y message?
 """
 from __future__ import annotations
@@ -40,10 +42,41 @@ def _md_to_plain(text: str) -> str:
     return _RE_LINK.sub(r"\1 (\2)", text)
 
 
+def strip_markdown(text: str) -> str:
+    """Public name for the plain-text conversion (see _md_to_plain).
+
+    A streamed reply has to be stripped BEFORE it reaches the platform — the
+    platform is the wrong layer to know about markdown — so this stopped being
+    an implementation detail of chunking.
+    """
+    return _md_to_plain(text)
+
+
 def chunk_for_platform(text: str, limit: int) -> list[str]:
     """Strip markdown then split into chunks under the platform's per-message limit."""
     text = _md_to_plain(text)
     return [text[i : i + limit] for i in range(0, len(text), limit)] or [""]
+
+
+def chunks_already_delivered(chunks: list[str], delivered: int) -> int:
+    """How many leading chunks a stream has already put on screen.
+
+    `delivered` is a CHARACTER count from ReplyStream.finish. Counting whole
+    chunks rather than trusting it to line up keeps the caller honest if a
+    platform ever delivers a different amount than expected: a partially
+    delivered first chunk counts as zero, so the reply is re-sent complete
+    rather than resumed from the middle.
+    """
+    if delivered <= 0:
+        return 0
+    covered = 0
+    total = 0
+    for chunk in chunks:
+        total += len(chunk)
+        if total > delivered:
+            break
+        covered += 1
+    return covered
 
 
 # ---- cancel-intent detection ----

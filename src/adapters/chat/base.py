@@ -49,6 +49,7 @@ __all__ = [
     "OnCommand",
     "OnLifecycle",
     "OnMessage",
+    "ReplyStream",
     "StatusTracker",
 ]
 
@@ -86,6 +87,32 @@ class StatusTracker(Protocol):
     """A live status surface updated as agent tool-calls happen."""
 
     async def on_tool_use(self, tool_name: str, args: dict[str, Any]) -> None: ...
+
+
+class ReplyStream(Protocol):
+    """A reply being written into the chat while the model generates it."""
+
+    async def push(self, text: str) -> None:
+        """Show `text` as the reply so far. SNAPSHOTS, not deltas.
+
+        Called once per generated chunk, so implementations must throttle
+        their own I/O rather than assuming the caller does.
+        """
+        ...
+
+    async def finish(self, text: str) -> int:
+        """Settle on the final reply, and report how much of it was delivered.
+
+        The return value is the number of leading characters now visible in
+        the chat, so the caller knows what is left to send. It is not
+        necessarily `len(text)`: a reply longer than one platform message has
+        to be continued in further messages, which is the caller's job.
+
+        Zero is a valid answer and means "nothing was shown" — an
+        implementation that never opened a message, or one that withdrew it
+        because the final reply turned out to be empty or silent.
+        """
+        ...
 
 
 OnMessage = Callable[[InboundMessage], Awaitable[None]]
@@ -209,6 +236,23 @@ class ChatPlatform(ABC):
         friendly_status: Callable[[str, dict[str, Any]], str],
     ) -> AbstractAsyncContextManager[StatusTracker]:
         """Yield a StatusTracker that surfaces in-chat tool progress."""
+
+    def reply_stream(
+        self,
+        chat_id: ConversationRef,
+        reply_to: int | None = None,
+    ) -> AbstractAsyncContextManager[ReplyStream] | None:
+        """Open a live reply for this chat, or None if streaming isn't offered.
+
+        NOT abstract, and None is a first-class answer: a platform with no way
+        to edit a sent message cannot stream, and must not be forced to fake
+        it. Callers fall back to sending the reply once it is complete, which
+        is what every caller did before this existed.
+        """
+        # Accepted for contract parity; a platform that can't stream has
+        # nothing to open them with.
+        del chat_id, reply_to
+        return None
 
     @abstractmethod
     def run(

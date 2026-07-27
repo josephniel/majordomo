@@ -22,10 +22,11 @@ import contextlib
 import logging
 import time
 from collections import deque
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from adapters.chat import ChatPlatform, InboundMessage
+from adapters.chat import ChatPlatform, InboundMessage, ReplyStream
 from adapters.comms import CommsLog, CommsRelay
 from ports import (
     CanaryRunner,
@@ -36,7 +37,12 @@ from ports import (
 )
 
 from .commands import CommandsMixin
-from .formatting import chunk_for_platform, is_cancel_intent
+from .formatting import (
+    chunk_for_platform,
+    chunks_already_delivered,
+    is_cancel_intent,
+    strip_markdown,
+)
 from .ingestion import ingest_attachments
 from .proactive import ProactiveMixin
 from .recovery import RecoveryMixin
@@ -45,7 +51,13 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from adapters.comms.status_report import StatusReporter
-    from adapters.model import Agent, Attachment, ConversationHistory, ToolUseCallback
+    from adapters.model import (
+        Agent,
+        Attachment,
+        ConversationHistory,
+        PartialReplyCallback,
+        ToolUseCallback,
+    )
     from adapters.tools import ServiceRegistry, WriteApprovalGate
     from domain import ReflectionEngine
     from ports import ToolProviderView
@@ -342,6 +354,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         on_tool_use: ToolUseCallback | None = None,
         attachments: list[Attachment] | None = None,
         typing: bool = True,
+        on_partial_reply: PartialReplyCallback | None = None,
     ) -> str:
         """Run an agent turn — THE single place that happens.
 
@@ -353,9 +366,11 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 async with self._platform.keep_typing(chat_id):
                     return await agent.send(
                         text, on_tool_use=on_tool_use, attachments=attachments,
+                        on_partial_reply=on_partial_reply,
                     )
             return await agent.send(
                 text, on_tool_use=on_tool_use, attachments=attachments,
+                on_partial_reply=on_partial_reply,
             )
 
         task = asyncio.create_task(_run())
@@ -414,15 +429,28 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             self._refresh_agent_if_stale(chat_id)
             agent = self._get_agent(chat_id)
 
+            # Stream the reply into the chat as it is written, when the
+            # platform offers it. On a local model (~30 tok/s decode) an
+            # average reply is ~15s during which nothing appeared at all.
+            stream_cm = self._platform.reply_stream(chat_id, reply_to=msg.message_id)
             try:
-                async with self._platform.status_tracker(
-                    chat_id, self._format_tool_status
-                ) as status:
+                async with AsyncExitStack() as stack:
+                    status = await stack.enter_async_context(
+                        self._platform.status_tracker(chat_id, self._format_tool_status)
+                    )
+                    stream = (
+                        await stack.enter_async_context(stream_cm)
+                        if stream_cm is not None else None
+                    )
                     reply = await self._execute_agent_turn(
                         chat_id, agent, text,
                         on_tool_use=status.on_tool_use,
                         attachments=msg.attachments or None,
+                        on_partial_reply=self._stream_pusher(stream),
                     )
+                    # Inside the stack: a raised or cancelled turn must leave
+                    # the half-written reply withdrawn, not stranded on screen.
+                    delivered = await self._settle_stream(stream, reply)
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -441,9 +469,11 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
 
             # Only the first chunk reply-quotes the original message; the
             # rest are continuations of our own reply and don't need to
-            # repeat the quote.
+            # repeat the quote. Chunks the stream already delivered are
+            # skipped — it painted them into a message that is still there.
             chunks = chunk_for_platform(reply, self._platform.max_message_length)
-            for i, chunk in enumerate(chunks):
+            shown = chunks_already_delivered(chunks, delivered)
+            for i, chunk in enumerate(chunks[shown:], start=shown):
                 await self._platform.send_text(
                     chat_id,
                     chunk,
@@ -459,6 +489,39 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             await self._recover_missed_schedule(chat_id, reply, agent)
             await self._recover_missed_send(chat_id, reply, agent)
             await self._recover_missed_record(chat_id, reply, agent)
+
+    def _stream_pusher(self, stream: ReplyStream | None) -> PartialReplyCallback | None:
+        """Adapt a ReplyStream to the agent's partial-reply callback.
+
+        Strips markdown here rather than in the platform: the kernel already
+        owns that for chunking, and a platform reaching up for it inverts the
+        layering (import-linter enforces this).
+
+        Failures are swallowed. A stream that breaks mid-reply must not take
+        the turn down with it — the complete text is still returned and still
+        sent.
+        """
+        if stream is None:
+            return None
+
+        async def _push(partial: str) -> None:
+            try:
+                await stream.push(strip_markdown(partial))
+            except Exception:
+                log.debug("reply stream push failed (ignored)", exc_info=True)
+
+        return _push
+
+    async def _settle_stream(self, stream: ReplyStream | None, reply: str) -> int:
+        """Finalise the streamed message; report characters already delivered."""
+        if stream is None:
+            return 0
+        try:
+            delivered: int = await stream.finish(strip_markdown(reply))
+            return delivered
+        except Exception:
+            log.debug("reply stream finish failed; sending normally", exc_info=True)
+            return 0
 
     async def _ingest_attachments(
         self, chat_id: ConversationRef, text: str, msg: InboundMessage
