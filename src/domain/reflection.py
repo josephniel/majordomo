@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ports import ConversationRef, MemoryVerdict, Summarizer
@@ -45,28 +46,9 @@ MIN_NEW_ROWS = 4
 # Cap on rows read per reflection run.
 MAX_ROWS_PER_RUN = 300
 
-_EXTRACTION_PROMPT = """You are the background memory process of a personal assistant agent. \
-Read the conversation excerpt below and extract durable facts worth remembering \
-long-term. A durable fact is something that will still matter in future \
-conversations: identity details, preferences, decisions, commitments, deadlines, \
-relationships, recurring situations, corrections the user made. NOT worth saving: \
-small talk, one-off task mechanics, anything already obviously transient.
-
-Output STRICT JSON: an array of objects, each with:
-  "scope":       "user" (about the operator) | "agent" (about the assistant's own behavior/configuration) | "domain" (about an external system) | "reference" (a pointer to an external resource: URL, dashboard, doc, repo, ticket)
-  "domain_key":  required non-empty when scope is "domain" (e.g. "gmail", "clickup"), else ""
-  "title":       short label, <= 6 words
-  "content":     the fact as ONE self-contained sentence (include names/dates — it must make sense with zero context)
-
-Rules:
-- 0 to 6 facts. If nothing is durable, output [].
-- One fact per object. Never bundle.
-- Write facts in third person about "the user" / "the assistant".
-- Output ONLY the JSON array. No prose, no code fences.
-
-CONVERSATION EXCERPT:
-{transcript}
-"""  # noqa: E501 — model-facing text; a wrap here changes what the model reads
+_EXTRACTION_PROMPT = (
+    Path(__file__).parent / "prompts/reflection_extract.md"
+).read_text(encoding="utf-8")
 
 
 class ReflectionEngine:
@@ -223,12 +205,14 @@ class ReflectionEngine:
 # and deliberately conservative — false negatives just mean no warning.
 _VOLATILE_PATTERNS = re.compile(
     r"""
-      (?:[\w./-]+\.(?:py|ts|js|go|rs|yaml|yml|json|sql|sh|md|toml|cfg|ini))  # file
-    | (?:\s|^)--[a-z][\w-]+                                                   # --flag
-    | \b[0-9a-f]{7,40}\b(?=.*\bcommit\b)|\bcommit\s+[0-9a-f]{7,40}\b          # commit SHA
-    | \bv?\d+\.\d+(?:\.\d+)?\b                                                # version
-    | \b[A-Z][A-Z0-9]*_[A-Z0-9_]*\b                                          # ENV_VAR / CONFIG_KEY (must have _)
-    """,  # noqa: E501 — model-facing text; a wrap here changes what the model reads
+      # a file path
+      (?:[\w./-]+\.(?:py|ts|js|go|rs|yaml|yml|json|sql|sh|md|toml|cfg|ini))
+    | (?:\s|^)--[a-z][\w-]+                                          # a --flag
+    | \b[0-9a-f]{7,40}\b(?=.*\bcommit\b)|\bcommit\s+[0-9a-f]{7,40}\b  # a commit SHA
+    | \bv?\d+\.\d+(?:\.\d+)?\b                                       # a version
+      # ENV_VAR / CONFIG_KEY — must contain an underscore
+    | \b[A-Z][A-Z0-9]*_[A-Z0-9_]*\b
+    """,
     re.VERBOSE,
 )
 
