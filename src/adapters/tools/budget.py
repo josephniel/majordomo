@@ -23,7 +23,7 @@ import httpx
 
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
-from ._http import HTTP_NO_CONTENT, api_errors, format_http_error
+from ._failures import HTTP_NO_CONTENT, api_errors, format_http_error
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -153,6 +153,222 @@ def _format_transaction(tx: dict[str, Any]) -> str:
     )
 
 
+def _read_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Read-only views: accounts, the tag tree, and recent transactions."""
+    @tool(
+        "list_accounts",
+        "List the budget tracker's accounts (id, name, type, currency). "
+        "Needed to pick the account_id for record_transaction.",
+        {},
+    )
+    @_guarded
+    async def list_accounts_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        accounts = await client.list_accounts()
+        if not accounts:
+            return ToolResult.ok(
+                "No accounts yet — create one in the budget tracker UI first."
+            )
+        return ToolResult.ok("\n".join(_format_account(a) for a in accounts))
+
+    @tool(
+        "list_tags",
+        "List the budget tracker's tags/categories as a tree (id, name, "
+        "whether they take debit/credit). Needed to pick the tag_id for "
+        "record_transaction.",
+        {},
+    )
+    @_guarded
+    async def list_tags_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        tags = await client.list_tags()
+        if not tags:
+            return ToolResult.ok(
+                "No tags yet — create some in the budget tracker UI first."
+            )
+        return ToolResult.ok("\n".join(_format_tags(tags)))
+
+    @tool(
+        "recent_transactions",
+        "Most recent budget transactions, newest first. Args: account_id "
+        "(optional — omit for all accounts), limit (default 10, max 50).",
+        {
+            "type": "object",
+            "properties": {
+                "account_id": {"type": "integer", "description": "Filter to one account."},
+                "limit": {"type": "integer", "description": "Max rows (default 10, cap 50)."},
+            },
+        },
+    )
+    @_guarded
+    async def recent_transactions_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        limit = max(1, min(int(args.get("limit") or 10), 50))
+        account_id = int(args["account_id"]) if args.get("account_id") else None
+        resp = await client.list_transactions(account_id=account_id, page_size=limit)
+        items = resp.get("items") or resp.get("transactions") or []
+        if not items:
+            return ToolResult.ok("(no transactions)")
+        return ToolResult.ok("\n".join(_format_transaction(t) for t in items))
+
+    return [list_accounts_tool, list_tags_tool, recent_transactions_tool]
+
+
+def _write_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Record money moving — a single transaction, or a split across people."""
+    @tool(
+        "record_transaction",
+        "Record a SOLO transaction in the budget tracker ledger (for a "
+        "payment shared with other people use record_split instead). Use "
+        "for every expense/income the user mentions, even when it was "
+        "also logged elsewhere (e.g. Splitwise). Args: account_id and tag_id "
+        "(from list_accounts / list_tags), amount (positive number), type "
+        "('debit' = money out, the default; 'credit' = money in), "
+        "description, counterparty (who was paid / who paid, optional), "
+        "occurred_at (ISO datetime, optional — defaults to now).",
+        {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "integer",
+                    "description": "Account the money moved on (list_accounts).",
+                },
+                "tag_id": {"type": "integer", "description": "Category tag (list_tags)."},
+                "amount": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Positive amount in the account's currency.",
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["debit", "credit"],
+                    "description": "debit = money out (default), credit = money in.",
+                },
+                "description": {"type": "string", "description": "What this was for."},
+                "counterparty": {
+                    "type": "string",
+                    "description": "Merchant or person on the other side.",
+                    "maxLength": 120,
+                },
+                "occurred_at": {
+                    "type": "string",
+                    "description": "ISO 8601 datetime; omit for now.",
+                },
+            },
+            "required": ["account_id", "tag_id", "amount"],
+        },
+    )
+    async def record_transaction_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        try:
+            account_id = int(args["account_id"])
+            payload: dict[str, Any] = {
+                "type": args.get("type") or "debit",
+                "amount": args["amount"],
+                "tag_id": int(args["tag_id"]),
+                "occurred_at": args.get("occurred_at") or datetime.now(UTC).isoformat(),
+            }
+            if args.get("description"):
+                payload["description"] = str(args["description"])
+            if args.get("counterparty"):
+                payload["counterparty"] = str(args["counterparty"])[:120]
+            tx = await client.create_transaction(account_id, payload)
+            return ToolResult.ok(
+                f"recorded: {payload['type']} {payload['amount']} on account "
+                f"{account_id} (transaction #{tx.get('id', '?')})"
+            )
+        except KeyError as e:
+            return ToolResult.error(f"error: missing required arg {e}")
+        except httpx.HTTPStatusError as e:
+            return ToolResult.error(format_http_error(_VENDOR, e))
+        except Exception as e:
+            return ToolResult.error(f"error: {e}")
+
+    @tool(
+        "record_split",
+        "Record a payment SPLIT with other people: the user paid the full "
+        "amount, others owe their shares. Books the user's own share "
+        "(total minus all shares) as the expense and each person's share "
+        "as a loan in the people ledger — atomically. Args: account_id "
+        "(paying account) and tag_id (from list_accounts / list_tags), "
+        "total_amount (the FULL amount paid), shares (one entry per OTHER "
+        "person: their name + what they owe; do NOT include the user), "
+        "description, occurred_at (ISO datetime, optional — defaults to "
+        "now).",
+        {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "integer",
+                    "description": "Account the full payment left (list_accounts).",
+                },
+                "tag_id": {
+                    "type": "integer",
+                    "description": "Category tag for the expense (list_tags).",
+                },
+                "total_amount": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Full amount paid, including everyone's shares.",
+                },
+                "shares": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "person": {
+                                "type": "string",
+                                "description": "Name of the person who owes this share.",
+                                "maxLength": 120,
+                            },
+                            "amount": {
+                                "type": "number",
+                                "exclusiveMinimum": 0,
+                                "description": "What this person owes.",
+                            },
+                        },
+                        "required": ["person", "amount"],
+                    },
+                    "description": "The OTHER people's shares (never the user's own).",
+                },
+                "description": {"type": "string", "description": "What this was for."},
+                "occurred_at": {
+                    "type": "string",
+                    "description": "ISO 8601 datetime; omit for now.",
+                },
+            },
+            "required": ["account_id", "tag_id", "total_amount", "shares"],
+        },
+    )
+    async def record_split_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        try:
+            account_id = int(args["account_id"])
+            shares = [
+                {"counterparty": str(s["person"]).strip()[:120], "amount": s["amount"]}
+                for s in (args["shares"] or [])
+            ]
+            payload: dict[str, Any] = {
+                "total_amount": args["total_amount"],
+                "shares": shares,
+                "tag_id": int(args["tag_id"]),
+                "occurred_at": args.get("occurred_at") or datetime.now(UTC).isoformat(),
+            }
+            if args.get("description"):
+                payload["description"] = str(args["description"])
+            out = await client.create_split(account_id, payload)
+            lent = ", ".join(f"{s['counterparty']} owes {s['amount']}" for s in shares)
+            return ToolResult.ok(
+                f"split recorded on account {account_id}: your share "
+                f"{out.get('my_share', '?')} booked as expense, lent "
+                f"{out.get('lent_amount', '?')} ({lent})"
+            )
+        except KeyError as e:
+            return ToolResult.error(f"error: missing required arg {e}")
+        except httpx.HTTPStatusError as e:
+            return ToolResult.error(format_http_error(_VENDOR, e))
+        except Exception as e:
+            return ToolResult.error(f"error: {e}")
+
+    return [record_transaction_tool, record_split_tool]
+
+
 class BudgetConnector(Connector):
     name = "budget"
     TRIGGER_KEYWORDS = (
@@ -240,219 +456,7 @@ the ledger books their share as expense and the rest as loans)."""
     # ---- tools ----
 
     def _build_tools_for_profile(self, client: BudgetClient) -> list[Any]:
-        @tool(
-            "list_accounts",
-            "List the budget tracker's accounts (id, name, type, currency). "
-            "Needed to pick the account_id for record_transaction.",
-            {},
-        )
-        @_guarded
-        async def list_accounts_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            accounts = await client.list_accounts()
-            if not accounts:
-                return ToolResult.ok(
-                    "No accounts yet — create one in the budget tracker UI first."
-                )
-            return ToolResult.ok("\n".join(_format_account(a) for a in accounts))
-
-        @tool(
-            "list_tags",
-            "List the budget tracker's tags/categories as a tree (id, name, "
-            "whether they take debit/credit). Needed to pick the tag_id for "
-            "record_transaction.",
-            {},
-        )
-        @_guarded
-        async def list_tags_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            tags = await client.list_tags()
-            if not tags:
-                return ToolResult.ok(
-                    "No tags yet — create some in the budget tracker UI first."
-                )
-            return ToolResult.ok("\n".join(_format_tags(tags)))
-
-        @tool(
-            "recent_transactions",
-            "Most recent budget transactions, newest first. Args: account_id "
-            "(optional — omit for all accounts), limit (default 10, max 50).",
-            {
-                "type": "object",
-                "properties": {
-                    "account_id": {"type": "integer", "description": "Filter to one account."},
-                    "limit": {"type": "integer", "description": "Max rows (default 10, cap 50)."},
-                },
-            },
-        )
-        @_guarded
-        async def recent_transactions_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            limit = max(1, min(int(args.get("limit") or 10), 50))
-            account_id = int(args["account_id"]) if args.get("account_id") else None
-            resp = await client.list_transactions(account_id=account_id, page_size=limit)
-            items = resp.get("items") or resp.get("transactions") or []
-            if not items:
-                return ToolResult.ok("(no transactions)")
-            return ToolResult.ok("\n".join(_format_transaction(t) for t in items))
-
-        @tool(
-            "record_transaction",
-            "Record a SOLO transaction in the budget tracker ledger (for a "
-            "payment shared with other people use record_split instead). Use "
-            "for every expense/income the user mentions, even when it was "
-            "also logged elsewhere (e.g. Splitwise). Args: account_id and tag_id "
-            "(from list_accounts / list_tags), amount (positive number), type "
-            "('debit' = money out, the default; 'credit' = money in), "
-            "description, counterparty (who was paid / who paid, optional), "
-            "occurred_at (ISO datetime, optional — defaults to now).",
-            {
-                "type": "object",
-                "properties": {
-                    "account_id": {
-                        "type": "integer",
-                        "description": "Account the money moved on (list_accounts).",
-                    },
-                    "tag_id": {"type": "integer", "description": "Category tag (list_tags)."},
-                    "amount": {
-                        "type": "number",
-                        "exclusiveMinimum": 0,
-                        "description": "Positive amount in the account's currency.",
-                    },
-                    "type": {
-                        "type": "string",
-                        "enum": ["debit", "credit"],
-                        "description": "debit = money out (default), credit = money in.",
-                    },
-                    "description": {"type": "string", "description": "What this was for."},
-                    "counterparty": {
-                        "type": "string",
-                        "description": "Merchant or person on the other side.",
-                        "maxLength": 120,
-                    },
-                    "occurred_at": {
-                        "type": "string",
-                        "description": "ISO 8601 datetime; omit for now.",
-                    },
-                },
-                "required": ["account_id", "tag_id", "amount"],
-            },
-        )
-        async def record_transaction_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                account_id = int(args["account_id"])
-                payload: dict[str, Any] = {
-                    "type": args.get("type") or "debit",
-                    "amount": args["amount"],
-                    "tag_id": int(args["tag_id"]),
-                    "occurred_at": args.get("occurred_at") or datetime.now(UTC).isoformat(),
-                }
-                if args.get("description"):
-                    payload["description"] = str(args["description"])
-                if args.get("counterparty"):
-                    payload["counterparty"] = str(args["counterparty"])[:120]
-                tx = await client.create_transaction(account_id, payload)
-                return ToolResult.ok(
-                    f"recorded: {payload['type']} {payload['amount']} on account "
-                    f"{account_id} (transaction #{tx.get('id', '?')})"
-                )
-            except KeyError as e:
-                return ToolResult.error(f"error: missing required arg {e}")
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(format_http_error(_VENDOR, e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        @tool(
-            "record_split",
-            "Record a payment SPLIT with other people: the user paid the full "
-            "amount, others owe their shares. Books the user's own share "
-            "(total minus all shares) as the expense and each person's share "
-            "as a loan in the people ledger — atomically. Args: account_id "
-            "(paying account) and tag_id (from list_accounts / list_tags), "
-            "total_amount (the FULL amount paid), shares (one entry per OTHER "
-            "person: their name + what they owe; do NOT include the user), "
-            "description, occurred_at (ISO datetime, optional — defaults to "
-            "now).",
-            {
-                "type": "object",
-                "properties": {
-                    "account_id": {
-                        "type": "integer",
-                        "description": "Account the full payment left (list_accounts).",
-                    },
-                    "tag_id": {
-                        "type": "integer",
-                        "description": "Category tag for the expense (list_tags).",
-                    },
-                    "total_amount": {
-                        "type": "number",
-                        "exclusiveMinimum": 0,
-                        "description": "Full amount paid, including everyone's shares.",
-                    },
-                    "shares": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "person": {
-                                    "type": "string",
-                                    "description": "Name of the person who owes this share.",
-                                    "maxLength": 120,
-                                },
-                                "amount": {
-                                    "type": "number",
-                                    "exclusiveMinimum": 0,
-                                    "description": "What this person owes.",
-                                },
-                            },
-                            "required": ["person", "amount"],
-                        },
-                        "description": "The OTHER people's shares (never the user's own).",
-                    },
-                    "description": {"type": "string", "description": "What this was for."},
-                    "occurred_at": {
-                        "type": "string",
-                        "description": "ISO 8601 datetime; omit for now.",
-                    },
-                },
-                "required": ["account_id", "tag_id", "total_amount", "shares"],
-            },
-        )
-        async def record_split_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-            try:
-                account_id = int(args["account_id"])
-                shares = [
-                    {"counterparty": str(s["person"]).strip()[:120], "amount": s["amount"]}
-                    for s in (args["shares"] or [])
-                ]
-                payload: dict[str, Any] = {
-                    "total_amount": args["total_amount"],
-                    "shares": shares,
-                    "tag_id": int(args["tag_id"]),
-                    "occurred_at": args.get("occurred_at") or datetime.now(UTC).isoformat(),
-                }
-                if args.get("description"):
-                    payload["description"] = str(args["description"])
-                out = await client.create_split(account_id, payload)
-                lent = ", ".join(f"{s['counterparty']} owes {s['amount']}" for s in shares)
-                return ToolResult.ok(
-                    f"split recorded on account {account_id}: your share "
-                    f"{out.get('my_share', '?')} booked as expense, lent "
-                    f"{out.get('lent_amount', '?')} ({lent})"
-                )
-            except KeyError as e:
-                return ToolResult.error(f"error: missing required arg {e}")
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(format_http_error(_VENDOR, e))
-            except Exception as e:
-                return ToolResult.error(f"error: {e}")
-
-        return [
-            list_accounts_tool,
-            list_tags_tool,
-            recent_transactions_tool,
-            record_transaction_tool,
-            record_split_tool,
-        ]
+        return [*_read_tools(client), *_write_tools(client)]
 
     # ---- CLI ----
 

@@ -30,7 +30,7 @@ import httpx
 if TYPE_CHECKING:
     from pathlib import Path
 
-from ._http import HTTP_OK
+from ._failures import HTTP_OK
 
 log = logging.getLogger(__name__)
 

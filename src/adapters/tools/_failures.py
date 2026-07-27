@@ -1,4 +1,4 @@
-"""One place where an HTTP connector's failures become tool results.
+"""One place where an adapter's failures become tool results.
 
 Five connectors each had their own `_format_http_error` differing only in the
 vendor's name, and thirty-odd handlers each ended in the same six lines:
@@ -49,10 +49,13 @@ def format_http_error(vendor: str, e: httpx.HTTPStatusError) -> str:
     return f"{vendor} API error {e.response.status_code}: {(e.response.text or '')[:_BODY_CHARS]}"
 
 
-def api_errors(vendor: str) -> Callable[[Handler], Handler]:
-    """Turn a handler's HTTP and unexpected failures into ToolResult.error.
+def handler_errors(render: Callable[[Exception], str]) -> Callable[[Handler], Handler]:
+    """Turn any failure inside a handler into ToolResult.error, via `render`.
 
-    Applied BELOW `@tool`, so it wraps the coroutine before the spec is built.
+    The HTTP connectors want the status code and body; the IMAP one wants its
+    own wording. What they share is that a tool must ANSWER rather than raise:
+    an exception escaping here reaches the agent loop, and the model learns
+    nothing it can act on.
     """
 
     def decorator(handler: Handler) -> Handler:
@@ -60,11 +63,23 @@ def api_errors(vendor: str) -> Callable[[Handler], Handler]:
         async def wrapper(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             try:
                 return await handler(args, ctx)
-            except httpx.HTTPStatusError as e:
-                return ToolResult.error(format_http_error(vendor, e))
             except Exception as e:
-                return ToolResult.error(f"error: {e}")
+                return ToolResult.error(render(e))
 
         return wrapper
 
     return decorator
+
+
+def api_errors(vendor: str) -> Callable[[Handler], Handler]:
+    """Turn a handler's HTTP and unexpected failures into ToolResult.error.
+
+    Applied BELOW `@tool`, so it wraps the coroutine before the spec is built.
+    """
+
+    def render(e: Exception) -> str:
+        if isinstance(e, httpx.HTTPStatusError):
+            return format_http_error(vendor, e)
+        return f"error: {e}"
+
+    return handler_errors(render)

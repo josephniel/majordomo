@@ -26,12 +26,12 @@ import httpx
 
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
+from ._failures import HTTP_NO_CONTENT, api_errors
 from ._google_oauth import (
     CredentialStore,
     GoogleOAuthClient,
     GoogleOAuthError,
 )
-from ._http import HTTP_NO_CONTENT, api_errors
 
 if TYPE_CHECKING:
     from .registry import ServiceRegistry
