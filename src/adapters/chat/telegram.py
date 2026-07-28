@@ -834,19 +834,35 @@ class _TelegramStatusTracker:
 
 # ---- streamed reply ----
 
-# How often the message is repainted. Telegram flood-controls edits, but the
-# ceiling is not a fixed number — it reacts to how hard you push a given chat.
-# So this is a STARTING point that backs off on demand (see _on_retry_after)
-# rather than a constant tuned pessimistically for the worst case.
+# Extra delay between repaints, ON TOP OF the round trip each edit already
+# costs. Near zero on purpose.
 #
-# It was 1.2s, which is where "streaming" reads as a slideshow: local decode
-# is ~30 tok/s, so 1.2s lands a whole sentence at once.
-_STREAM_EDIT_INTERVAL = 0.4
+# Letter-by-letter is not reachable here and no amount of tuning gets there:
+# every character would need its own editMessageText, and each call is a
+# network round trip. Measured against this bot, hammering edits as fast as
+# the API would take them:
+#
+#     requested interval   achieved   flood control
+#     0.30s                1.3/s      none
+#     0.15s                1.5/s      none
+#     0.05s                2.0/s      none
+#
+# Nothing rate-limited us even at 20 requests/second attempted — the wall is
+# ~470ms of round trip per edit, so ~2 updates/second is the hard ceiling. At
+# ~30 chars/s of generation that is ~15 characters per update, and that is the
+# smallest step this medium can render.
+#
+# So the interval only exists to leave headroom: flood control is a property
+# of a chat's recent history, and a long reply plus a busy chat could still
+# hit it where a 25-edit probe did not. _on_retry_after handles that if it
+# happens.
+_STREAM_EDIT_INTERVAL = 0.05
 
-# Never repaint faster than this even if nothing complains, and never slower
-# than this no matter how much Telegram sulks — past the ceiling the user is
-# better served by a slideshow than by a stalled message.
-_STREAM_MIN_INTERVAL = 0.35
+# Floor guards against a future where the round trip is NOT the limiter — a
+# self-hosted Bot API server on localhost would let this spin. Ceiling keeps a
+# sulking Telegram from stalling the message entirely; past it the user is
+# better served by a slideshow than by a frozen reply.
+_STREAM_MIN_INTERVAL = 0.05
 _STREAM_MAX_INTERVAL = 3.0
 
 # Multiplier applied when Telegram asks us to slow down.
