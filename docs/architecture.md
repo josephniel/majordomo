@@ -165,6 +165,30 @@ as "identity details, preferences, relationships" — telling that model it
 serves a personal assistant biases what an engineering assistant bothers to
 remember.
 
+### The general rule: a prompt may not assert configuration
+
+The persona claim was one instance of a wider defect — prompt text stating
+something the deployment has not been configured for. A sweep found three
+more, all now derived rather than asserted:
+
+| prompt | asserted | now |
+|---|---|---|
+| memory | the domain_key list, hardcoded and already missing `budget` | the persona's enabled connectors |
+| code execution | "each run needs the user's approval" | omitted when `write_approval: false` |
+| Telegram platform | "you can send images and PDFs and you receive their contents" | images gated on whether any enabled vendor has vision; PDFs left to the Documents section, which only renders when that faculty is on |
+
+The failure mode is worse than saying nothing: the model acts on the claim,
+so the user gets a confident answer about an image nobody could see. Note
+that voice was already conditional in that same sentence — the asymmetry is
+what made the vision claim easy to miss.
+
+Two things stayed asserted on purpose. `EVAL_SYSTEM_PROMPT` pins a fixed
+persona because eval scores are only comparable across models and runs if the
+prompt is byte-identical, so a persona edit must not move the baseline. The
+memory prompt still spells out `VALID_SCOPES` and `LINK_RELATIONS` as prose;
+those match their constants today, and a checked-in drift guard would be
+worth more than the prose being generated.
+
 ### Precedence
 
 ```
@@ -507,7 +531,7 @@ Every pull request must pass all four gates:
 | `ruff check .` — 624 rules across 24 families, incl. security & complexity | **0 violations, no suppressions** |
 | `mypy --strict` — src, CLI and scripts | **0 errors, no `type: ignore`** |
 | `import-linter` — the six contracts above | **6/6 kept** |
-| `pytest` — unit + integration against live Postgres | **1,247 passing** |
+| `pytest` — unit + integration against live Postgres | **1,251 passing** |
 
 There is not a single `# noqa` or `# type: ignore` in the codebase. That is a
 deliberate policy, and it paid for itself: the strict pass that got here turned

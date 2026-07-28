@@ -106,20 +106,33 @@ isolated sandbox with NO network access; /work is the only writable
 directory and is empty at start. Files you write to /work are kept after
 the run — mention them by the returned path and use chat_send_file to
 deliver them to the user. Print what you want to see; only stdout/stderr
-come back. Each run needs the user's approval, so batch work into one
-script instead of many small runs."""
+come back."""
+
+    # Appended only when the gate is actually installed. `write_approval:
+    # false` is a supported persona setting, and this file's own docstring
+    # documents it — so stating the requirement unconditionally told those
+    # personas something false, and the batching advice it justifies was
+    # then unmotivated.
+    _APPROVAL_LINE = (
+        " Each run needs the user's approval, so batch work into one "
+        "script instead of many small runs."
+    )
 
     def __init__(
         self,
         runs_dir: Path,
         image: str | None = None,
         network: str | None = None,
+        approval_required: bool = True,
     ) -> None:
         self._runs_dir = runs_dir
         self._image = image or DEFAULT_IMAGE
         self._network = network or "none"
+        self._approval_required = approval_required
 
     def system_prompt_section(self) -> str:
+        if self._approval_required:
+            return self.SYSTEM_PROMPT_SECTION + self._APPROVAL_LINE
         return self.SYSTEM_PROMPT_SECTION
 
     def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
