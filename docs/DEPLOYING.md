@@ -7,61 +7,35 @@ over `getUpdates` and both fail with `Conflict`.
 
 ## macOS (launchd)
 
-Save this as `~/Library/LaunchAgents/com.example.majordomo.plist`, replacing
-`__PROJECT_DIR__` with the absolute path to your checkout and `__PERSONA__`
-with your instance id:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.example.majordomo</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/bash</string>
-        <string>-c</string>
-        <string>cd __PROJECT_DIR__ &amp;&amp; exec ./manage up __PERSONA__</string>
-    </array>
-
-    <!-- Explicit PATH so `docker` resolves regardless of shell profile. -->
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-    </dict>
-
-    <key>WorkingDirectory</key>
-    <string>__PROJECT_DIR__</string>
-
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>ThrottleInterval</key>
-    <integer>15</integer>
-
-    <key>StandardOutPath</key>
-    <string>__PROJECT_DIR__/logs/bot.out.log</string>
-    <key>StandardErrorPath</key>
-    <string>__PROJECT_DIR__/logs/bot.err.log</string>
-</dict>
-</plist>
-```
-
-Then:
+`./manage` renders `deploy/launchagent.plist.example` and loads it for you:
 
 ```sh
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.majordomo.plist
+./manage agent-install personal_assistant
 ```
 
 | task | command |
 |---|---|
-| restart after a code change | `launchctl kickstart -k gui/$(id -u)/com.example.majordomo` |
-| stop without it respawning | `launchctl bootout gui/$(id -u)/com.example.majordomo` |
-| check it is alive | `launchctl print gui/$(id -u)/com.example.majordomo \| grep state` |
+| restart after a code change | `./manage agent-restart <persona>` |
+| stop without it respawning | `./manage agent-uninstall <persona>` |
+| check what is alive | `./manage agent-status` |
+
+**Agents are keyed per persona.** launchd identifies a service by its label, so
+a single shared label would cap the machine at one bot forever. The label is
+`com.<user>.majordomo.<persona>`, which makes a second instance an install
+rather than an edit:
+
+```sh
+./manage agent-install dev_assistant    # a second bot, side by side
+```
+
+Logs are per persona for the same reason (`logs/<persona>.out.log`,
+`logs/<persona>.err.log`) — two instances sharing one file interleave into
+nonsense.
+
+A second persona still needs its own `instances/<persona>/` directory, and two
+things there **must** differ: a distinct persona id (it is the partition key in
+the shared database) and **a different Telegram bot token**. Two processes on
+one token is exactly the `Conflict` collision above.
 
 **Never `kill` the PID.** `KeepAlive=true` respawns within seconds, and for a
 moment you have two pollers on one token — which surfaces as `Conflict`
@@ -70,6 +44,12 @@ errors rather than as anything that says "you killed it wrong".
 Run it as a user **LaunchAgent**, not a root daemon, if you use Claude Code
 subscription auth: the process needs your `~/.claude`. Keep the checkout out
 of `~/Desktop` and `~/Documents` or macOS TCC prompts will block it.
+
+Postgres is shared across instances — one container, one database, personas as
+rows. The compose project name is pinned in `docker-compose.yml` so the stack's
+identity does not depend on what the clone directory is called; without that
+pin, renaming the directory makes compose treat the running Postgres as a
+stranger and fail on a container-name conflict.
 
 ## Linux (systemd, sketch)
 
@@ -81,7 +61,7 @@ unit per bot token.
 
 Settings are split by SCOPE — is this true of the machine, or of this
 assistant? Full rationale in
-[ARCHITECTURE-NOTES](ARCHITECTURE-NOTES.md#configuration-scope-not-kind).
+[architecture.md](architecture.md#configuration-scope-not-kind).
 
 | file | holds | template |
 |---|---|---|
@@ -173,5 +153,5 @@ restart. Two exceptions worth knowing:
   this reason: personas sharing a database must agree, and startup refuses
   the combination that would let one wipe the other's vectors.
 - The recall eval does **not** migrate anything (see
-  [ARCHITECTURE-NOTES](ARCHITECTURE-NOTES.md#test-database)) — pass
+  [architecture.md](architecture.md#test-database)) — pass
   `--migrate` only against a scratch database you own.

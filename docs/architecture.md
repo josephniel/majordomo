@@ -1,4 +1,20 @@
-# Architecture notes — decisions, caveats, and deliberate scope cuts
+# Architecture
+
+The single home for how majordomo is put together: the shape, the decisions
+behind it, the caveats, and the scope cuts that were deliberate. Where a
+section records why something is NOT built, that is the point of the section —
+the reasoning is the artifact.
+
+Hexagonal, with one dependency rule: the application layer depends on ports and
+protocols, never on concrete implementations, and only the composition root
+touches concretes and the environment. **That rule is enforced by
+`import-linter` in CI, not by convention** — six contracts, checked on every
+pull request (see [Architecture enforcement](#architecture-enforcement-ci)).
+
+Two consequences worth stating up front, because they are the practical test of
+whether the shape is holding: adding an LLM vendor is one `VendorSpec` entry,
+and adding a tool provider is one `ProviderSpec` entry. When either of those
+starts requiring edits in several places, a seam has leaked.
 
 ## Layout (ports & adapters, 2026-07-26)
 
@@ -430,35 +446,55 @@ The dependency rule used to live in a docstring, which is exactly why it had
 drifted: `adapters/model/` (an adapter) imported `adapters/tools/` (another adapter) in
 three places, and nothing failed. Prose does not fail a build.
 
-`scripts/check_architecture.py` runs five import-linter contracts in CI:
+`scripts/check_architecture.py` runs six import-linter contracts in CI:
 
-1. **core is a leaf** — imports nothing of ours.
-2. **core imports no vendor SDK** — no anthropic/openai/telegram/asyncpg/etc.
-   The contracts layer stays vendor-neutral by construction, not by habit.
-3. **adapters do not import each other** — agents / connectors / platforms /
-   storage are mutually independent.
+1. **ports is a leaf** — imports nothing of ours.
+2. **ports imports no third-party SDK** — no anthropic/openai/telegram/asyncpg
+   etc. The contracts layer stays vendor-neutral by construction, not by habit.
+3. **peer adapters do not import each other** — `chat` / `model` / `tools` /
+   `trigger` are mutually independent; anything two of them need is a contract
+   and belongs in `ports`.
 4. **only the composition root touches the environment** — nothing but
    `runtime/` imports dotenv.
-5. **layers** — personas > chat > capabilities|services > adapters >
-   storage|comms > core.
+5. **faculties talk to storage ports, never to a storage adapter** — the layer
+   rule alone permitted `domain` → `adapters.store`, and that single import is
+   what had made the memory faculty inseparable from Postgres.
+6. **layered** — runtime > kernel > domain > adapters > infrastructure > ports.
 
 Contract 3 was broken when it was written. The fix generalizes: all three
 offending imports wanted exactly ONE method off `ServiceRegistry`
-(`load_enabled()`), so `core.ServiceCatalog` now states that as a Protocol
+(`load_enabled()`), so `ports.ServiceCatalog` now states that as a Protocol
 and the agents depend on the protocol. `ServiceRegistry` satisfies it
 structurally — no inheritance, no registration, no import.
 
-One exemption, recorded rather than hidden: `chat.__main__` imports
-`personas`, because it is the process entry point (`python -m chat`) and
-wiring the composition root is its job. It lives inside `kernel/` for
-historical reasons only; Phase 6 moves it to `runtime/` and the exemption
-goes with it.
+There are **no exemptions**. The last one — the process entry point importing
+the composition root — was retired by moving it from `chat/__main__.py` to
+`runtime/__main__.py`, where importing the composition root is no longer a
+layer violation because it lives in the same package. Deleting an exemption by
+moving the code is worth more than the exemption was costing.
 
-**Type checking is a ratchet, not a wall.** `mypy --strict` over all of
-`src/` reports ~180 errors, so requiring it everywhere would mean a flag day
-or a permanently red build. CI enforces strict on `ports/` only — the layer
-whose job is precision, that everything else imports, and that is small
-enough to hold. Promote packages in as they are cleaned up.
+## Engineering standards
+
+Every pull request must pass all four gates:
+
+| Gate | State |
+|---|---|
+| `ruff check .` — 624 rules across 24 families, incl. security & complexity | **0 violations, no suppressions** |
+| `mypy --strict` — src, CLI and scripts | **0 errors, no `type: ignore`** |
+| `import-linter` — the six contracts above | **6/6 kept** |
+| `pytest` — unit + integration against live Postgres | **1,231 passing** |
+
+There is not a single `# noqa` or `# type: ignore` in the codebase. That is a
+deliberate policy, and it paid for itself: the strict pass that got here turned
+up seven real bugs — including a dead inter-bot relay and two CLI commands that
+had never worked — several of them sitting exactly where a suppression would
+have felt justified.
+
+Strict typing is repo-wide rather than a ratchet. It was scoped to `ports/`
+while the rest of `src/` still had ~180 errors, on the reasoning that requiring
+it everywhere meant a flag day or a permanently red build. The flag day was
+eventually worth it: `strict = true` now sits on `[tool.mypy]`, so a new package
+is strict from its first line instead of being opted in and forgotten.
 
 ## Memory retrieval: fusion, embeddings, reranking
 
@@ -532,19 +568,19 @@ the RRF weights — they are calibrated per model.
 
 ### Test database
 
-Tests and evals default to a SEPARATE database (`telegram_claude_test`).
+Tests and evals default to a SEPARATE database (`majordomo_test`).
 They call `init_schema`, which applies destructive migrations, so pointing
 them at a live assistant's database lets a test run clear a real persona's
 vectors out from under a running process. Create it once:
 
-    docker exec telegram-bot-postgres \
-        psql -U tc -d postgres -c 'CREATE DATABASE telegram_claude_test OWNER tc;'
+    docker exec majordomo-postgres \
+        psql -U majordomo -d postgres -c 'CREATE DATABASE majordomo_test OWNER majordomo;'
 
 **This paragraph was true of the tests and false of the recall eval for a
 while, and the eval was migrating production.** Two changes, separately
 harmless: `MemoryDatabase.connect()` started applying the schema (so the
 memory port's lifecycle contract could be just "connect"), and the eval's DSN
-fallback named `telegram_claude` rather than `telegram_claude_test`. Together
+fallback named `majordomo` rather than `majordomo_test`. Together
 they made a read-only benchmark a production migration.
 
 It went unnoticed because the harness *is* careful — with rows. It seeds a

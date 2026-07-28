@@ -45,7 +45,7 @@ Scoring contract
 comparable ACROSS queries. That second requirement is what lets
 `select_for_injection` apply an absolute floor. A store that returns raw
 cosine distances, or BM25 scores, or ranks, does not satisfy this port even
-though it type-checks — see `docs/ARCHITECTURE-NOTES.md`.
+though it type-checks — see `docs/architecture.md`.
 """
 from __future__ import annotations
 
