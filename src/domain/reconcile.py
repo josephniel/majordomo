@@ -63,6 +63,7 @@ from ports import (
     FactCandidate,
     MemoryEntry,
     MemoryVerdict,
+    PersonaIdentity,
     Reconciliation,
     Summarizer,
 )
@@ -168,9 +169,15 @@ def _parse_verdict(raw: str) -> tuple[MemoryVerdict | None, UUID | None, str]:
 class Reconciler:
     """Turns candidate facts into decisions about existing memory."""
 
-    def __init__(self, memory: LongTermMemory, summarizer: Summarizer) -> None:
+    def __init__(
+        self,
+        memory: LongTermMemory,
+        summarizer: Summarizer,
+        identity: PersonaIdentity | None = None,
+    ) -> None:
         self._memory = memory
         self._summarizer = summarizer
+        self._identity = identity or PersonaIdentity(name="")
 
     async def decide(self, candidate: FactCandidate) -> Reconciliation:
         """Decide what should happen to this candidate. Never raises.
@@ -201,6 +208,7 @@ class Reconciler:
                                   reason="nothing related is known")
 
         prompt = _VERDICT_PROMPT.format(
+            persona=self._identity.descriptor,
             existing=_render_existing(neighbours),
             candidate=candidate.content,
         )

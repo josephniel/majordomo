@@ -3,6 +3,17 @@
 
 name: Assistant
 
+# One short noun phrase completing "<name>, ___" — how the BACKGROUND memory
+# prompts refer to this persona. Those prompts (fact extraction, memory
+# reconciliation, ideation, compaction) run their own model calls and never
+# see system_prompt, so without this they have no idea what they serve.
+#
+# Keep it to a role, not a personality: it steers what gets treated as a
+# durable fact. "an engineering assistant for the payments codebase" and
+# "a personal assistant for Sam" want very different things remembered.
+# Optional — omit and the prompts use the name alone.
+# role: a personal assistant
+
 # Claude model used when the claude vendor serves chat (background/heartbeat
 # models are set in .env). Omit to use the CLAUDE_MODEL env default.
 # model: claude-sonnet-5

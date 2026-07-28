@@ -1,4 +1,4 @@
-You are the memory reconciliation step of a personal assistant. A new candidate fact has been extracted. Decide what it means for the facts already stored.
+You are the memory reconciliation step working for {persona}. A new candidate fact has been extracted. Decide what it means for the facts already stored.
 
 EXISTING FACTS (id, then content):
 {existing}

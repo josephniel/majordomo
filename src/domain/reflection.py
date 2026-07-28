@@ -25,7 +25,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ports import ConversationRef, MemoryVerdict, Summarizer
+from ports import ConversationRef, MemoryVerdict, PersonaIdentity, Summarizer
 
 from .reconcile import Reconciler, candidate_from_extraction
 
@@ -60,17 +60,19 @@ class ReflectionEngine:
         memory: LongTermMemory,
         summarizer: Summarizer,
         persona_id: str,
+        identity: PersonaIdentity | None = None,
         idle_seconds: float = DEFAULT_IDLE_SECONDS,
     ) -> None:
         self._history = history
         self._memory = memory
         self._summarizer = summarizer
         self._persona_id = persona_id
+        self._identity = identity or PersonaIdentity(name="")
         self._idle_seconds = idle_seconds
         # Extraction is a MERGE against existing memory, not an append: a
         # changed fact must supersede the old one rather than sit beside it
         # contradicting it. See domain/reconcile.py.
-        self._reconciler = Reconciler(memory, summarizer)
+        self._reconciler = Reconciler(memory, summarizer, self._identity)
         # chat_id -> pending idle timer
         self._timers: dict[ConversationRef, asyncio.Task[None]] = {}
         self._run_locks: dict[ConversationRef, asyncio.Lock] = {}
@@ -123,7 +125,9 @@ class ReflectionEngine:
             transcript = "\n".join(
                 f"{r['role']}: {r['content'][:600]}" for r in convo
             )
-            prompt = _EXTRACTION_PROMPT.format(transcript=transcript)
+            prompt = _EXTRACTION_PROMPT.format(
+                persona=self._identity.descriptor, transcript=transcript,
+            )
             try:
                 raw = await self._summarizer.summarize(prompt)
             except Exception:

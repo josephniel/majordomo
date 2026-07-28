@@ -51,7 +51,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
-from ports import MemoryVerdict, Reconciliation, Summarizer
+from ports import MemoryVerdict, PersonaIdentity, Reconciliation, Summarizer
 
 from .reconcile import Reconciler, candidate_from_extraction
 
@@ -78,7 +78,7 @@ MAX_PROPOSALS = 6
 # actually said".
 IDEATION_CONFIDENCE = 0.6
 
-_IDEATION_PROMPT = """You are the reflective process of a personal assistant. \
+_IDEATION_PROMPT = """You are the reflective process working for {persona}. \
 Below is what the assistant currently knows. Your job is to notice things \
 that FOLLOW from these facts but are not written down anywhere.
 
@@ -144,14 +144,16 @@ class Ideator:
         memory: LongTermMemory,
         summarizer: Summarizer,
         reconciler: Reconciler | None = None,
+        identity: PersonaIdentity | None = None,
     ) -> None:
         self._memory = memory
         self._summarizer = summarizer
+        self._identity = identity or PersonaIdentity(name="")
         # Shares the reconciler with extraction on purpose. An inferred fact
         # is held to exactly the same checks as an observed one, including
         # the guard that a destructive verdict must name a fact the model was
         # actually shown.
-        self._reconciler = reconciler or Reconciler(memory, summarizer)
+        self._reconciler = reconciler or Reconciler(memory, summarizer, identity)
 
     async def run(
         self,
@@ -187,6 +189,7 @@ class Ideator:
 
         rendered = "\n".join(f"- id={f.id} ({f.scope}) {f.content}" for f in facts)
         prompt = _IDEATION_PROMPT.format(
+            persona=self._identity.descriptor,
             facts=rendered, max_proposals=MAX_PROPOSALS,
         )
         try:

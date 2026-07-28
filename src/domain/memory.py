@@ -51,6 +51,7 @@ from ports import (
     MemoryEntry,
     MemoryStore,
     Neighbor,
+    PersonaIdentity,
     Scored,
     Summarizer,
     ToolSpec,
@@ -60,7 +61,7 @@ from .memory_tools import build_memory_tools
 from .staleness import staleness_suffix
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    from collections.abc import Coroutine, Sequence
     from uuid import UUID
 
     from adapters.model.history import ConversationHistory
@@ -167,9 +168,18 @@ class LongTermMemory(Faculty):
         persona_id: str,
         summarizer: Summarizer,
         history: ConversationHistory | None = None,
+        identity: PersonaIdentity | None = None,
+        domain_keys: Sequence[str] = (),
     ) -> None:
         self._db = db
         self._persona_id = persona_id
+        self._identity = identity or PersonaIdentity(name="")
+        # The domain_key vocabulary the model is offered. Derived from the
+        # connectors THIS persona has enabled, because a hardcoded list
+        # both invents compartments the persona cannot reach and goes
+        # stale silently — the literal it replaced had never gained
+        # `budget` and still named connectors this persona lacks.
+        self._domain_keys = tuple(domain_keys)
         self._summarizer = summarizer
         self._history = history  # enables the history_search tool
         # Cache of memory_core rows so the sync system_prompt_section() can
@@ -523,7 +533,9 @@ class LongTermMemory(Faculty):
         return list(self._tools_cache)
 
     def system_prompt_section(self) -> str:
-        out = self.SYSTEM_PROMPT_HEADER
+        out = self.SYSTEM_PROMPT_HEADER.format(
+            domain_keys=", ".join(self._domain_keys) or "(no connectors enabled)",
+        )
         pinned = self._render_pinned()
         if pinned:
             out += "\n\n== Pinned facts (always current, verbatim) ==\n\n" + pinned
@@ -628,7 +640,10 @@ class LongTermMemory(Faculty):
     ) -> str:
         compartment = scope if not domain_key else f"{scope}/{domain_key}"
         lines = [
-            f"You are compacting a memory compartment for an agent. Compartment: {compartment}.",
+            (
+                f"You are compacting a memory compartment for "
+                f"{self._identity.descriptor}. Compartment: {compartment}."
+            ),
             "",
             "Goal: produce ONE running narrative that captures everything the agent",
             "should always know about this compartment. Plain text, dense, no bullet",
