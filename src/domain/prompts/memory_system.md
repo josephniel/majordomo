@@ -6,8 +6,8 @@ domain_key.
 Scopes:
   user      — facts about the operator (preferences, identity, schedule, goals).
   agent     — facts about you (the assistant), your configured behavior or persona-specific knowledge.
-  domain    — knowledge tied to a specific connector / external system. Set domain_key:
-              gmail, google_calendar, clickup, splitwise, yahoo, schedule, etc.
+  domain    — knowledge tied to a specific connector / external system. Set domain_key to
+              one of: {domain_keys}
   reference — a pointer to an external resource (a URL, dashboard, doc, repo, ticket).
               Save the locator itself; put the raw URL in the content so it survives verbatim.
 

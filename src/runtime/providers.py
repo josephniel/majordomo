@@ -140,6 +140,11 @@ def _build_memory(rt: RuntimeContext) -> ToolProvider:
         persona_id=rt.persona.id,
         summarizer=rt.summarizer,
         history=rt.conversation_history,  # enables history_search
+        identity=rt.persona.identity,
+        # Static config, so this cannot recurse into building providers.
+        domain_keys=[
+            n for n in CONNECTOR_NAMES if rt.persona.is_connector_enabled(n)
+        ],
     )
 
 

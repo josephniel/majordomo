@@ -291,6 +291,7 @@ class PersonaRuntime:
             memory=self.memory_faculty,
             summarizer=self.summarizer,
             persona_id=self.persona.id,
+            identity=self.persona.identity,
         )
 
 

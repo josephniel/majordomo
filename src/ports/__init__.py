@@ -13,6 +13,7 @@ shared contracts from here and never from a sibling's internals.
     conversation.py — ConversationRef (platform-agnostic chat identity)
     triggers.py  — TriggerEvent/TriggerSource (waking the agent unprompted)
     memory.py    — MemoryStore + MemoryEntry (the second brain's contract)
+    persona.py   — PersonaIdentity (who background prompts work for)
     documents.py — DocumentStore (RAG corpus contract)
 """
 from .context import ToolContext
@@ -42,6 +43,7 @@ from .memory import (
     Scored,
 )
 from .messaging import Attachment
+from .persona import PersonaIdentity
 from .protocols import (
     AttachmentIngestor,
     CanaryRunner,
@@ -97,6 +99,7 @@ __all__ = [
     "ModelRole",
     "Neighbor",
     "PartialReplyCallback",
+    "PersonaIdentity",
     "PersonaLike",
     "Reconciliation",
     "Scored",

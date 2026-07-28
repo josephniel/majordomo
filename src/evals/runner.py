@@ -50,6 +50,12 @@ VENDORS = {
     "ollama": (OllamaAgent, "OLLAMA_MODEL"),
 }
 
+# The harness's OWN fixture persona, not a leak of one. Scores are only
+# comparable across models and across runs if every model is handed a byte-
+# identical prompt, so this is deliberately fixed rather than read from an
+# instance — a persona edit must not silently move the baseline. It is also
+# why the cases below talk about reminders and facts: they are written
+# against this prompt.
 EVAL_SYSTEM_PROMPT = (
     "You are a personal assistant. Help with reminders, schedules, and "
     "remembering facts. Keep replies short. USE your tools — never claim "

@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from ports import PersonaIdentity
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -48,6 +50,12 @@ class Persona:
     dir: Path
     name: str
     system_prompt: str
+    # One short noun phrase completing "<name>, ___" — e.g. "a personal
+    # assistant" or "an engineering assistant for the payments codebase".
+    # Used by the background memory prompts, which run
+    # their own LLM calls and so never see `system_prompt`. Optional: unset
+    # just means those prompts refer to the persona by name alone.
+    role: str = ""
     enabled_connectors: dict[str, EnabledValue] = field(default_factory=dict)
     model: str | None = None
     # Layer 5: write tools require an in-chat operator approval per call.
@@ -90,6 +98,7 @@ class Persona:
             dir=persona_dir,
             name=str(cfg.get("name") or persona_id),
             system_prompt=str(cfg.get("system_prompt") or ""),
+            role=str(cfg.get("role") or "").strip(),
             # Canonical keys are `faculties:` (the agent's own — memory,
             # schedule, skills, code, files, documents, delegate) and
             # `connectors:` (external services). They merge into one policy
@@ -177,6 +186,15 @@ class Persona:
         return self.dir / "credentials"
 
     # ---- enablement queries ----
+
+    @property
+    def identity(self) -> PersonaIdentity:
+        """What the background memory prompts are told they work for.
+
+        Deliberately narrower than `system_prompt`: those prompts run once per
+        candidate fact, so they get the name and role and nothing else.
+        """
+        return PersonaIdentity(name=self.name, role=self.role)
 
     def background_view(self) -> Persona:
         """Narrow this persona to what background agents see (heartbeat, mail-watch).

@@ -502,7 +502,11 @@ async def _ideate_memory(
     memory = container.provider("memory")
     await memory.on_chat_startup()
     try:
-        ideator = Ideator(container.memory_faculty, container.summarizer)
+        ideator = Ideator(
+            container.memory_faculty,
+            container.summarizer,
+            identity=container.persona.identity,
+        )
         decisions = await ideator.run(scope=scope, domain_key=domain_key, dry_run=dry_run)
 
         if not decisions:
