@@ -139,6 +139,7 @@ class ChatPlatform(ABC):
         persona_id: str,
         comms_log: CommsLog | None = None,
         transcriber: Any | None = None,
+        vision: bool = True,
     ) -> ChatPlatform:
         """Build a platform instance from its raw config block + env vars.
 
@@ -151,7 +152,10 @@ class ChatPlatform(ABC):
         rather than a credential arrives already resolved: `transcriber` is
         built by the composition root from the SETTINGS table, because a
         platform reaching into os.environ for a vendor chain is a second
-        configuration surface that nothing else can see or audit.
+        configuration surface that nothing else can see or audit. `vision`
+        arrives the same way and for the same reason: whether any enabled
+        vendor can see an image is a property of the resolved model chain,
+        which a platform has no business inspecting.
         """
 
     def system_prompt_section(self) -> str:

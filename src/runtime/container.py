@@ -566,7 +566,32 @@ class PersonaRuntime:
             persona_id=self.persona.id,
             comms_log=comms,
             transcriber=self.transcriber,
+            vision=self._any_vendor_sees_images(),
         )
+
+    def _any_vendor_sees_images(self) -> bool:
+        """Report whether ANY enabled vendor can actually look at an image.
+
+        Read from settings rather than from built agents on purpose: the
+        platform's system prompt feeds ContextBuilder, which feeds the agent
+        chain, so asking the chain here would be a cycle. Vendor enablement
+        and vision capability are both pure functions of settings, so the
+        answer is available without constructing anything.
+        """
+        s = self.settings
+        for v in VENDORS:
+            if not v.enabled(s):
+                continue
+            override = v.supports_vision(s)
+            if override is not None:
+                if override:
+                    return True
+                continue
+            # backend None = the natively-integrated Claude adapter, which
+            # reads images and PDFs both.
+            if v.backend is None or getattr(v.backend, "SUPPORTS_VISION", False):
+                return True
+        return False
 
     # ---- agent ----
 

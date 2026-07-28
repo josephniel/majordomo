@@ -164,6 +164,7 @@ def _build_code(rt: RuntimeContext) -> ToolProvider:
         runs_dir=rt.persona.data_dir / "code_runs",
         image=rt.settings.code_exec_image,
         network=rt.settings.code_exec_network,
+        approval_required=rt.persona.write_approval,
     )
 
 

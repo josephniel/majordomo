@@ -256,3 +256,71 @@ class TestTheDomainVocabularyIsDerived:
             "budget shipped long ago; the old hardcoded prompt list never "
             "learned about it, which is exactly what this change prevents"
         )
+
+
+class TestCapabilityClaimsMatchConfiguration:
+    """Second sweep: prompts asserting CONFIGURATION, not just a role.
+
+    Same defect shape as the persona claim. A prompt that states a capability
+    the deployment does not have is worse than one that says nothing — the
+    model acts on it, and the user sees a confident answer about an image
+    nobody could see.
+    """
+
+    def test_code_exec_only_promises_approval_when_the_gate_is_on(self, tmp_path):
+        from domain.code_exec import CodeExecutor
+
+        gated = CodeExecutor(runs_dir=tmp_path, approval_required=True)
+        assert "needs the user's approval" in gated.system_prompt_section()
+
+        # write_approval: false is a supported persona setting.
+        ungated = CodeExecutor(runs_dir=tmp_path, approval_required=False)
+        assert "approval" not in ungated.system_prompt_section()
+        # The batching advice exists only to amortise approval taps, so it
+        # must not survive on its own.
+        assert "batch work" not in ungated.system_prompt_section()
+
+    def test_image_claim_tracks_whether_any_model_can_see(self):
+        from adapters.chat.telegram import TelegramPlatform
+
+        def section(vision):
+            p = TelegramPlatform(
+                token="t", allowed_user_ids={1}, persona_id="p", vision=vision,
+            )
+            return p.system_prompt_section()
+
+        assert "you receive their contents" in section(True)
+
+        blind = section(False)
+        assert "NO configured model can" in blind
+        assert "you receive their contents" not in blind
+
+    def test_a_text_only_chain_is_reported_as_blind(self):
+        """The README's zero-cost quickstart is Ollama-only, and the MLX
+        models in use have no vision — precisely the chain that used to be
+        told it could see images.
+        """
+        from runtime.vendors import VENDORS_BY_NAME
+
+        groq = VENDORS_BY_NAME["groq"]
+        assert groq.backend is not None
+        assert groq.backend.SUPPORTS_VISION is False, (
+            "groq is text-only; if this ever changes the platform prompt's "
+            "vision line must be re-checked"
+        )
+
+    def test_the_platform_prompt_does_not_claim_pdfs_are_readable(self):
+        """It used to say "images and PDFs and you receive their contents".
+
+        PDF readability depends on the documents faculty — ingestion is a
+        no-op when no AttachmentIngestor is mounted — so the platform layer
+        cannot honestly promise it. DocumentLibrary already states it, and
+        that section only renders when the faculty is enabled. My first cut
+        at this fix replaced one unconditional PDF claim with another.
+        """
+        from adapters.chat.telegram import TelegramPlatform
+
+        section = TelegramPlatform(
+            token="t", allowed_user_ids={1}, persona_id="p",
+        ).system_prompt_section()
+        assert "PDF" not in section

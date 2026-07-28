@@ -125,6 +125,7 @@ class TelegramPlatform(ChatPlatform):
         control_room_chat_id: int | None = None,
         comms_log: CommsLog | None = None,
         transcriber: CascadingTranscriber | None = None,
+        vision: bool = True,
     ) -> None:
         self._token = token
         self._allowed_user_ids = allowed_user_ids
@@ -132,6 +133,7 @@ class TelegramPlatform(ChatPlatform):
         self._control_room_chat_id = control_room_chat_id
         self._comms_log = comms_log
         self._transcriber = transcriber
+        self._vision = vision
         # Filled in during _post_init via bot.get_me() so we can detect
         # @-mentions of ourselves in the control room.
         self._username: str | None = None
@@ -154,6 +156,7 @@ class TelegramPlatform(ChatPlatform):
         persona_id: str,
         comms_log: CommsLog | None = None,
         transcriber: CascadingTranscriber | None = None,
+        vision: bool = True,
     ) -> TelegramPlatform:
         """Parse the telegram block of instances/<persona_id>/platform.yaml.
 
@@ -193,9 +196,24 @@ class TelegramPlatform(ChatPlatform):
             # no transcription vendor has a key, in which case voice keeps
             # its polite rejection.
             transcriber=transcriber,
+            # Whether ANY enabled vendor can actually see an image.
+            vision=vision,
         )
 
     def system_prompt_section(self) -> str:
+        # Conditional for the same reason voice_line is: claiming a
+        # capability the configured chain does not have makes the model
+        # answer about an image it cannot see. The zero-cost setup the
+        # README recommends (Ollama only) is exactly such a chain.
+        image_line = (
+            "The user can send images and you receive their contents."
+            if self._vision
+            else (
+                "The user can send images, but NO configured model can "
+                "view them — say so plainly instead of guessing at the "
+                "contents."
+            )
+        )
         voice_line = (
             "Voice notes and audio arrive transcribed, prefixed with "
             "[voice note] — treat them as the user's words and forgive "
@@ -203,7 +221,7 @@ class TelegramPlatform(ChatPlatform):
             if self._transcriber is not None
             else "Voice and audio are not supported."
         )
-        prompt = _PROMPT_PART.format(voice_line=voice_line)
+        prompt = _PROMPT_PART.format(image_line=image_line, voice_line=voice_line)
         if self._control_room_chat_id is None:
             return prompt
         # _username is fetched in _post_init, before the first agent turn
