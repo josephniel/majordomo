@@ -21,7 +21,9 @@ from telegram.error import BadRequest, RetryAfter
 
 from adapters.chat.telegram import (
     _STREAM_CURSOR,
+    _STREAM_EDIT_INTERVAL,
     _STREAM_MAX_INTERVAL,
+    _STREAM_MIN_INTERVAL,
     _TelegramReplyStream,
     _typed_prefix,
 )
@@ -176,6 +178,22 @@ class TestTelegramReplyStream:
         assert bot.visible.endswith(_STREAM_CURSOR)
         await s.finish("A partial answer here still going on a bit.")
         assert bot.visible == "A partial answer here still going on a bit."
+
+    def test_the_default_interval_stays_at_the_measured_ceiling(self):
+        """Repaint rate is bound by ROUND TRIP, not by rate limiting.
+
+        Measured against the live bot: hammering edits at 20 req/s attempted
+        drew no flood control at all and still only achieved 2.0/s, because
+        each editMessageText is a ~470ms round trip. Any interval worth
+        noticing is therefore pure added latency on top of a wall we already
+        hit — 0.4s cost a third of the achievable update rate.
+
+        This guards the number against being "tuned" back up by someone
+        reasoning about rate limits rather than measuring.
+        """
+        assert _STREAM_EDIT_INTERVAL <= 0.1
+        assert _STREAM_MIN_INTERVAL <= _STREAM_EDIT_INTERVAL
+        assert _STREAM_MAX_INTERVAL > _STREAM_EDIT_INTERVAL
 
     async def test_flood_control_backs_the_interval_off_and_keeps_it_there(self):
         """Backing off for one retry walks straight back into the limit."""
