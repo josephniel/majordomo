@@ -35,7 +35,7 @@ def messages(report, check):
                     for f in report.findings if f.check == check)
 
 
-DSN = "postgres://tc:pw@127.0.0.1:5433/db"
+DSN = "postgres://majordomo:pw@127.0.0.1:5433/db"
 
 
 class TestDroppedChainVendors:
@@ -210,18 +210,18 @@ class TestSharedDatabase:
 
     def test_the_dsn_in_the_message_is_redacted(self, tmp_path):
         root = make(tmp_path, {
-            "a": {"env": {"MEMORY_DATABASE_URL": "postgres://tc:hunter2@h/db",
+            "a": {"env": {"MEMORY_DATABASE_URL": "postgres://majordomo:hunter2@h/db",
                           "EMBEDDING_MODEL": "BAAI/bge-base-en-v1.5"}},
-            "b": {"env": {"MEMORY_DATABASE_URL": "postgres://tc:hunter2@h/db",
+            "b": {"env": {"MEMORY_DATABASE_URL": "postgres://majordomo:hunter2@h/db",
                           "EMBEDDING_MODEL": "BAAI/bge-small-en-v1.5"}},
         })
         assert "hunter2" not in messages(audit(root, "a"), "database")
 
     def test_separate_databases_may_differ(self, tmp_path):
         root = make(tmp_path, {
-            "a": {"env": {"MEMORY_DATABASE_URL": "postgres://tc:p@h/a",
+            "a": {"env": {"MEMORY_DATABASE_URL": "postgres://majordomo:p@h/a",
                           "EMBEDDING_MODEL": "BAAI/bge-base-en-v1.5"}},
-            "b": {"env": {"MEMORY_DATABASE_URL": "postgres://tc:p@h/b",
+            "b": {"env": {"MEMORY_DATABASE_URL": "postgres://majordomo:p@h/b",
                           "EMBEDDING_MODEL": "BAAI/bge-small-en-v1.5"}},
         })
         assert levels(audit(root, "a"), "database") == [OK]
@@ -246,7 +246,7 @@ class TestDuplication:
     def test_differing_values_are_not_reported(self, tmp_path):
         root = make(tmp_path, {
             "a": {"env": {"MEMORY_DATABASE_URL": DSN, "PRIMARY_LLM": "claude"}},
-            "b": {"env": {"MEMORY_DATABASE_URL": "postgres://tc:p@h/other",
+            "b": {"env": {"MEMORY_DATABASE_URL": "postgres://majordomo:p@h/other",
                           "PRIMARY_LLM": "groq"}},
         })
         assert "PRIMARY_LLM" not in messages(audit(root, "a"), "duplication")
@@ -299,7 +299,7 @@ class TestResolvedDump:
         """This output is what you paste into a diff or an issue."""
         root = make(tmp_path, {"a": {"env": {}}})
         out = render_resolution(root, "a", {"MEMORY_DATABASE_URL":
-                                            "postgres://tc:hunter2@h/db",
+                                            "postgres://majordomo:hunter2@h/db",
                                             "GROQ_API_KEY": "sk-secret"})
         assert "hunter2" not in out
         assert "sk-secret" not in out

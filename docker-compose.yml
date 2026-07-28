@@ -4,29 +4,37 @@
 #
 # Postgres is published on host port 5433 (NOT 5432) to avoid colliding with
 # any Postgres already on the host. Data lives in the external named volume
-# (created by `./manage db-up` if missing)
-# `tc_pgdata` (created out-of-band; holds the imported memory/history), so
+# `majordomo_pgdata` (created by `./manage db-up` if missing), so
 # `docker compose down` never destroys it.
+#
+# The project name is PINNED below. Compose otherwise derives it from the
+# directory name, so checking the repo out under any other folder name makes
+# compose treat the running Postgres as a stranger and fail with a
+# container-name conflict. Postgres is shared infrastructure — one database,
+# one container, many bot instances — so its identity must not depend on
+# where any particular clone happens to live.
+
+name: majordomo
 
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: telegram-bot-postgres
+    container_name: majordomo-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: telegram_claude
-      POSTGRES_USER: tc
-      POSTGRES_PASSWORD: tc_local_dev
+      POSTGRES_DB: majordomo
+      POSTGRES_USER: majordomo
+      POSTGRES_PASSWORD: majordomo_local_dev
     ports:
       - "127.0.0.1:5433:5432"
     volumes:
-      - tc_pgdata:/var/lib/postgresql/data
+      - majordomo_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tc -d telegram_claude"]
+      test: ["CMD-SHELL", "pg_isready -U majordomo -d majordomo"]
       interval: 5s
       timeout: 5s
       retries: 10
 
 volumes:
-  tc_pgdata:
+  majordomo_pgdata:
     external: true

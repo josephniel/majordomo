@@ -166,7 +166,7 @@ class PersonaRuntime:
             raise SystemExit(
                 f"persona {self.persona.id!r}: MEMORY_DATABASE_URL is not set. "
                 f"Add it to {self.persona.env_file} (e.g. "
-                f"postgres://tc:tc_local_dev@postgres:5432/telegram_claude when "
+                f"postgres://majordomo:majordomo_local_dev@postgres:5432/majordomo when "
                 f"running under docker-compose, or postgres://...@localhost:5432/... natively)."
             )
         self._assert_embedding_model_is_host_wide(dsn)

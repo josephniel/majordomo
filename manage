@@ -61,6 +61,14 @@ manage — majordomo stack
     bot [persona]                    run a bot only (assumes db is up)
     list-personas                    show every persona under instances/
 
+  Supervision (macOS LaunchAgents — one agent per persona):
+    agent-install [persona]          install + load a KeepAlive LaunchAgent
+    agent-uninstall [persona]        unload + remove that persona's agent
+    agent-restart [persona]          restart it (never kill the PID by hand —
+                                     KeepAlive respawns and the two bots then
+                                     fight over Telegram getUpdates)
+    agent-status                     list every installed majordomo agent
+
   Postgres:
     db-up                            start Postgres in background
     db-down                          stop the whole compose stack
@@ -117,10 +125,10 @@ USAGE
 cmd_up() {
     require_docker
     require_venv
-    docker volume create tc_pgdata >/dev/null
+    docker volume create majordomo_pgdata >/dev/null
     docker compose up -d postgres
     # Wait briefly for healthcheck.
-    until docker compose exec -T postgres pg_isready -U tc -d telegram_claude >/dev/null 2>&1; do
+    until docker compose exec -T postgres pg_isready -U majordomo -d majordomo >/dev/null 2>&1; do
         sleep 1
     done
     local persona; persona="$(persona_or_default "${1:-}")"
@@ -141,20 +149,101 @@ cmd_list_personas() {
     done
 }
 
+# ---- supervision (macOS LaunchAgents) ----
+#
+# One agent per persona. launchd keys services by label, so a shared label
+# would cap the box at a single bot; deriving the label from the persona is
+# what makes a second instance an install rather than an edit.
+
+AGENT_PREFIX="com.$(id -un).majordomo"
+AGENT_DIR="$HOME/Library/LaunchAgents"
+
+agent_label()     { echo "$AGENT_PREFIX.$1"; }
+agent_plist()     { echo "$AGENT_DIR/$(agent_label "$1").plist"; }
+agent_target()    { echo "gui/$(id -u)/$(agent_label "$1")"; }
+
+# Resolve the persona and fail loudly if it isn't real — installing an agent
+# for a typo'd persona yields a service that crash-loops every 15s forever.
+agent_persona() {
+    local p; p="$(persona_or_default "${1:-}")"
+    [[ -n "$p" ]] || die "no persona given and none could be detected. Try: ./manage list-personas"
+    [[ -f "instances/$p/persona.yaml" ]] || die "no such persona: $p (see ./manage list-personas)"
+    echo "$p"
+}
+
+cmd_agent_install() {
+    local persona; persona="$(agent_persona "${1:-}")"
+    local tpl="deploy/launchagent.plist.example"
+    [[ -f "$tpl" ]] || die "$tpl is missing"
+    local plist; plist="$(agent_plist "$persona")"
+    local target; target="$(agent_target "$persona")"
+
+    mkdir -p "$AGENT_DIR" logs
+    # Unload an existing copy first; bootstrap refuses to load over an
+    # already-registered label. bootout returns BEFORE launchd has finished
+    # unloading, and bootstrapping into that window fails with a bare
+    # "Input/output error" (errno 5) that names nothing — so wait for the
+    # label to actually disappear instead of assuming it has.
+    if launchctl print "$target" >/dev/null 2>&1; then
+        launchctl bootout "$target" 2>/dev/null || true
+        local waited=0
+        while launchctl print "$target" >/dev/null 2>&1; do
+            sleep 1
+            waited=$((waited + 1))
+            [[ $waited -lt 30 ]] || die "timed out waiting for $(agent_label "$persona") to unload"
+        done
+    fi
+
+    sed -e "s|__LABEL__|$(agent_label "$persona")|g" \
+        -e "s|__PROJECT_DIR__|$(pwd)|g" \
+        -e "s|__PERSONA__|$persona|g" \
+        "$tpl" > "$plist"
+    plutil -lint "$plist" >/dev/null || die "generated plist is malformed: $plist"
+
+    launchctl bootstrap "gui/$(id -u)" "$plist"
+    echo "[manage] installed $(agent_label "$persona")"
+    echo "[manage] logs: logs/$persona.out.log  logs/$persona.err.log"
+}
+
+cmd_agent_uninstall() {
+    local persona; persona="$(agent_persona "${1:-}")"
+    launchctl bootout "$(agent_target "$persona")" 2>/dev/null || true
+    rm -f "$(agent_plist "$persona")"
+    echo "[manage] removed $(agent_label "$persona")"
+}
+
+cmd_agent_restart() {
+    local persona; persona="$(agent_persona "${1:-}")"
+    launchctl kickstart -k "$(agent_target "$persona")"
+    echo "[manage] restarted $(agent_label "$persona")"
+}
+
+cmd_agent_status() {
+    # Columns are PID / last exit / label.
+    local found
+    found="$(launchctl list | grep "$AGENT_PREFIX" || true)"
+    if [[ -z "$found" ]]; then
+        echo "no majordomo agents installed"
+    else
+        echo "PID     EXIT    LABEL"
+        echo "$found"
+    fi
+}
+
 # ---- postgres ----
 
 cmd_db_up() {
     require_docker
     # The data volume is declared external so `db-down` can never delete it;
     # create it on first run.
-    docker volume create tc_pgdata >/dev/null
+    docker volume create majordomo_pgdata >/dev/null
     docker compose up -d postgres
 }
 cmd_db_down()   { require_docker; docker compose down; }
 cmd_db_status() { require_docker; docker compose ps postgres; }
 cmd_db_shell() {
     require_docker
-    docker compose exec postgres psql -U tc -d telegram_claude
+    docker compose exec postgres psql -U majordomo -d majordomo
 }
 
 # ---- connector passthrough ----
@@ -282,6 +371,10 @@ main() {
         bot)                cmd_chat "$@" ;;
         list-personas)      cmd_list_personas ;;
         doctor)             cmd_doctor "$@" ;;
+        agent-install)      cmd_agent_install "$@" ;;
+        agent-uninstall)    cmd_agent_uninstall "$@" ;;
+        agent-restart)      cmd_agent_restart "$@" ;;
+        agent-status)       cmd_agent_status ;;
         db-up)              cmd_db_up ;;
         db-down)            cmd_db_down ;;
         db-status)          cmd_db_status ;;

@@ -168,99 +168,24 @@ turns, because the eval prompts were 1.5k tokens and production's are ~15.5k.
 **Built-in faculties:** memory · schedule · skills · documents · code · files · delegate
 **Service connectors:** Gmail · Google Calendar · Yahoo Mail · ClickUp · Splitwise · budget-tracker
 
-## Architecture
+## Before you grant writes
 
-Hexagonal. The dependency rule: the application layer depends on ports and
-protocols, never on concrete implementations; only the composition root touches
-concretes and the environment. **That rule is enforced by `import-linter` in CI,
-not by convention** — six contracts, checked on every PR.
+The agent reads untrusted content — email bodies, task descriptions — while
+holding broad tool access, so prompt injection is the threat model rather than
+an edge case. Nothing mutates without your explicit tap, only your Telegram
+user id can talk to it, and there is no skill marketplace and no executable
+skills (the 2026 supply-chain attacks on agent-skill ecosystems informed that
+cut). The layered defenses and their failure modes are written up in
+[docs/architecture.md](docs/architecture.md#security--trust-model); found a
+hole? [SECURITY.md](SECURITY.md).
 
-```
-src/
-  ports/       the contracts leaf — Agent, ChatPlatform, ToolProvider,
-               ToolSpec/@tool, ToolContext. Stdlib only; no vendor SDK.
-  adapters/    chat/ (telegram) · model/ (LLM vendors + failover) ·
-               tools/ (gmail, calendar, clickup, ...) · trigger/ (webhooks,
-               watches, retention) · store/ (Postgres, embeddings, rerank) ·
-               comms/ (inter-bot bus)
-  domain/      the agent's own faculties: memory, schedule, skills, code,
-               files, documents, delegate
-  kernel/      the turn pipeline + command/recovery/proactive/ingestion
-  runtime/     config (the declared configuration surface), Persona,
-               RuntimeSettings (the only thing that reads config), doctor,
-               the composition root, entry point (`python -m runtime`)
-  evals/       vendor tool-calling replay + recall-quality harnesses
-```
-
-Adding an LLM vendor is one `VendorSpec` entry. Adding a tool provider is one
-`ProviderSpec`. Design decisions and the reasoning behind them live in
-[docs/ARCHITECTURE-NOTES.md](docs/ARCHITECTURE-NOTES.md).
-
-### Engineering standards
-
-Every pull request must pass all four:
-
-| Gate | State |
-|---|---|
-| `ruff check .` — 624 rules across 24 families, incl. security & complexity | **0 violations, no suppressions** |
-| `mypy --strict` — src, CLI and scripts | **0 errors, no `type: ignore`** |
-| `import-linter` — the layering contracts above | **6/6 kept** |
-| `pytest` — unit + integration against live Postgres | **1,144 passing** |
-
-There is not a single `# noqa` or `# type: ignore` in the codebase. That's a
-deliberate policy: the strict pass that got here turned up seven real
-bugs — including a dead inter-bot relay and two CLI commands that had never
-worked — several sitting exactly where a suppression would have felt justified.
-
-## Configuration
-
-**Where a setting goes is decided by SCOPE, not by kind** — is it true of the
-machine, or of this assistant?
+## Documentation
 
 | | |
 |---|---|
-| `config.yaml` | the machine: database, local retrieval models, retention, timezone |
-| `instances/<id>/config.yaml` | this assistant: vendor chain, per-role models |
-| `instances/<id>/persona.yaml` | identity: name, prompt, faculties |
-| `instances/_shared.env` | secrets every persona uses |
-| `instances/<id>/.env` | secrets unique to one persona |
-
-Everything also still works as a plain environment variable — that layer is a
-supported fallback, not a deprecation, so an `.env` from before the split keeps
-running unchanged. `./manage doctor` lists entries a config file has since
-superseded. See
-[ARCHITECTURE-NOTES](docs/ARCHITECTURE-NOTES.md#configuration-scope-not-kind).
-
-`./manage help` lists the rest: connector auth flows (`add`/`auth`),
-memory/schedule/skills/document introspection, retention (`prune`), the vendor
-canary, and both eval harnesses.
-
-## Security model
-
-**Read this before granting writes.** The agent reads untrusted content (email
-bodies, task descriptions) with broad tool access. Prompt injection is the
-threat model, and the defenses are layered:
-
-1. **Inbound allowlist** — only your Telegram user id(s) can talk to the bot.
-2. **Tool policy** — per-persona read-only defaults; `read_write` is an explicit grant per faculty/connector.
-3. **Write approvals** — every mutating call needs your tap, with routing fields rendered untruncated and first.
-4. **Sandbox** — code execution has no network and can only write its own scratch dir; outbound file delivery is path-restricted away from credentials.
-5. **Audit** — every approval decision is durably logged.
-
-No skill marketplace and no executable skills — the 2026 supply-chain attacks on
-agent-skill ecosystems informed that cut.
-
-Found something? [SECURITY.md](SECURITY.md).
-
-## Deploying
-
-One long-running process per persona, under any supervisor you like — the only
-hard rule is that exactly **one** instance polls Telegram per bot token, or the
-two fight over `getUpdates` and both fail.
-
-**[docs/DEPLOYING.md](docs/DEPLOYING.md)** has a macOS launchd template, the
-systemd shape, where the logs go, what a schema change needs, and the two Ollama
-server defaults that make a local-model setup look broken.
+| [docs/architecture.md](docs/architecture.md) | how it is built and why — layout, configuration model, security, memory, the deliberate scope cuts |
+| [docs/DEPLOYING.md](docs/DEPLOYING.md) | running it for real: supervisors, logs, schema changes, local-model tuning |
+| `./manage help` | connector auth, introspection, retention, the vendor canary, both eval harnesses |
 
 ## Contributing
 
@@ -273,6 +198,8 @@ server defaults that make a local-model setup look broken.
 
 Issues and PRs welcome — [CONTRIBUTING.md](CONTRIBUTING.md) covers the layering
 rule, the no-suppressions policy, and what a new vendor or connector needs.
+**[docs/architecture.md](docs/architecture.md)** is the one place the shape and
+the reasoning behind it are written down — read it before a first PR.
 
 ## License
 

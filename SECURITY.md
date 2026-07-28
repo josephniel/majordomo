@@ -3,7 +3,7 @@
 This is a self-hosted personal agent that holds real credentials (email,
 calendar, task trackers) while reading untrusted content. The threat model
 and layered defenses are described in README.md and
-docs/ARCHITECTURE-NOTES.md.
+docs/architecture.md.
 
 ## Reporting a vulnerability
 

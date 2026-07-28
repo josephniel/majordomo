@@ -122,7 +122,7 @@ class TestPersonasSharingADatabaseMustAgree:
 
     def test_a_conflict_on_one_database_is_refused(self, tmp_path, monkeypatch):
         monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
-        dsn = "postgres://tc:x@127.0.0.1:5433/shared"
+        dsn = "postgres://majordomo:x@127.0.0.1:5433/shared"
         root = self._project(tmp_path, {
             "alice": {"MEMORY_DATABASE_URL": dsn, "EMBEDDING_MODEL": "BAAI/bge-base-en-v1.5"},
             "bob": {"MEMORY_DATABASE_URL": dsn, "EMBEDDING_MODEL": "BAAI/bge-small-en-v1.5"},
@@ -140,7 +140,7 @@ class TestPersonasSharingADatabaseMustAgree:
 
     def test_the_refusal_does_not_leak_the_password(self, tmp_path, monkeypatch):
         monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
-        dsn = "postgres://tc:hunter2@127.0.0.1:5433/shared"
+        dsn = "postgres://majordomo:hunter2@127.0.0.1:5433/shared"
         root = self._project(tmp_path, {
             "alice": {"MEMORY_DATABASE_URL": dsn, "EMBEDDING_MODEL": "BAAI/bge-base-en-v1.5"},
             "bob": {"MEMORY_DATABASE_URL": dsn, "EMBEDDING_MODEL": "BAAI/bge-small-en-v1.5"},
@@ -156,10 +156,10 @@ class TestPersonasSharingADatabaseMustAgree:
         """Personas don't have to share a database, and two that don't are
         free to disagree — so the check is on the DSN, not a blanket ban."""
         monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
-        mine = "postgres://tc:x@127.0.0.1:5433/alice_db"
+        mine = "postgres://majordomo:x@127.0.0.1:5433/alice_db"
         root = self._project(tmp_path, {
             "alice": {"MEMORY_DATABASE_URL": mine, "EMBEDDING_MODEL": "BAAI/bge-base-en-v1.5"},
-            "bob": {"MEMORY_DATABASE_URL": "postgres://tc:x@127.0.0.1:5433/bob_db",
+            "bob": {"MEMORY_DATABASE_URL": "postgres://majordomo:x@127.0.0.1:5433/bob_db",
                     "EMBEDDING_MODEL": "BAAI/bge-small-en-v1.5"},
         })
         rt = self._runtime(root, "alice", {
@@ -173,7 +173,7 @@ class TestPersonasSharingADatabaseMustAgree:
         without resolving the default would compare '' to '' and pass here
         but fail the next test."""
         monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
-        dsn = "postgres://tc:x@127.0.0.1:5433/shared"
+        dsn = "postgres://majordomo:x@127.0.0.1:5433/shared"
         root = self._project(tmp_path, {
             "alice": {"MEMORY_DATABASE_URL": dsn},
             "bob": {"MEMORY_DATABASE_URL": dsn},
@@ -186,7 +186,7 @@ class TestPersonasSharingADatabaseMustAgree:
         Comparing the configured strings would call that a conflict and
         refuse to start a perfectly valid pair."""
         monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
-        dsn = "postgres://tc:x@127.0.0.1:5433/shared"
+        dsn = "postgres://majordomo:x@127.0.0.1:5433/shared"
         root = self._project(tmp_path, {
             "alice": {"MEMORY_DATABASE_URL": dsn},
             "bob": {"MEMORY_DATABASE_URL": dsn, "EMBEDDING_MODEL": Embedder().model_name},
@@ -198,7 +198,7 @@ class TestPersonasSharingADatabaseMustAgree:
         self, tmp_path, monkeypatch
     ):
         monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
-        dsn = "postgres://tc:x@127.0.0.1:5433/shared"
+        dsn = "postgres://majordomo:x@127.0.0.1:5433/shared"
         root = self._project(tmp_path, {"alice": {"MEMORY_DATABASE_URL": dsn}})
         broken = root / "instances" / "broken"
         broken.mkdir(parents=True)

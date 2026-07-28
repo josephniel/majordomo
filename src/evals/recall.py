@@ -55,7 +55,7 @@ DEFAULT_CASES = Path(__file__).resolve().parents[2] / "evals" / "recall_cases.ya
 
 # The SEPARATE test database, matching tests/conftest.py and the CI service.
 #
-# This fallback said `telegram_claude` — the LIVE database — which contradicted
+# This fallback said `majordomo` — the LIVE database — which contradicted
 # both conftest and the architecture notes' claim that "tests and evals default
 # to a separate database". Nobody noticed because the harness is careful with
 # DATA (throwaway persona, deleted in a finally) and that is the risk anyone
@@ -63,7 +63,7 @@ DEFAULT_CASES = Path(__file__).resolve().parents[2] / "evals" / "recall_cases.ya
 # applying the schema, running the benchmark migrated production.
 DEFAULT_DSN = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgres://tc:tc_local_dev@127.0.0.1:5433/telegram_claude_test",
+    "postgres://majordomo:majordomo_local_dev@127.0.0.1:5433/majordomo_test",
 )
 
 # The k values that matter. 4 mirrors AUTO_RECALL_LIMIT (what gets injected
@@ -300,9 +300,9 @@ async def _require_schema(db: MemoryDatabase, dsn: str) -> None:
         f"be able to migrate a database it doesn't own.\n"
         f"If this is a scratch database you own, re-run with --migrate.\n"
         f"To create the standard test database:\n"
-        f"    docker exec telegram-bot-postgres \\\n"
-        f"        psql -U tc -d postgres -c "
-        f"'CREATE DATABASE telegram_claude_test OWNER tc;'"
+        f"    docker exec majordomo-postgres \\\n"
+        f"        psql -U majordomo -d postgres -c "
+        f"'CREATE DATABASE majordomo_test OWNER majordomo;'"
     )
 
 

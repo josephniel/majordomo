@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Supervisor for ONE bot instance (one persona).
+
+  The label is per-persona on purpose: launchd keys services by label, so a
+  single shared label would let only one bot exist. `__LABEL__` below is
+  rendered as com.<user>.majordomo.<persona>, which is what makes running a
+  second persona a matter of installing a second agent rather than editing
+  this one.
+
+  Do not install this file by hand — `./manage agent-install <persona>`
+  fills the placeholders in and loads it. See docs/DEPLOYING.md.
+
+  Placeholders: __LABEL__  __PROJECT_DIR__  __PERSONA__
+-->
+<plist version="1.0">
+	<dict>
+		<key>Label</key>
+		<string>__LABEL__</string>
+
+		<!-- Runs as the logged-in user (LaunchAgent, not root Daemon) so it keeps
+		     access to ~/.claude subscription auth and the user's Docker. Keep the
+		     project under ~/projects (NOT ~/Desktop or ~/Documents) so macOS TCC
+		     doesn't block it. -->
+		<key>ProgramArguments</key>
+		<array>
+			<string>/bin/bash</string>
+			<string>-c</string>
+			<string>cd __PROJECT_DIR__ &amp;&amp; exec ./manage up __PERSONA__</string>
+		</array>
+
+		<!-- Explicit PATH so docker / node / npx resolve regardless of shell profile. -->
+		<key>EnvironmentVariables</key>
+		<dict>
+			<key>PATH</key>
+			<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		</dict>
+
+		<key>WorkingDirectory</key>
+		<string>__PROJECT_DIR__</string>
+
+		<key>RunAtLoad</key>
+		<true/>
+		<key>KeepAlive</key>
+		<true/>
+		<key>ThrottleInterval</key>
+		<integer>15</integer>
+
+		<!-- Per-persona log files, for the same reason the label is per-persona:
+		     two instances sharing one file interleave into nonsense. -->
+		<key>StandardOutPath</key>
+		<string>__PROJECT_DIR__/logs/__PERSONA__.out.log</string>
+		<key>StandardErrorPath</key>
+		<string>__PROJECT_DIR__/logs/__PERSONA__.err.log</string>
+	</dict>
+</plist>

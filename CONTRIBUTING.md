@@ -1,6 +1,6 @@
 # Contributing
 
-Small project, sharp opinions — read `docs/ARCHITECTURE-NOTES.md` first;
+Small project, sharp opinions — read `docs/architecture.md` first;
 it records why things are the way they are (including what was deliberately
 NOT built).
 

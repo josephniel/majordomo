@@ -131,16 +131,16 @@ class TestScopeIsEnforced:
 class TestSecretsStayOutOfCommittedFiles:
     def test_a_variable_reference_is_resolved(self, project):
         r = resolver(project, host={"database": {"url": "${MEMORY_DATABASE_URL}"}},
-                     env={"MEMORY_DATABASE_URL": "postgres://tc:pw@h/db"})
+                     env={"MEMORY_DATABASE_URL": "postgres://majordomo:pw@h/db"})
         assert r.resolve(SETTINGS_BY_FIELD["memory_database_url"]).value \
-            == "postgres://tc:pw@h/db"
+            == "postgres://majordomo:pw@h/db"
 
     def test_a_reference_can_be_embedded_in_a_larger_string(self, project):
         r = resolver(project,
-                     host={"database": {"url": "postgres://tc:${PW}@127.0.0.1/db"}},
+                     host={"database": {"url": "postgres://majordomo:${PW}@127.0.0.1/db"}},
                      env={"PW": "hunter2"})
         assert r.resolve(SETTINGS_BY_FIELD["memory_database_url"]).value \
-            == "postgres://tc:hunter2@127.0.0.1/db"
+            == "postgres://majordomo:hunter2@127.0.0.1/db"
 
     def test_an_unbacked_reference_falls_through_rather_than_blanking(self, project):
         """`${NOPE}` with nothing behind it must mean "unset", so the env
@@ -157,13 +157,13 @@ class TestSecretsStayOutOfCommittedFiles:
 
     def test_a_literal_secret_in_a_committed_file_is_a_finding(self, project):
         """config.yaml is committed and this repo is public."""
-        r = resolver(project, host={"database": {"url": "postgres://tc:hunter2@h/db"}})
+        r = resolver(project, host={"database": {"url": "postgres://majordomo:hunter2@h/db"}})
         found = r.literal_secrets()
         assert [s.field for s, _ in found] == ["memory_database_url"]
 
     def test_a_referenced_secret_is_not_a_finding(self, project):
         r = resolver(project, host={"database": {"url": "${MEMORY_DATABASE_URL}"}},
-                     env={"MEMORY_DATABASE_URL": "postgres://tc:hunter2@h/db"})
+                     env={"MEMORY_DATABASE_URL": "postgres://majordomo:hunter2@h/db"})
         assert r.literal_secrets() == []
 
     def test_every_credential_is_marked_secret(self):

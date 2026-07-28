@@ -22,14 +22,14 @@ from evals import recall
 
 class TestTheDefaultTargetIsNotProduction:
     def test_default_dsn_names_the_test_database(self, monkeypatch):
-        """The fallback said `telegram_claude`, contradicting conftest AND
+        """The fallback said `majordomo`, contradicting conftest AND
         the architecture notes' claim that evals default to a separate
         database. The doc was right; the code was not."""
         monkeypatch.delenv("TEST_DATABASE_URL", raising=False)
         import importlib
         reloaded = importlib.reload(recall)
         try:
-            assert reloaded.DEFAULT_DSN.endswith("/telegram_claude_test")
+            assert reloaded.DEFAULT_DSN.endswith("/majordomo_test")
         finally:
             importlib.reload(recall)
 
@@ -116,7 +116,7 @@ class TestTheRefusalIsUseful:
 
         with pytest.raises(SystemExit) as exc:
             await recall._require_schema(
-                NoTables(), "postgres://tc:hunter2@127.0.0.1:5433/scratch"
+                NoTables(), "postgres://majordomo:hunter2@127.0.0.1:5433/scratch"
             )
         msg = str(exc.value)
         assert "--migrate" in msg
@@ -131,10 +131,10 @@ class TestTheRefusalIsUseful:
 
         with pytest.raises(SystemExit) as exc:
             await recall._require_schema(
-                NoTables(), "postgres://tc:hunter2@127.0.0.1:5433/scratch"
+                NoTables(), "postgres://majordomo:hunter2@127.0.0.1:5433/scratch"
             )
         assert "hunter2" not in str(exc.value)
-        assert "tc:***@" in str(exc.value)
+        assert "majordomo:***@" in str(exc.value)
 
     async def test_a_present_schema_passes_quietly(self):
         class HasTables:

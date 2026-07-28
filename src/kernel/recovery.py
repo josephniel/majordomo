@@ -1,7 +1,7 @@
 """Hallucination detection & recovery (Layers 3 / 3b / 3c / 3d).
 
 Weak vendors sometimes SAY they did something without calling the tool.
-The claim kinds recover differently (see docs/ARCHITECTURE-NOTES.md):
+The claim kinds recover differently (see docs/architecture.md):
 a missed memory save is re-extractable later (trigger reflection early); a
 missed schedule, send or record is not — the user walks away trusting a
 reminder, an email or a ledger entry that doesn't exist — so those get an
@@ -263,7 +263,7 @@ class RecoveryMixin:
     #
     # These were a docstring promise. A mixin that reads `self._platform`
     # without declaring it is only correct as long as every host happens to
-    # define it, which no tool was checking — ARCHITECTURE-NOTES flagged this
+    # define it, which no tool was checking — architecture.md flagged this
     # coupling as "documented only in prose", and prose does not fail a
     # build. Declared under TYPE_CHECKING so they stay annotations: the host
     # owns the real attributes, this block only states what is required.
