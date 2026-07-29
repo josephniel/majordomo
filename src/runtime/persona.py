@@ -82,6 +82,12 @@ class Persona:
     # full tool-schema token cost per fire, so keep this minimal.
     background_tools: dict[str, EnabledValue] | None = None
 
+    # True only on the view returned by background_view(). Agents read it to
+    # stamp ToolContext.background, which is what lets the approval gate tell
+    # an unattended trigger fire from the operator typing. Never set from YAML:
+    # it describes which view you are holding, not a configurable preference.
+    background: bool = False
+
     @classmethod
     def load(cls, persona_id: str, project_root: Path) -> Persona:
         persona_dir = project_root / "instances" / persona_id
@@ -214,7 +220,7 @@ class Persona:
                 )
                 for name, v in self.enabled_connectors.items()
             }
-        return replace(self, enabled_connectors=enabled)
+        return replace(self, enabled_connectors=enabled, background=True)
 
     def is_connector_enabled(self, connector_name: str) -> bool:
         v = self.enabled_connectors.get(connector_name)

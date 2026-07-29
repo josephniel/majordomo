@@ -85,6 +85,7 @@ class _FakeRegistry:
 
 class _FakePersona:
     model = None
+    background = False
 
     def allowed_tool_names(self, c):
         return []
