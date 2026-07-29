@@ -226,7 +226,9 @@ def _build_clickup(rt: RuntimeContext) -> ToolProvider:
 
 def _build_splitwise(rt: RuntimeContext) -> ToolProvider:
     from adapters.tools import SplitwiseConnector
-    return SplitwiseConnector(config=rt.config)
+    return SplitwiseConnector(
+        config=rt.config, default_timezone=rt.settings.schedule_timezone,
+    )
 
 
 def _build_budget(rt: RuntimeContext) -> ToolProvider:
