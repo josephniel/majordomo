@@ -106,6 +106,9 @@ class BudgetClient:
             "POST", f"/accounts/{account_id}/split", body=payload
         ))
 
+    async def delete_transaction(self, transaction_id: int) -> dict[str, Any]:
+        return json_object(await self._request("DELETE", f"/transactions/{transaction_id}"))
+
 
 # ---- formatting helpers ----
 
@@ -124,19 +127,30 @@ def _format_account(a: dict[str, Any]) -> str:
 
 
 def _format_tags(tags: list[dict[str, Any]], indent: str = "") -> list[str]:
+    """Render the tag tree, saying outright which ids a transaction may use.
+
+    A parent tag is a heading, not a category: the API answers one with
+    "Cannot tag transactions with a parent tag". Rendering parents and leaves
+    identically — as this used to, distinguished only by indentation — invites
+    a model to pick the parent whose name matches best ("Family & Friends")
+    and then loop when it is refused, because nothing in the listing told it
+    the id was unusable or which id to use instead.
+    """
     lines: list[str] = []
     for t in tags:
+        children = t.get("children") or []
         kinds = []
         if t.get("allow_debit"):
             kinds.append("debit")
         if t.get("allow_credit"):
             kinds.append("credit")
-        lines.append(
-            f"{indent}- [{t.get('id', '?')}] {t.get('name', '(unnamed)')} "
-            f"({'/'.join(kinds) or 'none'})"
-        )
-        if t.get("children"):
-            lines.extend(_format_tags(t["children"], indent + "  "))
+        head = f"{indent}- [{t.get('id', '?')}] {t.get('name', '(unnamed)')}"
+        if children:
+            kid_ids = ", ".join(str(c.get("id", "?")) for c in children)
+            lines.append(f"{head} — GROUP, NOT selectable; use a subtag below ({kid_ids})")
+        else:
+            lines.append(f"{head} — selectable for {' or '.join(kinds) or 'nothing'}")
+        lines.extend(_format_tags(children, indent + "  "))
     return lines
 
 
@@ -149,6 +163,95 @@ def _format_transaction(tx: dict[str, Any]) -> str:
         f"- [{tx.get('id', '?')}] {when} {tx.get('type', '?')} "
         f"{tx.get('amount', '?')} — {desc}{cp}{f' [{tag}]' if tag else ''}"
     )
+
+
+def _index_tags(
+    tags: list[dict[str, Any]], out: dict[int, dict[str, Any]] | None = None
+) -> dict[int, dict[str, Any]]:
+    """Flatten the tag tree to {id: tag}, so a tag_id can be judged before posting."""
+    index = {} if out is None else out
+    for t in tags:
+        tid = t.get("id")
+        if isinstance(tid, int):
+            index[tid] = t
+        _index_tags(t.get("children") or [], index)
+    return index
+
+
+def _tag_problem(tag_id: int, kind: str, index: dict[int, dict[str, Any]]) -> str:
+    """Say why `tag_id` cannot carry a `kind` transaction, or "" if it can.
+
+    The API's own refusals are correct but arrive without the tag tree beside
+    them, so "use a subtag instead" left a model guessing which subtag. Naming
+    the actual candidates here is what turns the refusal into a correction.
+    """
+    tag = index.get(tag_id)
+    if tag is None:
+        return f"tag_id {tag_id} does not exist — pick one from list_tags"
+    children = tag.get("children") or []
+    if children:
+        options = ", ".join(
+            f"[{c.get('id')}] {c.get('name')}" for c in children
+        )
+        return (
+            f"tag_id {tag_id} ({tag.get('name')}) is a GROUP and cannot be used "
+            f"on a transaction. Choose one of its subtags: {options}"
+        )
+    allowed = kind == "credit" and tag.get("allow_credit")
+    allowed = allowed or (kind == "debit" and tag.get("allow_debit"))
+    if not allowed:
+        takes = []
+        if tag.get("allow_debit"):
+            takes.append("debit")
+        if tag.get("allow_credit"):
+            takes.append("credit")
+        alternatives = ", ".join(
+            f"[{t.get('id')}] {t.get('name')}"
+            for t in index.values()
+            if not (t.get("children") or []) and t.get(f"allow_{kind}")
+        )
+        return (
+            f"tag_id {tag_id} ({tag.get('name')}) does not accept {kind} "
+            f"transactions — it takes {' or '.join(takes) or 'nothing'}. "
+            f"Tags that accept {kind}: {alternatives}"
+        )
+    return ""
+
+
+async def _tag_index_or_none(client: BudgetClient) -> dict[int, dict[str, Any]] | None:
+    """Return the tag index, or None when it could not be read.
+
+    None means "skip the pre-check" rather than "fail the write": the API still
+    validates, and a flaky GET should not cost the user a recorded expense.
+    """
+    try:
+        return _index_tags(await client.list_tags())
+    except Exception:
+        log.warning("budget: could not read tags to pre-check tag_id", exc_info=True)
+        return None
+
+
+async def _reject_bad_tag(client: BudgetClient, tag_id: int, kind: str) -> ToolResult | None:
+    """Return the refusal for a tag that cannot carry this transaction, else None."""
+    index = await _tag_index_or_none(client)
+    if index is None:
+        return None
+    problem = _tag_problem(tag_id, kind, index)
+    return ToolResult.error(problem) if problem else None
+
+
+def _as_transaction_id(raw: Any) -> int | None:
+    """Return a usable row id, or None when the model sent prose.
+
+    Models answer "the latest entry" with the words rather than the number, and
+    an unparsed id would reach the API as a URL segment.
+    """
+    if isinstance(raw, bool) or raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _read_tools(client: BudgetClient) -> list[ToolSpec]:
@@ -210,17 +313,26 @@ def _read_tools(client: BudgetClient) -> list[ToolSpec]:
 
 
 def _write_tools(client: BudgetClient) -> list[ToolSpec]:
-    """Record money moving — a single transaction, or a split across people."""
+    """Record a solo transaction — the user paid alone, or owes someone."""
     @tool(
         "record_transaction",
-        "Record a SOLO transaction in the budget tracker ledger (for a "
-        "payment shared with other people use record_split instead). Use "
-        "for every expense/income the user mentions, even when it was "
-        "also logged elsewhere (e.g. Splitwise). Args: account_id and tag_id "
-        "(from list_accounts / list_tags), amount (positive number), type "
-        "('debit' = money out, the default; 'credit' = money in), "
-        "description, counterparty (who was paid / who paid, optional), "
-        "occurred_at (ISO datetime, optional — defaults to now).",
+        "Record a SOLO transaction in the budget tracker ledger. Use it when "
+        "the user paid alone, AND when someone ELSE paid and the user owes "
+        "them — that case is a debit on the 'People' account with the lender "
+        "as counterparty, which reduces what they owe the user. Only use "
+        "record_split when the USER paid and others owe him a share.\n\n"
+        "tag_id RULES — it must be a LEAF tag, never a GROUP: list_tags marks "
+        "every line either 'GROUP, NOT selectable' or 'selectable for "
+        "debit/credit'. A group ('Family & Friends') is refused; its subtag "
+        "('Family Loans (Lent)') is what you want. The tag must also accept "
+        "the type you are sending — some take debit only.\n\n"
+        "Spending accounts are also balance-checked: a debit larger than a "
+        "cash/debit-card account's balance is refused, so if the money did "
+        "not really leave that account, you have the wrong account.\n\n"
+        "Args: account_id and tag_id (from list_accounts / list_tags), amount "
+        "(positive number), type ('debit' = money out, the default; 'credit' "
+        "= money in), description, counterparty (who was paid / who paid, "
+        "optional), occurred_at (ISO datetime, optional — defaults to now).",
         {
             "type": "object",
             "properties": {
@@ -256,10 +368,15 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
     async def record_transaction_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         try:
             account_id = int(args["account_id"])
+            kind = args.get("type") or "debit"
+            tag_id = int(args["tag_id"])
+            bad = await _reject_bad_tag(client, tag_id, kind)
+            if bad is not None:
+                return bad
             payload: dict[str, Any] = {
-                "type": args.get("type") or "debit",
+                "type": kind,
                 "amount": args["amount"],
-                "tag_id": int(args["tag_id"]),
+                "tag_id": tag_id,
                 "occurred_at": args.get("occurred_at") or datetime.now(UTC).isoformat(),
             }
             if args.get("description"):
@@ -278,17 +395,29 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
         except Exception as e:
             return ToolResult.error(f"error: {e}")
 
+    return [record_transaction_tool]
+
+
+def _split_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Record a payment the user made and others owe a share of."""
     @tool(
         "record_split",
-        "Record a payment SPLIT with other people: the user paid the full "
+        "Record a payment SPLIT with other people: THE USER PAID the full "
         "amount, others owe their shares. Books the user's own share "
         "(total minus all shares) as the expense and each person's share "
-        "as a loan in the people ledger — atomically. Args: account_id "
-        "(paying account) and tag_id (from list_accounts / list_tags), "
-        "total_amount (the FULL amount paid), shares (one entry per OTHER "
-        "person: their name + what they owe; do NOT include the user), "
-        "description, occurred_at (ISO datetime, optional — defaults to "
-        "now).",
+        "as a loan in the people ledger — atomically.\n\n"
+        "Only for when the USER paid. If someone ELSE paid and the user owes "
+        "them a share, this is the wrong tool — use record_transaction as a "
+        "debit on the 'People' account instead. account_id must be a real "
+        "spending account (cash / bank / card); the 'People' account is not "
+        "valid here and is refused.\n\n"
+        "tag_id must be a LEAF tag that accepts debit — list_tags marks which. "
+        "A GROUP tag is refused.\n\n"
+        "Args: account_id (paying account) and tag_id (from list_accounts / "
+        "list_tags), total_amount (the FULL amount paid), shares (one entry "
+        "per OTHER person: their name + what they owe; do NOT include the "
+        "user), description, occurred_at (ISO datetime, optional — defaults "
+        "to now).",
         {
             "type": "object",
             "properties": {
@@ -338,6 +467,12 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
     async def record_split_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         try:
             account_id = int(args["account_id"])
+            tag_id = int(args["tag_id"])
+            # A split books the user's own share as a debit, so the tag must
+            # accept one — same pre-check, same reason.
+            bad = await _reject_bad_tag(client, tag_id, "debit")
+            if bad is not None:
+                return bad
             shares = [
                 {"counterparty": str(s["person"]).strip()[:120], "amount": s["amount"]}
                 for s in (args["shares"] or [])
@@ -345,7 +480,7 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
             payload: dict[str, Any] = {
                 "total_amount": args["total_amount"],
                 "shares": shares,
-                "tag_id": int(args["tag_id"]),
+                "tag_id": tag_id,
                 "occurred_at": args.get("occurred_at") or datetime.now(UTC).isoformat(),
             }
             if args.get("description"):
@@ -364,8 +499,45 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
         except Exception as e:
             return ToolResult.error(f"error: {e}")
 
-    return [record_transaction_tool, record_split_tool]
+    return [record_split_tool]
 
+
+def _undo_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Remove a row that should not have been written."""
+    @tool(
+        "delete_transaction",
+        "Delete ONE budget transaction by its id (the number in [brackets] "
+        "from recent_transactions). Use to undo a mistaken entry — most often "
+        "a record_transaction written for the full amount when the purchase "
+        "was really a split, which record_split then duplicated. Deletes only "
+        "the single row given: a split booked several rows (your own share, "
+        "plus one per person), so removing a whole split means calling this "
+        "once per id. Confirm the id against recent_transactions first — this "
+        "cannot be undone.",
+        {
+            "type": "object",
+            "properties": {
+                "transaction_id": {
+                    "type": "integer",
+                    "description": "Transaction id from recent_transactions.",
+                },
+            },
+            "required": ["transaction_id"],
+        },
+    )
+    @_guarded
+    async def delete_transaction_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        raw = args.get("transaction_id")
+        transaction_id = _as_transaction_id(raw)
+        if transaction_id is None:
+            return ToolResult.error(
+                f"transaction_id must be a number from recent_transactions, got {raw!r}"
+            )
+        out = await client.delete_transaction(transaction_id)
+        status = out.get("status") or "deleted"
+        return ToolResult.ok(f"transaction {transaction_id}: {status}")
+
+    return [delete_transaction_tool]
 
 class BudgetConnector(Connector):
     name = "budget"
@@ -382,7 +554,7 @@ class BudgetConnector(Connector):
         "track",
         "ledger",
     )
-    WRITE_TOOLS = frozenset({"record_transaction", "record_split"})
+    WRITE_TOOLS = frozenset({"record_transaction", "record_split", "delete_transaction"})
     # Both write a ledger row the user will later rely on — chat Layer 3d.
     RECORD_CLAIM_TOOLS = frozenset({"record_transaction", "record_split"})
 
@@ -394,6 +566,7 @@ class BudgetConnector(Connector):
         # write
         "record_transaction",
         "record_split",
+        "delete_transaction",
     ]
 
     STATUS: ClassVar[dict[str, str]] = {
@@ -402,6 +575,7 @@ class BudgetConnector(Connector):
         "recent_transactions": "Reading recent transactions",
         "record_transaction": "Recording the transaction",
         "record_split": "Recording the split payment",
+        "delete_transaction": "Deleting the budget transaction",
     }
 
     SYSTEM_PROMPT_SECTION = """== Budget tracker ==
@@ -456,7 +630,12 @@ the ledger books their share as expense and the rest as loans)."""
     # ---- tools ----
 
     def _build_tools_for_profile(self, client: BudgetClient) -> list[Any]:
-        return [*_read_tools(client), *_write_tools(client)]
+        return [
+            *_read_tools(client),
+            *_write_tools(client),
+            *_split_tools(client),
+            *_undo_tools(client),
+        ]
 
     # ---- CLI ----
 
