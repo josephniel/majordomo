@@ -89,6 +89,26 @@ PRIOR_PEEK_ROWS = 12
 # log and compact only what we fetched (never more — cutoff is explicit).
 COMPACTION_FETCH_LIMIT = 5_000
 
+# Markers that mean the summarizer kept writing the transcript rather than
+# summarizing it. A legitimate narrative paragraph never opens a speaker turn
+# and never contains a tool call, so any of these is proof of a continuation.
+# This is not cosmetic: a fabricated turn folded into history is indistinguishable
+# from a real one afterwards, and the model then reports invented work as done.
+_TRANSCRIPT_MARKERS = (
+    "[tool]",
+    "user:",
+    "assistant:",
+    "system:",
+    "<function=",
+)
+
+
+def _looks_like_transcript(summary: str) -> bool:
+    """Report whether a 'summary' is really more transcript."""
+    low = summary.lower()
+    return any(marker in low for marker in _TRANSCRIPT_MARKERS)
+
+
 # An async callable that, given the user's message text, returns a context
 # block of relevant long-term memories ("" when nothing relevant).
 MemoryRecaller = Callable[[str], Awaitable[str]]
@@ -926,10 +946,26 @@ class CascadingAgent(Agent):
             else:
                 transcript_lines.append(f"{role}: {content}")
         transcript = "\n".join(transcript_lines)
-        prompt = (
-            "Summarize the conversation below into a dense narrative paragraph "
+        instruction = (
+            "Summarize the transcript above into a dense narrative paragraph "
             "(<= 250 tokens). Preserve concrete facts (names, dates, requests, "
-            "decisions). Drop filler. Output only the summary, no preamble.\n\n"
-            f"---\n{transcript}\n---"
+            "decisions) and record what actually happened, including attempts "
+            "that FAILED or were refused — never describe an action as done "
+            "unless the transcript shows it succeeded. Do NOT continue the "
+            "conversation, do not write any further 'user:', 'assistant:' or "
+            "'system:' lines, and do not invent tool calls. Output only the "
+            "summary paragraph, no preamble."
         )
-        return await self._summarizer.summarize(prompt)
+        # The instruction is repeated below the transcript, not only above it: a
+        # summarizer fed thousands of tokens of `role: content` lines will
+        # otherwise autocomplete the format instead of summarizing it, and the
+        # invented turns land in history as though they had happened.
+        prompt = f"{instruction}\n\n---\n{transcript}\n---\n\n{instruction}"
+        summary = await self._summarizer.summarize(prompt)
+        if _looks_like_transcript(summary):
+            log.warning(
+                "summarizer continued the transcript instead of summarizing it; "
+                "discarding (chat %s)", self._chat_id,
+            )
+            return ""
+        return summary
