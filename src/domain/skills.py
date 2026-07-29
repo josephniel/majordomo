@@ -38,7 +38,8 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import yaml
@@ -46,7 +47,6 @@ import yaml
 from ports import Faculty, ToolContext, ToolResult, ToolSpec, tool
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -59,6 +59,21 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,63}$")
 # Injection caps: keyword matches must never crowd out the conversation.
 MAX_INJECTED_SKILLS = 2
 MAX_INJECTED_CHARS_PER_SKILL = 3000
+
+# Where a note's previous body goes before an overwrite. Dot-prefixed so the
+# scanner, which already skips "_" and "." names, never reads a snapshot as a
+# live instruction.
+_HISTORY_DIR = ".history"
+_MAX_HISTORY = 10
+
+
+# Who wrote a note. Recorded because the store is now mixed-authorship, and
+# "did I write this or did the bot?" is the first question asked of a rule that
+# turns out to be wrong.
+SOURCE_OPERATOR = "operator"   # hand-edited, or written outside the agent
+SOURCE_IN_TURN = "in_turn"     # the model called skill_save during a chat
+SOURCE_MINED = "mined"         # background mining of past conversations
+VALID_SOURCES = (SOURCE_OPERATOR, SOURCE_IN_TURN, SOURCE_MINED)
 
 
 @dataclass(frozen=True)
@@ -74,6 +89,14 @@ class Skill:
     # operator has not seen is the one thing this faculty must not create,
     # since a wrong one silently steers every later turn.
     proposed: bool = False
+    # Provenance. Absent on notes written before this was recorded, so every
+    # reader must treat "" as unknown rather than as operator-authored.
+    source: str = ""
+    # The operator's own words that justify a mined rule. Kept because the
+    # person reviewing a proposal is deciding whether they really said this.
+    evidence: str = ""
+    created: str = ""
+    updated: str = ""
 
 
 def _parse_skill(path: Path) -> Skill | None:
@@ -106,6 +129,10 @@ def _parse_skill(path: Path) -> Skill | None:
         ),
         always=bool(meta.get("always")),
         proposed=bool(meta.get("proposed")),
+        source=str(meta.get("source") or "").strip().lower(),
+        evidence=str(meta.get("evidence") or "").strip(),
+        created=str(meta.get("created") or "").strip(),
+        updated=str(meta.get("updated") or "").strip(),
     )
 
 
@@ -168,48 +195,104 @@ class SkillsLibrary(Faculty):
 
     # ---- writing (shared by the tool and the background miner) ----
 
-    def save_skill(
-        self,
-        name: str,
-        body: str,
-        description: str = "",
-        keywords: Sequence[str] = (),
-        always: bool = False,
-        proposed: bool = False,
-    ) -> str:
+    def save_skill(self, skill: Skill, now: datetime | None = None) -> str:
         """Write one note. Returns "" on success, else the reason.
 
-        The single place a skill file is produced, so the miner cannot drift
-        from the tool on frontmatter or naming rules.
+        The single place a skill file is produced, so the tool, the approval
+        path and the background miner cannot drift on frontmatter or naming.
+
+        Takes a Skill rather than eight parameters because every caller either
+        has one already (approve, mine) or is building one, and because the
+        provenance fields must travel WITH the note — a save that silently
+        dropped `source` would leave a mined rule indistinguishable from one
+        the operator wrote.
         """
-        name = name.strip().lower()
-        body = body.strip()
+        name = skill.name.strip().lower()
+        body = skill.body.strip()
         if not _NAME_RE.match(name):
             return f"invalid skill name {name!r} (snake_case, 2-64 chars)"
         if not body:
             return "skill body is empty"
-        fm: dict[str, Any] = {"description": description.strip()}
-        cleaned = [str(k).strip().lower() for k in keywords if str(k).strip()]
+
+        stamp = (now or datetime.now(UTC)).date().isoformat()
+        path = self._dir / f"{name}.md"
+        previous = _parse_skill(path) if path.exists() else None
+        # An overwrite used to destroy the old body outright, which mattered
+        # little while only the operator wrote these and matters a lot now that
+        # a miner merges into them: a bad merge was unrecoverable.
+        archived = self._archive(path)
+
+        fm: dict[str, Any] = {"description": skill.description.strip()}
+        cleaned = [str(k).strip().lower() for k in skill.keywords if str(k).strip()]
         if cleaned:
             fm["keywords"] = cleaned
-        if always:
+        if skill.always:
             fm["always"] = True
-        if proposed:
+        if skill.proposed:
             fm["proposed"] = True
+        if skill.source:
+            fm["source"] = skill.source
+        if skill.evidence:
+            fm["evidence"] = skill.evidence.strip()
+        # `created` survives an update; only `updated` moves. Losing the
+        # original date would make every note look as new as its last edit.
+        fm["created"] = (previous.created if previous and previous.created else stamp)
+        if previous is not None:
+            fm["updated"] = stamp
+
         text = "---\n" + yaml.safe_dump(fm, sort_keys=False).strip() + "\n---\n\n" + body + "\n"
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
-            path = self._dir / f"{name}.md"
-            existed = path.exists()
             path.write_text(text, encoding="utf-8")
         except OSError as e:
             return str(e)
         log.info(
-            "skill %r %s%s", name,
-            "updated" if existed else "created",
-            " (proposed)" if proposed else "",
+            "skill %r %s%s%s", name,
+            "updated" if previous is not None else "created",
+            " (proposed)" if skill.proposed else "",
+            f"; previous body kept at {archived.name}" if archived else "",
         )
         return ""
+
+    def _archive(self, path: Path) -> Path | None:
+        """Copy a note aside before it is overwritten, or None if there is none.
+
+        Best-effort by design: failing to archive must not block the save. The
+        directory is dot-prefixed so the scanner never treats a snapshot as a
+        live note.
+        """
+        if not path.exists():
+            return None
+        try:
+            history = self._dir / _HISTORY_DIR
+            history.mkdir(parents=True, exist_ok=True)
+            # Second resolution, plus a counter, so several saves in one second
+            # cannot silently overwrite each other's snapshots.
+            base = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            dest = history / f"{path.stem}.{base}.md"
+            n = 1
+            while dest.exists():
+                dest = history / f"{path.stem}.{base}-{n}.md"
+                n += 1
+            dest.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        except OSError:
+            log.warning("could not archive %s before overwrite", path.name, exc_info=True)
+            return None
+        self._prune_history(path.stem)
+        return dest
+
+    def _prune_history(self, stem: str) -> None:
+        """Keep only the most recent snapshots of one note."""
+        history = self._dir / _HISTORY_DIR
+        try:
+            snaps = sorted(history.glob(f"{stem}.*.md"))
+        except OSError:
+            return
+        for old in snaps[:-_MAX_HISTORY]:
+            try:
+                old.unlink()
+            except OSError:
+                log.debug("could not prune %s", old.name, exc_info=True)
 
     # ---- Connector contract ----
 
@@ -346,13 +429,15 @@ class SkillsLibrary(Faculty):
             name = str(args.get("name") or "").strip().lower()
             body = str(args.get("body") or "").strip()
             existed = (outer._dir / f"{name}.md").exists()
-            problem = outer.save_skill(
+            raw_keywords = args.get("keywords") or []
+            problem = outer.save_skill(Skill(
                 name=name,
                 body=body,
                 description=str(args.get("description") or ""),
-                keywords=args.get("keywords") or [],
+                keywords=tuple(str(k) for k in raw_keywords),
                 always=bool(args.get("always")),
-            )
+                source=SOURCE_IN_TURN,
+            ))
             if problem:
                 return ToolResult.error(problem)
             return ToolResult.ok(f"skill {name!r} {'updated' if existed else 'saved'}")
@@ -374,14 +459,7 @@ class SkillsLibrary(Faculty):
                     f"no proposed skill named {name!r}. "
                     f"Pending: {', '.join(sorted(pending)) or '(none)'}"
                 )
-            problem = outer.save_skill(
-                name=skill.name,
-                body=skill.body,
-                description=skill.description,
-                keywords=skill.keywords,
-                always=skill.always,
-                proposed=False,
-            )
+            problem = outer.save_skill(replace(skill, proposed=False))
             if problem:
                 return ToolResult.error(problem)
             return ToolResult.ok(f"skill {name!r} is now active")

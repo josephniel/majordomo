@@ -833,6 +833,43 @@ default), `skills.correction_threshold`. Known gap: the prompt asks for at
 most three candidates and nothing enforces it, so the dedup guard rather than
 a count is what bounds proliferation.
 
+### Why files rather than Postgres
+
+Skills stay on disk (`instances/<id>/skills/*.md`) while memory, history and
+the approval log live in Postgres, and the split is deliberate: the database
+holds what the machine accumulates, files hold what the operator authors —
+persona.yaml, config.yaml, connectors.yaml, and these. A skill is a standing
+instruction meant to be read and edited, so hand-editability in any editor,
+inspectability at a glance, and `context_version()` as a sum of mtimes are all
+worth more than a schema. Durability is not the tiebreaker people expect it to
+be: the Postgres volume is not backed up either, so moving them would change
+which unbacked-up store loses them.
+
+Mining did change the calculus, because the store became mixed-authorship, and
+two real defects followed — both fixed on the file side rather than by moving:
+
+- **provenance** — `source: operator | in_turn | mined`, plus the `evidence`
+  quote behind a mined rule, and `created` / `updated` dates. `source: ""`
+  means unknown (a note predating this), never operator-authored. Approval
+  preserves provenance, or activating a proposal would launder a mined rule
+  into an anonymous one.
+- **overwrites were destructive** — irrelevant while only the operator wrote
+  these, serious once a miner merges INTO them, because a bad merge was
+  unrecoverable. `save_skill` now snapshots the previous body into
+  `skills/.history/<name>.<utc>.md` (dot-prefixed, so the scanner can never
+  read a snapshot as a live note), bounded to the last 10 per note, and
+  best-effort: a failed archive must not block the save. Deleting a note
+  leaves its history behind.
+
+Revisit if any of these becomes true: more than one host, dozens of notes
+(where semantic search over them beats keyword matching against a two-slot
+injection cap), or several personas needing to share notes.
+
+`./manage backup [--with-secrets] [dir]` tars `instances/`, which is gitignored
+and the only durable state that exists in neither git nor Postgres. Secrets are
+excluded by default — a backup ends up somewhere less protected than the box it
+came from, and API keys are re-issuable while a hand-written skill note is not.
+
 ## Heartbeat, delegation, voice
 
 - **Heartbeat**: persona.yaml `heartbeat.cron` + `heartbeat.prompt` (styled

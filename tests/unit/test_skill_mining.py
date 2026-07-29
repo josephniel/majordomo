@@ -17,7 +17,7 @@ from domain.skill_mining import (
     _parse_candidates,
     detect_signal,
 )
-from domain.skills import SkillsLibrary
+from domain.skills import Skill, SkillsLibrary
 
 # The real exchange, trimmed. Three corrections and an explicit rule.
 REAL_TAUGHT_RULE = [
@@ -39,6 +39,14 @@ ORDINARY_CHAT = [
     {"role": "user", "content": "Thanks, and book me a slot at 3pm"},
     {"role": "assistant", "content": "Done."},
 ]
+
+def _save(lib, name, body, description="", keywords=(), **kw):
+    """Build the Skill save_skill now takes, so tests read as data not plumbing."""
+    return lib.save_skill(Skill(
+        name=name, body=body, description=description,
+        keywords=tuple(keywords), **kw,
+    ))
+
 
 
 class _FakeSummarizer:
@@ -160,7 +168,7 @@ class TestMining:
 
     async def test_existing_skills_are_shown_to_the_model(self, tmp_path):
         lib = _library(tmp_path)
-        lib.save_skill("reply_in_english", "Always reply in English.", "Reply in English",
+        _save(lib, "reply_in_english", "Always reply in English.", "Reply in English",
                        ["tagalog", "english"])
         summarizer = _FakeSummarizer("[]")
         await SkillMiner(lib, summarizer).mine(REAL_TAUGHT_RULE)
@@ -177,7 +185,7 @@ class TestMining:
     async def test_updating_an_active_note_keeps_it_active(self, tmp_path):
         # Demoting an approved rule to a draft would silently switch it off.
         lib = _library(tmp_path)
-        lib.save_skill("who_paid_decides_the_entry", "Old body, superseded.",
+        _save(lib, "who_paid_decides_the_entry", "Old body, superseded.",
                        "Who paid decides", ["owes", "paid"])
         miner = SkillMiner(lib, _FakeSummarizer(json.dumps([
             _candidate(replaces="who_paid_decides_the_entry")
@@ -191,7 +199,7 @@ class TestMining:
     async def test_a_near_duplicate_new_note_is_refused(self, tmp_path):
         # The real risk: two notes on one topic compete for two injection slots.
         lib = _library(tmp_path)
-        lib.save_skill("split_transactions_need_splitwise", "Keep both sides in sync.",
+        _save(lib, "split_transactions_need_splitwise", "Keep both sides in sync.",
                        "Sync splits", ["split", "owes", "paid", "people account"])
         miner = SkillMiner(lib, _FakeSummarizer(json.dumps([_candidate()])))
         assert await miner.mine(REAL_TAUGHT_RULE) == []
@@ -246,19 +254,19 @@ class TestMining:
 class TestProposalsAreInert:
     def test_a_proposal_is_never_keyword_injected(self, tmp_path):
         lib = _library(tmp_path)
-        lib.save_skill("draft", "Do the thing when asked about badminton.",
+        _save(lib, "draft", "Do the thing when asked about badminton.",
                        "Draft", ["badminton"], proposed=True)
         assert lib.all_skills() == []
 
     async def test_a_proposal_is_never_auto_injected(self, tmp_path):
         lib = _library(tmp_path)
-        lib.save_skill("draft", "Do the thing when asked about badminton.",
+        _save(lib, "draft", "Do the thing when asked about badminton.",
                        "Draft", ["badminton"], proposed=True)
         assert await lib.auto_inject("what about badminton") == ""
 
     def test_an_always_proposal_is_not_inlined(self, tmp_path):
         lib = _library(tmp_path)
-        lib.save_skill("draft", "Never do the risky thing at all, ever.",
+        _save(lib, "draft", "Never do the risky thing at all, ever.",
                        "Draft", [], always=True, proposed=True)
         section = lib.system_prompt_section()
         assert "Never do the risky thing" not in section
@@ -267,7 +275,7 @@ class TestProposalsAreInert:
 
     def test_the_prompt_says_proposals_are_inactive(self, tmp_path):
         lib = _library(tmp_path)
-        lib.save_skill("draft", "Some drafted instruction body here.", "Draft",
+        _save(lib, "draft", "Some drafted instruction body here.", "Draft",
                        ["x"], proposed=True)
         section = lib.system_prompt_section()
         assert "INACTIVE" in section

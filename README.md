@@ -214,7 +214,7 @@ turns, because the eval prompts were 1.5k tokens and production's are ~15.5k.
 - **Delegation** — `delegate_task` runs heavy multi-step work in a fresh sub-agent so the main conversation stays lean.
 - **Voice in** — Telegram voice notes transcribe through a vendor-neutral Whisper chain and become normal turns.
 - **A clock** — every turn is stamped with the current time in your timezone, so "in 20 minutes" means something. Connector dates render in that zone too: a vendor storing local midnight as UTC used to report every evening expense a day early.
-- **Operations** — retention pruning for every growth table, `/status` introspection, turn-level observability (vendor, latency, tokens, failovers), per-chat rate limiting, restart-safe schedules.
+- **Operations** — retention pruning for every growth table, `/status` introspection, turn-level observability (vendor, latency, tokens, failovers), per-chat rate limiting, restart-safe schedules, and `./manage backup` for the instance dirs — the only durable state in neither git nor Postgres (secrets excluded by default).
 
 **Built-in faculties:** memory · schedule · skills · documents · code · files · delegate
 **Service connectors:** Gmail · Google Calendar · Yahoo Mail · ClickUp · Splitwise · budget-tracker

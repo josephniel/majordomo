@@ -35,7 +35,9 @@ if TYPE_CHECKING:
 
     from ports import PersonaIdentity, Summarizer
 
-    from .skills import Skill, SkillsLibrary
+    from .skills import SkillsLibrary
+
+from .skills import SOURCE_MINED, Skill
 
 log = logging.getLogger(__name__)
 
@@ -242,14 +244,18 @@ class SkillMiner:
             # approved that topic, and demoting it to a proposal would silently
             # switch off a rule they are relying on. A new topic is proposed.
             active_target = target in by_name and not by_name[target].proposed
-            problem = self._library.save_skill(
+            problem = self._library.save_skill(Skill(
                 name=target,
                 body=cand.body,
                 description=cand.description,
                 keywords=cand.keywords,
                 always=by_name[target].always if target in by_name else False,
                 proposed=not (self._auto_save or active_target),
-            )
+                source=SOURCE_MINED,
+                # The operator's own words, so a reviewer can check the rule
+                # was actually stated rather than plausibly inferred.
+                evidence=cand.evidence,
+            ))
             if problem:
                 log.warning("could not write mined skill %r: %s", target, problem)
                 continue

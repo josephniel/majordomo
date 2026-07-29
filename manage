@@ -103,6 +103,12 @@ manage — majordomo stack
     documents inspect [persona]      list the document library
     prune [persona]                  run retention now (nightly cron does this too)
 
+  Backup:
+    backup [--with-secrets] [dir]    tar the instance dirs (skills, persona
+                                     config, watch state) — the only durable
+                                     state NOT in Postgres and NOT in git.
+                                     Excludes .env / credentials unless asked.
+
   Misc:
     canary [persona]                 test each LLM vendor actually calls tools
     cli [persona] -- <args...>       raw passthrough to python cli.py
@@ -216,6 +222,55 @@ cmd_agent_restart() {
     local persona; persona="$(agent_persona "${1:-}")"
     launchctl kickstart -k "$(agent_target "$persona")"
     echo "[manage] restarted $(agent_label "$persona")"
+}
+
+cmd_backup() {
+    # instances/ is gitignored and holds the only state that exists nowhere
+    # else: hand-written skills, mined proposals, persona config, watch
+    # watermarks. Losing the disk loses work that took real effort to produce.
+    local with_secrets=0 dest=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --with-secrets) with_secrets=1 ;;
+            -*) echo "unknown flag: $1" >&2; return 1 ;;
+            *)  dest="$1" ;;
+        esac
+        shift
+    done
+    dest="${dest:-$(pwd)/backups}"
+    mkdir -p "$dest" || return 1
+
+    local stamp archive
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    archive="$dest/majordomo-instances-$stamp.tar.gz"
+
+    # Secrets are excluded by DEFAULT. A backup tends to end up somewhere less
+    # protected than the box it came from, and API keys are re-issuable while a
+    # hand-written skill note is not. Opt in explicitly if you want them.
+    local -a excludes=(
+        --exclude=__pycache__
+        --exclude=.DS_Store
+    )
+    if [[ "$with_secrets" -eq 0 ]]; then
+        excludes+=(
+            --exclude=.env
+            --exclude=_shared.env
+            --exclude=credentials
+        )
+    fi
+
+    tar -czf "$archive" -C "$(pwd)" "${excludes[@]}" instances || return 1
+
+    echo "[manage] wrote $archive"
+    echo "         $(du -h "$archive" | cut -f1)  $(tar -tzf "$archive" | wc -l | tr -d " ") entries"
+    if [[ "$with_secrets" -eq 0 ]]; then
+        echo "         secrets EXCLUDED (.env, _shared.env, credentials/)."
+        echo "         re-auth after a restore, or use --with-secrets."
+    else
+        echo "         WARNING: contains API keys in plaintext. Store it encrypted."
+    fi
+    echo "         Postgres is NOT in here — memory, history and the approval"
+    echo "         log live there. Dump it separately if you need those."
 }
 
 cmd_agent_status() {
@@ -375,6 +430,7 @@ main() {
         agent-uninstall)    cmd_agent_uninstall "$@" ;;
         agent-restart)      cmd_agent_restart "$@" ;;
         agent-status)       cmd_agent_status ;;
+        backup)             cmd_backup "$@" ;;
         db-up)              cmd_db_up ;;
         db-down)            cmd_db_down ;;
         db-status)          cmd_db_status ;;

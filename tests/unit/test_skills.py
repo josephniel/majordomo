@@ -1,8 +1,17 @@
 """capabilities.skills — markdown instruction skills."""
 import pytest
 
-from domain.skills import MAX_INJECTED_SKILLS, SkillsLibrary, _parse_skill
+from domain.skills import MAX_INJECTED_SKILLS, Skill, SkillsLibrary, _parse_skill
 from ports import ToolContext
+
+
+def _save(lib, name, body, description="", keywords=(), **kw):
+    """Build the Skill save_skill now takes, so tests read as data not plumbing."""
+    return lib.save_skill(Skill(
+        name=name, body=body, description=description,
+        keywords=tuple(keywords), **kw,
+    ))
+
 
 
 def _write_skill(d, name, body, description="", keywords=(), always=False):
@@ -232,7 +241,7 @@ class TestProposalApproval:
         d = tmp_path / "skills"
         d.mkdir(parents=True)
         lib = SkillsLibrary(skills_dir=d)
-        lib.save_skill("mined_rule", "Always use the People account for money owed.",
+        _save(lib, "mined_rule", "Always use the People account for money owed.",
                        "Use People account", ["owes", "people"], proposed=True)
         return lib
 
@@ -259,7 +268,7 @@ class TestProposalApproval:
 
     async def test_an_already_active_skill_is_not_approvable(self, tmp_path):
         lib = self._lib(tmp_path)
-        lib.save_skill("live_rule", "An active instruction body goes here.", "Live", ["x"])
+        _save(lib, "live_rule", "An active instruction body goes here.", "Live", ["x"])
         approve = self._tool(lib, "skill_approve")
         result = await approve.handler({"name": "live_rule"}, ToolContext())
         assert result.is_error
@@ -269,3 +278,131 @@ class TestProposalApproval:
         result = await self._tool(lib, "skill_read").handler({"name": "mined_rule"}, ToolContext())
         assert not result.is_error
         assert "People account" in result.text
+
+
+class TestProvenance:
+    """Who wrote a note, and on what evidence.
+
+    Recorded because the store became mixed-authorship the day background
+    mining landed: "did I write this rule, or did the bot?" is the first
+    question asked of one that turns out to be wrong.
+    """
+
+    def _lib(self, tmp_path):
+        d = tmp_path / "skills"
+        d.mkdir(parents=True)
+        return SkillsLibrary(skills_dir=d)
+
+    def test_source_and_evidence_round_trip(self, tmp_path):
+        lib = self._lib(tmp_path)
+        _save(lib, "rule", "Some instruction body long enough to be real.", "R", ["k"],
+              source="mined", evidence="If it's me who paid, record a split")
+        got = lib.all_skills()[0]
+        assert got.source == "mined"
+        assert "record a split" in got.evidence
+
+    def test_created_is_stamped(self, tmp_path):
+        lib = self._lib(tmp_path)
+        _save(lib, "rule", "Some instruction body long enough to be real.")
+        assert lib.all_skills()[0].created  # an ISO date
+        assert not lib.all_skills()[0].updated  # first write is not an update
+
+    def test_created_survives_an_update_and_updated_moves(self, tmp_path):
+        from datetime import UTC, datetime
+        lib = self._lib(tmp_path)
+        lib.save_skill(Skill(name="rule", body="First body, long enough to count.",
+                             description="R"),
+                       now=datetime(2026, 7, 1, tzinfo=UTC))
+        lib.save_skill(Skill(name="rule", body="Second body, also long enough.",
+                             description="R"),
+                       now=datetime(2026, 7, 29, tzinfo=UTC))
+        got = lib.all_skills()[0]
+        assert got.created == "2026-07-01", "the original date was lost"
+        assert got.updated == "2026-07-29"
+
+    def test_the_save_tool_records_who_called_it(self, tmp_path):
+        lib = self._lib(tmp_path)
+        spec = {t.name: t for t in lib.builtin_tools()}["skill_save"]
+        import asyncio
+        asyncio.run(spec.handler(
+            {"name": "rule", "body": "A body long enough to be a real instruction."},
+            ToolContext(),
+        ))
+        assert lib.all_skills()[0].source == "in_turn"
+
+    async def test_approving_keeps_the_provenance(self, tmp_path):
+        # Otherwise approval would launder a mined rule into an anonymous one.
+        lib = self._lib(tmp_path)
+        _save(lib, "rule", "A mined instruction body, long enough.", "R", ["k"],
+              proposed=True, source="mined", evidence="the operator said so")
+        spec = {t.name: t for t in lib.builtin_tools()}["skill_approve"]
+        await spec.handler({"name": "rule"}, ToolContext())
+        got = lib.all_skills()[0]
+        assert got.source == "mined"
+        assert got.evidence == "the operator said so"
+        assert not got.proposed
+
+    def test_unknown_provenance_stays_empty(self, tmp_path):
+        # Notes predating this must not be mislabelled as operator-authored.
+        d = tmp_path / "skills"
+        d.mkdir(parents=True)
+        (d / "old.md").write_text("---\ndescription: Old\n---\n\nAn older note body.\n")
+        assert SkillsLibrary(skills_dir=d).all_skills()[0].source == ""
+
+
+class TestOverwriteIsRecoverable:
+    """A merge that ruins a note must be undoable.
+
+    save_skill overwrites in place, which was fine while only the operator
+    wrote these and is not fine now that a miner merges into them.
+    """
+
+    def _lib(self, tmp_path):
+        d = tmp_path / "skills"
+        d.mkdir(parents=True)
+        return SkillsLibrary(skills_dir=d)
+
+    def test_the_previous_body_is_kept(self, tmp_path):
+        lib = self._lib(tmp_path)
+        _save(lib, "rule", "The ORIGINAL body that must survive an overwrite.")
+        _save(lib, "rule", "A replacement body that lost something important.")
+        snaps = list((tmp_path / "skills" / ".history").glob("rule.*.md"))
+        assert len(snaps) == 1
+        assert "ORIGINAL body" in snaps[0].read_text()
+
+    def test_a_first_write_archives_nothing(self, tmp_path):
+        lib = self._lib(tmp_path)
+        _save(lib, "rule", "A body long enough to be a real instruction.")
+        assert not (tmp_path / "skills" / ".history").exists()
+
+    def test_snapshots_are_never_read_as_live_notes(self, tmp_path):
+        lib = self._lib(tmp_path)
+        _save(lib, "rule", "The original body of this instruction note.")
+        _save(lib, "rule", "The replacement body of this instruction note.")
+        # A dot-directory is invisible to the scanner, so an archived copy can
+        # never come back as a second active skill.
+        assert [s.name for s in lib.every_skill()] == ["rule"]
+
+    def test_history_is_bounded(self, tmp_path):
+        lib = self._lib(tmp_path)
+        for i in range(15):
+            _save(lib, "rule", f"Body revision number {i}, long enough to count.")
+        snaps = list((tmp_path / "skills" / ".history").glob("rule.*.md"))
+        assert len(snaps) == 10, "history grew without bound"
+
+    def test_several_saves_in_one_second_do_not_collide(self, tmp_path):
+        lib = self._lib(tmp_path)
+        for i in range(3):
+            _save(lib, "rule", f"Body revision {i}, long enough to be real.")
+        snaps = list((tmp_path / "skills" / ".history").glob("rule.*.md"))
+        assert len(snaps) == 2, "a snapshot overwrote another"
+
+    def test_delete_leaves_the_history_behind(self, tmp_path):
+        import asyncio
+        lib = self._lib(tmp_path)
+        _save(lib, "rule", "The original body of this instruction note.")
+        _save(lib, "rule", "The replacement body of this instruction note.")
+        spec = {t.name: t for t in lib.builtin_tools()}["skill_delete"]
+        asyncio.run(spec.handler({"name": "rule"}, ToolContext()))
+        snaps = list((tmp_path / "skills" / ".history").glob("rule.*.md"))
+        assert snaps, "deleting a note also destroyed its recoverable history"
