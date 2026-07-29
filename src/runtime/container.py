@@ -59,6 +59,7 @@ from domain import (
     LongTermMemory,
     ReflectionEngine,
     ScheduleEngine,
+    SkillMiner,
     SkillsLibrary,
     TaskScheduler,
 )
@@ -292,6 +293,24 @@ class PersonaRuntime:
             summarizer=self.summarizer,
             persona_id=self.persona.id,
             identity=self.persona.identity,
+            skill_miner=self.skill_miner,
+        )
+
+    @cached_property
+    def skill_miner(self) -> SkillMiner | None:
+        """Standing-instruction extraction, or None when switched off.
+
+        Shares reflection's read and watermark: facts and rules are two
+        questions about the same exchange.
+        """
+        if not self.settings.skill_mining:
+            return None
+        return SkillMiner(
+            library=self.skills_library,
+            summarizer=self.summarizer,
+            identity=self.persona.identity,
+            auto_save=self.settings.skill_mining_auto_save,
+            correction_threshold=self.settings.skill_mining_correction_threshold,
         )
 
 

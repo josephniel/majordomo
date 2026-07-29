@@ -82,6 +82,17 @@ class RuntimeSettings:
     compaction_model: str = "claude-haiku-4-5"
     compaction_deep_model: str = "claude-sonnet-5"
 
+    # ---- skills / learning loop ----
+    # Mine standing instructions out of idle conversations (runs on the
+    # summarize model, alongside fact reflection).
+    skill_mining: bool = True
+    # Write mined notes ACTIVE instead of proposed. Off by default: a skill
+    # steers every later turn, so the operator reads it first.
+    skill_mining_auto_save: bool = False
+    # How many corrective messages in one exchange justify a mining pass. An
+    # explicit "always/never" triggers one regardless.
+    skill_mining_correction_threshold: int = 2
+
     # ---- approvals ----
     # Write tools that may execute WITHOUT an approval prompt when the turn was
     # started by a trigger (watch/heartbeat/webhook) rather than by the user.

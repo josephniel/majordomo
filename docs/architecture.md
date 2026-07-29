@@ -686,6 +686,43 @@ in other languages slip through (accepted residual for now). Detection
 matches tool *names* by substring because vendors report different forms
 (`mcp__schedule__schedule_once` vs `schedule_once`).
 
+### A tool must not withhold what calling it requires
+
+Several days of "the model is bad at this" turned out to be tool design. The
+pattern repeated across two connectors:
+
+- `create_expense` instructed the model to read user ids "from the members
+  array", and `list_groups` printed `(2 members)` with no ids in it. The
+  operator's own id was worse than absent — you are not your own friend, so
+  `list_friends` can never show it. The model invented a number, the API
+  answered "not your friend", and the assistant concluded the operator's
+  account was broken and told them to log out and back in.
+- `list_tags` rendered group tags and leaf tags identically, distinguished
+  only by indentation. The model picked the group whose name matched best,
+  got "use a subtag instead", and asked the operator which subtag rather
+  than reading the four it had already fetched.
+
+Neither model was hallucinating in the usual sense; both were doing the only
+thing available. Three rules came out of it, and they generalise past these
+connectors:
+
+1. **A listing emits what its own docs tell the model to read from it.** If a
+   description says "get the id from X", X prints ids.
+2. **A write pre-checks what the API will reject, and the refusal names the
+   candidates.** Vendor errors are usually correct but arrive without the
+   roster or tag tree beside them, so "use a subtag" is unactionable. These
+   pre-checks are best-effort: an unreadable roster skips the check rather
+   than costing the operator a write, since the API still validates.
+3. **If a value cannot be looked up, remove the need to look it up.** `shares`
+   accepts the literal `"me"`, resolved server-side.
+
+A corollary for input: tolerate what models predictably mangle. Markdown bold
+wrapped around a JSON argument (`**'[{…}]'**`) is not a reason to fail a write
+for the fourth time — the model cannot see its own markup and will retry
+identically. Unknown tool names get the same treatment: the error lists the
+real tools for that connector's prefix, because a bare "unknown tool" leaves
+the model to guess again, and it guesses the same way twice.
+
 ## Layer 5: write-tool approval gate
 
 The persona tool policy decides which write tools are EXPOSED; the approval
@@ -719,6 +756,30 @@ Not yet durable: an in-flight approval lives in memory, so restarting while
 one is pending loses it and the operator's tap lands on a nonce nobody is
 waiting for.
 
+**Unattended turns.** A tap requires somebody to be looking, and nobody is
+when a watch fires at 03:00. The prompt times out, and a timeout reaches the
+model as "the user denied this action" — so a fire configured to mirror
+expenses automatically instead reports that it could not. Worse, that is
+indistinguishable to the model from a real refusal, so it starts explaining a
+denial that never happened.
+
+`approvals.background_auto_approve` names writes that may execute without
+asking, and the exemption is narrow in three ways that matter:
+
+- it applies **only** when `ToolContext.background` is set, which only
+  trigger-driven turns carry (`persona.background_view()`); a chat turn asks
+  for every one of the same tools, because there the operator IS present;
+- it is empty by default — the gate exists so a mutation costs a tap, and
+  relaxing that is the operator's decision, per tool, in config;
+- auto-approved calls are still written to `approval_log`, with
+  `decision='auto_approved'`, because that table is where the operator finds
+  out what ran while they were away.
+
+`background` rides on the persona VIEW rather than an agent constructor flag
+or ambient state. Turns are serialized per chat today, so a module-level "the
+user is away" flag would work — and would silently start auto-approving chat
+writes the day that stops being true.
+
 ## Skills: instructions-only, self-written under approval
 
 Skills (`domain/skills.py`) are markdown notes under
@@ -726,10 +787,88 @@ instances/<id>/skills/ — description/keywords/always frontmatter; `always`
 inlined into the system prompt, keyword matches attached per-turn beside
 memory recall, everything else on-demand via skill_read. No code, no
 marketplace (ClawHavoc taught the industry why). The Hermes-style learning
-loop exists — skill_save/skill_delete — but they're WRITE_TOOLS: a
-self-written standing instruction costs one operator tap, which is the
+loop exists — skill_save/skill_approve/skill_delete — but they're WRITE_TOOLS:
+a self-written standing instruction costs one operator tap, which is the
 difference between "the model learns" and "anything the model reads can
 rewrite its own system prompt".
+
+### Mining skills from conversations
+
+The in-turn loop above depends on the CHAT model noticing it is being taught.
+Measured over one deployment it fired five times in a single day and never
+again, while the operator taught the same rule three times in one afternoon:
+the local primary answers "I understand, from now on I will…" and calls
+nothing. A nudge in a system prompt is not a mechanism.
+
+`domain/skill_mining.py` therefore extracts standing instructions inside
+background reflection, sharing its read and watermark — facts and rules are
+two questions about one exchange. Two properties are load-bearing:
+
+- it runs on the **summarize role**, so a weak chat primary cannot swallow it;
+- it reads a whole **idle-bounded exchange**, which is the only vantage point
+  from which "they corrected me three times" is visible. A single turn
+  structurally cannot see a repeat.
+
+A deterministic detector (`detect_signal`) gates the model call on correction
+and rule-stating markers in USER rows only — the assistant apologises
+constantly, and counting that would mine every exchange; trigger preambles are
+skipped for the same reason, being machine text full of "always"/"never".
+
+Two guards keep the output from degrading behaviour:
+
+- **Duplication.** Injection is capped at two slots, so a second note on one
+  topic makes BOTH less likely to be applied than the single note would have
+  been. Existing notes go into the prompt so a candidate can declare what it
+  `replaces`, and on top of that a keyword-overlap check refuses a NEW note
+  that overlaps an existing one, telling it to extend that note instead.
+- **Consent.** A mined note is written `proposed: true` and is genuinely inert
+  — excluded from `all_skills()`, from keyword injection, and from `always`
+  inlining. The system prompt lists proposals as INACTIVE and tells the model
+  not to follow them. `skill_approve` activates one, and is itself gated.
+  Updating an ALREADY-APPROVED note stays active, because demoting it to a
+  draft would silently switch off a rule the operator relies on.
+
+Config: `skills.mine_from_conversations`, `skills.auto_save_mined` (off by
+default), `skills.correction_threshold`. Known gap: the prompt asks for at
+most three candidates and nothing enforces it, so the dedup guard rather than
+a count is what bounds proliferation.
+
+### Why files rather than Postgres
+
+Skills stay on disk (`instances/<id>/skills/*.md`) while memory, history and
+the approval log live in Postgres, and the split is deliberate: the database
+holds what the machine accumulates, files hold what the operator authors —
+persona.yaml, config.yaml, connectors.yaml, and these. A skill is a standing
+instruction meant to be read and edited, so hand-editability in any editor,
+inspectability at a glance, and `context_version()` as a sum of mtimes are all
+worth more than a schema. Durability is not the tiebreaker people expect it to
+be: the Postgres volume is not backed up either, so moving them would change
+which unbacked-up store loses them.
+
+Mining did change the calculus, because the store became mixed-authorship, and
+two real defects followed — both fixed on the file side rather than by moving:
+
+- **provenance** — `source: operator | in_turn | mined`, plus the `evidence`
+  quote behind a mined rule, and `created` / `updated` dates. `source: ""`
+  means unknown (a note predating this), never operator-authored. Approval
+  preserves provenance, or activating a proposal would launder a mined rule
+  into an anonymous one.
+- **overwrites were destructive** — irrelevant while only the operator wrote
+  these, serious once a miner merges INTO them, because a bad merge was
+  unrecoverable. `save_skill` now snapshots the previous body into
+  `skills/.history/<name>.<utc>.md` (dot-prefixed, so the scanner can never
+  read a snapshot as a live note), bounded to the last 10 per note, and
+  best-effort: a failed archive must not block the save. Deleting a note
+  leaves its history behind.
+
+Revisit if any of these becomes true: more than one host, dozens of notes
+(where semantic search over them beats keyword matching against a two-slot
+injection cap), or several personas needing to share notes.
+
+`./manage backup [--with-secrets] [dir]` tars `instances/`, which is gitignored
+and the only durable state that exists in neither git nor Postgres. Secrets are
+excluded by default — a backup ends up somewhere less protected than the box it
+came from, and API keys are re-issuable while a hand-written skill note is not.
 
 ## Heartbeat, delegation, voice
 

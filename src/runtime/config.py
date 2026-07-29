@@ -218,6 +218,20 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("retention.documents_days", "retention.documents_days",
             "RETENTION_DOCS_DAYS", as_int, _RETENTION.documents_days, Scope.HOST),
 
+    Setting("skill_mining", "skills.mine_from_conversations",
+            "SKILL_MINING", as_bool, True, Scope.PERSONA,
+            doc="Extract standing instructions from idle conversations, "
+                "alongside fact reflection. Proposals are inert until "
+                "approved unless auto_save is on."),
+    Setting("skill_mining_auto_save", "skills.auto_save_mined",
+            "SKILL_MINING_AUTO_SAVE", as_bool, False, Scope.PERSONA,
+            doc="Write mined skills active instead of proposed. Off by "
+                "default — a skill note steers every future turn."),
+    Setting("skill_mining_correction_threshold", "skills.correction_threshold",
+            "SKILL_MINING_CORRECTION_THRESHOLD", as_int, 2, Scope.PERSONA,
+            doc="Corrective messages in one exchange before mining runs. An "
+                "explicit always/never rule triggers it regardless."),
+
     Setting("background_auto_approve", "approvals.background_auto_approve",
             "BACKGROUND_AUTO_APPROVE", as_csv, (), Scope.PERSONA,
             doc="Write tools that skip the approval prompt on trigger-driven "

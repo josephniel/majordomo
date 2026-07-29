@@ -21,3 +21,6 @@ instances/*
 # else's timezone and dashboard URL. Un-ignore it if you want your own
 # deployment reviewable in your own fork.
 /config.yaml
+
+# Local backups from ./manage backup — may contain secrets with --with-secrets.
+backups/
