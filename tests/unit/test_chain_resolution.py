@@ -92,3 +92,77 @@ class TestItStaysQuietWhenItShould:
             _warn(runtime, ["gemini"], [], role=ModelRole.CHAT)
             _warn(runtime, ["gemini"], [], role=ModelRole.BACKGROUND)
         assert len(caplog.records) == 2
+
+
+class TestTheRoleModelOverrideBelongsToTheLeaderOnly:
+    """A role's `model:` is an override for the vendor that LEADS the role.
+
+    It used to be applied to every vendor in the chain, so a background role
+    configured as
+
+        chain: [gemini, groq, claude]
+        model: gemini-3.6-flash
+
+    asked GROQ for `gemini-3.6-flash`. Groq answered
+
+        404 - The model `gemini-3.6-flash` does not exist or you do not
+              have access to it
+
+    which reads as a missing/unentitled model while naming a model that exists
+    perfectly well at Gemini. Worse, the failure marked GROQ unhealthy for
+    120s on every background fire — a fault that was never Groq's — so the
+    fallback the chain was configured to have was repeatedly poisoned.
+
+    Verified against the live instance: gemini's free tier was exhausted, so
+    every mail-watch poll (every 3 minutes) burned this 404 before reaching
+    claude.
+    """
+
+    def _resolved(self, runtime, chain, model, available):
+        """Effective model per vendor, mirroring container.create_agent."""
+        from runtime.model_roles import RoleChain
+
+        rc = RoleChain(role=ModelRole.BACKGROUND, chain=tuple(chain), model=model)
+        enabled = {n: object() for n in available}
+        order, primary = runtime._chain_order(
+            ModelRole.BACKGROUND, rc, "", enabled,
+        )
+        return {
+            n: (rc.model if n == primary else None) or f"<{n}-own-model>"
+            for n in order
+        }, primary
+
+    def test_only_the_leader_takes_the_override(self, runtime):
+        resolved, primary = self._resolved(
+            runtime, ["gemini", "groq", "claude"], "gemini-3.6-flash",
+            ["gemini", "groq", "claude"],
+        )
+        assert primary == "gemini"
+        assert resolved["gemini"] == "gemini-3.6-flash"
+        assert resolved["groq"] == "<groq-own-model>"
+        assert resolved["claude"] == "<claude-own-model>"
+
+    def test_no_fallback_is_ever_sent_another_vendors_model(self, runtime):
+        """The specific regression: a Google model must never reach Groq."""
+        resolved, _ = self._resolved(
+            runtime, ["gemini", "groq", "claude"], "gemini-3.6-flash",
+            ["gemini", "groq", "claude"],
+        )
+        for name, model in resolved.items():
+            if name != "gemini":
+                assert "gemini" not in model
+
+    def test_a_single_vendor_role_still_gets_its_override(self, runtime):
+        """compaction is configured as chain: claude + model: claude-haiku-4-5,
+        so the leader-only rule must not break the common one-vendor case."""
+        resolved, primary = self._resolved(
+            runtime, ["claude"], "claude-haiku-4-5", ["claude"],
+        )
+        assert primary == "claude"
+        assert resolved["claude"] == "claude-haiku-4-5"
+
+    def test_no_override_leaves_every_vendor_on_its_own_model(self, runtime):
+        resolved, _ = self._resolved(
+            runtime, ["gemini", "groq"], None, ["gemini", "groq"],
+        )
+        assert set(resolved.values()) == {"<gemini-own-model>", "<groq-own-model>"}

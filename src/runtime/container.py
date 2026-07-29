@@ -71,10 +71,10 @@ from .model_roles import RoleChain, resolve_roles
 from .persona import Persona
 from .providers import CONNECTOR_NAMES, FACULTY_NAMES, PROVIDERS_BY_NAME
 from .settings import RuntimeSettings
-from .vendors import VENDORS, VENDORS_BY_NAME
+from .vendors import VENDORS, VENDORS_BY_NAME, VendorSpec
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable, Sequence
+    from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
     from pathlib import Path
 
     from adapters.chat.transcription import CascadingTranscriber
@@ -633,7 +633,7 @@ class PersonaRuntime:
         role: ModelRole,
         role_chain: RoleChain,
         primary: str,
-        available: dict[str, Agent],
+        available: Mapping[str, object],
     ) -> tuple[list[str], str]:
         """Decide the fallback order for this role, and which vendor leads it.
 
@@ -746,19 +746,36 @@ class PersonaRuntime:
         role_chain = self.model_roles[role]
         primary = s.primary_llm
 
+        # Which vendors are usable is a pure function of settings, so the
+        # order can be resolved BEFORE anything is constructed. That ordering
+        # matters: `role_chain.model` is an override for the vendor that LEADS
+        # this role, and applying it to the whole chain sent Groq a Gemini
+        # model name — a 404 that reads like "the model does not exist" while
+        # naming a model that exists perfectly well at the other vendor, and
+        # that marked Groq unhealthy for a fault that was never Groq's.
+        enabled: dict[str, VendorSpec] = {v.name: v for v in VENDORS if v.enabled(s)}
+        if enabled:
+            order, primary = self._chain_order(role, role_chain, primary, enabled)
+        else:
+            order = []
+
         # Every usable backend, keyed by name — driven by the vendor
         # registry, so adding a vendor never touches this method.
         available: dict[str, Agent] = {}
         for v in VENDORS:
             if not v.enabled(s):
                 continue
+            # Only the leader gets the role's model override; fallbacks keep
+            # their own configured model, which is the whole point of naming
+            # them as fallbacks.
+            model_override = role_chain.model if v.name == primary else None
             if v.backend is None:
                 # Natively-integrated vendor (claude): SDK adapter with
                 # session resume; keyless under subscription auth.
                 builder = (
-                    claude_builder if role_chain.model is None
+                    claude_builder if model_override is None
                     else self._options_builder_for(
-                        persona, context_builder, role_chain.model
+                        persona, context_builder, model_override
                     )
                 )
                 available[v.name] = AnthropicAgent(
@@ -766,7 +783,7 @@ class PersonaRuntime:
                 )
             else:
                 available[v.name] = _oai(v.backend, VendorEndpoint(
-                    model=role_chain.model or v.model(s),
+                    model=model_override or v.model(s),
                     api_key=v.api_key(s),
                     base_url=v.base_url(s),
                     extra_completion_kwargs=v.extra_kwargs(s),
@@ -781,7 +798,6 @@ class PersonaRuntime:
                 f"CLAUDE_ENABLED=1 / OLLAMA_ENABLED=1, plus PRIMARY_LLM, in the instance .env."
             )
 
-        order, primary = self._chain_order(role, role_chain, primary, available)
         chain: list[tuple[str, Agent]] = [(n, available[n]) for n in order if n in available]
         log.info(
             "persona %r: %s chain = %s (primary=%s, model=%s)",
@@ -813,7 +829,7 @@ class PersonaRuntime:
         return resolve_roles(self.settings)
 
     def _warn_dropped_vendors(
-        self, role: ModelRole, chain: tuple[str, ...], available: dict[str, Agent]
+        self, role: ModelRole, chain: tuple[str, ...], available: Mapping[str, object]
     ) -> None:
         """Say so when a configured chain names a vendor that can't be used.
 

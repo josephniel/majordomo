@@ -531,7 +531,7 @@ Every pull request must pass all four gates:
 | `ruff check .` — 624 rules across 24 families, incl. security & complexity | **0 violations, no suppressions** |
 | `mypy --strict` — src, CLI and scripts | **0 errors, no `type: ignore`** |
 | `import-linter` — the six contracts above | **6/6 kept** |
-| `pytest` — unit + integration against live Postgres | **1,251 passing** |
+| `pytest` — unit + integration against live Postgres | **1,255 passing** |
 
 There is not a single `# noqa` or `# type: ignore` in the codebase. That is a
 deliberate policy, and it paid for itself: the strict pass that got here turned
