@@ -15,6 +15,23 @@
 # config.yaml at all.
 
 # ------------------------------------------------------------------
+skills:
+  # Extract standing instructions from idle conversations, alongside fact
+  # reflection. Proposals are inert until approved unless auto_save is on.
+  # env fallback: SKILL_MINING
+  # mine_from_conversations: true
+
+  # Write mined skills active instead of proposed. Off by default — a
+  # skill note steers every future turn.
+  # env fallback: SKILL_MINING_AUTO_SAVE
+  # auto_save_mined: false
+
+  # Corrective messages in one exchange before mining runs. An explicit
+  # always/never rule triggers it regardless.
+  # env fallback: SKILL_MINING_CORRECTION_THRESHOLD
+  # correction_threshold: 2
+
+# ------------------------------------------------------------------
 approvals:
   # Write tools that skip the approval prompt on trigger-driven turns only
   # (nobody is watching to tap). Connector name ('budget'), qualified tool

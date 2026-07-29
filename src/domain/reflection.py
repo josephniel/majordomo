@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from adapters.model.history import ConversationHistory
 
     from .memory import LongTermMemory
+    from .skill_mining import SkillMiner
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ class ReflectionEngine:
         persona_id: str,
         identity: PersonaIdentity | None = None,
         idle_seconds: float = DEFAULT_IDLE_SECONDS,
+        skill_miner: SkillMiner | None = None,
     ) -> None:
         self._history = history
         self._memory = memory
@@ -69,6 +71,10 @@ class ReflectionEngine:
         self._persona_id = persona_id
         self._identity = identity or PersonaIdentity(name="")
         self._idle_seconds = idle_seconds
+        # Facts and standing instructions are different things extracted from
+        # the same exchange, so they share the read and the watermark. None
+        # when the operator has mining switched off.
+        self._skill_miner = skill_miner
         # Extraction is a MERGE against existing memory, not an append: a
         # changed fact must supersede the old one rather than sit beside it
         # contradicting it. See domain/reconcile.py.
@@ -164,6 +170,21 @@ class ReflectionEngine:
             # corrected fact to whatever else happened to be said at the same
             # time — which is not a relationship.
             await self._autolink_batch(saved_entries)
+
+            # Same rows, different question: what should the assistant DO
+            # differently next time. Best-effort — a mining failure must not
+            # hold back the watermark and re-extract these facts forever.
+            if self._skill_miner is not None:
+                try:
+                    mined = await self._skill_miner.mine(convo)
+                except Exception:
+                    log.exception("skill mining failed (continuing)")
+                    mined = []
+                if mined:
+                    log.info(
+                        "reflection for chat %s: skill notes written: %s",
+                        chat_id, ", ".join(mined),
+                    )
 
             # Advance the watermark past everything we read — even if zero
             # facts came out, these turns are done.

@@ -10,6 +10,7 @@ persona, no accounts, no auth flows.
     ScheduleEngine — low-level scheduler runtime (used by PersonaRuntime)
     ScheduledTask  — dataclass for one scheduled task
     SkillsLibrary  — operator-curated markdown instruction notes
+    SkillMiner     — proposes new notes from repeated corrections
 
 Runtime services (webhooks, mail watch, retention) live in `adapters/trigger/` —
 they act on their own triggers and never appear in a tool schema.
@@ -23,6 +24,7 @@ from .memory import LongTermMemory
 from .reconcile import Reconciler
 from .reflection import ReflectionEngine
 from .schedule import ScheduledTask, ScheduleEngine, TaskScheduler
+from .skill_mining import SkillMiner
 from .skills import SkillsLibrary
 
 __all__ = [
@@ -36,6 +38,7 @@ __all__ = [
     "ReflectionEngine",
     "ScheduleEngine",
     "ScheduledTask",
+    "SkillMiner",
     "SkillsLibrary",
     "TaskScheduler",
 ]

@@ -43,7 +43,7 @@ class TestLibrary:
     def test_missing_dir_still_teaches_the_loop(self, tmp_path):
         lib = SkillsLibrary(skills_dir=tmp_path / "nope")
         section = lib.system_prompt_section()
-        assert "No skills saved yet." in section
+        assert "No active skills yet." in section
         assert "skill_save" in section  # the learning-loop nudge
         assert lib.context_version() == 0
 
@@ -135,11 +135,12 @@ class TestSkillReadTool:
 
 
 class TestSelfWrittenSkills:
-    """Hermes-style learning loop: skill_save/skill_delete are WRITE_TOOLS,
-    so they ride the Layer 5 approval gate like any other mutation."""
+    """Hermes-style learning loop: every skill mutation is a WRITE_TOOL, so it
+    rides the Layer 5 approval gate. skill_approve is one too — activating a
+    mined proposal is what actually changes behaviour."""
 
-    def test_save_and_delete_are_write_tools(self):
-        assert {"skill_save", "skill_delete"} == SkillsLibrary.WRITE_TOOLS
+    def test_every_mutation_is_a_write_tool(self):
+        assert {"skill_save", "skill_approve", "skill_delete"} == SkillsLibrary.WRITE_TOOLS
 
     def test_read_only_grant_excludes_saving(self, tmp_path):
         from runtime.persona import Persona
@@ -222,3 +223,49 @@ class TestSelfWrittenSkills:
         result = await spec.handler({"name": "../victim"}, ToolContext())
         assert result.is_error
         assert outside.exists()
+
+
+class TestProposalApproval:
+    """A mined proposal is inert until the operator says otherwise."""
+
+    def _lib(self, tmp_path):
+        d = tmp_path / "skills"
+        d.mkdir(parents=True)
+        lib = SkillsLibrary(skills_dir=d)
+        lib.save_skill("mined_rule", "Always use the People account for money owed.",
+                       "Use People account", ["owes", "people"], proposed=True)
+        return lib
+
+    def _tool(self, lib, name):
+        return {t.name: t for t in lib.builtin_tools()}[name]
+
+    async def test_approve_activates_and_preserves_the_note(self, tmp_path):
+        lib = self._lib(tmp_path)
+        approve = self._tool(lib, "skill_approve")
+        result = await approve.handler({"name": "mined_rule"}, ToolContext())
+        assert not result.is_error, result.text
+        active = lib.all_skills()
+        assert [s.name for s in active] == ["mined_rule"]
+        assert active[0].description == "Use People account"
+        assert active[0].keywords == ("owes", "people")
+        assert "People account" in active[0].body
+        assert lib.proposed_skills() == []
+
+    async def test_approving_an_unknown_proposal_lists_what_is_pending(self, tmp_path):
+        lib = self._lib(tmp_path)
+        result = await self._tool(lib, "skill_approve").handler({"name": "nope"}, ToolContext())
+        assert result.is_error
+        assert "mined_rule" in result.text
+
+    async def test_an_already_active_skill_is_not_approvable(self, tmp_path):
+        lib = self._lib(tmp_path)
+        lib.save_skill("live_rule", "An active instruction body goes here.", "Live", ["x"])
+        approve = self._tool(lib, "skill_approve")
+        result = await approve.handler({"name": "live_rule"}, ToolContext())
+        assert result.is_error
+
+    async def test_a_proposal_is_readable_so_it_can_be_reviewed(self, tmp_path):
+        lib = self._lib(tmp_path)
+        result = await self._tool(lib, "skill_read").handler({"name": "mined_rule"}, ToolContext())
+        assert not result.is_error
+        assert "People account" in result.text
