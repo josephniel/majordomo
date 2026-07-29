@@ -93,6 +93,10 @@ class PersonaLike(Protocol):
 
     system_prompt: str
     model: str | None
+    # True on the reduced view background fires run under. Agents pass it into
+    # the ToolContext so the approval gate can tell an unattended write from a
+    # live one, without any agent needing a constructor flag for it.
+    background: bool
 
     def allowed_tool_names(self, connector: Any) -> list[str] | None: ...
 

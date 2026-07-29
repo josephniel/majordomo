@@ -310,7 +310,9 @@ class PersonaRuntime:
         """
         if not self.persona.write_approval:
             return None
-        return WriteApprovalGate()
+        return WriteApprovalGate(
+            background_auto_approve=frozenset(self.settings.background_auto_approve),
+        )
 
     # ---- tool providers (registry-driven; see runtime/providers.py) ----
 
@@ -1111,6 +1113,7 @@ class PersonaRuntime:
             watcher=SplitwiseWatcher(
                 splitwise_connector=self.provider("splitwise"),
                 state_file=self.persona.data_dir / "splitwise_watch.json",
+                default_timezone=self.settings.schedule_timezone,
             ),
             preamble=SPLITWISE_WATCH_PROMPT_PREAMBLE,
         )

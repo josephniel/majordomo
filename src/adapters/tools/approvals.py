@@ -46,6 +46,17 @@ _DESCRIPTION_SUFFIX = (
     "if they deny it, report that and do not retry unless asked."
 )
 
+# Same tool, but the operator has pre-authorised it for unattended fires. Said
+# plainly, because a model told "this asks for approval first" hedges — it
+# announces what it is about to do and waits for a tap that will never come,
+# during a turn whose whole point is to finish without one.
+_AUTO_APPROVED_SUFFIX = (
+    " NOTE: the user has pre-approved this tool for background/automated turns, "
+    "so during a trigger fire it executes immediately with NO approval prompt "
+    "and NO confirmation needed — just call it and report what you did. In a "
+    "normal chat turn it still asks the user first."
+)
+
 # Approval-prompt rendering caps. Truncation is a THREAT-MODEL decision,
 # not cosmetics: a prompt-injected write can hide its payload in the tail
 # of a long field. So routing/persistence fields (who it goes to, whether
@@ -103,6 +114,26 @@ def _refusal(tool_name: str, reason: str) -> ToolResult:
     return ToolResult.error(f"{tool_name} was NOT executed: {reason}")
 
 
+def _auto_approved(
+    allowed: frozenset[str], connector_name: str, tool_name: str
+) -> bool:
+    """Whether an unattended write is on the operator's allow-list.
+
+    Three spellings, so a rule can be as broad or as narrow as the operator
+    wants: the bare connector ("budget" — every write it owns), the qualified
+    tool ("budget__record_split"), or the bare tool name ("record_split",
+    across connectors). Matching is case-insensitive because the config layer
+    lower-cases list values.
+    """
+    if not allowed:
+        return False
+    connector = connector_name.lower()
+    tool = tool_name.lower()
+    return bool(
+        allowed & {connector, tool, f"{connector}__{tool}"}
+    )
+
+
 # auditor(chat_id, connector, tool, args_preview, decision, reason)
 Auditor = Callable[[ConversationRef, str, str, str, str, str], Awaitable[None]]
 
@@ -131,9 +162,13 @@ class PendingApproval:
 class WriteApprovalGate:
     """Wraps write-tool handlers with an in-chat operator confirmation."""
 
-    def __init__(self) -> None:
+    def __init__(self, background_auto_approve: frozenset[str] | None = None) -> None:
         self._confirmer: Confirmer | None = None
         self._auditor: Auditor | None = None
+        # Writes that may run unattended during a trigger fire. Empty by
+        # default: the gate's whole point is that a mutation costs a tap, and
+        # the exemption is the operator's to grant, per tool, in config.
+        self._background_auto_approve = background_auto_approve or frozenset()
         # conversation -> the write it is blocked on. Only ever holds
         # conversations currently inside `_confirmer`, and the entry is
         # removed in a finally so a denial, timeout, cancellation or crash
@@ -186,16 +221,22 @@ class WriteApprovalGate:
 
         async def gated_handler(args: dict[str, Any], ctx: ToolContext) -> Any:
             approved, reason = await self._confirm(
-                connector_name, tool_name, args, chat_id=ctx.chat_id,
+                connector_name, tool_name, args,
+                chat_id=ctx.chat_id, background=ctx.background,
             )
             if not approved:
                 log.warning("write tool %s denied: %s", tool_name, reason)
                 return _refusal(tool_name, reason)
             return await inner(args, ctx)
 
+        suffix = (
+            _AUTO_APPROVED_SUFFIX
+            if _auto_approved(self._background_auto_approve, connector_name, tool_name)
+            else _DESCRIPTION_SUFFIX
+        )
         return replace(
             spec,
-            description=spec.description + _DESCRIPTION_SUFFIX,
+            description=spec.description + suffix,
             handler=gated_handler,
         )
 
@@ -207,7 +248,24 @@ class WriteApprovalGate:
         tool_name: str,
         args: dict[str, Any],
         chat_id: ConversationRef | None,
+        background: bool = False,
     ) -> tuple[bool, str]:
+        # Checked before the confirmer: an allow-listed write during a trigger
+        # fire must not depend on a chat being reachable, and asking would only
+        # burn the approval timeout against an operator who is not looking.
+        # Still audited — auto-approved is a decision, and approval_log is where
+        # the operator goes to find out what ran while they were away.
+        if background and _auto_approved(
+            self._background_auto_approve, connector_name, tool_name
+        ):
+            log.info(
+                "write tool %s auto-approved (background, allow-listed)", tool_name
+            )
+            await self._audit(
+                chat_id, connector_name, tool_name, args,
+                "auto_approved", "background auto-approve (config)",
+            )
+            return True, ""
         if self._confirmer is None:
             # Only reachable outside the bot process (CLI, tests):
             # create_conversation() binds the confirmer before the platform

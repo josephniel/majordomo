@@ -15,6 +15,14 @@
 # config.yaml at all.
 
 # ------------------------------------------------------------------
+approvals:
+  # Write tools that skip the approval prompt on trigger-driven turns only
+  # (nobody is watching to tap). Connector name ('budget'), qualified tool
+  # ('budget__record_split') or bare tool name. Empty = every write asks.
+  # env fallback: BACKGROUND_AUTO_APPROVE
+  # background_auto_approve: [gemini, claude, groq]
+
+# ------------------------------------------------------------------
 llm:
   # env fallback: PRIMARY_LLM
   # primary:

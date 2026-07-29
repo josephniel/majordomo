@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
+from adapters.timefmt import DEFAULT_TIMEZONE, local_date
+
 log = logging.getLogger(__name__)
 
 MAX_NEW_PER_PROFILE = 8
@@ -35,11 +37,21 @@ expenses were detected. Mirror them into the budget tracker ledger:
 (you may have recorded it yourself during a chat).
 - Expense the user paid, shared with others -> record_split (full amount + \
 each other person's owed share). Only the user involved -> record_transaction.
-- Expense someone ELSE paid: do NOT record a payment from the user's \
-accounts — just mention what the user owes in your reply.
-- Deleted or edited expenses: report them; never auto-correct the ledger.
+- Expense someone ELSE paid (the user owes a share): record_transaction as a \
+DEBIT on the 'People' account with the payer as counterparty — never a \
+payment from the user's own cash/card accounts.
+- EDITED expense already in the ledger: bring the ledger into line with \
+Splitwise (the tracker has no edit — delete the stale rows with \
+delete_transaction, then record the corrected entry) and say what you \
+changed. DELETED in Splitwise: delete the matching ledger rows and say so.
 - Pick the paying account from list_accounts / memory; ask only if genuinely \
 unknowable.
+- tag_id must be a LEAF tag (list_tags marks which are selectable); a GROUP \
+tag is refused.
+- This turn is unattended. Do not ask for confirmation and do not offer to do \
+something — the tools you need here run without an approval prompt, so just \
+do the work and report it. If a tool IS refused, say what failed; never \
+claim a record you did not write.
 Reply with one short line per expense recorded (or <silent> if everything \
 was already recorded and nothing needs attention).
 
@@ -51,7 +63,9 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat(timespec="seconds")
 
 
-def _format_expense(e: dict[str, Any], my_id: int | None) -> str:
+def _format_expense(
+    e: dict[str, Any], my_id: int | None, tz: str = DEFAULT_TIMEZONE
+) -> str:
     def name(u: dict[str, Any]) -> str:
         user = u.get("user") or {}
         if my_id is not None and user.get("id") == my_id:
@@ -71,7 +85,7 @@ def _format_expense(e: dict[str, Any], my_id: int | None) -> str:
     if e.get("payment"):
         flags.append("settle-up payment")
     line = (
-        f"- [{e.get('id', '?')}] {str(e.get('date', ''))[:10]} "
+        f"- [{e.get('id', '?')}] {local_date(e.get('date'), tz)} "
         f"{e.get('description') or '(no description)'!s} — total {e.get('cost', '?')} "
         f"{e.get('currency_code', '')} — paid by {', '.join(payers) or '?'}"
         f"; owed: {', '.join(owes) or '?'}"
@@ -86,9 +100,11 @@ class SplitwiseWatcher:
         self,
         splitwise_connector: Any,  # narrow surface: build_clients() -> {name: client}
         state_file: Path,
+        default_timezone: str | None = None,
     ) -> None:
         self._splitwise = splitwise_connector
         self._state_file = state_file
+        self._tz = default_timezone or DEFAULT_TIMEZONE
         self._state: dict[str, dict[str, Any]] = self._load()
         # Two-phase state, exactly like MailWatcher: check() stages here and
         # the caller commit()s only after the turn was DELIVERED — a vendor
@@ -198,7 +214,9 @@ class SplitwiseWatcher:
                 my_id = await client.current_user_id()
             except Exception:
                 log.debug("splitwise_watch: could not resolve own user id", exc_info=True)
-            lines.extend(_format_expense(e, my_id) for e in fresh[:MAX_NEW_PER_PROFILE])
+            lines.extend(
+                _format_expense(e, my_id, self._tz) for e in fresh[:MAX_NEW_PER_PROFILE]
+            )
             if len(fresh) > MAX_NEW_PER_PROFILE:
                 lines.append(f"- … and {len(fresh) - MAX_NEW_PER_PROFILE} more")
 

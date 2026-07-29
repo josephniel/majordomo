@@ -25,6 +25,16 @@ class ToolContext:
 
     Opaque by contract: it is a ConversationRef, not a platform id. A handler
     that reaches into `.chat_key` has coupled a faculty to one platform.
+
+    background — True when this turn was started by a trigger (a watch, a
+    schedule, a heartbeat) rather than by the user typing. Carried here, in the
+    signature, rather than looked up from ambient state: turns are serialized
+    per chat today, but a gate that inferred "the user is not here" from a
+    module-level flag would start approving user writes the moment that stops
+    being true. The approval gate is its only consumer — nobody is watching the
+    chat during a background turn, so a write that waits on a tap can only time
+    out, and an allow-list of tools may run unattended instead.
     """
 
     chat_id: ConversationRef | None = None
+    background: bool = False

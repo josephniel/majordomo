@@ -4,7 +4,14 @@ from typing import ClassVar
 
 import httpx
 
-from adapters.tools.budget import DEFAULT_BASE_URL, BudgetClient, BudgetConnector
+from adapters.tools.budget import (
+    DEFAULT_BASE_URL,
+    BudgetClient,
+    BudgetConnector,
+    _format_tags,
+    _index_tags,
+    _tag_problem,
+)
 from ports import ToolContext
 
 CTX = ToolContext(chat_id=1)
@@ -187,7 +194,7 @@ class TestTools:
 class TestContract:
     def test_write_tools_declared(self):
         assert frozenset(
-            {"record_transaction", "record_split"}
+            {"record_transaction", "record_split", "delete_transaction"}
         ) == BudgetConnector.WRITE_TOOLS
         # Reads must never be gated.
         assert "list_accounts" not in BudgetConnector.WRITE_TOOLS
@@ -219,3 +226,198 @@ class TestContract:
         # The public edge blocks automation by design — the default must
         # never point the bot through Cloudflare.
         assert DEFAULT_BASE_URL.startswith("http://127.0.0.1")
+
+
+class TestDeleteTransaction:
+    """Undoing a mistaken row.
+
+    Added after a real turn recorded a purchase twice — record_transaction for
+    the full 426, then record_split for the same 426 — and the model reached
+    for a `delete_transaction` that did not exist, so the duplicate stayed.
+    """
+
+    def _tool(self, handler):
+        return _connector_tools(handler)["delete_transaction"]
+
+    async def test_deletes_by_id(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            return httpx.Response(200, json={"status": "deleted"})
+
+        result = await self._tool(handler).handler({"transaction_id": 3069}, CTX)
+        assert not result.is_error, result.text
+        assert seen["method"] == "DELETE"
+        assert seen["path"] == "/transactions/3069"
+        assert "3069" in result.text
+
+    async def test_accepts_a_numeric_string(self):
+        def handler(_request):
+            return httpx.Response(200, json={"status": "deleted"})
+
+        result = await self._tool(handler).handler({"transaction_id": "3069"}, CTX)
+        assert not result.is_error, result.text
+
+    async def test_refuses_a_non_numeric_id_without_calling_the_api(self):
+        called = []
+
+        def handler(_request):
+            called.append(1)
+            return httpx.Response(200, json={"status": "deleted"})
+
+        result = await self._tool(handler).handler({"transaction_id": "the latest one"}, CTX)
+        assert result.is_error
+        assert "recent_transactions" in result.text
+        assert not called, "a vague id reached the API"
+
+    async def test_missing_id_is_refused(self):
+        called = []
+
+        def handler(_request):
+            called.append(1)
+            return httpx.Response(200, json={})
+
+        result = await self._tool(handler).handler({}, CTX)
+        assert result.is_error
+        assert not called
+
+    async def test_api_failure_is_reported(self):
+        def handler(_request):
+            return httpx.Response(404, json={"detail": "Not Found"})
+
+        result = await self._tool(handler).handler({"transaction_id": 999999}, CTX)
+        assert result.is_error
+
+    def test_registered_as_a_write_tool(self):
+        # It must sit behind the approval gate like the other two writes.
+        assert "delete_transaction" in BudgetConnector.WRITE_TOOLS
+        assert "delete_transaction" in BudgetConnector.TOOL_NAMES
+        assert "delete_transaction" in BudgetConnector.STATUS
+
+
+# The real shape of the tag tree, trimmed to the part that caused the 2026-07-29
+# loop: a GROUP whose name matches best, over the leaves that actually work.
+TAG_TREE = [
+    {
+        "id": 58, "name": "Family & Friends", "allow_debit": True, "allow_credit": False,
+        "children": [
+            {"id": 35, "name": "Family Loans (Lent)", "allow_debit": True,
+             "allow_credit": True, "children": []},
+            {"id": 34, "name": "Family Support", "allow_debit": True,
+             "allow_credit": False, "children": []},
+        ],
+    },
+    {"id": 45, "name": "Others", "allow_debit": True, "allow_credit": True, "children": []},
+    {"id": 1, "name": "Salary", "allow_debit": False, "allow_credit": True, "children": []},
+]
+
+
+class TestTagListing:
+    def test_group_is_marked_unusable_and_names_its_subtags(self):
+        lines = "\n".join(_format_tags(TAG_TREE))
+        assert "[58] Family & Friends — GROUP, NOT selectable" in lines
+        assert "35, 34" in lines  # the ids to use instead
+
+    def test_leaf_says_what_it_accepts(self):
+        lines = "\n".join(_format_tags(TAG_TREE))
+        assert "[35] Family Loans (Lent) — selectable for debit or credit" in lines
+        assert "[34] Family Support — selectable for debit" in lines
+        assert "[1] Salary — selectable for credit" in lines
+
+
+class TestTagPreCheck:
+    def _index(self):
+        return _index_tags(TAG_TREE)
+
+    def test_indexes_every_depth(self):
+        assert set(self._index()) == {58, 35, 34, 45, 1}
+
+    def test_group_tag_is_refused_with_its_children_named(self):
+        problem = _tag_problem(58, "debit", self._index())
+        assert "is a GROUP" in problem
+        assert "[35] Family Loans (Lent)" in problem
+        assert "[34] Family Support" in problem
+
+    def test_wrong_direction_names_tags_that_would_work(self):
+        problem = _tag_problem(34, "credit", self._index())
+        assert "does not accept credit" in problem
+        assert "[35] Family Loans (Lent)" in problem
+        assert "[1] Salary" in problem
+
+    def test_unknown_tag_is_refused(self):
+        assert "does not exist" in _tag_problem(999, "debit", self._index())
+
+    def test_valid_leaf_passes(self):
+        assert _tag_problem(35, "debit", self._index()) == ""
+        assert _tag_problem(35, "credit", self._index()) == ""
+        assert _tag_problem(34, "debit", self._index()) == ""
+
+
+class TestWritesPreCheckTheTag:
+    def _handler(self, seen):
+        def handler(request):
+            if request.url.path == "/tags":
+                return httpx.Response(200, json=TAG_TREE)
+            seen["posted"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": 99, "my_share": 0, "lent_amount": 0})
+
+        return handler
+
+    async def test_group_tag_never_reaches_the_api(self):
+        seen = {}
+        tool = _connector_tools(self._handler(seen))["record_transaction"]
+        result = await tool.handler(
+            {"account_id": 34, "tag_id": 58, "amount": 987.3, "counterparty": "Dana O"}, CTX
+        )
+        assert result.is_error
+        assert "[35] Family Loans (Lent)" in result.text
+        assert "posted" not in seen
+
+    async def test_the_working_combination_goes_through(self):
+        # acct 34 (People) + leaf 35 + debit: verified against the live API.
+        seen = {}
+        tool = _connector_tools(self._handler(seen))["record_transaction"]
+        result = await tool.handler(
+            {"account_id": 34, "tag_id": 35, "amount": 987.3, "counterparty": "Dana O"}, CTX
+        )
+        assert not result.is_error, result.text
+        assert seen["posted"]["tag_id"] == 35
+        assert seen["posted"]["type"] == "debit"
+
+    async def test_credit_on_a_debit_only_tag_is_caught(self):
+        seen = {}
+        tool = _connector_tools(self._handler(seen))["record_transaction"]
+        result = await tool.handler(
+            {"account_id": 34, "tag_id": 34, "amount": 987.3, "type": "credit"}, CTX
+        )
+        assert result.is_error
+        assert "does not accept credit" in result.text
+        assert "posted" not in seen
+
+    async def test_split_also_pre_checks(self):
+        seen = {}
+        tool = _connector_tools(self._handler(seen))["record_split"]
+        result = await tool.handler(
+            {"account_id": 9, "tag_id": 58, "total_amount": 1000,
+             "shares": [{"person": "Sam O", "amount": 500}]}, CTX
+        )
+        assert result.is_error
+        assert "is a GROUP" in result.text
+        assert "posted" not in seen
+
+    async def test_unreadable_tags_do_not_block_the_write(self):
+        # Better a write the API judges than one refused by a flaky GET.
+        seen = {}
+
+        def handler(request):
+            if request.url.path == "/tags":
+                return httpx.Response(500, text="boom")
+            seen["posted"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": 99})
+
+        tool = _connector_tools(handler)["record_transaction"]
+        result = await tool.handler({"account_id": 34, "tag_id": 58, "amount": 10}, CTX)
+        assert not result.is_error, result.text
+        assert seen["posted"]["tag_id"] == 58

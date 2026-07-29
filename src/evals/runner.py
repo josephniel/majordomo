@@ -102,6 +102,8 @@ class _EvalPersona:
     name = "Eval"
     model: str | None = None
     system_prompt = EVAL_SYSTEM_PROMPT
+    # Evals drive the agent directly, never through a trigger fire.
+    background = False
 
     def allowed_tool_names(self, _connector: Any) -> list[str] | None:
         return None  # all tools
