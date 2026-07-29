@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
 from openai.lib.streaming.chat import ChatCompletionStreamState
 
@@ -186,6 +186,35 @@ def _extract_failed_generation(exc: BaseException) -> str | None:
     # Last resort: regex it out of the stringified exception.
     m = re.search(r"'failed_generation':\s*'(.*?)'\}", str(exc), re.DOTALL)
     return m.group(1) if m else None
+
+
+# How many sibling tool names to offer back when a model invents one. Enough to
+# recognise the right one, not so many that a 60-tool roster floods the turn.
+_UNKNOWN_TOOL_SUGGESTIONS = 12
+
+
+def _unknown_tool_error(tool_name: str, known: Mapping[str, Any]) -> str:
+    """Answer an invented tool name with the real roster for its connector.
+
+    Models reach across connector namespaces — `splitwise_personal__list_accounts`
+    for what is really `budget__list_accounts`, or a `delete_transaction` that
+    was never implemented. A bare "unknown tool" leaves them guessing again, and
+    they tend to guess the same way twice; naming the actual siblings turns a
+    dead end into a correction.
+    """
+    prefix = tool_name.split("__", maxsplit=1)[0] if "__" in tool_name else ""
+    siblings = sorted(n for n in known if prefix and n.startswith(f"{prefix}__"))
+    if not siblings:
+        siblings = sorted(known)
+    shown = siblings[:_UNKNOWN_TOOL_SUGGESTIONS]
+    if not shown:
+        return f"error: unknown tool {tool_name!r} (no tools are available)"
+    more = f" (+{len(siblings) - len(shown)} more)" if len(siblings) > len(shown) else ""
+    return (
+        f"error: unknown tool {tool_name!r} — it does not exist and nothing "
+        f"happened. Available: {', '.join(shown)}{more}. Use one of these "
+        f"exactly, or tell the user the action is not supported."
+    )
 
 
 def _parse_llama_tool_calls(text: str) -> list[tuple[str, str]]:
@@ -359,6 +388,10 @@ class ChatCompletionsAgent(Agent):
         self._history = history
         self._persona_id = persona_id
         self._chat_id = chat_id
+        # Set by the persona VIEW, not a constructor flag: background fires run
+        # under persona.background_view(), and the composition root builds a
+        # throwaway agent per fire, so this is per-turn in practice.
+        self._background = bool(persona is not None and persona.background)
         self._connectors = connectors or []
         self._persona = persona
         self._model = model or self.DEFAULT_MODEL
@@ -1061,13 +1094,15 @@ class ChatCompletionsAgent(Agent):
                     log.debug("on_tool_use callback raised", exc_info=True)
             spec = self._tools_by_name.get(tool_name)
             if spec is None:
-                result_text = f"error: unknown tool {tool_name!r}"
+                result_text = _unknown_tool_error(tool_name, self._tools_by_name)
                 is_error = True
             else:
                 try:
                     result = await spec.handler(
                         args,
-                        ToolContext(chat_id=self._chat_id),
+                        ToolContext(
+                            chat_id=self._chat_id, background=self._background
+                        ),
                     )
                     normalized = as_tool_result(result)
                     result_text = normalized.text or "(empty)"

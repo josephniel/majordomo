@@ -266,6 +266,11 @@ class AnthropicOptionsBuilder:
         default_model: str | None = None,
     ) -> None:
         self._composer = context_builder
+        # Claude binds tool wrappers when the session opens, not per turn, so
+        # this is read once here. Background fires get their own builder over
+        # the background persona view (see create_agent's persona_override
+        # branch), which is what keeps it per-turn in effect.
+        self._background = persona.background
         self._config = config
         self._connectors = connectors
         self._persona = persona
@@ -286,7 +291,7 @@ class AnthropicOptionsBuilder:
         chat_id: ConversationRef | None = None,
     ) -> ClaudeAgentOptions:
         enabled = self._config.load_enabled()
-        ctx = ToolContext(chat_id=chat_id)
+        ctx = ToolContext(chat_id=chat_id, background=self._background)
         mcp_servers: dict[str, Any] = {}
         allowed_tools: list[str] = []
 

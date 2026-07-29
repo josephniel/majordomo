@@ -82,6 +82,13 @@ class RuntimeSettings:
     compaction_model: str = "claude-haiku-4-5"
     compaction_deep_model: str = "claude-sonnet-5"
 
+    # ---- approvals ----
+    # Write tools that may execute WITHOUT an approval prompt when the turn was
+    # started by a trigger (watch/heartbeat/webhook) rather than by the user.
+    # Empty = every write still asks, which is the safe default. Accepts a
+    # connector name, a qualified tool, or a bare tool name.
+    background_auto_approve: tuple[str, ...] = ()
+
     # ---- schedules / proactivity ----
     schedule_timezone: str | None = None
     webhook_token: str = ""

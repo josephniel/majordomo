@@ -218,6 +218,13 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("retention.documents_days", "retention.documents_days",
             "RETENTION_DOCS_DAYS", as_int, _RETENTION.documents_days, Scope.HOST),
 
+    Setting("background_auto_approve", "approvals.background_auto_approve",
+            "BACKGROUND_AUTO_APPROVE", as_csv, (), Scope.PERSONA,
+            doc="Write tools that skip the approval prompt on trigger-driven "
+                "turns only (nobody is watching to tap). Connector name "
+                "('budget'), qualified tool ('budget__record_split') or bare "
+                "tool name. Empty = every write asks."),
+
     # ---- host facilities ----
     Setting("schedule_timezone", "schedule.timezone", "SCHEDULE_TIMEZONE",
             as_opt_str, None, Scope.HOST,
