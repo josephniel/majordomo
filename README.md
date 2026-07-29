@@ -33,8 +33,14 @@ project has the shape it does:
 
 If the assistant *claims* it saved something, scheduled something, or sent
 something, the runtime checks whether the tool actually ran — and if it didn't,
-it either fixes it or tells you plainly that it didn't happen. Every mutating
-action needs your tap before it executes.
+it either fixes it or tells you plainly that it didn't happen. Mutating actions
+need your tap before they execute, and the only exceptions are ones you named in
+config yourself.
+
+The same distrust applies inward. A model that can't find the id it needs will
+invent one, so tools don't get to withhold what calling them requires; a
+summarizer asked to compress a transcript will sometimes continue it instead, so
+its output is checked before it becomes history.
 
 That's the whole thesis. Everything below is in service of it.
 
@@ -103,6 +109,12 @@ turn, and if the model still doesn't call the tool, you get a blunt
 *"⚠️ Correction: that wasn't actually sent"* rather than its second attempt at
 the same lie.
 
+History gets the same treatment. Asked to fold 87 turns into a summary, a
+summarizer once **continued the transcript instead** — inventing tool calls that
+never ran, in the exact `system: [tool] …` format it was fed. A fabricated turn
+is indistinguishable from a real one once folded in, so any "summary" containing
+transcript syntax is discarded rather than written.
+
 </td><td width="50%" valign="top">
 
 ### ✋ Nothing mutates without your tap
@@ -112,6 +124,13 @@ posts an inline **Approve / Deny** keyboard. 120s timeout means deny. Routing
 fields (recipients, `always` flags) render first and untruncated, so you see
 who it's about to email before you approve. Every decision lands in an audit
 table.
+
+Unattended turns are the one honest exception. Nobody is holding the phone when
+a watcher fires at 3am, so the prompt times out and the model reports that it
+couldn't do what it was configured to do automatically. So
+`background_auto_approve` names the writes allowed to run without asking, **and
+only on trigger-driven turns** — a chat turn still asks for every one of them.
+Empty by default, and auto-approved calls are still audited.
 
 </td></tr>
 <tr><td width="50%" valign="top">
@@ -132,6 +151,38 @@ Writes are reconciled against what's already known — add / update / delete /
 noop — so a changed fact **supersedes** the old one instead of sitting beside it
 contradicting it. Facts carry validity dates, so *"I'm on leave until the 19th"*
 stops being true on the 19th instead of being recalled forever.
+
+</td></tr>
+<tr><td width="50%" valign="top">
+
+### 🔧 A refusal that names the fix
+
+A model that can't look something up will invent it. `create_expense` told the
+model to read user ids "from the members array" — and the listing printed
+`(2 members)` with no ids at all. It fabricated a number, the API said *"not your
+friend"*, and the assistant told its operator their account was broken.
+
+So listings emit what calling them requires, writes pre-check what the API would
+reject, and a refusal carries the real candidates: *"tag 58 is a GROUP — choose
+[35] Family Loans or [37] P2P"*, or the actual group roster, or the sibling tools
+that do exist when a tool name was invented. Where a value can't be looked up at
+all, it no longer has to be — `shares` accepts `"me"`.
+
+</td><td width="50%" valign="top">
+
+### 📚 It writes its own instructions
+
+Telling the chat model to save a skill when corrected twice doesn't work: a small
+local primary answers *"I understand, from now on I will…"* and calls nothing. It
+fired 5 times in one day, then never again while the same rule got taught three
+times in one afternoon.
+
+So mining runs in **background reflection** on the summarize model, over a whole
+idle-bounded exchange — the only vantage point a repeated correction is visible
+from. A deterministic detector gates the model call, and a keyword-overlap guard
+makes a new rule **extend** the closest existing note rather than compete with it
+for a two-slot injection budget. Proposals are written but **inert** until you
+approve one.
 
 </td></tr>
 </table>
@@ -157,12 +208,12 @@ turns, because the eval prompts were 1.5k tokens and production's are ~15.5k.
 ## Everything else it does
 
 - **Documents** — text/PDF attachments auto-ingest into a pgvector chunk store; `doc_search` / `doc_read` give the model RAG over your files.
-- **Skills** — markdown instruction notes (keyword-attached, always-on, or fetched on demand). The agent can write its own when you teach it something — each one needs an approval tap. Instructions only: no executable skills, no marketplace, by design.
+- **Skills** — markdown instruction notes (keyword-attached, always-on, or fetched on demand). The agent writes its own two ways: mid-turn when you teach it something, and from background mining of past conversations. Mined notes land as **proposals** — listed, readable, and completely inert until you approve one; activating is itself an approval-gated write. Instructions only: no executable skills, no marketplace, by design.
 - **Sandboxed code** — `run_code` in a throwaway Docker container: no network, memory/CPU/pid caps, read-only root, per-run artifact dir. Artifacts deliver to chat via `chat_send_file`.
-- **Proactivity** — a cron heartbeat that works your checklist on a cheap dedicated model and messages you only when something needs you; a Gmail watcher that polls token-free and wakes the LLM only for genuinely new mail; authenticated webhooks that turn any POST into an agent turn.
+- **Proactivity** — a cron heartbeat that works your checklist on a cheap dedicated model and messages you only when something needs you; watchers for Gmail and Splitwise that poll cheaply and wake the LLM only for genuinely new activity; authenticated webhooks that turn any POST into an agent turn. Trigger-driven turns are marked as such, so the approval gate can tell an unattended write from a live one.
 - **Delegation** — `delegate_task` runs heavy multi-step work in a fresh sub-agent so the main conversation stays lean.
 - **Voice in** — Telegram voice notes transcribe through a vendor-neutral Whisper chain and become normal turns.
-- **A clock** — every turn is stamped with the current time in your timezone, so "in 20 minutes" means something.
+- **A clock** — every turn is stamped with the current time in your timezone, so "in 20 minutes" means something. Connector dates render in that zone too: a vendor storing local midnight as UTC used to report every evening expense a day early.
 - **Operations** — retention pruning for every growth table, `/status` introspection, turn-level observability (vendor, latency, tokens, failovers), per-chat rate limiting, restart-safe schedules.
 
 **Built-in faculties:** memory · schedule · skills · documents · code · files · delegate
