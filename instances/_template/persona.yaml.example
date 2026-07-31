@@ -28,6 +28,7 @@ name: Assistant
 faculties:
   memory: true
   schedule: true
+  tasks: read_write      # the obligations board; every file/close = approval tap
   skills: read_write     # agent may save skills it learns (each save = approval tap)
   delegate: true
   code: read_write       # sandboxed; every run needs an approval tap
@@ -40,6 +41,7 @@ faculties:
 connectors: {}
 #  gmail: read_write
 #  google_calendar: true
+#  google_drive: true     # read-only scope; needed by meeting_watch below
 #  clickup: true
 #  splitwise: true
 #  yahoo: true
@@ -52,6 +54,7 @@ connectors: {}
 # background_tools:
 #   memory: true
 #   gmail: true
+#   tasks: read_write      # meeting_watch cannot file anything without this
 
 # Layer 5: every write tool call asks for an inline Approve/Deny tap before
 # executing. Only set false if you fully trust every read_write surface.
@@ -89,6 +92,20 @@ system_prompt: |
 # record_transaction (writes still ride the approval gate).
 # splitwise_watch:
 #   every_minutes: 10
+
+# Meeting notes -> task board (needs google_calendar AND google_drive
+# connectors, plus the tasks faculty with WRITE access for background fires —
+# see background_tools above, or the watch disables itself and says so). A
+# token-free Calendar poll finds meetings that just ended; Gemini writes its
+# notes doc minutes later, so an ended meeting is re-checked each poll until
+# the notes appear or notes_grace_minutes runs out. Only the action items YOU
+# own are filed, deduped on the calendar event id so re-read notes never
+# double-file.
+# meeting_watch:
+#   every_minutes: 5
+#   notes_grace_minutes: 45   # how long to wait for Gemini before giving up
+#   lookback_minutes: 180     # how far back to look for ended meetings
+#   calendar_id: primary
 
 # Event-driven triggers: POST /trigger/<name> with Bearer WEBHOOK_TOKEN.
 # webhooks:

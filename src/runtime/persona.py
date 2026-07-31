@@ -76,6 +76,11 @@ class Persona:
     # chat_id: <optional>}. Needs splitwise AND budget connectors enabled.
     # Polling — Splitwise's API has no webhooks. See adapters/trigger/splitwisewatch.py.
     splitwise_watch: dict[str, Any] | None = None
+    # Action items out of Gemini's meeting notes: {every_minutes: 5,
+    # notes_grace_minutes: 45, calendar_id: "primary", chat_id: <optional>}.
+    # Needs google_calendar AND google_drive connectors and the tasks faculty.
+    # See adapters/trigger/meetingwatch.py.
+    meeting_watch: dict[str, Any] | None = None
     # Enablement map for BACKGROUND agents (heartbeat, mail-watch) — same
     # grammar as faculties:/connectors:. When unset, the chat map is used
     # downgraded to read-only. Background fires are unattended and pay the
@@ -119,6 +124,9 @@ class Persona:
             mail_watch=dict(cfg["mail_watch"]) if cfg.get("mail_watch") else None,
             splitwise_watch=(
                 dict(cfg["splitwise_watch"]) if cfg.get("splitwise_watch") else None
+            ),
+            meeting_watch=(
+                dict(cfg["meeting_watch"]) if cfg.get("meeting_watch") else None
             ),
             background_tools=(
                 dict(cfg["background_tools"]) if cfg.get("background_tools") else None

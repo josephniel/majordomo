@@ -15,6 +15,7 @@ shared contracts from here and never from a sibling's internals.
     memory.py    — MemoryStore + MemoryEntry (the second brain's contract)
     persona.py   — PersonaIdentity (who background prompts work for)
     documents.py — DocumentStore (RAG corpus contract)
+    tasks.py     — TaskStore + TrackedTask (the obligations board's contract)
 """
 from .context import ToolContext
 from .conversation import ConversationRef, chat_key
@@ -57,6 +58,13 @@ from .protocols import (
     ToolTraceReporting,
     VendorIntrospectable,
 )
+from .tasks import (
+    DEFAULT_PRIORITY,
+    TaskStatus,
+    TaskStore,
+    TrackedTask,
+    clamp_priority,
+)
 from .tools import (
     Connector,
     Faculty,
@@ -76,6 +84,7 @@ from .triggers import (
 )
 
 __all__ = [
+    "DEFAULT_PRIORITY",
     "LINK_RELATIONS",
     "VALID_SCOPES",
     "AddCron",
@@ -106,6 +115,8 @@ __all__ = [
     "ServiceCatalog",
     "SessionResettable",
     "Summarizer",
+    "TaskStatus",
+    "TaskStore",
     "ToolCallProbe",
     "ToolContext",
     "ToolOutcomeCallback",
@@ -116,6 +127,7 @@ __all__ = [
     "ToolSpec",
     "ToolTraceReporting",
     "ToolUseCallback",
+    "TrackedTask",
     "TriggerAgent",
     "TriggerContext",
     "TriggerEvent",
@@ -124,5 +136,6 @@ __all__ = [
     "VendorIntrospectable",
     "as_tool_result",
     "chat_key",
+    "clamp_priority",
     "tool",
 ]

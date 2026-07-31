@@ -390,8 +390,14 @@ class GoogleCalendarConnector(Connector):
 
     # ---- Connector contract ----
 
-    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
-        servers: dict[str, list[ToolSpec]] = {}
+    def build_clients(self) -> dict[str, CalendarClient]:
+        """One CalendarClient per enabled profile.
+
+        Shared by the tool servers below and the meeting-watch poller
+        (adapters/trigger/meetingwatch.py), which needs to know when a meeting
+        ended without spending an LLM turn to ask.
+        """
+        clients: dict[str, CalendarClient] = {}
         for profile in self._config.load_all():
             if not profile.enabled or not self.owns_profile(profile.name):
                 continue
@@ -407,12 +413,16 @@ class GoogleCalendarConnector(Connector):
             try:
                 oauth = GoogleOAuthClient(Path(oauth_path))
                 store = CredentialStore(oauth, Path(creds_path))
-                client = CalendarClient(store)
+                clients[profile.name] = CalendarClient(store)
             except Exception:
                 log.exception("could not build CalendarClient for %s", profile.name)
-                continue
-            servers[profile.name] = self._build_tools_for_profile(client)
-        return servers
+        return clients
+
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
+        return {
+            name: self._build_tools_for_profile(client)
+            for name, client in self.build_clients().items()
+        }
 
     def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)

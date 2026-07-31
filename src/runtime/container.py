@@ -1138,6 +1138,93 @@ class PersonaRuntime:
         )
 
     @cached_property
+    def meeting_watch_source(self) -> WatchSource | None:
+        """Gemini's meeting notes, turned into the operator's task board.
+
+        None unless persona.yaml has meeting_watch and all three pieces the fire
+        needs are enabled: google_calendar (to know a meeting ended),
+        google_drive (to read the notes doc), and the tasks faculty WITH
+        task_add (to file what it found).
+
+        The task_add check is not defensive padding. `background_tools:` is a
+        separate enablement map, so a persona can perfectly well grant the chat
+        `tasks: read_write` and leave background fires read-only — and then every
+        meeting fire would read the notes, be unable to file anything, and report
+        a plausible summary of action items that exist nowhere. A watch that
+        cannot do its job should not run; a warning naming the fix is worth more
+        than a feature that appears to work.
+        """
+        cfg = self.persona.meeting_watch
+        if not cfg:
+            return None
+        missing = [
+            name
+            for name in ("google_calendar", "google_drive", "tasks")
+            if not self.persona.is_connector_enabled(name)
+        ]
+        if missing:
+            log.warning(
+                "persona %r: meeting_watch needs %s enabled; disabled",
+                self.persona.id,
+                " and ".join(missing),
+            )
+            return None
+        if not self._background_can_write_tasks():
+            log.warning(
+                "persona %r: meeting_watch fires cannot call task_add — grant "
+                "`tasks: read_write` under background_tools: in persona.yaml "
+                "(and allow-list tasks__task_add under "
+                "approvals.background_auto_approve so unattended fires need no "
+                "tap); disabled",
+                self.persona.id,
+            )
+            return None
+        chat_id = self._watch_chat_id(cfg, "meeting_watch")
+        if chat_id is None:
+            return None
+        from adapters.trigger.meetingwatch import (
+            DEFAULT_CALENDAR_ID,
+            DEFAULT_LOOKBACK_MINUTES,
+            DEFAULT_NOTES_GRACE_MINUTES,
+            MEETING_WATCH_PROMPT_PREAMBLE,
+            MeetingWatcher,
+        )
+        from domain.triggers import WatchSource
+
+        # Slower than mail_watch: notes appear minutes after a meeting ends, so
+        # a tighter poll only re-checks an empty Drive more often.
+        every = max(1, int(cfg.get("every_minutes") or 5))
+        return WatchSource(
+            name="meeting_watch",
+            cron=f"*/{every} * * * *",
+            conversation=chat_id,
+            watcher=MeetingWatcher(
+                calendar_connector=self.provider("google_calendar"),
+                drive_connector=self.provider("google_drive"),
+                state_file=self.persona.data_dir / "meeting_watch.json",
+                lookback_minutes=int(
+                    cfg.get("lookback_minutes") or DEFAULT_LOOKBACK_MINUTES
+                ),
+                notes_grace_minutes=int(
+                    cfg.get("notes_grace_minutes") or DEFAULT_NOTES_GRACE_MINUTES
+                ),
+                calendar_id=str(cfg.get("calendar_id") or DEFAULT_CALENDAR_ID),
+            ),
+            preamble=MEETING_WATCH_PROMPT_PREAMBLE,
+        )
+
+    def _background_can_write_tasks(self) -> bool:
+        """Whether an unattended fire may call task_add.
+
+        Asks the persona's own policy resolver rather than re-reading YAML, so
+        this agrees with what the background agent will actually be handed.
+        """
+        allowed = self.persona.background_view().allowed_tool_names(
+            self.provider("tasks")
+        )
+        return allowed is None or "task_add" in allowed
+
+    @cached_property
     def webhook_server(self) -> WebhookServer | None:
         """Event-driven triggers.
 
@@ -1283,7 +1370,13 @@ class PersonaRuntime:
         if self.heartbeat_source is not None:
             sources.append(self.heartbeat_source)
         sources.extend(
-            w for w in (self.mail_watch_source, self.splitwise_watch_source) if w is not None
+            w
+            for w in (
+                self.mail_watch_source,
+                self.splitwise_watch_source,
+                self.meeting_watch_source,
+            )
+            if w is not None
         )
         if self.webhook_server is not None:
             sources.append(WebhookSource(self.webhook_server))

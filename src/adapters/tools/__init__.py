@@ -19,6 +19,7 @@ from ports import (
 from .approvals import GatedToolProvider, PendingApproval, WriteApprovalGate
 from .budget import BudgetConnector
 from .clickup import ClickUpConnector
+from .gdrive import GoogleDriveConnector
 from .gmail import GmailConnector
 from .google_calendar import GoogleCalendarConnector
 
@@ -39,6 +40,7 @@ __all__ = [
     "GatedToolProvider",
     "GmailConnector",
     "GoogleCalendarConnector",
+    "GoogleDriveConnector",
     "PendingApproval",
     "ServiceRegistry",
     "SplitwiseConnector",

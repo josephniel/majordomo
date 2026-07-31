@@ -11,6 +11,7 @@ persona, no accounts, no auth flows.
     ScheduledTask  — dataclass for one scheduled task
     SkillsLibrary  — operator-curated markdown instruction notes
     SkillMiner     — proposes new notes from repeated corrections
+    TaskBoard      — the obligations the operator owes, ranked by a pure function
 
 Runtime services (webhooks, mail watch, retention) live in `adapters/trigger/` —
 they act on their own triggers and never appear in a tool schema.
@@ -26,6 +27,7 @@ from .reflection import ReflectionEngine
 from .schedule import ScheduledTask, ScheduleEngine, TaskScheduler
 from .skill_mining import SkillMiner
 from .skills import SkillsLibrary
+from .tasks import TaskBoard
 
 __all__ = [
     "CodeExecutor",
@@ -40,5 +42,6 @@ __all__ = [
     "ScheduledTask",
     "SkillMiner",
     "SkillsLibrary",
+    "TaskBoard",
     "TaskScheduler",
 ]
