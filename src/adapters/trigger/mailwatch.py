@@ -14,10 +14,11 @@ never miss boundary messages; seen-ids dedupe the overlap).
 """
 from __future__ import annotations
 
-import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any
+
+from ._state import WatchState
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -48,39 +49,12 @@ class MailWatcher:
         query: str = DEFAULT_QUERY,
     ) -> None:
         self._gmail = gmail_connector
-        self._state_file = state_file
         self._query = query
-        self._state: dict[str, dict[str, Any]] = self._load()
-        # Two-phase state: check() stages the advanced watermark here; the
-        # caller commit()s only after the alert turn was DELIVERED. A vendor
-        # outage at fire time therefore re-reports the same mail next poll
-        # instead of losing it forever.
-        self._pending: dict[str, dict[str, Any]] = {}
-
-    # ---- state ----
-
-    def _load(self) -> dict[str, dict[str, Any]]:
-        try:
-            # Whatever is on disk: a hand-edited state file is the operator's
-            # problem to fix, but it must not be this watcher's crash.
-            state: dict[str, dict[str, Any]] = json.loads(
-                self._state_file.read_text(encoding="utf-8")
-            )
-        except FileNotFoundError:
-            return {}
-        except Exception:
-            log.exception("mail_watch state unreadable; starting fresh")
-            return {}
-        return state
-
-    def _persist(self) -> None:
-        try:
-            self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._state_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self._state), encoding="utf-8")
-            tmp.replace(self._state_file)
-        except Exception:
-            log.exception("could not persist mail_watch state")
+        # Two-phase state: check() stages the advanced watermark; the caller
+        # commit()s only after the alert turn was DELIVERED. A vendor outage at
+        # fire time therefore re-reports the same mail next poll instead of
+        # losing it forever. See adapters/trigger/_state.py.
+        self._state = WatchState(state_file, label="mail_watch")
 
     # ---- polling ----
 
@@ -93,15 +67,15 @@ class MailWatcher:
         """
         now = int(time.time())
         lines: list[str] = []
-        pending: dict[str, dict[str, Any]] = {}
+        staged: dict[str, dict[str, Any]] = {}
         for name, client in self._gmail.build_clients().items():
             try:
                 profile_lines, new_state = await self._check_profile(name, client, now)
                 lines.extend(profile_lines)
-                pending[name] = new_state
+                staged[name] = new_state
             except Exception:
                 log.exception("mail_watch: profile %s poll failed", name)
-        self._pending = pending
+        self._state.stage(staged)
         if not lines:
             self.commit()  # nothing to deliver — advance the watermark now
             return None
@@ -112,14 +86,12 @@ class MailWatcher:
 
         Call after the alert turn was delivered (or when check() reported nothing).
         """
-        self._state.update(self._pending)
-        self._pending = {}
-        self._persist()
+        self._state.commit()
 
     async def _check_profile(
         self, name: str, client: Any, now: int,
     ) -> tuple[list[str], dict[str, Any]]:
-        state = self._state.get(name) or {}
+        state = self._state.for_profile(name)
         watermark = int(state.get("watermark") or 0)
         seen: list[str] = list(state.get("seen_ids") or [])
 

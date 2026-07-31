@@ -207,17 +207,18 @@ turns, because the eval prompts were 1.5k tokens and production's are ~15.5k.
 
 ## Everything else it does
 
+- **A task board** — obligations with a due date and a priority, and the order is **computed** (due date, priority, capped age bonus) rather than asked of the model. "Prioritize my tasks" is a question an LLM answers confidently, differently each time, and unfalsifiably; here the ranking is a pure function of stored fields and each line carries its reason ("overdue 3d · P1"), so a wrong order is something you fix by editing the task, not by arguing. Action items also arrive on their own: when a meeting ends, the bot reads Gemini's notes doc out of Drive and files what *you* owe, deduped so re-read notes never double-file.
 - **Documents** — text/PDF attachments auto-ingest into a pgvector chunk store; `doc_search` / `doc_read` give the model RAG over your files.
 - **Skills** — markdown instruction notes (keyword-attached, always-on, or fetched on demand). The agent writes its own two ways: mid-turn when you teach it something, and from background mining of past conversations. Mined notes land as **proposals** — listed, readable, and completely inert until you approve one; activating is itself an approval-gated write. Instructions only: no executable skills, no marketplace, by design.
 - **Sandboxed code** — `run_code` in a throwaway Docker container: no network, memory/CPU/pid caps, read-only root, per-run artifact dir. Artifacts deliver to chat via `chat_send_file`.
-- **Proactivity** — a cron heartbeat that works your checklist on a cheap dedicated model and messages you only when something needs you; watchers for Gmail and Splitwise that poll cheaply and wake the LLM only for genuinely new activity; authenticated webhooks that turn any POST into an agent turn. Trigger-driven turns are marked as such, so the approval gate can tell an unattended write from a live one.
+- **Proactivity** — a cron heartbeat that works your checklist on a cheap dedicated model and messages you only when something needs you; watchers for Gmail, Splitwise and ended meetings that poll cheaply and wake the LLM only for genuinely new activity; authenticated webhooks that turn any POST into an agent turn. Trigger-driven turns are marked as such, so the approval gate can tell an unattended write from a live one.
 - **Delegation** — `delegate_task` runs heavy multi-step work in a fresh sub-agent so the main conversation stays lean.
 - **Voice in** — Telegram voice notes transcribe through a vendor-neutral Whisper chain and become normal turns.
 - **A clock** — every turn is stamped with the current time in your timezone, so "in 20 minutes" means something. Connector dates render in that zone too: a vendor storing local midnight as UTC used to report every evening expense a day early.
 - **Operations** — retention pruning for every growth table, `/status` introspection, turn-level observability (vendor, latency, tokens, failovers), per-chat rate limiting, restart-safe schedules, and `./manage backup` for the instance dirs — the only durable state in neither git nor Postgres (secrets excluded by default).
 
-**Built-in faculties:** memory · schedule · skills · documents · code · files · delegate
-**Service connectors:** Gmail · Google Calendar · Yahoo Mail · ClickUp · Splitwise · budget-tracker
+**Built-in faculties:** memory · schedule · tasks · skills · documents · code · files · delegate
+**Service connectors:** Gmail · Google Calendar · Google Drive · Yahoo Mail · ClickUp · Splitwise · budget-tracker
 
 ## Before you grant writes
 

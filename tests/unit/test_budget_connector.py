@@ -60,6 +60,33 @@ class TestClient:
         assert seen["path"] == "/accounts/3/transactions"
         assert seen["body"]["tag_id"] == 9
 
+    async def test_settle_person_posts_to_person_route(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"transfer_id": 1559})
+
+        await _client_with(handler).settle_person(9, {"account_id": 5, "amount": 1500})
+        assert seen["method"] == "POST"
+        assert seen["path"] == "/people/9/settle"
+        assert seen["body"] == {"account_id": 5, "amount": 1500}
+
+    async def test_list_people_reads_people_route(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            return httpx.Response(200, json=[{"id": 9, "name": "Annika T"}])
+
+        out = await _client_with(handler).list_people()
+        assert seen["method"] == "GET"
+        assert seen["path"] == "/people"
+        assert out[0]["name"] == "Annika T"
+
 
 class TestTools:
     async def test_record_transaction_defaults_and_confirms(self):
@@ -194,7 +221,7 @@ class TestTools:
 class TestContract:
     def test_write_tools_declared(self):
         assert frozenset(
-            {"record_transaction", "record_split", "delete_transaction"}
+            {"record_transaction", "record_split", "settle_person", "delete_transaction"}
         ) == BudgetConnector.WRITE_TOOLS
         # Reads must never be gated.
         assert "list_accounts" not in BudgetConnector.WRITE_TOOLS
@@ -295,6 +322,145 @@ class TestDeleteTransaction:
         assert "delete_transaction" in BudgetConnector.WRITE_TOOLS
         assert "delete_transaction" in BudgetConnector.TOOL_NAMES
         assert "delete_transaction" in BudgetConnector.STATUS
+
+
+PEOPLE = [{"id": 9, "name": "Annika T"}, {"id": 11, "name": "Devin"}]
+
+
+def _settle_handler(settle_response, people=None, seen=None):
+    """Routes GET /people and POST /people/{id}/settle."""
+    def handler(request):
+        if request.url.path == "/people":
+            return httpx.Response(200, json=PEOPLE if people is None else people)
+        if seen is not None:
+            seen["path"] = request.url.path
+            seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=settle_response)
+    return handler
+
+
+def _settled(**over):
+    out = {
+        "person_id": 9, "person_name": "Annika T", "direction": "received",
+        "amount": "1500.00", "account_id": 5, "transfer_id": 1559,
+        "balance_before": "1500.00", "balance_after": "0.00",
+    }
+    out.update(over)
+    return out
+
+
+class TestSettlePerson:
+    """The 2026-07-31 bug: a Splitwise settle-up hand-rolled as a credit on the
+    People account, which doubled the balance to 3000 instead of clearing it.
+    """
+
+    async def test_resolves_name_then_posts_to_settle_route(self):
+        seen = {}
+        tools = _connector_tools(_settle_handler(_settled(), seen=seen))
+        result = await tools["settle_person"].handler(
+            {"person": "Annika T", "account_id": 5}, CTX,
+        )
+        assert not result.is_error
+        assert seen["path"] == "/people/9/settle"
+        assert seen["body"] == {"account_id": 5}  # no amount -> settle in full
+
+    async def test_sends_no_direction_argument(self):
+        """Direction is the ledger's call; the bot must not be able to state it."""
+        seen = {}
+        tools = _connector_tools(_settle_handler(_settled(), seen=seen))
+        await tools["settle_person"].handler({"person": "Devin", "account_id": 5}, CTX)
+        assert "direction" not in seen["body"]
+        assert "type" not in seen["body"]
+        schema = tools["settle_person"].parameters["properties"]
+        assert "direction" not in schema
+        assert "type" not in schema
+
+    async def test_optional_fields_forwarded(self):
+        seen = {}
+        tools = _connector_tools(_settle_handler(_settled(), seen=seen))
+        await tools["settle_person"].handler(
+            {
+                "person": "Annika T", "account_id": 5, "amount": 500.0,
+                "occurred_at": "2026-07-31T00:00:00Z", "description": "Splitwise settle-up",
+            },
+            CTX,
+        )
+        assert seen["body"]["amount"] == 500.0
+        assert seen["body"]["occurred_at"] == "2026-07-31T00:00:00Z"
+        assert seen["body"]["description"] == "Splitwise settle-up"
+
+    async def test_name_match_tolerates_case_and_padding(self):
+        seen = {}
+        tools = _connector_tools(_settle_handler(_settled(), seen=seen))
+        result = await tools["settle_person"].handler(
+            {"person": "  annika t  ", "account_id": 5}, CTX,
+        )
+        assert not result.is_error
+        assert seen["path"] == "/people/9/settle"
+
+    async def test_unknown_name_refuses_and_lists_known_people(self):
+        """A misspelling must not mint a second person holding half the balance."""
+        posted = []
+
+        def handler(request):
+            if request.url.path == "/people":
+                return httpx.Response(200, json=PEOPLE)
+            posted.append(request.url.path)
+            return httpx.Response(200, json=_settled())
+
+        tools = _connector_tools(handler)
+        result = await tools["settle_person"].handler(
+            {"person": "Anika T", "account_id": 5}, CTX,  # one 'n' — the real typo
+        )
+        assert result.is_error
+        assert "Annika T" in result.text  # the spelling it should have used
+        assert not posted  # nothing written
+
+    async def test_blank_name_refused(self):
+        tools = _connector_tools(_settle_handler(_settled()))
+        result = await tools["settle_person"].handler({"person": "  ", "account_id": 5}, CTX)
+        assert result.is_error
+
+    async def test_reports_direction_and_balance_movement(self):
+        tools = _connector_tools(_settle_handler(_settled()))
+        result = await tools["settle_person"].handler(
+            {"person": "Annika T", "account_id": 5}, CTX,
+        )
+        assert "received from Annika T" in result.text
+        assert "1500.00 -> 0.00" in result.text
+        assert "#1559" in result.text
+
+    async def test_paid_direction_is_worded_the_other_way(self):
+        tools = _connector_tools(_settle_handler(
+            _settled(direction="paid", person_name="Devin",
+                     balance_before="-2886.67", balance_after="0.00"),
+        ))
+        result = await tools["settle_person"].handler({"person": "Devin", "account_id": 5}, CTX)
+        assert "paid to Devin" in result.text
+
+    async def test_already_settled_is_surfaced_not_retried(self):
+        def handler(request):
+            if request.url.path == "/people":
+                return httpx.Response(200, json=PEOPLE)
+            return httpx.Response(400, json={"detail": "Annika T has no open balance to settle"})
+
+        tools = _connector_tools(handler)
+        result = await tools["settle_person"].handler(
+            {"person": "Annika T", "account_id": 5}, CTX,
+        )
+        assert result.is_error
+
+    def test_registered_as_a_write_tool(self):
+        assert "settle_person" in BudgetConnector.WRITE_TOOLS
+        assert "settle_person" in BudgetConnector.TOOL_NAMES
+        assert "settle_person" in BudgetConnector.STATUS
+        # It writes a ledger row the user will rely on later.
+        assert "settle_person" in BudgetConnector.RECORD_CLAIM_TOOLS
+
+    def test_prompt_routes_settle_ups_away_from_record_transaction(self):
+        section = BudgetConnector.SYSTEM_PROMPT_SECTION
+        assert "settle_person" in section
+        assert "paid me back" in section
 
 
 # The real shape of the tag tree, trimmed to the part that caused the 2026-07-29

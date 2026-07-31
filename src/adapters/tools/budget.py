@@ -94,7 +94,15 @@ class BudgetClient:
             params["account_ids"] = str(account_id)
         return json_object(await self._request("GET", "/transactions", params=params))
 
+    async def list_people(self) -> list[dict[str, Any]]:
+        return json_array(await self._request("GET", "/people"))
+
     # ---- write ----
+
+    async def settle_person(self, person_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        return json_object(await self._request(
+            "POST", f"/people/{person_id}/settle", body=payload
+        ))
 
     async def create_transaction(self, account_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         return json_object(await self._request(
@@ -502,6 +510,94 @@ def _split_tools(client: BudgetClient) -> list[ToolSpec]:
     return [record_split_tool]
 
 
+def _settle_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Close out what a person owes (or is owed) — direction derived server-side."""
+    @tool(
+        "settle_person",
+        "Record a SETTLE-UP with a person: a debt between the user and someone "
+        "else being paid off, in either direction. Use it whenever money moves "
+        "to close an existing balance rather than to buy something — "
+        "'Annika paid me back', 'I sent Devin their share', a Splitwise "
+        "settle-up payment.\n\n"
+        "NEVER hand-roll a settle-up with record_transaction. On the People "
+        "account a credit means 'they owe me MORE' and a debit means 'that debt "
+        "is settled', and both look like money moving in from the outside — so "
+        "recording a repayment by hand tends to DOUBLE the balance instead of "
+        "clearing it. This tool takes no direction argument on purpose: the "
+        "ledger reads the sign of the person's open balance and derives it.\n\n"
+        "Args: person (their name as the ledger already spells it — the tool "
+        "lists the known names if it cannot match), account_id (the user's OWN "
+        "account the cash moved through, from list_accounts — never the People "
+        "account), amount (optional; omit to settle the balance in FULL, which "
+        "is the usual case), occurred_at (ISO datetime, optional), description "
+        "(optional).\n\n"
+        "Refused if the person has no open balance — that means the debt was "
+        "already settled, so do NOT retry as a plain transaction; say it was "
+        "already clear.",
+        {
+            "type": "object",
+            "properties": {
+                "person": {
+                    "type": "string",
+                    "description": "Person's name as spelled in the ledger.",
+                    "maxLength": 120,
+                },
+                "account_id": {
+                    "type": "integer",
+                    "description": "The user's own account the cash moved through.",
+                },
+                "amount": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Optional; omit to settle in full.",
+                },
+                "occurred_at": {
+                    "type": "string",
+                    "description": "ISO 8601 datetime; omit for now.",
+                },
+                "description": {"type": "string", "description": "Optional note."},
+            },
+            "required": ["person", "account_id"],
+        },
+    )
+    @_guarded
+    async def settle_person_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        name = str(args.get("person") or "").strip()
+        if not name:
+            return ToolResult.error("error: person is required")
+        people = await client.list_people()
+        match = next(
+            (p for p in people if str(p.get("name", "")).strip().lower() == name.lower()),
+            None,
+        )
+        if match is None:
+            # Do NOT fall back to creating a person: a misspelling here is how
+            # near-duplicates ("Anika T" beside "Annika T") get minted, and
+            # each one carries its own half of the balance.
+            known = ", ".join(str(p.get("name")) for p in people) or "(none)"
+            return ToolResult.error(
+                f"error: no person named {name!r} in the ledger. Known people: {known}. "
+                "Use the exact spelling — do not create a new person to settle."
+            )
+        payload: dict[str, Any] = {"account_id": int(args["account_id"])}
+        if args.get("amount") is not None:
+            payload["amount"] = args["amount"]
+        if args.get("occurred_at"):
+            payload["occurred_at"] = str(args["occurred_at"])
+        if args.get("description"):
+            payload["description"] = str(args["description"])
+        out = await client.settle_person(int(match["id"]), payload)
+        verb = "received from" if out.get("direction") == "received" else "paid to"
+        return ToolResult.ok(
+            f"settled: {out.get('amount')} {verb} {out.get('person_name')} "
+            f"on account {out.get('account_id')} — balance "
+            f"{out.get('balance_before')} -> {out.get('balance_after')} "
+            f"(transfer #{out.get('transfer_id')})"
+        )
+
+    return [settle_person_tool]
+
+
 def _undo_tools(client: BudgetClient) -> list[ToolSpec]:
     """Remove a row that should not have been written."""
     @tool(
@@ -554,9 +650,11 @@ class BudgetConnector(Connector):
         "track",
         "ledger",
     )
-    WRITE_TOOLS = frozenset({"record_transaction", "record_split", "delete_transaction"})
-    # Both write a ledger row the user will later rely on — chat Layer 3d.
-    RECORD_CLAIM_TOOLS = frozenset({"record_transaction", "record_split"})
+    WRITE_TOOLS = frozenset({
+        "record_transaction", "record_split", "settle_person", "delete_transaction",
+    })
+    # All write a ledger row the user will later rely on — chat Layer 3d.
+    RECORD_CLAIM_TOOLS = frozenset({"record_transaction", "record_split", "settle_person"})
 
     TOOL_NAMES: ClassVar[list[str]] = [
         # read
@@ -566,6 +664,7 @@ class BudgetConnector(Connector):
         # write
         "record_transaction",
         "record_split",
+        "settle_person",
         "delete_transaction",
     ]
 
@@ -575,6 +674,7 @@ class BudgetConnector(Connector):
         "recent_transactions": "Reading recent transactions",
         "record_transaction": "Recording the transaction",
         "record_split": "Recording the split payment",
+        "settle_person": "Recording the settle-up",
         "delete_transaction": "Deleting the budget transaction",
     }
 
@@ -591,7 +691,13 @@ Solo expense/income -> record_transaction. Payment SHARED with other people
 (a Splitwise-style split) -> record_split with the FULL amount paid plus
 each other person's share — never record the full amount of a shared
 payment as a plain transaction (it would overstate the user's spending;
-the ledger books their share as expense and the rest as loans)."""
+the ledger books their share as expense and the rest as loans).
+
+Money settling an EXISTING debt either way ("she paid me back", "I sent him
+his share", a Splitwise settle-up) -> settle_person, never
+record_transaction. A settle-up hand-rolled as a plain transaction usually
+doubles the balance instead of clearing it, because on the People account
+"money in" and "debt cleared" are opposite signs of the same ledger."""
 
     def __init__(self, config: ServiceRegistry) -> None:
         self._config = config
@@ -634,6 +740,7 @@ the ledger books their share as expense and the rest as loans)."""
             *_read_tools(client),
             *_write_tools(client),
             *_split_tools(client),
+            *_settle_tools(client),
             *_undo_tools(client),
         ]
 

@@ -10,6 +10,10 @@ Two tiers (inspired by Letta/MemGPT and mem0):
 Compaction itself lives upstream (domain/memory.py, via the vendor-neutral
 Summarizer) — this layer only stores and retrieves.
 
+A third table, `tasks`, sits beside them without joining the scheme: obligations
+are listed and ranked rather than recalled by similarity, so TaskDatabase carries
+no Embedder and its schema does not move when the embedding model does.
+
 What is NOT here any more
 -------------------------
 The DTOs (`MemoryEntry`, `MemoryCoreEntry`) and the taxonomy constants
@@ -27,6 +31,7 @@ from .db import MemoryDatabase, redact_dsn
 from .docs import DocumentStore
 from .embeddings import Embedder
 from .reranking import RerankConfig, Reranker
+from .tasks import TaskDatabase
 
 __all__ = [
     "LINK_RELATIONS",
@@ -38,5 +43,6 @@ __all__ = [
     "MemoryEntry",
     "RerankConfig",
     "Reranker",
+    "TaskDatabase",
     "redact_dsn",
 ]

@@ -1,6 +1,10 @@
 """services.splitwisewatch — polling watcher (Splitwise has no webhooks)."""
 
-from adapters.trigger.splitwisewatch import MAX_NEW_PER_PROFILE, SplitwiseWatcher
+from adapters.trigger.splitwisewatch import (
+    MAX_NEW_PER_PROFILE,
+    SPLITWISE_WATCH_PROMPT_PREAMBLE,
+    SplitwiseWatcher,
+)
 
 
 def _expense(eid=1, updated="2026-07-23T10:00:00Z", cost="1385.0", deleted=False,
@@ -72,7 +76,7 @@ class TestCheck:
         assert await w.check() is None
         # Watermark advanced immediately (nothing to lose) and persisted.
         w2 = make_watcher(tmp_path, {"splitwise": FakeClient([])})
-        assert w2._state.get("splitwise", {}).get("watermark")
+        assert w2._state.for_profile("splitwise").get("watermark")
 
     async def test_two_phase_commit(self, tmp_path):
         client = FakeClient([_expense()])
@@ -104,6 +108,22 @@ class TestCheck:
         block = await w.check()
         assert "DELETED" in block
         assert "settle-up payment" in block
+
+    async def test_prompt_tells_the_agent_what_to_do_with_a_settle_up(self):
+        """The watch flagged settle-ups but the prompt never said how to book one.
+
+        On 2026-07-31 the agent improvised with record_transaction and booked a
+        repayment as a fresh loan, doubling the balance instead of clearing it.
+        The flag is only useful paired with the routing rule.
+        """
+        assert "settle-up payment" in SPLITWISE_WATCH_PROMPT_PREAMBLE
+        assert "settle_person" in SPLITWISE_WATCH_PROMPT_PREAMBLE
+        assert "NEVER record a settle-up with record_transaction" in (
+            SPLITWISE_WATCH_PROMPT_PREAMBLE
+        )
+
+    async def test_prompt_warns_against_creating_a_second_spelling(self):
+        assert "exactly as the ledger spells it" in SPLITWISE_WATCH_PROMPT_PREAMBLE
 
     async def test_first_run_uses_lookback_not_full_history(self, tmp_path):
         client = FakeClient([])

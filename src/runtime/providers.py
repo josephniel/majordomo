@@ -153,6 +153,27 @@ def _build_schedule(rt: RuntimeContext) -> ToolProvider:
     return TaskScheduler(runtime=rt.schedule_runtime)
 
 
+def _build_tasks(rt: RuntimeContext) -> ToolProvider:
+    from adapters.store import TaskDatabase
+    from domain import TaskBoard
+    dsn = rt.settings.memory_database_url
+    if not dsn:
+        raise SystemExit(
+            f"persona {rt.persona.id!r}: MEMORY_DATABASE_URL is not set "
+            f"(needed by the task board)."
+        )
+    # Same database as memory and documents, its own table, and — unlike
+    # theirs — no Embedder: tasks are ranked from their own fields, never
+    # recalled by similarity.
+    return TaskBoard(
+        store=TaskDatabase(dsn),
+        persona_id=rt.persona.id,
+        # The board's "due today" has to mean the operator's today, and the
+        # host already declares that wall clock once for crons and heartbeats.
+        timezone=rt.settings.schedule_timezone,
+    )
+
+
 def _build_skills(rt: RuntimeContext) -> ToolProvider:
     from domain import SkillsLibrary
     return SkillsLibrary(skills_dir=rt.persona.dir / "skills")
@@ -214,6 +235,11 @@ def _build_google_calendar(rt: RuntimeContext) -> ToolProvider:
     )
 
 
+def _build_google_drive(rt: RuntimeContext) -> ToolProvider:
+    from adapters.tools import GoogleDriveConnector
+    return GoogleDriveConnector(config=rt.config)
+
+
 def _build_yahoo(rt: RuntimeContext) -> ToolProvider:
     from adapters.tools import YahooConnector
     return YahooConnector(config=rt.config)
@@ -244,12 +270,14 @@ def _build_budget(rt: RuntimeContext) -> ToolProvider:
 PROVIDERS: tuple[ProviderSpec, ...] = (
     _connector("gmail", _build_gmail),
     _connector("google_calendar", _build_google_calendar),
+    _connector("google_drive", _build_google_drive),
     _connector("yahoo", _build_yahoo),
     _connector("clickup", _build_clickup),
     _connector("splitwise", _build_splitwise),
     _connector("budget", _build_budget),
     _faculty("memory", _build_memory),
     _faculty("schedule", _build_schedule),
+    _faculty("tasks", _build_tasks),
     _faculty("skills", _build_skills),
     _faculty("delegate", _build_delegate),
     _faculty("code", _build_code),

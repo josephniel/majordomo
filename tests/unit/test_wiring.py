@@ -669,3 +669,129 @@ class TestProvidersAreWarmedAtBoot:
         orch, _, _ = _orch(tmp_path, connectors=[Boom(), Fine()])
         await orch._warm_providers()          # must not raise
         assert warmed == ["fine"]
+
+
+
+class TestMeetingWatchGating:
+    """meeting_watch needs three grants, and the one that is easy to miss is
+    the BACKGROUND write on tasks.
+
+    `background_tools:` is its own enablement map, and when it is absent the
+    chat map is inherited DOWNGRADED to read-only. So the natural-looking
+    persona — `tasks: read_write` under faculties:, nothing else — gives an
+    unattended fire a board it can read and not write. That combination would
+    read the notes, file nothing, and report a plausible summary of action
+    items that exist nowhere, which is the failure the watch refuses to run
+    with rather than the one it papers over.
+    """
+
+    CHAT: ClassVar[dict] = {
+        "google_calendar": True,
+        "google_drive": True,
+        "tasks": "read_write",
+    }
+    BACKGROUND: ClassVar[dict] = {
+        "google_calendar": True,
+        "google_drive": True,
+        "tasks": "read_write",
+    }
+    _KEEP = object()
+
+    def _runtime(
+        self, tmp_path, monkeypatch, *,
+        enabled=None, background_tools=_KEEP, meeting_watch=True,
+    ):
+        from runtime.container import PersonaRuntime
+        from runtime.persona import Persona
+
+        # The tasks faculty is Postgres-backed; the DSN only has to EXIST for
+        # the provider to be constructible — nothing connects in these tests.
+        monkeypatch.setenv("MEMORY_DATABASE_URL", "postgres://x/y")
+        instance = tmp_path / "instances" / "t"
+        instance.mkdir(parents=True)
+        (instance / "platform.yaml").write_text(
+            "telegram:\n  allowed_user_ids:\n    - 777\n", encoding="utf-8",
+        )
+        persona = Persona(
+            id="t", dir=instance, name="T", system_prompt="x",
+            enabled_connectors=dict(self.CHAT if enabled is None else enabled),
+            background_tools=(
+                dict(self.BACKGROUND) if background_tools is self._KEEP
+                else background_tools
+            ),
+            meeting_watch={"every_minutes": 5} if meeting_watch else None,
+        )
+        return PersonaRuntime(persona)
+
+    def test_all_grants_present_builds_the_watch(self, tmp_path, monkeypatch):
+        src = self._runtime(tmp_path, monkeypatch).meeting_watch_source
+        assert src is not None
+        assert src.name == "meeting_watch"
+        assert src.cron == "*/5 * * * *"
+
+    def test_no_config_no_watch(self, tmp_path, monkeypatch):
+        assert self._runtime(
+            tmp_path, monkeypatch, meeting_watch=False,
+        ).meeting_watch_source is None
+
+    def test_every_minutes_drives_the_cron(self, tmp_path, monkeypatch):
+        rt = self._runtime(tmp_path, monkeypatch)
+        rt.persona.meeting_watch = {"every_minutes": 15}
+        assert rt.meeting_watch_source.cron == "*/15 * * * *"
+
+    def test_without_calendar_there_is_nothing_to_watch(self, tmp_path, monkeypatch):
+        enabled = {k: v for k, v in self.CHAT.items() if k != "google_calendar"}
+        assert self._runtime(
+            tmp_path, monkeypatch, enabled=enabled,
+        ).meeting_watch_source is None
+
+    def test_without_drive_the_notes_cannot_be_read(self, tmp_path, monkeypatch):
+        enabled = {k: v for k, v in self.CHAT.items() if k != "google_drive"}
+        assert self._runtime(
+            tmp_path, monkeypatch, enabled=enabled,
+        ).meeting_watch_source is None
+
+    def test_without_the_tasks_faculty_there_is_nowhere_to_file(
+        self, tmp_path, monkeypatch,
+    ):
+        enabled = {k: v for k, v in self.CHAT.items() if k != "tasks"}
+        assert self._runtime(
+            tmp_path, monkeypatch, enabled=enabled,
+        ).meeting_watch_source is None
+
+    def test_chat_write_access_alone_is_not_enough(self, tmp_path, monkeypatch):
+        """No background_tools: block, so the chat grant is inherited
+        read-only and task_add is gone. This is the trap the guard exists for."""
+        assert self._runtime(
+            tmp_path, monkeypatch, background_tools=None,
+        ).meeting_watch_source is None
+
+    def test_read_only_tasks_disables_it_even_in_the_background_map(
+        self, tmp_path, monkeypatch,
+    ):
+        assert self._runtime(
+            tmp_path, monkeypatch,
+            background_tools={**self.BACKGROUND, "tasks": True},
+        ).meeting_watch_source is None
+
+    def test_a_tool_list_without_task_add_disables_it(self, tmp_path, monkeypatch):
+        assert self._runtime(
+            tmp_path, monkeypatch,
+            background_tools={**self.BACKGROUND, "tasks": ["task_list", "task_next"]},
+        ).meeting_watch_source is None
+
+    def test_a_tool_list_containing_task_add_enables_it(self, tmp_path, monkeypatch):
+        assert self._runtime(
+            tmp_path, monkeypatch,
+            background_tools={**self.BACKGROUND, "tasks": ["task_add", "task_next"]},
+        ).meeting_watch_source is not None
+
+    def test_the_watch_joins_the_trigger_sources(self, tmp_path, monkeypatch):
+        rt = self._runtime(tmp_path, monkeypatch)
+        names = {getattr(s, "name", None) for s in rt.trigger_sources(None)}
+        assert "meeting_watch" in names
+
+    def test_the_state_file_sits_with_the_other_watermarks(self, tmp_path, monkeypatch):
+        rt = self._runtime(tmp_path, monkeypatch)
+        watcher = rt.meeting_watch_source._watcher
+        assert watcher._state._path == rt.persona.data_dir / "meeting_watch.json"
