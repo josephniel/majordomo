@@ -41,6 +41,15 @@ each other person's owed share). Only the user involved -> record_transaction.
 - Expense someone ELSE paid (the user owes a share): record_transaction as a \
 DEBIT on the 'People' account with the payer as counterparty — never a \
 payment from the user's own cash/card accounts.
+- Flagged "settle-up payment" (a debt being paid off, either direction) -> \
+settle_person with the other person's name and the account the cash moved \
+through. NEVER record a settle-up with record_transaction: on the People \
+account "money in" and "debt cleared" are opposite signs, so a hand-rolled \
+settle-up doubles the balance instead of clearing it. Pass the name exactly \
+as the ledger spells it — settle_person lists the known names if it cannot \
+match, and creating a second spelling splits the balance across two people. \
+If it reports no open balance, the debt was already settled: say so and \
+record nothing.
 - EDITED expense already in the ledger: bring the ledger into line with \
 Splitwise (the tracker has no edit — delete the stale rows with \
 delete_transaction, then record the corrected entry) and say what you \
