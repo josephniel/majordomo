@@ -72,7 +72,7 @@ class TestCheck:
         assert await w.check() is None
         # Watermark advanced immediately (nothing to lose) and persisted.
         w2 = make_watcher(tmp_path, {"splitwise": FakeClient([])})
-        assert w2._state.get("splitwise", {}).get("watermark")
+        assert w2._state.for_profile("splitwise").get("watermark")
 
     async def test_two_phase_commit(self, tmp_path):
         client = FakeClient([_expense()])

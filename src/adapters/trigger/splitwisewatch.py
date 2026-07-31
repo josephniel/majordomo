@@ -13,7 +13,6 @@ lets edits re-report, because an edit bumps updated_at).
 """
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -22,6 +21,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from adapters.timefmt import DEFAULT_TIMEZONE, local_date
+
+from ._state import WatchState
 
 log = logging.getLogger(__name__)
 
@@ -103,38 +104,11 @@ class SplitwiseWatcher:
         default_timezone: str | None = None,
     ) -> None:
         self._splitwise = splitwise_connector
-        self._state_file = state_file
         self._tz = default_timezone or DEFAULT_TIMEZONE
-        self._state: dict[str, dict[str, Any]] = self._load()
-        # Two-phase state, exactly like MailWatcher: check() stages here and
-        # the caller commit()s only after the turn was DELIVERED — a vendor
-        # outage at fire time re-reports the same expenses next poll.
-        self._pending: dict[str, dict[str, Any]] = {}
-
-    # ---- state ----
-
-    def _load(self) -> dict[str, dict[str, Any]]:
-        try:
-            # Whatever is on disk: a hand-edited state file is the operator's
-            # problem to fix, but it must not be this watcher's crash.
-            state: dict[str, dict[str, Any]] = json.loads(
-                self._state_file.read_text(encoding="utf-8")
-            )
-        except FileNotFoundError:
-            return {}
-        except Exception:
-            log.exception("splitwise_watch state unreadable; starting fresh")
-            return {}
-        return state
-
-    def _persist(self) -> None:
-        try:
-            self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._state_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self._state), encoding="utf-8")
-            tmp.replace(self._state_file)
-        except Exception:
-            log.exception("could not persist splitwise_watch state")
+        # Two-phase state, exactly like MailWatcher: check() stages and the
+        # caller commit()s only after the turn was DELIVERED — a vendor outage at
+        # fire time re-reports the same expenses next poll. See _state.py.
+        self._state = WatchState(state_file, label="splitwise_watch")
 
     # ---- polling ----
 
@@ -147,15 +121,15 @@ class SplitwiseWatcher:
         """
         now = datetime.now(UTC)
         lines: list[str] = []
-        pending: dict[str, dict[str, Any]] = {}
+        staged: dict[str, dict[str, Any]] = {}
         for name, client in self._splitwise.build_clients().items():
             try:
                 profile_lines, new_state = await self._check_profile(name, client, now)
                 lines.extend(profile_lines)
-                pending[name] = new_state
+                staged[name] = new_state
             except Exception:
                 log.exception("splitwise_watch: profile %s poll failed", name)
-        self._pending = pending
+        self._state.stage(staged)
         if not lines:
             self.commit()  # nothing to deliver — advance the watermark now
             return None
@@ -166,14 +140,12 @@ class SplitwiseWatcher:
 
         Call after the turn was delivered (or when check() reported nothing).
         """
-        self._state.update(self._pending)
-        self._pending = {}
-        self._persist()
+        self._state.commit()
 
     async def _check_profile(
         self, name: str, client: Any, now: datetime,
     ) -> tuple[list[str], dict[str, Any]]:
-        state = self._state.get(name) or {}
+        state = self._state.for_profile(name)
         seen: dict[str, str] = dict(state.get("seen") or {})
 
         watermark = state.get("watermark")
