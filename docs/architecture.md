@@ -32,11 +32,11 @@ src/
                 chat/     chat platforms (telegram, transcription)
                 model/    LLM vendors, CascadingAgent failover, history mirror
                 tools/    external services (gmail, calendar, clickup, ...)
-                trigger/  time/event sources (webhooks, mail watch, retention)
+                trigger/  time/event sources (webhooks, watches, retention)
                 store/    Postgres persistence + local embeddings/reranking
                 comms/    the shared inter-bot comms bus
-  domain/     the agent's own faculties: memory, schedule, skills, code,
-              files, documents, delegate, reflection.
+  domain/     the agent's own faculties: memory, schedule, tasks, skills,
+              code, files, documents, delegate, reflection.
   kernel/     the turn pipeline and its context modules (commands, recovery,
               proactive, ingestion). Depends on ports, never on concretes.
   runtime/    the composition root: config (the declared configuration
@@ -390,11 +390,16 @@ isn't the user's.
 ## Storage split
 
 - Postgres: memory entries/core, chat-history mirror (+ archive), turn_log,
-  reflection watermarks, comms log, documents + chunks.
+  reflection watermarks, comms log, documents + chunks, tasks.
 - JSON files under `instances/<id>/data/`: Claude session ids
   (`sessions.json`), schedules (`schedules.json`), vendor health
-  (`vendor_health.json`), mail-watch watermark (`mail_watch.json`); plus
-  `code_runs/` artifact dirs (pruned, keep-50).
+  (`vendor_health.json`), watch watermarks (`mail_watch.json`,
+  `splitwise_watch.json`, `meeting_watch.json`); plus `code_runs/` artifact
+  dirs (pruned, keep-50).
+
+The task board is in Postgres rather than beside the watch watermarks because
+of that split: a lost watermark re-reports one poll's worth of activity, while a
+lost task is an obligation the user never hears about again.
 
 Two backup stories, deliberately: the JSON files are cheap, per-instance,
 host-local state that is safe to lose (sessions resume fresh, health
@@ -939,6 +944,22 @@ is load-bearing rather than decorative — see the watch below.
   unlike a missed reminder, nobody would ever notice mail that was never
   mentioned.
 - **Splitwise watch** — same shape, mirroring expenses into the budget ledger.
+- **Meeting watch** (`adapters/trigger/meetingwatch.py`): after a meeting ends,
+  reads Gemini's notes doc out of Drive and files the user's action items onto
+  the task board. Same two-phase watermark, plus one condition the other
+  watches don't have — the notes DO NOT EXIST yet when the trigger condition
+  happens, since Gemini writes them minutes after everyone hangs up. So an
+  ended meeting goes into a `pending` set and is re-checked each poll until
+  either the notes appear or `notes_grace_minutes` runs out. Giving up is
+  silent by design: most meetings never get notes at all (a 1:1, a focus
+  block, notes simply off), and a bot that announced "no notes found" after
+  every one of those gets turned off within a day — the expiry is logged
+  instead, so "why didn't it fire?" is answerable from `./manage logs`.
+  The three watch sources now share their two-phase state machine
+  (`adapters/trigger/_state.py`) rather than each keeping a copy: the
+  difference that matters — persisting the watermark in `check()` instead of
+  `commit()` — is invisible until it silently drops the news it was about to
+  report.
 - **Retention** — a trigger that never wakes the model. It belongs to the port
   anyway: it is a runtime-owned cron registered the same way as the others,
   and giving it a bespoke branch in the orchestrator is exactly the
