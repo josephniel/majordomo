@@ -21,6 +21,7 @@ from .delegate import Delegator
 from .documents import DocumentLibrary
 from .files import FileCourier
 from .ideation import Ideator
+from .jobs import HostJobs
 from .memory import LongTermMemory
 from .reconcile import Reconciler
 from .reflection import ReflectionEngine
@@ -34,6 +35,7 @@ __all__ = [
     "Delegator",
     "DocumentLibrary",
     "FileCourier",
+    "HostJobs",
     "Ideator",
     "LongTermMemory",
     "Reconciler",

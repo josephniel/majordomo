@@ -20,6 +20,7 @@ from .approvals import GatedToolProvider, PendingApproval, WriteApprovalGate
 from .budget import BudgetConnector
 from .clickup import ClickUpConnector
 from .gdrive import GoogleDriveConnector
+from .gitlab import GitLabConnector
 from .gmail import GmailConnector
 from .google_calendar import GoogleCalendarConnector
 
@@ -38,6 +39,7 @@ __all__ = [
     "ContextInjector",
     "Faculty",
     "GatedToolProvider",
+    "GitLabConnector",
     "GmailConnector",
     "GoogleCalendarConnector",
     "GoogleDriveConnector",

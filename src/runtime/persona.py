@@ -81,6 +81,25 @@ class Persona:
     # Needs google_calendar AND google_drive connectors and the tasks faculty.
     # See adapters/trigger/meetingwatch.py.
     meeting_watch: dict[str, Any] | None = None
+    # Named host commands for the `jobs` faculty: {<job_name>: {command:
+    # "sh /path/job.sh", description: "...", timeout_minutes: 30,
+    # report_begin/report_end: <optional marker pair>}}. Defining jobs here
+    # AND enabling the faculty (faculties: jobs: read_write) are both
+    # required. WHEN a job runs is conversational — ask in chat, or have a
+    # schedule-faculty task say to run it. See domain/jobs.py.
+    jobs: dict[str, Any] | None = None
+    # Parameterized job FAMILIES the model may instantiate via job_propose
+    # (proposals are inert drafts until the operator's /jobs approve):
+    # {<template_name>: {command: "sh x.sh {repo}", params: {repo: "<regex>"},
+    # description, timeout_minutes, report_begin/end}}. The model composes
+    # validated params, never command text. See domain/jobs.py.
+    job_templates: dict[str, Any] | None = None
+    # Seatbelt profile (macOS sandbox-exec SBPL file, path relative to the
+    # instance dir) that confines job commands: authored jobs always run
+    # inside it; operator jobs opt in per-job with `sandbox: true`. The
+    # profile's whole point is denying writes to the bot's own config,
+    # credentials and job scripts — the self-authorization surface.
+    job_sandbox_profile: str | None = None
     # Enablement map for BACKGROUND agents (heartbeat, mail-watch) — same
     # grammar as faculties:/connectors:. When unset, the chat map is used
     # downgraded to read-only. Background fires are unattended and pay the
@@ -127,6 +146,14 @@ class Persona:
             ),
             meeting_watch=(
                 dict(cfg["meeting_watch"]) if cfg.get("meeting_watch") else None
+            ),
+            jobs=dict(cfg["jobs"]) if cfg.get("jobs") else None,
+            job_templates=(
+                dict(cfg["job_templates"]) if cfg.get("job_templates") else None
+            ),
+            job_sandbox_profile=(
+                str(cfg["job_sandbox_profile"]).strip()
+                if cfg.get("job_sandbox_profile") else None
             ),
             background_tools=(
                 dict(cfg["background_tools"]) if cfg.get("background_tools") else None

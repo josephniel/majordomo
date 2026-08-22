@@ -59,6 +59,8 @@ class CommandsMixin:
             await self._cmd_status(cmd.chat_id, reply_to=cmd.message_id)
         elif cmd.command == "help":
             await self._cmd_help(cmd.chat_id, reply_to=cmd.message_id)
+        elif cmd.command == "jobs":
+            await self._cmd_jobs(cmd.chat_id, cmd.args, reply_to=cmd.message_id)
         else:
             log.warning("unknown command: %s", cmd.command)
 
@@ -68,12 +70,78 @@ class CommandsMixin:
             "/status — vendors, health, memory, schedules, proactive subsystems\n"
             "/reset — start the conversation over (history archived, not lost)\n"
             "/cancel — stop the in-flight reply (or just say \"cancel\")\n"
+            "/jobs — review model-authored jobs (approve/revoke/resume <name>)\n"
             "/help — this message\n\n"
             "Just talk for everything else: reminders and schedules, email and "
             "calendar, tasks and expenses, remembering facts, searching files "
             "you've sent me, running code, voice notes. Anything that changes "
             "the outside world asks you to Approve first."
         ), reply_to=reply_to)
+
+    async def _cmd_jobs(
+        self, chat_id: ConversationRef, args: str, *, reply_to: int | None = None
+    ) -> None:
+        """Review and manage model-authored jobs: the human half of the lifecycle.
+
+        Approval is deliberately NOT a model tool — the only path from draft
+        to approved is this operator-typed command, which the model cannot
+        invoke. The mixin reaches the faculty duck-typed (the gated view
+        delegates attribute access), the same way /status reaches status_line.
+        """
+        jobs = next(
+            (c for c in self._connectors if getattr(c, "name", "") == "jobs"), None
+        )
+        if jobs is None:
+            await self._platform.send_text(
+                chat_id, "The jobs faculty is not enabled for this persona.",
+                reply_to=reply_to,
+            )
+            return
+        parts = args.split()
+        action = parts[0].lower() if parts else "list"
+        name = parts[1] if len(parts) > 1 else ""
+        method_by_action = {
+            "list": "authored_overview",
+            "show": "show_authored",
+            "approve": "approve_authored",
+            "revoke": "revoke_authored",
+            "resume": "resume_authored",
+        }
+        method_name = method_by_action.get(action)
+        if method_name is None or (action != "list" and not name):
+            await self._platform.send_text(
+                chat_id, "Usage: /jobs [show|approve|revoke|resume <name>]",
+                reply_to=reply_to,
+            )
+            return
+        method = getattr(jobs, method_name, None)
+        if not callable(method):
+            await self._platform.send_text(
+                chat_id, "This persona's jobs faculty has no authored tier.",
+                reply_to=reply_to,
+            )
+            return
+        try:
+            text = str(method() if action == "list" else method(name))
+        except Exception:
+            log.exception("/jobs %r failed", args)
+            text = "That failed — the log has the traceback."
+        await self._platform.send_text(chat_id, text, reply_to=reply_to)
+        # Lifecycle flips happen OUTSIDE the conversation, so without this
+        # the model's belief about a job's status goes stale — observed live:
+        # it refused a freshly-approved job "because it is still a draft"
+        # without calling job_run. Mirror the action the way tool calls are
+        # mirrored, so the next turn simply knows.
+        if action in ("approve", "revoke", "resume") and self._conversation_history:
+            try:
+                await self._conversation_history.append(
+                    persona_id=self._persona_id,
+                    chat_id=chat_id,
+                    role="system",
+                    content=f"[operator] /jobs {action} {name} → {text.splitlines()[0]}",
+                )
+            except Exception:
+                log.debug("could not mirror /jobs action into history", exc_info=True)
 
     async def _cmd_start(self, chat_id: ConversationRef, *, reply_to: int | None = None) -> None:
         enabled = [i.name for i in self._config.load_enabled()]

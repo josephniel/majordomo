@@ -34,6 +34,7 @@ faculties:
   code: read_write       # sandboxed; every run needs an approval tap
   files: true
   documents: read_write
+#  jobs: read_write      # named HOST commands (unsandboxed!) — see jobs: below
 
 # External-service adapters — multi-profile, credentialed. Configure
 # profiles via ./manage add/auth after enabling. Start read-only (true) and
@@ -106,6 +107,48 @@ system_prompt: |
 #   notes_grace_minutes: 45   # how long to wait for Gemini before giving up
 #   lookback_minutes: 180     # how far back to look for ended meetings
 #   calendar_id: primary
+
+# Named HOST commands for the jobs faculty (enable `jobs:` under faculties
+# above). UNSANDBOXED on purpose — these exist to touch real repos and real
+# tools — so the model can only pick FROM this list, never compose a command,
+# and each job_run rides the approval gate. WHEN a job runs is
+# conversational: ask in chat ("run the nightly-backup job"), or tell the
+# bot to schedule it ("every Monday 9am, run it and send me the report") —
+# that lands in the schedule faculty like any reminder. A job printing the
+# report_begin/report_end marker lines gets exactly that block relayed;
+# otherwise the output tail is.
+# jobs:
+#   nightly_backup:
+#     description: Tar the instance dirs to the NAS
+#     command: sh $HOME/backup.sh
+#     timeout_minutes: 15
+#     report_begin: "REPORT BEGIN"    # optional marker pair
+#     report_end: "REPORT END"
+
+# Parameterized job FAMILIES the model may instantiate itself via
+# job_propose ("make me a job that syncs X") — it composes validated
+# params, never command text. Proposals land as INERT drafts in
+# data/authored_jobs.json and only the operator's `/jobs approve <name>`
+# chat command activates one (approval is deliberately not a tool). The
+# approved spec is hash-pinned (drift demotes it to draft), authored jobs
+# are capped at 10, run at most hourly after a success (failed runs retry
+# immediately — the 3-strike auto-pause bounds failure loops; `/jobs
+# resume` clears it), and unapproved drafts expire after 7 days.
+# job_templates:
+#   mirror_repo:
+#     description: Clone-or-sync one GitLab project into ~/projects/work
+#     command: sh $HOME/mirror-repo.sh {project}
+#     params:
+#       project: "^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)+$"
+#     timeout_minutes: 10
+
+# Seatbelt profile (macOS sandbox-exec SBPL, path relative to this dir) that
+# confines job commands. Authored jobs ALWAYS run inside it when set;
+# operator jobs opt in per-job with `sandbox: true`. Deny at minimum writes
+# to this instance dir (the bot's config, credentials, authored-job store and
+# job scripts — a job that can edit those can grant itself permissions),
+# ~/Library/LaunchAgents, and your VCS identity/credential files.
+# job_sandbox_profile: ./jobs/sandbox.sb
 
 # Event-driven triggers: POST /trigger/<name> with Bearer WEBHOOK_TOKEN.
 # webhooks:
