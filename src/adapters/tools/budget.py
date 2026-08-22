@@ -337,10 +337,19 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
         "Spending accounts are also balance-checked: a debit larger than a "
         "cash/debit-card account's balance is refused, so if the money did "
         "not really leave that account, you have the wrong account.\n\n"
+        "DIRECTION IS REQUIRED. type='debit' is money LEAVING the account, "
+        "type='credit' is money ARRIVING in it. There is no default: state it "
+        "every time. 'I paid', 'I bought', 'I spent' are debits; 'I was paid', "
+        "'X paid me back', 'deposit', 'refund', 'cash in' are credits. Getting "
+        "this wrong moves the money the opposite way, and on a cash or "
+        "debit-card account a mislabelled credit is refused as an overdraft.\n\n"
+        "REPAYMENTS ARE NOT THIS TOOL. If someone is paying back a balance they "
+        "already owe on the People ledger, use settle_person — it finds the open "
+        "balance and books both sides. Recording it here leaves them still owing.\n\n"
         "Args: account_id and tag_id (from list_accounts / list_tags), amount "
-        "(positive number), type ('debit' = money out, the default; 'credit' "
-        "= money in), description, counterparty (who was paid / who paid, "
-        "optional), occurred_at (ISO datetime, optional — defaults to now).",
+        "(positive number), type ('debit' or 'credit', required), description, "
+        "counterparty (who was paid / who paid, optional), occurred_at (ISO "
+        "datetime, optional — defaults to now).",
         {
             "type": "object",
             "properties": {
@@ -357,7 +366,10 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
                 "type": {
                     "type": "string",
                     "enum": ["debit", "credit"],
-                    "description": "debit = money out (default), credit = money in.",
+                    "description": (
+                        "REQUIRED. debit = money out of the account, "
+                        "credit = money into it."
+                    ),
                 },
                 "description": {"type": "string", "description": "What this was for."},
                 "counterparty": {
@@ -370,14 +382,26 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
                     "description": "ISO 8601 datetime; omit for now.",
                 },
             },
-            "required": ["account_id", "tag_id", "amount"],
+            "required": ["account_id", "tag_id", "amount", "type"],
         },
     )
     async def record_transaction_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         try:
             account_id = int(args["account_id"])
-            kind = args.get("type") or "debit"
             tag_id = int(args["tag_id"])
+            # Checked after the required args so a genuinely missing one still
+            # reports itself. Deliberately no default: a missing direction is a
+            # question for the model, not something to guess. Guessing "debit"
+            # booked four deposits in a row as withdrawals, and the overdraft
+            # refusals that followed were relayed to the user as a balance
+            # problem -- four times, without the guess ever being suspected.
+            kind = args.get("type")
+            if kind not in ("debit", "credit"):
+                return ToolResult.error(
+                    "error: 'type' is required and must be 'debit' (money out) "
+                    "or 'credit' (money in). If this is someone repaying a "
+                    "balance they owe you, use settle_person instead."
+                )
             bad = await _reject_bad_tag(client, tag_id, kind)
             if bad is not None:
                 return bad

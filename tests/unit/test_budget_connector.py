@@ -98,16 +98,56 @@ class TestTools:
 
         tools = _connector_tools(handler)
         result = await tools["record_transaction"].handler(
-            {"account_id": 3, "tag_id": 9, "amount": 250.5,
+            {"account_id": 3, "tag_id": 9, "amount": 250.5, "type": "debit",
              "description": "lunch", "counterparty": "Jollibee"},
             CTX,
         )
         assert not result.is_error
         assert "transaction #42" in result.text
-        assert seen["body"]["type"] == "debit"  # default
+        assert seen["body"]["type"] == "debit"
         assert seen["body"]["description"] == "lunch"
         assert seen["body"]["counterparty"] == "Jollibee"
         assert seen["body"]["occurred_at"]  # defaulted to now
+
+    async def test_record_transaction_refuses_a_missing_direction(self):
+        """No default direction. Guessing "debit" booked four deposits in a row
+        as withdrawals on 2026-08-01, and the overdraft refusals that followed
+        were relayed to the user as a balance problem."""
+        seen = {}
+
+        def handler(request):
+            seen["called"] = True
+            return httpx.Response(200, json={"id": 1})
+
+        tools = _connector_tools(handler)
+        result = await tools["record_transaction"].handler(
+            {"account_id": 3, "tag_id": 9, "amount": 690}, CTX,
+        )
+        assert result.is_error
+        assert "type" in result.text and "credit" in result.text
+        # and it must not have reached the ledger
+        assert "called" not in seen
+
+    async def test_record_transaction_points_repayments_at_settle_person(self):
+        tools = _connector_tools(lambda r: httpx.Response(200, json={"id": 1}))
+        result = await tools["record_transaction"].handler(
+            {"account_id": 3, "tag_id": 9, "amount": 480}, CTX,
+        )
+        assert "settle_person" in result.text
+
+    async def test_record_transaction_credit_is_sent_through(self):
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": 7})
+
+        tools = _connector_tools(handler)
+        result = await tools["record_transaction"].handler(
+            {"account_id": 9, "tag_id": 35, "amount": 690, "type": "credit"}, CTX,
+        )
+        assert not result.is_error
+        assert seen["body"]["type"] == "credit"
 
     async def test_record_transaction_missing_required_arg(self):
         tools = _connector_tools(lambda r: httpx.Response(200, json={}))
@@ -123,7 +163,7 @@ class TestTools:
 
         tools = _connector_tools(handler)
         result = await tools["record_transaction"].handler(
-            {"account_id": 3, "tag_id": 999, "amount": 10}, CTX,
+            {"account_id": 3, "tag_id": 999, "amount": 10, "type": "debit"}, CTX,
         )
         assert result.is_error
         assert "422" in result.text
@@ -535,7 +575,8 @@ class TestWritesPreCheckTheTag:
         seen = {}
         tool = _connector_tools(self._handler(seen))["record_transaction"]
         result = await tool.handler(
-            {"account_id": 34, "tag_id": 58, "amount": 987.3, "counterparty": "Dana O"}, CTX
+            {"account_id": 34, "tag_id": 58, "amount": 987.3, "type": "debit",
+             "counterparty": "Dana O"}, CTX
         )
         assert result.is_error
         assert "[35] Family Loans (Lent)" in result.text
@@ -546,7 +587,8 @@ class TestWritesPreCheckTheTag:
         seen = {}
         tool = _connector_tools(self._handler(seen))["record_transaction"]
         result = await tool.handler(
-            {"account_id": 34, "tag_id": 35, "amount": 987.3, "counterparty": "Dana O"}, CTX
+            {"account_id": 34, "tag_id": 35, "amount": 987.3, "type": "debit",
+             "counterparty": "Dana O"}, CTX
         )
         assert not result.is_error, result.text
         assert seen["posted"]["tag_id"] == 35
@@ -584,6 +626,6 @@ class TestWritesPreCheckTheTag:
             return httpx.Response(200, json={"id": 99})
 
         tool = _connector_tools(handler)["record_transaction"]
-        result = await tool.handler({"account_id": 34, "tag_id": 58, "amount": 10}, CTX)
+        result = await tool.handler({"account_id": 34, "tag_id": 58, "amount": 10, "type": "debit"}, CTX)
         assert not result.is_error, result.text
         assert seen["posted"]["tag_id"] == 58
