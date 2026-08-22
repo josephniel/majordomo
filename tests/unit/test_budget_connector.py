@@ -629,3 +629,80 @@ class TestWritesPreCheckTheTag:
         result = await tool.handler({"account_id": 34, "tag_id": 58, "amount": 10, "type": "debit"}, CTX)
         assert not result.is_error, result.text
         assert seen["posted"]["tag_id"] == 58
+
+
+class TestPendingPayments:
+    """Recurring payments exist in the ledger before they are paid. Recording one
+    by hand writes a second record of a payment already expected: the obligation
+    stays open and the spend shows as unbudgeted."""
+
+    def _tools(self, handler):
+        return _connector_tools(handler)
+
+    async def test_pending_list_shows_ids_to_approve(self):
+        def handler(request):
+            return httpx.Response(200, json={
+                "due": [{"id": 502, "due_date": "2026-08-30", "amount": "4698.00",
+                         "currency": "PHP", "description": "Globe Postpaid Plan",
+                         "account_name": "SB Wave Titanium 9609"}],
+                "upcoming": [{"id": 496, "due_date": "2026-08-23", "amount": "6045.67",
+                              "currency": "PHP", "description": "Installment: Globe Iconic",
+                              "account_name": "SB Wave Titanium 9609"}],
+            })
+
+        result = await self._tools(handler)["list_pending_payments"].handler({}, CTX)
+        assert not result.is_error
+        assert "id=502" in result.text and "Globe Postpaid Plan" in result.text
+        assert "DUE NOW" in result.text and "UPCOMING" in result.text
+
+    async def test_projected_rows_without_an_id_are_not_offered(self):
+        # An occurrence with no database row yet cannot be approved; listing it
+        # with no id would invite a call that cannot work.
+        def handler(request):
+            return httpx.Response(200, json={
+                "due": [], "upcoming": [{"id": None, "amount": "1.00",
+                                          "description": "projected"}]})
+
+        result = await self._tools(handler)["list_pending_payments"].handler({}, CTX)
+        assert "projected" not in result.text
+
+    async def test_empty_queue_says_so(self):
+        handler = lambda r: httpx.Response(200, json={"due": [], "upcoming": []})
+        result = await self._tools(handler)["list_pending_payments"].handler({}, CTX)
+        assert not result.is_error
+        assert "Nothing scheduled" in result.text
+
+    async def test_approve_posts_and_closes_the_obligation(self):
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            seen["method"] = request.method
+            return httpx.Response(200, json={
+                "id": 502, "description": "Globe Postpaid Plan", "amount": "4698.00",
+                "account_name": "SB Wave Titanium 9609", "status": "posted"})
+
+        result = await self._tools(handler)["approve_pending_payment"].handler(
+            {"id": 502}, CTX,
+        )
+        assert not result.is_error
+        assert seen["method"] == "POST"
+        assert "/scheduled-transactions/502/approve" in seen["url"]
+        assert "settled" in result.text and "posted" in result.text
+
+    async def test_a_corrected_amount_is_sent(self):
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content) if request.content else None
+            return httpx.Response(200, json={"id": 5, "status": "posted"})
+
+        await self._tools(handler)["approve_pending_payment"].handler(
+            {"id": 5, "amount": 6855.31}, CTX,
+        )
+        assert seen["body"] == {"amount": 6855.31}
+
+    async def test_approve_without_an_id_is_refused(self):
+        handler = lambda r: httpx.Response(200, json={})
+        result = await self._tools(handler)["approve_pending_payment"].handler({}, CTX)
+        assert result.is_error and "id" in result.text

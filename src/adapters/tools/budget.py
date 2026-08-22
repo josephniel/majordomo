@@ -94,6 +94,23 @@ class BudgetClient:
             params["account_ids"] = str(account_id)
         return json_object(await self._request("GET", "/transactions", params=params))
 
+    async def list_pending_payments(self) -> dict[str, Any]:
+        return json_object(
+            await self._request("GET", "/scheduled-transactions/pending")
+        )
+
+    async def approve_pending_payment(
+        self, sid: int, amount: float | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {}
+        if amount is not None:
+            body["amount"] = amount
+        return json_object(
+            await self._request(
+                "POST", f"/scheduled-transactions/{sid}/approve", body=body or None,
+            )
+        )
+
     async def list_people(self) -> list[dict[str, Any]]:
         return json_array(await self._request("GET", "/people"))
 
@@ -430,6 +447,93 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
     return [record_transaction_tool]
 
 
+def _pending_tools(client: BudgetClient) -> list[ToolSpec]:
+    """The scheduled-payment queue: see what is already owed, and settle it.
+
+    Without these the only way to answer "I paid the Globe bills" is
+    record_transaction, which writes a SECOND record of a payment the ledger was
+    already expecting. The obligation stays open, the spend counts as
+    unaccounted-for, and the two never meet -- there is no link between a
+    transaction and the schedule it satisfies.
+    """
+
+    @tool(
+        "list_pending_payments",
+        "List scheduled payments awaiting approval — what is due now and what "
+        "falls due soon, with the id needed to approve one. Check this FIRST "
+        "whenever the user says they paid something recurring (a bill, rent, a "
+        "subscription, an installment, an allowance): if what they paid is in "
+        "this list, approve it instead of recording a new transaction.",
+        {},
+    )
+    @_guarded
+    async def list_pending_payments_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        data = await client.list_pending_payments()
+        due = data.get("due") or []
+        upcoming = data.get("upcoming") or []
+        if not due and not upcoming:
+            return ToolResult.ok("Nothing scheduled is waiting for approval.")
+        lines = []
+        for label, rows in (("DUE NOW", due), ("UPCOMING", upcoming)):
+            if not rows:
+                continue
+            lines.append(f"{label}:")
+            for r in rows:
+                if r.get("id") is None:
+                    continue  # a projected occurrence with no row yet
+                lines.append(
+                    f"  id={r['id']} {r.get('due_date','')} "
+                    f"{r.get('amount','')} {r.get('currency','')} "
+                    f"{r.get('description') or '(no description)'} "
+                    f"[{r.get('account_name','?')}]"
+                )
+        return ToolResult.ok("\n".join(lines))
+
+    @tool(
+        "approve_pending_payment",
+        "Settle a scheduled payment the user has just made. This posts the "
+        "transaction AND closes the obligation, which recording it by hand does "
+        "not — a hand-written transaction leaves the schedule open forever and "
+        "the spend showing as unbudgeted.\n\n"
+        "Pass `amount` ONLY when the real amount differs from the scheduled one; "
+        "the correction is stored, so the ledger says what was actually paid. "
+        "Get the id from list_pending_payments. Approving several is normal — "
+        "'I paid the Globe bills' may be four separate items.",
+        {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Scheduled payment id, from list_pending_payments.",
+                },
+                "amount": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Actual amount, only if it differs from the scheduled one.",
+                },
+            },
+            "required": ["id"],
+        },
+    )
+    @_guarded
+    async def approve_pending_payment_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        try:
+            sid = int(args["id"])
+        except KeyError as e:
+            return ToolResult.error(f"error: missing required arg {e}")
+        amount = args.get("amount")
+        row = await client.approve_pending_payment(
+            sid, float(amount) if amount is not None else None,
+        )
+        return ToolResult.ok(
+            f"settled: {row.get('description') or 'scheduled payment'} "
+            f"{row.get('amount','')} on {row.get('account_name','?')} "
+            f"(status {row.get('status','?')})"
+        )
+
+    return [list_pending_payments_tool, approve_pending_payment_tool]
+
+
 def _split_tools(client: BudgetClient) -> list[ToolSpec]:
     """Record a payment the user made and others owe a share of."""
     @tool(
@@ -690,6 +794,8 @@ class BudgetConnector(Connector):
         "record_split",
         "settle_person",
         "delete_transaction",
+        "list_pending_payments",
+        "approve_pending_payment",
     ]
 
     STATUS: ClassVar[dict[str, str]] = {
@@ -700,13 +806,25 @@ class BudgetConnector(Connector):
         "record_split": "Recording the split payment",
         "settle_person": "Recording the settle-up",
         "delete_transaction": "Deleting the budget transaction",
+        "list_pending_payments": "Checking scheduled payments",
+        "approve_pending_payment": "Settling the scheduled payment",
     }
 
     SYSTEM_PROMPT_SECTION = """== Budget tracker ==
 
 The user's personal ledger. IMPORTANT: whenever the user reports spending or
 receiving money — including expenses you just recorded in Splitwise or read
-from email — ALSO record it here so the ledger stays complete. Pick the
+from email — ALSO record it here so the ledger stays complete.
+
+RECURRING PAYMENTS ARE ALREADY IN THE LEDGER, WAITING. Bills, rent,
+subscriptions, installments, allowances and loan amortizations exist as
+scheduled payments before they are paid. When the user says they paid something
+of that kind, call list_pending_payments FIRST and approve_pending_payment on
+what matches — one call per item, and "the Globe bills" may well be four.
+Recording it with record_transaction instead writes a second record of a
+payment the ledger was already expecting: the obligation stays open, the spend
+shows as unbudgeted, and nothing links the two. Only fall back to
+record_transaction when nothing in the pending list matches. Pick the
 account and tag from list_accounts/list_tags (they rarely change; remember
 the user's usual ones). If the paying account is genuinely ambiguous, ask
 once and remember the answer.
@@ -763,6 +881,7 @@ doubles the balance instead of clearing it, because on the People account
         return [
             *_read_tools(client),
             *_write_tools(client),
+            *_pending_tools(client),
             *_split_tools(client),
             *_settle_tools(client),
             *_undo_tools(client),
