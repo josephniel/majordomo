@@ -87,6 +87,37 @@ _USAGE_LIMIT_HINTS = (
 )
 
 
+# Result subtype for "the model hit its turn cap". Unlike an auth or API
+# failure, such a turn did real work first — in this bot that includes tool
+# calls that have already written to the ledger — so its partial text is kept
+# rather than replayed on another vendor.
+MAX_TURNS_SUBTYPE = "error_max_turns"
+
+
+def _result_error_detail(msg: ResultMessage) -> str:
+    """Readable reason for a ResultMessage that came back with is_error set.
+
+    `api_error_status` is folded in because a rate-limited turn can arrive as
+    subtype="success" carrying only that status code — and `_is_usage_limit`
+    classifies by substring, so "429" has to appear in the text for the longer
+    usage-limit cooldown to be applied instead of the short failure one.
+
+    Shapes vary across SDK versions, so the optional fields are read
+    defensively, same as `_capture_usage`.
+    """
+    parts: list[str] = []
+    result_text = str(getattr(msg, "result", "") or "").strip()
+    if result_text:
+        parts.append(result_text)
+    parts.extend(str(e) for e in (getattr(msg, "errors", None) or ()))
+    status = getattr(msg, "api_error_status", None)
+    if status is not None:
+        parts.append(f"api_error_status={status}")
+    if not parts:
+        parts.append(f"subtype={msg.subtype}")
+    return "; ".join(parts)
+
+
 def _is_usage_limit(exc: BaseException) -> bool:
     # The Claude Agent SDK surfaces rate limits as CLI ProcessErrors rather than
     # typed exceptions, so we match hint substrings — ProcessError already folds
@@ -165,6 +196,7 @@ async def _sdk_one_shot(prompt: str, model: str) -> str:
         chunks: list[str] = []
         actual_model = None
         usage = None
+        error_detail: str | None = None
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
                 actual_model = getattr(msg, "model", None) or actual_model
@@ -172,12 +204,23 @@ async def _sdk_one_shot(prompt: str, model: str) -> str:
             elif isinstance(msg, ResultMessage):
                 actual_model = getattr(msg, "model", None) or actual_model
                 usage = getattr(msg, "usage", None)
+                if msg.is_error:
+                    error_detail = _result_error_detail(msg)
         # Observability: prove which model actually served this background
-        # call (requested vs what the server reports back).
+        # call (requested vs what the server reports back). Logged before the
+        # raise below, because a failed call is exactly when knowing what
+        # served it matters.
         log.info(
             "background summarize: requested=%s served=%s usage=%s",
             model, actual_model or "(not reported)", usage,
         )
+        if error_detail is not None:
+            # Raise instead of returning the text the CLI emitted alongside the
+            # error: `summarize_with_subscription_auth` turns this into "", and
+            # the compaction caller backs off on an empty summary. Returning it
+            # would write the error string into chat_history as the summary
+            # standing in for every turn it replaced.
+            raise RuntimeError(f"Claude CLI error result: {error_detail}")
         return "".join(chunks).strip()
     # ClaudeSDKClient.__aexit__ is typed as possibly suppressing, so the block
     # is not provably terminal — an empty reply is the honest fallback.
@@ -460,6 +503,29 @@ class AnthropicAgent(Agent):
         with contextlib.suppress(Exception):
             await self._client.interrupt()
 
+    @staticmethod
+    def _check_result(msg: ResultMessage, partial: str) -> None:
+        """Raise if the CLI reported a failed turn on its result message.
+
+        Auth failures, API errors and turn-cap aborts are reported HERE, on the
+        result — not raised — and the CLI also emits the error text as an
+        ordinary AssistantMessage. Left alone that text becomes the reply: the
+        user is told "Failed to authenticate: ..." in the bot's own voice, the
+        vendor is marked healthy, and CascadingAgent never advances the chain.
+        Raising hands it to `send`, which classifies it, and to the cascade,
+        which fails over to the next vendor.
+        """
+        if not msg.is_error:
+            return
+        if msg.subtype == MAX_TURNS_SUBTYPE and partial:
+            log.warning(
+                "claude hit its turn cap; keeping the partial reply (%d chars) "
+                "instead of replaying the turn elsewhere — tools it already ran "
+                "may have written", len(partial),
+            )
+            return
+        raise RuntimeError(f"Claude CLI error result: {_result_error_detail(msg)}")
+
     async def _collect_reply(
         self,
         client: Any,
@@ -483,6 +549,7 @@ class AnthropicAgent(Agent):
             if isinstance(msg, ResultMessage):
                 self._session_id = msg.session_id
                 self._capture_usage(msg)
+                self._check_result(msg, "".join(parts).strip())
                 continue
             for block in getattr(msg, "content", None) or ():
                 if isinstance(block, ToolResultBlock):

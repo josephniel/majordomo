@@ -124,7 +124,8 @@ class TestTools:
             {"account_id": 3, "tag_id": 9, "amount": 690}, CTX,
         )
         assert result.is_error
-        assert "type" in result.text and "credit" in result.text
+        assert "type" in result.text
+        assert "credit" in result.text
         # and it must not have reached the ledger
         assert "called" not in seen
 
@@ -261,7 +262,8 @@ class TestTools:
 class TestContract:
     def test_write_tools_declared(self):
         assert frozenset(
-            {"record_transaction", "record_split", "settle_person", "delete_transaction"}
+            {"record_transaction", "record_split", "record_transfer", "settle_person",
+             "delete_transaction"}
         ) == BudgetConnector.WRITE_TOOLS
         # Reads must never be gated.
         assert "list_accounts" not in BudgetConnector.WRITE_TOOLS
@@ -626,7 +628,9 @@ class TestWritesPreCheckTheTag:
             return httpx.Response(200, json={"id": 99})
 
         tool = _connector_tools(handler)["record_transaction"]
-        result = await tool.handler({"account_id": 34, "tag_id": 58, "amount": 10, "type": "debit"}, CTX)
+        result = await tool.handler(
+            {"account_id": 34, "tag_id": 58, "amount": 10, "type": "debit"}, CTX
+        )
         assert not result.is_error, result.text
         assert seen["posted"]["tag_id"] == 58
 
@@ -652,8 +656,10 @@ class TestPendingPayments:
 
         result = await self._tools(handler)["list_pending_payments"].handler({}, CTX)
         assert not result.is_error
-        assert "id=502" in result.text and "Globe Postpaid Plan" in result.text
-        assert "DUE NOW" in result.text and "UPCOMING" in result.text
+        assert "id=502" in result.text
+        assert "Globe Postpaid Plan" in result.text
+        assert "DUE NOW" in result.text
+        assert "UPCOMING" in result.text
 
     async def test_projected_rows_without_an_id_are_not_offered(self):
         # An occurrence with no database row yet cannot be approved; listing it
@@ -667,7 +673,8 @@ class TestPendingPayments:
         assert "projected" not in result.text
 
     async def test_empty_queue_says_so(self):
-        handler = lambda r: httpx.Response(200, json={"due": [], "upcoming": []})
+        def handler(r):
+            return httpx.Response(200, json={"due": [], "upcoming": []})
         result = await self._tools(handler)["list_pending_payments"].handler({}, CTX)
         assert not result.is_error
         assert "Nothing scheduled" in result.text
@@ -688,7 +695,8 @@ class TestPendingPayments:
         assert not result.is_error
         assert seen["method"] == "POST"
         assert "/scheduled-transactions/502/approve" in seen["url"]
-        assert "settled" in result.text and "posted" in result.text
+        assert "settled" in result.text
+        assert "posted" in result.text
 
     async def test_a_corrected_amount_is_sent(self):
         seen = {}
@@ -703,6 +711,119 @@ class TestPendingPayments:
         assert seen["body"] == {"amount": 6855.31}
 
     async def test_approve_without_an_id_is_refused(self):
-        handler = lambda r: httpx.Response(200, json={})
+        def handler(r):
+            return httpx.Response(200, json={})
         result = await self._tools(handler)["approve_pending_payment"].handler({}, CTX)
-        assert result.is_error and "id" in result.text
+        assert result.is_error
+        assert "id" in result.text
+
+
+class TestRecordTransfer:
+    """Moving money between the user's own accounts.
+
+    The gap this closes was not a silent one: without a transfer tool the model
+    tried type='transfer' (refused by the debit|credit enum), then a bare credit
+    into an empty account (refused by the balance guard) — and relayed that
+    refusal to the user as a balance problem, leaving 4000 debited out of GCash
+    and arriving nowhere.
+    """
+
+    def _tools(self, handler):
+        return _connector_tools(handler)
+
+    async def test_posts_to_the_transfers_route_with_both_legs(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": 88})
+
+        result = await self._tools(handler)["record_transfer"].handler(
+            {"from_account_id": 3, "to_account_id": 5, "amount": 4000,
+             "description": "GCash to Cash"}, CTX,
+        )
+        assert seen["method"] == "POST"
+        assert seen["path"] == "/transfers"
+        assert seen["body"]["from_account_id"] == 3
+        assert seen["body"]["to_account_id"] == 5
+        assert seen["body"]["amount"] == 4000
+        assert seen["body"]["description"] == "GCash to Cash"
+        # No tag: the tracker tags transfers itself, and an internal move is
+        # not spending. Sending one would be a category on a non-expense.
+        assert "tag_id" not in seen["body"]
+        assert not result.is_error
+        assert "88" in result.text
+
+    async def test_same_account_is_refused_without_calling_the_api(self):
+        called = []
+
+        def handler(request):
+            called.append(request.url.path)
+            return httpx.Response(200, json={"id": 1})
+
+        result = await self._tools(handler)["record_transfer"].handler(
+            {"from_account_id": 7, "to_account_id": 7, "amount": 100}, CTX,
+        )
+        assert result.is_error
+        # The message has to name the alternative, not just the constraint —
+        # "must differ" alone does not tell the model what to call instead.
+        assert "record_transaction" in result.text
+        assert called == []
+
+    async def test_missing_account_is_refused(self):
+        def handler(request):
+            return httpx.Response(200, json={})
+
+        result = await self._tools(handler)["record_transfer"].handler(
+            {"from_account_id": 3, "amount": 100}, CTX,
+        )
+        assert result.is_error
+        assert "to_account_id" in result.text
+
+    async def test_domain_errors_are_surfaced_not_raised(self):
+        def handler(request):
+            return httpx.Response(
+                400, json={"detail": "Transfers require both accounts to have the same currency"},
+            )
+
+        result = await self._tools(handler)["record_transfer"].handler(
+            {"from_account_id": 3, "to_account_id": 5, "amount": 100}, CTX,
+        )
+        assert result.is_error
+        assert "currency" in result.text
+
+    async def test_a_naive_timestamp_is_read_as_local_not_utc(self):
+        """The mis-dating bug: a naive stamp stored as UTC displays 8h late."""
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": 1})
+
+        await self._tools(handler)["record_transfer"].handler(
+            {"from_account_id": 3, "to_account_id": 5, "amount": 100,
+             "occurred_at": "2026-08-15T23:20:00"}, CTX,
+        )
+        # 23:20 Manila is 15:20 UTC the SAME day — not 23:20 UTC, which would
+        # render as the 16th in the user's timezone.
+        assert seen["body"]["occurred_at"].startswith("2026-08-15T15:20:00")
+
+    async def test_an_aware_timestamp_is_trusted(self):
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": 1})
+
+        await self._tools(handler)["record_transfer"].handler(
+            {"from_account_id": 3, "to_account_id": 5, "amount": 100,
+             "occurred_at": "2026-08-15T10:00:00Z"}, CTX,
+        )
+        assert seen["body"]["occurred_at"].startswith("2026-08-15T10:00:00")
+
+    def test_registered_as_a_write_tool(self):
+        # A transfer moves real money; it must not run unapproved.
+        assert "record_transfer" in BudgetConnector.WRITE_TOOLS
+        assert "record_transfer" in BudgetConnector.RECORD_CLAIM_TOOLS

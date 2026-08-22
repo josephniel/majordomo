@@ -3,7 +3,11 @@ import base64
 
 import pytest
 
-from adapters.model.anthropic import AnthropicAgent, _is_usage_limit
+from adapters.model.anthropic import (
+    AnthropicAgent,
+    _is_usage_limit,
+    _result_error_detail,
+)
 from adapters.model.base import Attachment
 
 
@@ -112,6 +116,98 @@ class TestOptionsBuilder:
         opts = self._builder(max_turns=0, max_output_tokens=0).build()
         assert opts.max_turns is None
         assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in (opts.env or {})
+
+
+def _result(**kw):
+    """A ResultMessage with the required fields defaulted."""
+    from claude_agent_sdk import ResultMessage
+    return ResultMessage(**{
+        "subtype": "success", "duration_ms": 1, "duration_api_ms": 1,
+        "is_error": False, "num_turns": 1, "session_id": "s1", **kw,
+    })
+
+
+def _assistant(text):
+    from claude_agent_sdk import AssistantMessage, TextBlock
+    return AssistantMessage(content=[TextBlock(text=text)], model="claude-sonnet-5")
+
+
+class _FakeClient:
+    """Replays a canned message stream, like ClaudeSDKClient.receive_response."""
+
+    def __init__(self, messages):
+        self._messages = messages
+
+    def receive_response(self):
+        async def _gen():
+            for m in self._messages:
+                yield m
+        return _gen()
+
+
+async def _collect(messages):
+    agent = AnthropicAgent.__new__(AnthropicAgent)
+    agent._session_id = None
+    agent.last_turn_usage = {}
+    return await agent._collect_reply(_FakeClient(messages), None, None)
+
+
+class TestErrorResults:
+    """An error on the ResultMessage must raise, not become the reply.
+
+    Regression: the CLI reports auth/API failures on the result AND emits the
+    error text as an ordinary AssistantMessage. Returning it handed the user
+    "Failed to authenticate: ..." in the bot's own voice and left the vendor
+    marked healthy, so the cascade never failed over to the rest of the chain.
+    """
+
+    async def test_auth_failure_raises_instead_of_replying(self):
+        msg = "Failed to authenticate: OAuth session expired and could not be refreshed"
+        with pytest.raises(RuntimeError) as e:
+            await _collect([_assistant(msg), _result(is_error=True, result=msg)])
+        assert msg in str(e.value)
+
+    async def test_successful_result_still_returns_text(self):
+        assert await _collect([_assistant("hello"), _result()]) == "hello"
+
+    async def test_session_id_captured_even_on_error(self):
+        agent = AnthropicAgent.__new__(AnthropicAgent)
+        agent._session_id = None
+        agent.last_turn_usage = {}
+        client = _FakeClient([_result(is_error=True, session_id="s9", result="boom")])
+        with pytest.raises(RuntimeError):
+            await agent._collect_reply(client, None, None)
+        assert agent._session_id == "s9"
+
+    async def test_max_turns_keeps_partial_reply(self):
+        # The turn did real work — tools it ran may already have written to the
+        # ledger, so it must not be replayed on another vendor.
+        reply = await _collect([
+            _assistant("partial answer"),
+            _result(is_error=True, subtype="error_max_turns"),
+        ])
+        assert reply == "partial answer"
+
+    async def test_max_turns_with_no_text_still_raises(self):
+        with pytest.raises(RuntimeError):
+            await _collect([_result(is_error=True, subtype="error_max_turns")])
+
+
+class TestResultErrorDetail:
+    def test_status_code_makes_a_rate_limit_classifiable(self):
+        # subtype stays "success" on an API error; only the status identifies
+        # it, and _is_usage_limit matches by substring.
+        detail = _result_error_detail(_result(is_error=True, api_error_status=429))
+        assert _is_usage_limit(RuntimeError(detail))
+
+    def test_falls_back_to_subtype_when_empty(self):
+        detail = _result_error_detail(_result(is_error=True, subtype="error_during_execution"))
+        assert "error_during_execution" in detail
+
+    def test_errors_list_included(self):
+        detail = _result_error_detail(_result(is_error=True, errors=["a", "b"]))
+        assert "a" in detail
+        assert "b" in detail
 
 
 class TestResetSession:

@@ -18,9 +18,11 @@ import logging
 import sys
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
+from adapters.timefmt import DEFAULT_TIMEZONE
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
 from ._failures import api_errors, format_http_error, json_array, json_object
@@ -130,6 +132,17 @@ class BudgetClient:
         return json_object(await self._request(
             "POST", f"/accounts/{account_id}/split", body=payload
         ))
+
+    async def create_transfer(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Move money between two of the user's accounts (`POST /transfers`).
+
+        Not the same route as create_transaction: the tracker books a transfer
+        as ONE Transfer row with two Transaction legs, so the money leaves one
+        account and arrives in the other atomically. Two hand-written
+        transactions cannot express that — the ledger has no way to learn they
+        were the same movement.
+        """
+        return json_object(await self._request("POST", "/transfers", body=payload))
 
     async def delete_transaction(self, transaction_id: int) -> dict[str, Any]:
         return json_object(await self._request("DELETE", f"/transactions/{transaction_id}"))
@@ -263,6 +276,36 @@ async def _reject_bad_tag(client: BudgetClient, tag_id: int, kind: str) -> ToolR
         return None
     problem = _tag_problem(tag_id, kind, index)
     return ToolResult.error(problem) if problem else None
+
+
+def _occurred_at(raw: Any) -> str:
+    """Normalize a model-supplied timestamp to true UTC.
+
+    `occurred_at` is `DateTime(timezone=True)` on the tracker and the frontend
+    renders it with `new Date(iso).toLocaleString()`, so the value has to be
+    real UTC. The model routinely sends a NAIVE local ISO string instead
+    ("2026-08-15T23:20:00"), which Postgres reads as UTC — the entry then
+    displays 8 hours late and can land on the wrong calendar date. Confirmed on
+    real rows: a 23:20 Aug 1 Grab ride showed as Aug 2 07:20.
+
+    So a naive stamp is interpreted in the deployment's own timezone rather
+    than taken at face value, because that is what the model meant by it. An
+    already-aware stamp is trusted and converted; an unparseable one falls back
+    to now, since a wrong-but-plausible date is worse than an obvious one.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return datetime.now(UTC).isoformat()
+    try:
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.now(UTC).isoformat()
+    if stamp.tzinfo is None:
+        try:
+            stamp = stamp.replace(tzinfo=ZoneInfo(DEFAULT_TIMEZONE))
+        except (ZoneInfoNotFoundError, ValueError):
+            stamp = stamp.replace(tzinfo=UTC)
+    return stamp.astimezone(UTC).isoformat()
 
 
 def _as_transaction_id(raw: Any) -> int | None:
@@ -447,8 +490,115 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
     return [record_transaction_tool]
 
 
+def _transfer_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Move money between the user's OWN accounts.
+
+    Without this the bot simply cannot do it, and the failure is not a clean
+    one. On 2026-08-02 "move 4000 from GCash to Cash" burned ~13 turns: the
+    model tried type='transfer' (the record_transaction enum is debit|credit,
+    so it was refused), then a bare credit into Cash, which the balance guard
+    refused because Cash was 0 — and it reported that refusal to the user as a
+    BALANCE problem, never as a missing capability. The one debit it did land
+    left 4000 leaving GCash and arriving nowhere.
+
+    A transfer is not two transactions. The tracker books one Transfer row with
+    two legs, so the movement is atomic and reversible as a unit; hand-writing
+    the pair leaves the ledger with no idea they were the same money.
+    """
+    @tool(
+        "record_transfer",
+        "Move money between TWO OF THE USER'S OWN accounts — GCash to Cash, "
+        "payroll account to savings, topping up an e-wallet, paying a credit "
+        "card or loan from a bank account.\n\n"
+        "USE THIS INSTEAD OF record_transaction whenever money leaves one "
+        "account the user holds and arrives in another. record_transaction "
+        "only accepts type='debit' or 'credit' because it describes ONE side "
+        "of a movement; there is no type='transfer' and hand-rolling the pair "
+        "is wrong — a lone debit sends the money nowhere, and a lone credit is "
+        "usually refused as an overdraft on the receiving account, which reads "
+        "like a balance problem when it is really the wrong tool.\n\n"
+        "NO tag_id: the tracker tags transfers itself, and there is nothing to "
+        "categorise — an internal move is not spending. Both accounts must "
+        "hold the SAME currency, and neither may be a container account (post "
+        "to a sub-account instead). The source balance is checked, so a "
+        "transfer larger than what is actually in `from_account_id` is "
+        "refused.\n\n"
+        "NOT for money moving between the user and ANOTHER PERSON — that is "
+        "settle_person (an existing debt) or record_transaction (everything "
+        "else).\n\n"
+        "Args: from_account_id and to_account_id (from list_accounts, must "
+        "differ), amount (positive), description, occurred_at (ISO datetime, "
+        "optional — defaults to now).",
+        {
+            "type": "object",
+            "properties": {
+                "from_account_id": {
+                    "type": "integer",
+                    "description": "Account the money LEAVES (list_accounts).",
+                },
+                "to_account_id": {
+                    "type": "integer",
+                    "description": "Account the money ARRIVES in (list_accounts).",
+                },
+                "amount": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Positive amount in the shared currency.",
+                },
+                "description": {"type": "string", "description": "What this move was for."},
+                "occurred_at": {
+                    "type": "string",
+                    "description": "ISO 8601 datetime; omit for now.",
+                },
+            },
+            "required": ["from_account_id", "to_account_id", "amount"],
+        },
+    )
+    async def record_transfer_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        try:
+            from_id = int(args["from_account_id"])
+            to_id = int(args["to_account_id"])
+            amount = args["amount"]
+        except KeyError as e:
+            return ToolResult.error(f"error: missing required arg {e}")
+        except (TypeError, ValueError):
+            return ToolResult.error(
+                "error: from_account_id and to_account_id must be account ids "
+                "(integers) from list_accounts."
+            )
+        # Caught here rather than left to the API purely for the message: the
+        # tracker's own 400 says the ids "must differ", which does not tell the
+        # model that what it actually wants is record_transaction.
+        if from_id == to_id:
+            return ToolResult.error(
+                "error: a transfer needs two DIFFERENT accounts. If the money "
+                "did not move between the user's own accounts, use "
+                "record_transaction (one account, debit or credit) instead."
+            )
+        try:
+            payload: dict[str, Any] = {
+                "from_account_id": from_id,
+                "to_account_id": to_id,
+                "amount": amount,
+                "occurred_at": _occurred_at(args.get("occurred_at")),
+            }
+            if args.get("description"):
+                payload["description"] = str(args["description"])
+            out = await client.create_transfer(payload)
+            return ToolResult.ok(
+                f"transferred: {amount} from account {from_id} to "
+                f"account {to_id} (transfer #{out.get('id', '?')})"
+            )
+        except httpx.HTTPStatusError as e:
+            return ToolResult.error(format_http_error(_VENDOR, e))
+        except Exception as e:
+            return ToolResult.error(f"error: {e}")
+
+    return [record_transfer_tool]
+
+
 def _pending_tools(client: BudgetClient) -> list[ToolSpec]:
-    """The scheduled-payment queue: see what is already owed, and settle it.
+    """Serve the scheduled-payment queue: see what is owed, and settle it.
 
     Without these the only way to answer "I paid the Globe bills" is
     record_transaction, which writes a SECOND record of a payment the ledger was
@@ -779,10 +929,13 @@ class BudgetConnector(Connector):
         "ledger",
     )
     WRITE_TOOLS = frozenset({
-        "record_transaction", "record_split", "settle_person", "delete_transaction",
+        "record_transaction", "record_split", "record_transfer", "settle_person",
+        "delete_transaction",
     })
     # All write a ledger row the user will later rely on — chat Layer 3d.
-    RECORD_CLAIM_TOOLS = frozenset({"record_transaction", "record_split", "settle_person"})
+    RECORD_CLAIM_TOOLS = frozenset({
+        "record_transaction", "record_split", "record_transfer", "settle_person",
+    })
 
     TOOL_NAMES: ClassVar[list[str]] = [
         # read
@@ -792,6 +945,7 @@ class BudgetConnector(Connector):
         # write
         "record_transaction",
         "record_split",
+        "record_transfer",
         "settle_person",
         "delete_transaction",
         "list_pending_payments",
@@ -804,6 +958,7 @@ class BudgetConnector(Connector):
         "recent_transactions": "Reading recent transactions",
         "record_transaction": "Recording the transaction",
         "record_split": "Recording the split payment",
+        "record_transfer": "Moving money between accounts",
         "settle_person": "Recording the settle-up",
         "delete_transaction": "Deleting the budget transaction",
         "list_pending_payments": "Checking scheduled payments",
@@ -839,7 +994,15 @@ Money settling an EXISTING debt either way ("she paid me back", "I sent him
 his share", a Splitwise settle-up) -> settle_person, never
 record_transaction. A settle-up hand-rolled as a plain transaction usually
 doubles the balance instead of clearing it, because on the People account
-"money in" and "debt cleared" are opposite signs of the same ledger."""
+"money in" and "debt cleared" are opposite signs of the same ledger.
+
+Money moving between TWO OF THE USER'S OWN accounts ("move 4000 from GCash to
+Cash", topping up a wallet, paying a card or loan from a bank account) ->
+record_transfer. record_transaction describes ONE side of a movement and
+accepts only debit or credit — there is no type='transfer'. Do not simulate a
+transfer with two transactions: a lone debit sends the money nowhere, and the
+matching credit is usually refused as an overdraft, which looks like a balance
+problem when the real answer is that you are using the wrong tool."""
 
     def __init__(self, config: ServiceRegistry) -> None:
         self._config = config
@@ -881,6 +1044,7 @@ doubles the balance instead of clearing it, because on the People account
         return [
             *_read_tools(client),
             *_write_tools(client),
+            *_transfer_tools(client),
             *_pending_tools(client),
             *_split_tools(client),
             *_settle_tools(client),
