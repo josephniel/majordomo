@@ -91,8 +91,10 @@ class Persona:
     # Parameterized job FAMILIES the model may instantiate via job_propose
     # (proposals are inert drafts until the operator's /jobs approve):
     # {<template_name>: {command: "sh x.sh {repo}", params: {repo: "<regex>"},
-    # description, timeout_minutes, report_begin/end}}. The model composes
-    # validated params, never command text. See domain/jobs.py.
+    # description, timeout_minutes, report_begin/end}}. In a template
+    # proposal the model composes validated params only; it may also propose
+    # a full script, which additionally requires job_sandbox_profile below.
+    # See domain/jobs.py.
     job_templates: dict[str, Any] | None = None
     # Seatbelt profile (macOS sandbox-exec SBPL file, path relative to the
     # instance dir) that confines job commands: authored jobs always run

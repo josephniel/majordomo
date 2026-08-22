@@ -21,17 +21,21 @@ Two tiers of jobs exist:
   a human wrote them into config the model cannot touch.
 
   AUTHORED jobs — proposed by the model in conversation via `job_propose`,
-  persisted to data/authored_jobs.json as inert DRAFTS. A draft can only be
-  instantiated from an operator-defined TEMPLATE (persona.yaml
-  `job_templates:`): the model composes validated PARAMETERS, never command
-  text, which is what keeps "make me a job that syncs X" from becoming an
-  arbitrary-shell surface. Approval is deliberately NOT a tool — only the
-  operator's /jobs chat command can flip a draft to approved (the same
-  proposed-inert-until-approved lifecycle the skills faculty uses). The
-  approved spec is hash-pinned; drift demotes it back to draft. This guards
-  against accidental edits — a hostile process that can write the store can
-  also recompute the hash, so the adversarial fix is OS-level (a dedicated
-  user that cannot write the instance dir), not this file.
+  persisted to data/authored_jobs.json as inert DRAFTS. A proposal takes one
+  of two forms with different trust ceilings: instantiating an operator-
+  defined TEMPLATE (persona.yaml `job_templates:` — the model composes
+  regex-validated, shell-quoted PARAMETERS, so approving one is a glance),
+  or a full MODEL-WRITTEN SCRIPT, size-capped so the operator can read every
+  line, and refused outright unless a sandbox profile exists to confine it.
+  Approval is deliberately NOT a tool — only the operator's /jobs chat
+  command can flip a draft to approved (the same proposed-inert-until-
+  approved lifecycle the skills faculty uses), and /jobs show prints the
+  pinned text verbatim first. The approved spec is hash-pinned; drift
+  demotes it back to draft, and script files rematerialize from the hash-
+  verified record on every run, so editing them on disk changes nothing.
+  The sandbox denies JOB processes writes to the instance tree; the residual
+  gap — a hostile non-job process that can write the store can also
+  recompute the hash — is closed by a dedicated OS user, not this file.
 
 What a job PRINTS goes into the model's context as data. A job that prints
 `report_begin`/`report_end` marker lines gets exactly that block returned;
@@ -68,7 +72,7 @@ _OUTPUT_TAIL_CHARS = 3500
 
 # ---- authored-tier limits (blast-radius caps, ChatGPT-scheduled-tasks style) ----
 AUTHORED_MAX = 10                # drafts + approved together
-AUTHORED_MIN_RUN_INTERVAL_MIN = 60   # an authored job runs at most hourly
+AUTHORED_MIN_RUN_INTERVAL_MIN = 60   # hourly floor, counted from the last SUCCESS
 DRAFT_EXPIRY_DAYS = 7            # unapproved drafts evaporate
 AUTO_PAUSE_FAILURES = 3          # consecutive failures before an authored job pauses
 PROPOSE_COOLDOWN_MINUTES = 10    # no proposals while job output is fresh in context
@@ -97,7 +101,7 @@ def _review_flags(script: str) -> list[str]:
 
 @dataclass(frozen=True)
 class JobSpec:
-    """One persona.yaml `jobs:` entry, validated."""
+    """A runnable job: one persona.yaml `jobs:` entry, or a resolved authored job."""
 
     name: str
     command: str
@@ -273,7 +277,7 @@ def _extract_report(output: str, begin: str, end: str) -> str | None:
 
 
 class HostJobs(Faculty):
-    """The `jobs` faculty: list the named jobs, run one, report faithfully."""
+    """The `jobs` faculty: list, run, and conversationally author host jobs."""
 
     name = "jobs"
     TRIGGER_KEYWORDS = ("job", "run", "garden", "report", "weekly")

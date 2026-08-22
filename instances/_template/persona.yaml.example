@@ -126,8 +126,10 @@ system_prompt: |
 #     report_end: "REPORT END"
 
 # Parameterized job FAMILIES the model may instantiate itself via
-# job_propose ("make me a job that syncs X") — it composes validated
-# params, never command text. Proposals land as INERT drafts in
+# job_propose ("make me a job that syncs X") — for these it composes
+# validated params only. It may instead propose a full model-written
+# script (requires job_sandbox_profile below; review it with /jobs show
+# before approving). Either way, proposals land as INERT drafts in
 # data/authored_jobs.json and only the operator's `/jobs approve <name>`
 # chat command activates one (approval is deliberately not a tool). The
 # approved spec is hash-pinned (drift demotes it to draft), authored jobs
