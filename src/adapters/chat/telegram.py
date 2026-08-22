@@ -70,7 +70,10 @@ MAX_OUTBOUND_FILE_BYTES = 50 * 1024 * 1024
 # How long a write-approval keyboard waits before auto-denying. Long enough
 # to grab the phone, short enough that a forgotten prompt doesn't hold the
 # turn (and the per-chat lock) open indefinitely.
-APPROVAL_TIMEOUT_SECONDS = 120.0
+# Five minutes, not two. The clock starts when the tool is called, and a slow
+# chat model can spend most of two minutes on lookups before the prompt is even
+# sent -- one approval on 2026-08-01 auto-denied at 121s with the user mid-tap.
+APPROVAL_TIMEOUT_SECONDS = 300.0
 SUPPORTED_DOC_MIME_PREFIXES = ("image/", "text/")
 SUPPORTED_DOC_MIMES = {"application/pdf"}
 
