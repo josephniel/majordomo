@@ -194,6 +194,24 @@ def _build_files(rt: RuntimeContext) -> ToolProvider:
     return FileCourier(data_dir=rt.persona.data_dir)
 
 
+def _build_jobs(rt: RuntimeContext) -> ToolProvider:
+    from pathlib import Path
+
+    from domain import HostJobs
+
+    profile = None
+    if rt.persona.job_sandbox_profile:
+        raw = Path(rt.persona.job_sandbox_profile)
+        profile = raw if raw.is_absolute() else (rt.persona.dir / raw).resolve()
+    return HostJobs(
+        jobs_config=rt.persona.jobs,
+        state_file=rt.persona.data_dir / "job_runs.json",
+        templates_config=rt.persona.job_templates,
+        authored_file=rt.persona.data_dir / "authored_jobs.json",
+        sandbox_profile=profile,
+    )
+
+
 def _build_documents(rt: RuntimeContext) -> ToolProvider:
     from adapters.store import DocumentStore
     from domain import DocumentLibrary
@@ -262,6 +280,11 @@ def _build_budget(rt: RuntimeContext) -> ToolProvider:
     return BudgetConnector(config=rt.config)
 
 
+def _build_gitlab(rt: RuntimeContext) -> ToolProvider:
+    from adapters.tools import GitLabConnector
+    return GitLabConnector(config=rt.config)
+
+
 # ---- the registry ---------------------------------------------------------
 # Order matters in one visible way: it sets the order of the "== Connectors =="
 # section in the system prompt, and connectors precede faculties there for
@@ -275,6 +298,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     _connector("clickup", _build_clickup),
     _connector("splitwise", _build_splitwise),
     _connector("budget", _build_budget),
+    _connector("gitlab", _build_gitlab),
     _faculty("memory", _build_memory),
     _faculty("schedule", _build_schedule),
     _faculty("tasks", _build_tasks),
@@ -283,6 +307,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     _faculty("code", _build_code),
     _faculty("files", _build_files),
     _faculty("documents", _build_documents),
+    _faculty("jobs", _build_jobs),
 )
 
 PROVIDERS_BY_NAME: dict[str, ProviderSpec] = {p.name: p for p in PROVIDERS}

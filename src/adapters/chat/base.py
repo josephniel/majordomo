@@ -81,6 +81,10 @@ class CommandEvent:
     sender_id: str
     command: str
     message_id: int | None = None
+    # Text after the command token ("/jobs approve x" -> "approve x").
+    # Human-typed by construction: commands never originate from the model,
+    # which is what lets /jobs carry the approval of model-authored jobs.
+    args: str = ""
 
 
 class StatusTracker(Protocol):
