@@ -453,6 +453,7 @@ class TelegramPlatform(ChatPlatform):
         self._app.add_handler(CommandHandler("cancel", self._create_command_handler("cancel")))
         self._app.add_handler(CommandHandler("status", self._create_command_handler("status")))
         self._app.add_handler(CommandHandler("help", self._create_command_handler("help")))
+        self._app.add_handler(CommandHandler("jobs", self._create_command_handler("jobs")))
         self._app.add_handler(
             CallbackQueryHandler(self._on_approval_callback, pattern=r"^apr\|")
         )
@@ -498,6 +499,7 @@ class TelegramPlatform(ChatPlatform):
                 BotCommand("reset", "start the conversation over"),
                 BotCommand("cancel", "stop the in-flight reply"),
                 BotCommand("help", "what I can do"),
+                BotCommand("jobs", "list/approve model-authored jobs"),
             ])
         except Exception:
             log.exception("could not set command menu")
@@ -524,11 +526,14 @@ class TelegramPlatform(ChatPlatform):
                 return
             if self._on_command is None:
                 return
+            text = (update.message.text or "") if update.message else ""
+            parts = text.split(maxsplit=1)
             await self._on_command(CommandEvent(
                 chat_id=_ref(chat.id),
                 sender_id=str(user.id),
                 command=command,
                 message_id=update.message.message_id if update.message else None,
+                args=parts[1].strip() if len(parts) > 1 else "",
             ))
         return handler
 
