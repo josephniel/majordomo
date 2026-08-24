@@ -12,7 +12,6 @@ import pytest
 
 from domain.triggers import (
     ALL_SOURCE_TYPES,
-    ArtifactCommentSource,
     HeartbeatSource,
     RetentionSource,
     ScheduleSource,
@@ -68,7 +67,6 @@ def _sources():
         WatchSource(name="mail_watch", cron="*/3 * * * *", conversation=CHAT,
                     watcher=_Watcher(), preamble="[mail]\n"),
         WebhookSource(server=object()),
-        ArtifactCommentSource(server=object(), chat_id=CHAT),
         ScheduleSource(scheduler=object()),
         RetentionSource(job=object()),
     ]

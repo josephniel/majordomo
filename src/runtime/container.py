@@ -1264,32 +1264,6 @@ class PersonaRuntime:
         return allowed is None or "task_add" in allowed
 
     @cached_property
-    def artifact_server(self) -> Any | None:
-        """Hosted artifact pages + their comment box, when the faculty is on.
-
-        The server and the faculty share one directory and one id grammar;
-        building the server off the LIVE ArtifactLibrary instance (not a
-        second one) keeps that single-sourced. Loopback by default — public
-        exposure is the operator's proxy, same as every other service here.
-        """
-        from domain import ArtifactLibrary
-
-        library = next(
-            (c for c in self.active_services if isinstance(c, ArtifactLibrary)),
-            None,
-        )
-        if library is None:
-            return None
-        from adapters.trigger.artifactserver import DEFAULT_PORT, ArtifactServer
-
-        cfg = self.persona.artifacts or {}
-        return ArtifactServer(
-            library=library,
-            host=str(cfg.get("bind") or "127.0.0.1"),
-            port=int(cfg.get("port") or DEFAULT_PORT),
-        )
-
-    @cached_property
     def webhook_server(self) -> WebhookServer | None:
         """Event-driven triggers.
 
@@ -1446,13 +1420,6 @@ class PersonaRuntime:
         )
         if self.webhook_server is not None:
             sources.append(WebhookSource(self.webhook_server))
-        if self.artifact_server is not None:
-            comment_chat = self._default_operator_chat_id()
-            if comment_chat is not None:
-                from domain.triggers import ArtifactCommentSource
-                sources.append(ArtifactCommentSource(
-                    self.artifact_server, self._conversation(comment_chat),
-                ))
         if self.retention_job is not None:
             sources.append(RetentionSource(self.retention_job))
         return sources

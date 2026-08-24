@@ -16,7 +16,6 @@ persona, no accounts, no auth flows.
 Runtime services (webhooks, mail watch, retention) live in `adapters/trigger/` —
 they act on their own triggers and never appear in a tool schema.
 """
-from .artifacts import ArtifactLibrary
 from .code_exec import CodeExecutor
 from .delegate import Delegator
 from .documents import DocumentLibrary
@@ -32,7 +31,6 @@ from .skills import SkillsLibrary
 from .tasks import TaskBoard
 
 __all__ = [
-    "ArtifactLibrary",
     "CodeExecutor",
     "Delegator",
     "DocumentLibrary",
