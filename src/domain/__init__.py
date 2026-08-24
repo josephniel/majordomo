@@ -29,6 +29,7 @@ from .schedule import ScheduledTask, ScheduleEngine, TaskScheduler
 from .skill_mining import SkillMiner
 from .skills import SkillsLibrary
 from .tasks import TaskBoard
+from .workspace import Workspace
 
 __all__ = [
     "CodeExecutor",
@@ -46,4 +47,5 @@ __all__ = [
     "SkillsLibrary",
     "TaskBoard",
     "TaskScheduler",
+    "Workspace",
 ]

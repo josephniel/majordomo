@@ -217,6 +217,20 @@ def _build_artifacts(rt: RuntimeContext) -> ToolProvider:
     return ArtifactPagesConnector(config=rt.config)
 
 
+def _build_workspace(rt: RuntimeContext) -> ToolProvider:
+    from pathlib import Path
+
+    from domain import Workspace
+
+    root = str((rt.persona.workspace or {}).get("root") or "").strip()
+    if not root:
+        raise SystemExit(
+            f"persona {rt.persona.id!r}: the workspace faculty needs "
+            "`workspace: {root: <dir>}` in persona.yaml"
+        )
+    return Workspace(root=Path(root))
+
+
 def _build_documents(rt: RuntimeContext) -> ToolProvider:
     from adapters.store import DocumentStore
     from domain import DocumentLibrary
@@ -314,6 +328,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     _faculty("files", _build_files),
     _faculty("documents", _build_documents),
     _faculty("jobs", _build_jobs),
+    _faculty("workspace", _build_workspace),
 )
 
 PROVIDERS_BY_NAME: dict[str, ProviderSpec] = {p.name: p for p in PROVIDERS}
