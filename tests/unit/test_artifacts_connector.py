@@ -23,6 +23,8 @@ class FakeClient(ArtifactPagesClient):
         }
         self.rows = rows or []
         self.boom = boom
+        self.stored_markdown = "## F1 — x"
+        self.read_id = None
         self.sent: dict[str, Any] | None = None
 
     async def publish(self, payload):
@@ -35,6 +37,14 @@ class FakeClient(ArtifactPagesClient):
         if self.boom:
             raise self.boom
         return self.rows
+
+    async def read_artifact(self, artifact_id):
+        if self.boom:
+            raise self.boom
+        self.read_id = artifact_id
+        return {"id": artifact_id, "title": "MR review",
+                "updated": "2026-08-24", "url": f"https://a.example.com/a/{artifact_id}",
+                "markdown": self.stored_markdown}
 
 
 def _tools(client):
@@ -90,6 +100,35 @@ class TestPublishTool:
         assert "401" in result.text
 
 
+class TestReadTool:
+    async def test_read_returns_source_and_header(self):
+        client = FakeClient()
+        result = await _tools(client)["artifact_read"].handler(
+            {"artifact_id": "Ab3_-Ab3_-Ab"}, CTX
+        )
+        assert not result.is_error, result.text
+        assert client.read_id == "Ab3_-Ab3_-Ab"
+        assert "MR review" in result.text
+        assert "## F1 — x" in result.text
+
+    async def test_read_pages_with_offset(self):
+        client = FakeClient()
+        client.stored_markdown = "x" * 7000
+        first = await _tools(client)["artifact_read"].handler(
+            {"artifact_id": "Ab3_-Ab3_-Ab"}, CTX
+        )
+        assert "offset=6000" in first.text
+        rest = await _tools(client)["artifact_read"].handler(
+            {"artifact_id": "Ab3_-Ab3_-Ab", "offset": 6000}, CTX
+        )
+        assert "chars 6000-7000 of 7000" in rest.text
+        assert "offset=" not in rest.text.split("]")[1]
+
+    async def test_read_without_id_refused(self):
+        result = await _tools(FakeClient())["artifact_read"].handler({}, CTX)
+        assert result.is_error
+
+
 class TestListTool:
     async def test_list_names_id_title_and_url(self):
         rows = [{"id": "Ab3_-Ab3_-Ab", "title": "Review A",
@@ -119,9 +158,8 @@ class _Registry:
 
 
 class TestConnectorSurface:
-    def test_publish_is_a_write_tool(self):
-        assert "artifact_publish" in ArtifactPagesConnector.WRITE_TOOLS
-        assert "artifact_list" not in ArtifactPagesConnector.WRITE_TOOLS
+    def test_publish_is_the_only_write_tool(self):
+        assert {"artifact_publish"} == ArtifactPagesConnector.WRITE_TOOLS
 
     def test_profile_without_secrets_is_skipped(self):
         connector = ArtifactPagesConnector(config=_Registry([
@@ -140,5 +178,5 @@ class TestConnectorSurface:
         servers = connector.builtin_servers()
         assert list(servers) == ["artifacts"]
         assert {t.name for t in servers["artifacts"]} == {
-            "artifact_publish", "artifact_list",
+            "artifact_publish", "artifact_read", "artifact_list",
         }

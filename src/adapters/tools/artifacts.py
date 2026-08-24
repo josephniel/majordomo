@@ -46,6 +46,7 @@ log = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 30.0
 MAX_MARKDOWN_CHARS = 300_000
+READ_WINDOW_CHARS = 6000
 
 
 class ArtifactPagesClient:
@@ -73,6 +74,15 @@ class ArtifactPagesClient:
             body = resp.json()
             return [row for row in body if isinstance(row, dict)] \
                 if isinstance(body, list) else []
+
+    async def read_artifact(self, artifact_id: str) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+            resp = await client.get(
+                f"{self._base_url}/api/artifacts/{artifact_id}",
+                headers=self._headers,
+            )
+            resp.raise_for_status()
+            return json_object(resp)
 
 
 def _tools_for(client: ArtifactPagesClient) -> list[ToolSpec]:
@@ -116,6 +126,39 @@ def _tools_for(client: ArtifactPagesClient) -> list[ToolSpec]:
         )
 
     @tool(
+        "artifact_read",
+        "Read back a published artifact's SOURCE (title + the markdown you "
+        "published) by artifact_id — use this to see what a page currently "
+        "says before updating it, or to rebuild content after a session "
+        "refresh. The page renders long; the source paginates with offset "
+        "(chars into the markdown). Args: artifact_id, offset (optional).",
+        {"artifact_id": str, "offset": int},
+    )
+    @api_errors("artifact-pages")
+    async def artifact_read_tool(
+        args: dict[str, Any], _ctx: ToolContext
+    ) -> ToolResult:
+        artifact_id = str(args.get("artifact_id") or "").strip()
+        if not artifact_id:
+            return ToolResult.error("artifact_id is required")
+        out = await client.read_artifact(artifact_id)
+        markdown = str(out.get("markdown") or "")
+        offset = max(0, int(args.get("offset") or 0))
+        window = markdown[offset:offset + READ_WINDOW_CHARS]
+        head = (
+            f"{out.get('title', '(untitled)')} (updated {out.get('updated', '?')}) "
+            f"{out.get('url', '')}\n"
+            f"[markdown chars {offset}-{offset + len(window)} of {len(markdown)}]"
+        )
+        tail = ""
+        if offset + len(window) < len(markdown):
+            tail = (
+                f"\n… continue with offset={offset + len(window)} "
+                "to read the rest."
+            )
+        return ToolResult.ok(f"{head}\n\n{window}{tail}")
+
+    @tool(
         "artifact_list",
         "List published artifact pages: id, title, last updated, URL. Use "
         "it to find the artifact_id of a page you should update instead of "
@@ -136,16 +179,19 @@ def _tools_for(client: ArtifactPagesClient) -> list[ToolSpec]:
         ]
         return ToolResult.ok("\n".join(lines))
 
-    return [artifact_publish_tool, artifact_list_tool]
+    return [artifact_publish_tool, artifact_read_tool, artifact_list_tool]
 
 
 class ArtifactPagesConnector(Connector):
     name = "artifacts"
     TRIGGER_KEYWORDS = ("artifact", "review", "publish", "page", "report")
     WRITE_TOOLS = frozenset({"artifact_publish"})
-    TOOL_NAMES: ClassVar[list[str]] = ["artifact_publish", "artifact_list"]
+    TOOL_NAMES: ClassVar[list[str]] = [
+        "artifact_publish", "artifact_read", "artifact_list",
+    ]
     STATUS: ClassVar[dict[str, str]] = {
         "artifact_publish": "Publishing the artifact page",
+        "artifact_read": "Reading the artifact back",
         "artifact_list": "Listing published artifacts",
     }
 
