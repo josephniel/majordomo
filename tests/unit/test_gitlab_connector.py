@@ -337,7 +337,8 @@ class TestWriteTools:
 class TestContract:
     def test_write_tools_declared(self):
         assert frozenset(
-            {"comment_on_merge_request", "create_branch", "create_merge_request",
+            {"comment_on_merge_request", "commit_file", "create_branch",
+             "create_merge_request",
              "rebase_merge_request", "approve_merge_request", "merge_merge_request",
              "update_merge_request", "update_merge_request_note",
              "delete_merge_request_note", "reply_to_merge_request_discussion",
@@ -353,7 +354,8 @@ class TestContract:
         # Only the writes that CREATE a record: the record-claim layer
         # deliberately excludes updates, deletes, resolves and retries.
         assert frozenset({
-            "comment_on_merge_request", "create_branch", "create_merge_request",
+            "comment_on_merge_request", "commit_file", "create_branch",
+            "create_merge_request",
             "approve_merge_request", "merge_merge_request",
             "reply_to_merge_request_discussion",
         }) == GitLabConnector.RECORD_CLAIM_TOOLS
@@ -582,3 +584,69 @@ class TestMrManageTools:
         )
         assert seen["path"] == "/api/v4/projects/p/pipelines/233233/retry"
         assert "running" in result.text
+
+
+class TestCommitFile:
+    async def test_commit_posts_a_single_action(self):
+        seen = {}
+
+        def handler(request):
+            if _wire_path(request).endswith("/projects/crm%2Fcrm-docs"):
+                return httpx.Response(200, json={"default_branch": "master"})
+            seen["path"] = _wire_path(request)
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(201, json={"short_id": "abc1234"})
+
+        tool = _connector_tools(handler)["commit_file"]
+        result = await tool.handler({
+            "project": "crm/crm-docs", "branch": "docs/TS-1-standard",
+            "file_path": "standards/http-api-design.md",
+            "content": "# Standard\n", "message": "docs(TS-1): add standard",
+        }, CTX)
+        assert not result.is_error, result.text
+        assert seen["path"].endswith("/repository/commits")
+        assert seen["body"]["branch"] == "docs/TS-1-standard"
+        assert seen["body"]["commit_message"] == "docs(TS-1): add standard"
+        assert seen["body"]["actions"] == [{
+            "action": "create",
+            "file_path": "standards/http-api-design.md",
+            "content": "# Standard\n",
+        }]
+        assert "abc1234" in result.text
+
+    async def test_default_branch_is_refused(self):
+        def handler(request):
+            if _wire_path(request).endswith("/projects/crm%2Fcrm-docs"):
+                return httpx.Response(200, json={"default_branch": "master"})
+            raise AssertionError("must not reach the commits endpoint")
+
+        tool = _connector_tools(handler)["commit_file"]
+        result = await tool.handler({
+            "project": "crm/crm-docs", "branch": "master",
+            "file_path": "x.md", "content": "x", "message": "m",
+        }, CTX)
+        assert result.is_error
+        assert "default branch" in result.text
+
+    async def test_empty_content_is_refused_before_any_request(self):
+        def handler(request):
+            raise AssertionError("no request expected")
+
+        tool = _connector_tools(handler)["commit_file"]
+        result = await tool.handler({
+            "project": "p", "branch": "b", "file_path": "x.md",
+            "content": "  ", "message": "m",
+        }, CTX)
+        assert result.is_error
+
+    async def test_bad_action_is_refused(self):
+        def handler(request):
+            raise AssertionError("no request expected")
+
+        tool = _connector_tools(handler)["commit_file"]
+        result = await tool.handler({
+            "project": "p", "branch": "b", "file_path": "x.md",
+            "content": "x", "message": "m", "action": "delete",
+        }, CTX)
+        assert result.is_error
+        assert "create" in result.text
