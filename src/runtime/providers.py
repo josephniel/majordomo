@@ -212,6 +212,21 @@ def _build_jobs(rt: RuntimeContext) -> ToolProvider:
     )
 
 
+def _build_artifacts(rt: RuntimeContext) -> ToolProvider:
+    from adapters.trigger.artifactserver import DEFAULT_PORT
+    from domain import ArtifactLibrary
+
+    cfg = rt.persona.artifacts or {}
+    port = int(cfg.get("port") or DEFAULT_PORT)
+    # No public base_url means loopback links: the faculty still works from
+    # the same machine, and the operator wires the tunnel when ready.
+    base_url = str(cfg.get("base_url") or f"http://127.0.0.1:{port}")
+    return ArtifactLibrary(
+        artifacts_dir=rt.persona.data_dir / "artifacts",
+        base_url=base_url,
+    )
+
+
 def _build_documents(rt: RuntimeContext) -> ToolProvider:
     from adapters.store import DocumentStore
     from domain import DocumentLibrary
@@ -308,6 +323,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     _faculty("files", _build_files),
     _faculty("documents", _build_documents),
     _faculty("jobs", _build_jobs),
+    _faculty("artifacts", _build_artifacts),
 )
 
 PROVIDERS_BY_NAME: dict[str, ProviderSpec] = {p.name: p for p in PROVIDERS}

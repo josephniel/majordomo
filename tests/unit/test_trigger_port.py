@@ -2,7 +2,7 @@
 
 The behaviour of individual sources is covered where it belongs (heartbeat in
 test_heartbeat.py, watches and webhooks in test_wiring.py). What is asserted
-here is the contract itself: that all five sources satisfy it, that the event
+here is the contract itself: that every source satisfies it, that the event
 carries what the orchestrator needs, and that the lifecycle survives sources
 that misbehave.
 """
@@ -12,6 +12,7 @@ import pytest
 
 from domain.triggers import (
     ALL_SOURCE_TYPES,
+    ArtifactCommentSource,
     HeartbeatSource,
     RetentionSource,
     ScheduleSource,
@@ -67,6 +68,7 @@ def _sources():
         WatchSource(name="mail_watch", cron="*/3 * * * *", conversation=CHAT,
                     watcher=_Watcher(), preamble="[mail]\n"),
         WebhookSource(server=object()),
+        ArtifactCommentSource(server=object(), chat_id=CHAT),
         ScheduleSource(scheduler=object()),
         RetentionSource(job=object()),
     ]

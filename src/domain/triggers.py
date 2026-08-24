@@ -9,6 +9,7 @@ prompt that work becomes, and what to do once the turn has been delivered.
     HeartbeatSource   cron; skips when the operator's prompt is empty
     WatchSource       cron + a token-free prefilter; two-phase watermark
     WebhookSource     an HTTP POST arrives
+    ArtifactCommentSource  someone commented on a published artifact page
     ScheduleSource    the user's own reminders and one-shots
     RetentionSource   cron; prunes storage and never wakes the model
 
@@ -221,6 +222,55 @@ class WebhookSource:
         ))
 
 
+class ArtifactCommentSource:
+    """Someone typed into a published artifact page's comment box.
+
+    Same thin shape as WebhookSource: `ArtifactServer` owns the socket, the
+    id validation and the per-artifact cooldown; this only turns "a comment
+    arrived" into a TriggerEvent in the operator's chat. DEDICATED agent on
+    purpose — a comment is unverified page input, so it must run with the
+    background flag set and every write behind the tap.
+    """
+
+    name = "artifact_comments"
+
+    def __init__(self, server: Any, chat_id: ConversationRef) -> None:
+        self._server = server
+        self._chat_id = chat_id
+        self._emit: Any = None
+
+    async def start(self, ctx: TriggerContext) -> None:
+        self._emit = ctx.emit
+        try:
+            self._server.start(asyncio.get_running_loop(), self._fire)
+        except Exception:
+            log.exception("artifact server failed to start")
+
+    async def stop(self) -> None:
+        try:
+            self._server.stop()
+        except Exception:
+            log.exception("artifact server stop failed")
+
+    def describe(self) -> str | None:
+        try:
+            return f"artifacts :{self._server.port}"
+        except Exception:
+            return "artifacts (unavailable)"
+
+    async def _fire(
+        self, artifact_id: str, title: str, anchor: str, text: str
+    ) -> None:
+        from adapters.trigger import build_comment_prompt
+        await self._emit(TriggerEvent(
+            source=f"artifact:{artifact_id}",
+            conversation=self._chat_id,
+            prompt=build_comment_prompt(title, anchor, text),
+            description="artifact comment",
+            agent=TriggerAgent.DEDICATED,
+        ))
+
+
 class ScheduleSource:
     """The user's own reminders, recurring tasks and one-shots.
 
@@ -320,7 +370,8 @@ class RetentionSource:
 
 
 ALL_SOURCE_TYPES: tuple[type, ...] = (
-    HeartbeatSource, WatchSource, WebhookSource, ScheduleSource, RetentionSource,
+    HeartbeatSource, WatchSource, WebhookSource, ArtifactCommentSource,
+    ScheduleSource, RetentionSource,
 )
 
 # Checked at import, not in a test, because the failure this catches is

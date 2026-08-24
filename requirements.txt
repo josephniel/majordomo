@@ -11,3 +11,5 @@ openai>=1.40
 # Local, provider-independent embeddings for semantic memory recall (ONNX, no API).
 fastembed>=0.3
 pypdf
+# Artifact pages: deterministic markdown -> hosted HTML (domain/artifact_render.py).
+markdown-it-py>=3.0

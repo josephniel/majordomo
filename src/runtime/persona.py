@@ -86,6 +86,12 @@ class Persona:
     # updates to already-announced ones get a SHORT SUMMARY in chat — never a
     # review, and never a post to GitLab. See adapters/trigger/gitlabwatch.py.
     gitlab_watch: dict[str, Any] | None = None
+    # Hosted artifact pages (needs the artifacts faculty): {port: 18791,
+    # bind: "127.0.0.1", base_url: "https://artifacts.example.com"}.
+    # base_url is what published URLs are built from — set it to the public
+    # hostname the operator's proxy/tunnel maps to this port; unset, links
+    # are loopback-only. See domain/artifacts.py.
+    artifacts: dict[str, Any] | None = None
     # Named host commands for the `jobs` faculty: {<job_name>: {command:
     # "sh /path/job.sh", description: "...", timeout_minutes: 30,
     # report_begin/report_end: <optional marker pair>}}. Defining jobs here
@@ -157,6 +163,7 @@ class Persona:
             gitlab_watch=(
                 dict(cfg["gitlab_watch"]) if cfg.get("gitlab_watch") else None
             ),
+            artifacts=dict(cfg["artifacts"]) if cfg.get("artifacts") else None,
             jobs=dict(cfg["jobs"]) if cfg.get("jobs") else None,
             job_templates=(
                 dict(cfg["job_templates"]) if cfg.get("job_templates") else None

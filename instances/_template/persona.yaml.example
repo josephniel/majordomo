@@ -35,6 +35,7 @@ faculties:
   files: true
   documents: read_write
 #  jobs: read_write      # named HOST commands (unsandboxed!) — see jobs: below
+#  artifacts: read_write  # hosted pages for long documents — see artifacts: below
 
 # External-service adapters — multi-profile, credentialed. Configure
 # profiles via ./manage add/auth after enabling. Start read-only (true) and
@@ -152,6 +153,19 @@ system_prompt: |
 # job scripts — a job that can edit those can grant itself permissions),
 # ~/Library/LaunchAgents, and your VCS identity/credential files.
 # job_sandbox_profile: ./jobs/sandbox.sb
+
+# Hosted artifact pages (needs the artifacts faculty above): the bot renders
+# markdown into styled standalone pages — an MR review with diff hunks and
+# findings reads far better there than as chat text. artifact_publish is a
+# WRITE tool (the tap is your moment to decide the content may leave chat);
+# each page's URL carries an unguessable id minted by the runtime, which is
+# the access control. The page has a comment box: comments arrive back in
+# this chat as background trigger turns (unverified input — writes gated).
+# base_url is the public hostname your proxy/tunnel maps to this port;
+# leave it unset for loopback-only links.
+# artifacts:
+#   port: 18791
+#   base_url: https://artifacts.example.com
 
 # MR activity alerts (needs the gitlab connector): a token-free poll every
 # N minutes. A merge request you haven't been told about gets ANNOUNCED —
