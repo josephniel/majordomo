@@ -35,6 +35,7 @@ faculties:
   files: true
   documents: read_write
 #  jobs: read_write      # named HOST commands (unsandboxed!) — see jobs: below
+#  workspace: true        # read-only local repo mirrors — see workspace: below
 
 # External-service adapters — multi-profile, credentialed. Configure
 # profiles via ./manage add/auth after enabling. Start read-only (true) and
@@ -153,6 +154,14 @@ system_prompt: |
 # job scripts — a job that can edit those can grant itself permissions),
 # ~/Library/LaunchAgents, and your VCS identity/credential files.
 # job_sandbox_profile: ./jobs/sandbox.sb
+
+# Read-only access to local repo mirrors (needs the workspace faculty
+# above): four read tools — list repos, list a directory, read a file
+# (offset-paged), and `git grep` inside named repos. Point root at the
+# directory your sync job keeps cloned; .git internals are never readable
+# and every path is confined to the root.
+# workspace:
+#   root: ~/projects/work
 
 # Hosted artifact pages live in the STANDALONE artifact-pages service, not
 # in this process: enable the `artifacts` CONNECTOR (connectors: block above,

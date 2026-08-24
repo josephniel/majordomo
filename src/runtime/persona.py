@@ -107,6 +107,11 @@ class Persona:
     # profile's whole point is denying writes to the bot's own config,
     # credentials and job scripts — the self-authorization surface.
     job_sandbox_profile: str | None = None
+    # Read-only access to the operator's local repo mirrors for the
+    # `workspace` faculty: {root: "~/projects/work"}. Both the faculty
+    # (faculties: workspace: true) and this block are required.
+    # See domain/workspace.py.
+    workspace: dict[str, Any] | None = None
     # Enablement map for BACKGROUND agents (heartbeat, mail-watch) — same
     # grammar as faculties:/connectors:. When unset, the chat map is used
     # downgraded to read-only. Background fires are unattended and pay the
@@ -165,6 +170,7 @@ class Persona:
                 str(cfg["job_sandbox_profile"]).strip()
                 if cfg.get("job_sandbox_profile") else None
             ),
+            workspace=dict(cfg["workspace"]) if cfg.get("workspace") else None,
             background_tools=(
                 dict(cfg["background_tools"]) if cfg.get("background_tools") else None
             ),
