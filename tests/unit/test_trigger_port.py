@@ -2,7 +2,7 @@
 
 The behaviour of individual sources is covered where it belongs (heartbeat in
 test_heartbeat.py, watches and webhooks in test_wiring.py). What is asserted
-here is the contract itself: that all five sources satisfy it, that the event
+here is the contract itself: that every source satisfies it, that the event
 carries what the orchestrator needs, and that the lifecycle survives sources
 that misbehave.
 """

@@ -212,6 +212,11 @@ def _build_jobs(rt: RuntimeContext) -> ToolProvider:
     )
 
 
+def _build_artifacts(rt: RuntimeContext) -> ToolProvider:
+    from adapters.tools import ArtifactPagesConnector
+    return ArtifactPagesConnector(config=rt.config)
+
+
 def _build_documents(rt: RuntimeContext) -> ToolProvider:
     from adapters.store import DocumentStore
     from domain import DocumentLibrary
@@ -299,6 +304,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     _connector("splitwise", _build_splitwise),
     _connector("budget", _build_budget),
     _connector("gitlab", _build_gitlab),
+    _connector("artifacts", _build_artifacts),
     _faculty("memory", _build_memory),
     _faculty("schedule", _build_schedule),
     _faculty("tasks", _build_tasks),

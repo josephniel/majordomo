@@ -17,6 +17,7 @@ from ports import (
 )
 
 from .approvals import GatedToolProvider, PendingApproval, WriteApprovalGate
+from .artifacts import ArtifactPagesConnector
 from .budget import BudgetConnector
 from .clickup import ClickUpConnector
 from .gdrive import GoogleDriveConnector
@@ -31,6 +32,7 @@ from .splitwise import SplitwiseConnector
 from .yahoo import YahooConnector
 
 __all__ = [
+    "ArtifactPagesConnector",
     "AttachmentIngestor",
     "BudgetConnector",
     "ClickUpConnector",

@@ -542,8 +542,20 @@ class AnthropicAgent(Agent):
         AssistantMessage, and identify themselves only by tool_use_id — so the
         id->name map below is what lets an outcome be attributed to a tool
         name at all.
+
+        The reply is the text AFTER THE LAST TOOL CALL, not the whole turn's
+        text joined. Text emitted before a tool call is the model narrating
+        its work ("Let me check the diff:") — observed live prefixing, and
+        once nearly replacing, an MR announcement. `final_parts` resets on
+        every ToolUseBlock so only the closing message survives; the full
+        transcript is kept for the turn-cap partial (where narration beats
+        replaying a turn whose tools already wrote) and as the fallback when
+        a turn ends on a tool call with no text after it (where narration
+        beats an empty reply, which the cascade would count as a failure and
+        replay elsewhere).
         """
         parts: list[str] = []
+        final_parts: list[str] = []
         tool_names: dict[str, str] = {}
         async for msg in client.receive_response():
             if isinstance(msg, ResultMessage):
@@ -562,12 +574,14 @@ class AnthropicAgent(Agent):
             for block in msg.content:
                 if isinstance(block, TextBlock):
                     parts.append(block.text)
+                    final_parts.append(block.text)
                 elif isinstance(block, ToolUseBlock):
+                    final_parts.clear()
                     tool_names[block.id] = block.name
                     if on_tool_use is not None:
                         with contextlib.suppress(Exception):
                             await on_tool_use(block.name, dict(block.input or {}))
-        return "".join(parts).strip()
+        return "".join(final_parts).strip() or "".join(parts).strip()
 
     async def send(
         self,
