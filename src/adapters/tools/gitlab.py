@@ -6,10 +6,14 @@ Token + base URL are stored as plain JSON at
 credentials/gitlab/<slug>/secrets.json.
 
 The write surface is deliberately small: comment on an MR, create a branch,
-open an MR. Merging, force-pushing and deleting remote branches are absent
-on purpose — on this team humans merge, and an unattended agent that can
-delete a branch is a category of incident, not a feature. Adding one of
-those is a policy change, not a patch.
+open an MR, rebase an MR's source branch (the fast-forward workflow's
+prerequisite) — and, as the operator's own hand only, approve and merge.
+Merge is the sharpest tool here and carries a structural guard on top of
+the approval gate: it refuses unattended turns outright, so no schedule,
+watch or auto-approve list can ever merge anything — a human asked, in a
+live conversation, or it does not happen. Force-pushing and deleting remote
+branches remain absent on purpose: an unattended agent that can delete a
+branch is a category of incident, not a feature.
 """
 from __future__ import annotations
 
@@ -108,11 +112,19 @@ class GitLabClient:
 
     async def list_merge_requests(
         self, project: str, state: str = "opened", page: int = 1,
+        created_after: str = "", updated_after: str = "",
     ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "state": state, "order_by": "updated_at", "per_page": 20, "page": page,
+        }
+        if created_after:
+            params["created_after"] = created_after
+        if updated_after:
+            params["updated_after"] = updated_after
         return json_array(await self._request(
             "GET",
             f"/projects/{self.project_ref(project)}/merge_requests",
-            params={"state": state, "order_by": "updated_at", "per_page": 20, "page": page},
+            params=params,
         ))
 
     async def get_merge_request(self, project: str, mr_iid: int) -> dict[str, Any]:
@@ -135,6 +147,15 @@ class GitLabClient:
             "GET",
             f"/projects/{self.project_ref(project)}/merge_requests/{mr_iid}/notes",
             params={"sort": "asc", "per_page": 50},
+        ))
+
+    async def list_merge_request_discussions(
+        self, project: str, mr_iid: int,
+    ) -> list[dict[str, Any]]:
+        return json_array(await self._request(
+            "GET",
+            f"/projects/{self.project_ref(project)}/merge_requests/{mr_iid}/discussions",
+            params={"per_page": 50},
         ))
 
     async def list_pipelines(
@@ -224,6 +245,80 @@ class GitLabClient:
             body=payload,
         ))
 
+    async def approve_merge_request(self, project: str, mr_iid: int) -> dict[str, Any]:
+        return json_object(await self._request(
+            "POST",
+            f"/projects/{self.project_ref(project)}/merge_requests/{mr_iid}/approve",
+        ))
+
+    async def merge_merge_request(self, project: str, mr_iid: int) -> dict[str, Any]:
+        # No squash/message overrides: the project's own merge policy
+        # (squash_option, merge_method) governs, same as the UI button.
+        return json_object(await self._request(
+            "PUT",
+            f"/projects/{self.project_ref(project)}/merge_requests/{mr_iid}/merge",
+        ))
+
+    async def rebase_merge_request(self, project: str, mr_iid: int) -> dict[str, Any]:
+        return json_object(await self._request(
+            "PUT",
+            f"/projects/{self.project_ref(project)}/merge_requests/{mr_iid}/rebase",
+        ))
+
+    async def update_merge_request(
+        self, project: str, mr_iid: int, body: dict[str, Any],
+    ) -> dict[str, Any]:
+        return json_object(await self._request(
+            "PUT",
+            f"/projects/{self.project_ref(project)}/merge_requests/{mr_iid}",
+            body=body,
+        ))
+
+    async def update_merge_request_note(
+        self, project: str, mr_iid: int, note_id: int, body: str,
+    ) -> dict[str, Any]:
+        return json_object(await self._request(
+            "PUT",
+            f"/projects/{self.project_ref(project)}/merge_requests/{mr_iid}"
+            f"/notes/{note_id}",
+            body={"body": body},
+        ))
+
+    async def delete_merge_request_note(
+        self, project: str, mr_iid: int, note_id: int,
+    ) -> dict[str, Any]:
+        return json_object(await self._request(
+            "DELETE",
+            f"/projects/{self.project_ref(project)}/merge_requests/{mr_iid}"
+            f"/notes/{note_id}",
+        ))
+
+    async def reply_to_discussion(
+        self, project: str, mr_iid: int, discussion_id: str, body: str,
+    ) -> dict[str, Any]:
+        return json_object(await self._request(
+            "POST",
+            f"/projects/{self.project_ref(project)}/merge_requests/{mr_iid}"
+            f"/discussions/{discussion_id}/notes",
+            body={"body": body},
+        ))
+
+    async def resolve_discussion(
+        self, project: str, mr_iid: int, discussion_id: str, resolved: bool,
+    ) -> dict[str, Any]:
+        return json_object(await self._request(
+            "PUT",
+            f"/projects/{self.project_ref(project)}/merge_requests/{mr_iid}"
+            f"/discussions/{discussion_id}",
+            params={"resolved": str(resolved).lower()},
+        ))
+
+    async def retry_pipeline(self, project: str, pipeline_id: int) -> dict[str, Any]:
+        return json_object(await self._request(
+            "POST",
+            f"/projects/{self.project_ref(project)}/pipelines/{pipeline_id}/retry",
+        ))
+
 
 # ---- formatting helpers ----
 
@@ -238,6 +333,24 @@ def _clip(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n… (truncated at {limit} chars)"
+
+
+def _page(text: str, offset: int, limit: int) -> str:
+    """One window of a long text, with its coordinates and how to continue.
+
+    Exists because a reviewer-bot faced with a 1,288-line RFC and a plain
+    truncation had nothing to do but confess it audited a fifth of the
+    document. Paged output turns that into three more calls.
+    """
+    total = len(text)
+    start = max(0, offset)
+    chunk = text[start:start + limit]
+    end = start + len(chunk)
+    if start == 0 and end >= total:
+        return text
+    header = f"… (chars {start}-{end} of {total})\n"
+    footer = f"\n… (continue with offset={end})" if end < total else ""
+    return header + chunk + footer
 
 
 def _tail(text: str, limit: int) -> str:
@@ -358,9 +471,12 @@ def _project_read_tools(client: GitLabClient) -> list[ToolSpec]:
         "read_file",
         "Read one file from a GitLab repository. Args: project "
         "('group/name' or numeric id), file_path (path within the repo), "
-        "ref (branch, tag or SHA; '' = the project's default branch). "
-        "Long files are truncated.",
-        {"project": str, "file_path": str, "ref": str},
+        "ref (branch, tag or SHA; '' = the project's default branch), "
+        "offset (char position to read from, default 0). Long files come "
+        "back one window at a time — the output names the next offset, so "
+        "KEEP CALLING until the end when the whole document matters (e.g. "
+        "when reviewing it).",
+        {"project": str, "file_path": str, "ref": str, "offset": int},
     )
     @_guarded
     async def read_file_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
@@ -370,7 +486,7 @@ def _project_read_tools(client: GitLabClient) -> list[ToolSpec]:
             project_info = await client.get_project(project)
             ref = str(project_info.get("default_branch") or "master")
         content = await client.read_file(project, str(args["file_path"]), ref)
-        return ToolResult.ok(_clip(content, _FILE_CHARS))
+        return ToolResult.ok(_page(content, int(args.get("offset") or 0), _FILE_CHARS))
 
     @tool(
         "list_branches",
@@ -444,9 +560,12 @@ def _mr_read_tools(client: GitLabClient) -> list[ToolSpec]:
 
     @tool(
         "get_merge_request_diff",
-        "Get the file-by-file diff of a merge request. Large diffs are "
-        "truncated — say so if you review one. Args: project, mr_iid.",
-        {"project": str, "mr_iid": int},
+        "Get the file-by-file diff of a merge request. Args: project, "
+        "mr_iid, path (optional — only this file's diff), offset (char "
+        "position, default 0). Large diffs come back one window at a time — "
+        "the output names the next offset, so KEEP CALLING until the end "
+        "when reviewing; use path to focus on one file.",
+        {"project": str, "mr_iid": int, "path": str, "offset": int},
     )
     @_guarded
     async def get_merge_request_diff_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
@@ -454,11 +573,18 @@ def _mr_read_tools(client: GitLabClient) -> list[ToolSpec]:
             str(args["project"]), int(args["mr_iid"])
         )
         changes = resp.get("changes") or []
+        path = str(args.get("path") or "").strip()
+        if path:
+            changes = [
+                c for c in changes
+                if path in (c.get("new_path"), c.get("old_path"))
+            ]
+            if not changes:
+                return ToolResult.error(f"no changed file named {path!r} in this MR")
         if not changes:
             return ToolResult.ok("No changes in this merge request.")
-        return ToolResult.ok(
-            _clip("\n\n".join(_format_change(c) for c in changes), _DIFF_CHARS)
-        )
+        joined = "\n\n".join(_format_change(c) for c in changes)
+        return ToolResult.ok(_page(joined, int(args.get("offset") or 0), _DIFF_CHARS))
 
     @tool(
         "list_merge_request_notes",
@@ -490,6 +616,50 @@ def _mr_read_tools(client: GitLabClient) -> list[ToolSpec]:
         get_merge_request_diff_tool,
         list_merge_request_notes_tool,
     ]
+
+
+def _format_discussion(d: dict[str, Any]) -> str | None:
+    """One thread with its actionable ids; None for system-only threads."""
+    notes = [n for n in (d.get("notes") or []) if not n.get("system")]
+    if not notes:
+        return None
+    resolvable = any(n.get("resolvable") for n in notes)
+    resolved = all(n.get("resolved") for n in notes if n.get("resolvable"))
+    state = (" [resolved]" if resolved else " [open]") if resolvable else ""
+    lines = [f"discussion {d.get('id', '?')}{state}:"]
+    for n in notes:
+        author = (n.get("author") or {}).get("username", "?")
+        body = " ".join(str(n.get("body") or "").split())[:300]
+        lines.append(f"  - note {n.get('id', '?')} @{author}: {body}")
+    return "\n".join(lines)
+
+
+def _discussion_read_tools(client: GitLabClient) -> list[ToolSpec]:
+    """Read the threads with the ids the manage tools act on."""
+
+    @tool(
+        "list_merge_request_discussions",
+        "Read a merge request's discussion THREADS with the ids needed to "
+        "act on them: each thread's discussion_id (for replying/resolving) "
+        "and each note's note_id (for editing/deleting). Args: project, "
+        "mr_iid, offset (char position for long output, default 0).",
+        {"project": str, "mr_iid": int, "offset": int},
+    )
+    @_guarded
+    async def list_merge_request_discussions_tool(
+        args: dict[str, Any], _ctx: ToolContext
+    ) -> ToolResult:
+        discussions = await client.list_merge_request_discussions(
+            str(args["project"]), int(args["mr_iid"])
+        )
+        threads = [t for t in (_format_discussion(d) for d in discussions) if t]
+        if not threads:
+            return ToolResult.ok("No human discussion threads on this merge request.")
+        return ToolResult.ok(
+            _page("\n\n".join(threads), int(args.get("offset") or 0), _DIFF_CHARS)
+        )
+
+    return [list_merge_request_discussions_tool]
 
 
 def _pipeline_read_tools(client: GitLabClient) -> list[ToolSpec]:
@@ -610,22 +780,219 @@ def _write_tools(client: GitLabClient) -> list[ToolSpec]:
             f"opened !{mr.get('iid', '?')}: {mr.get('web_url', '(no url)')}"
         )
 
-    return [comment_on_merge_request_tool, create_branch_tool, create_merge_request_tool]
+    @tool(
+        "approve_merge_request",
+        "Record the operator's approval on a GitLab merge request. Use it "
+        "ONLY when the operator explicitly says to approve a specific MR — "
+        "it is their sign-off, never your own opinion of the MR. Args: "
+        "project, mr_iid.",
+        {"project": str, "mr_iid": int},
+    )
+    @_guarded
+    async def approve_merge_request_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        await client.approve_merge_request(str(args["project"]), int(args["mr_iid"]))
+        return ToolResult.ok(f"approved !{args['mr_iid']} in {args['project']}")
+
+    @tool(
+        "merge_merge_request",
+        "Merge a GitLab merge request, under the project's own merge policy "
+        "(squash/ff as configured). Use it ONLY when the operator explicitly "
+        "says to merge a specific MR in a live conversation — never propose "
+        "it, and it structurally refuses unattended turns. GitLab itself "
+        "refuses when the MR is unmergeable (conflicts, failing pipeline). "
+        "Args: project, mr_iid.",
+        {"project": str, "mr_iid": int},
+    )
+    @_guarded
+    async def merge_merge_request_tool(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if ctx is not None and ctx.background:
+            # Defense in depth beyond the approval gate: even a future
+            # background_auto_approve entry must never be able to merge.
+            return ToolResult.error(
+                "merge is refused on unattended turns — only the operator, "
+                "live in chat, merges"
+            )
+        mr = await client.merge_merge_request(str(args["project"]), int(args["mr_iid"]))
+        state = mr.get("state", "?")
+        sha = str(mr.get("merge_commit_sha") or mr.get("sha") or "")[:8]
+        return ToolResult.ok(
+            f"merged !{args['mr_iid']} in {args['project']} ({state}, {sha})"
+        )
+
+    @tool(
+        "rebase_merge_request",
+        "Rebase a merge request's source branch onto its target — the "
+        "prerequisite for fast-forward merges when merge status says "
+        "need_rebase. GitLab rebases ASYNCHRONOUSLY: after calling, check "
+        "get_merge_request until the status settles; a conflict aborts the "
+        "rebase server-side and the MR reports merge_error (nothing is "
+        "clobbered). Args: project, mr_iid.",
+        {"project": str, "mr_iid": int},
+    )
+    @_guarded
+    async def rebase_merge_request_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        await client.rebase_merge_request(str(args["project"]), int(args["mr_iid"]))
+        return ToolResult.ok(
+            f"rebase started for !{args['mr_iid']} in {args['project']} — "
+            "asynchronous; check get_merge_request for the settled status"
+        )
+
+    return [
+        comment_on_merge_request_tool,
+        create_branch_tool,
+        create_merge_request_tool,
+        rebase_merge_request_tool,
+        approve_merge_request_tool,
+        merge_merge_request_tool,
+    ]
+
+
+def _mr_manage_tools(client: GitLabClient) -> list[ToolSpec]:
+    """Everything that curates an MR's conversation and metadata — all gated."""
+
+    @tool(
+        "update_merge_request",
+        "Edit a merge request's metadata. All fields except project/mr_iid "
+        "are OPTIONAL — pass '' to skip. Args: project, mr_iid, title, "
+        "description, target_branch, state_event ('close' or 'reopen').",
+        {"project": str, "mr_iid": int, "title": str, "description": str,
+         "target_branch": str, "state_event": str},
+    )
+    @_guarded
+    async def update_merge_request_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        body: dict[str, Any] = {}
+        for field_name in ("title", "description", "target_branch", "state_event"):
+            if str(args.get(field_name) or "").strip():
+                body[field_name] = str(args[field_name])
+        if not body:
+            return ToolResult.error("no fields supplied — nothing to update")
+        await client.update_merge_request(str(args["project"]), int(args["mr_iid"]), body)
+        return ToolResult.ok(
+            f"updated !{args['mr_iid']}: " + ", ".join(body.keys())
+        )
+
+    @tool(
+        "update_merge_request_note",
+        "Edit one comment on a merge request (usually one this bot posted — "
+        "the API only allows editing your own). note_id comes from "
+        "list_merge_request_discussions. Args: project, mr_iid, note_id, "
+        "body (the full replacement text).",
+        {"project": str, "mr_iid": int, "note_id": int, "body": str},
+    )
+    @_guarded
+    async def update_merge_request_note_tool(
+        args: dict[str, Any], _ctx: ToolContext
+    ) -> ToolResult:
+        body = str(args.get("body") or "").strip()
+        if not body:
+            return ToolResult.error("empty body — to remove a comment use "
+                                    "delete_merge_request_note")
+        await client.update_merge_request_note(
+            str(args["project"]), int(args["mr_iid"]), int(args["note_id"]), body
+        )
+        return ToolResult.ok(f"edited note {args['note_id']} on !{args['mr_iid']}")
+
+    @tool(
+        "delete_merge_request_note",
+        "Delete one comment on a merge request (usually one this bot posted "
+        "— the API only allows deleting your own). Args: project, mr_iid, "
+        "note_id.",
+        {"project": str, "mr_iid": int, "note_id": int},
+    )
+    @_guarded
+    async def delete_merge_request_note_tool(
+        args: dict[str, Any], _ctx: ToolContext
+    ) -> ToolResult:
+        await client.delete_merge_request_note(
+            str(args["project"]), int(args["mr_iid"]), int(args["note_id"])
+        )
+        return ToolResult.ok(f"deleted note {args['note_id']} on !{args['mr_iid']}")
+
+    @tool(
+        "reply_to_merge_request_discussion",
+        "Reply INSIDE an existing discussion thread on a merge request (a "
+        "top-level comment is comment_on_merge_request instead). "
+        "discussion_id comes from list_merge_request_discussions. Args: "
+        "project, mr_iid, discussion_id, body.",
+        {"project": str, "mr_iid": int, "discussion_id": str, "body": str},
+    )
+    @_guarded
+    async def reply_to_discussion_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        body = str(args.get("body") or "").strip()
+        if not body:
+            return ToolResult.error("empty reply body — nothing to post")
+        await client.reply_to_discussion(
+            str(args["project"]), int(args["mr_iid"]),
+            str(args["discussion_id"]), body,
+        )
+        return ToolResult.ok(
+            f"replied in discussion {args['discussion_id']} on !{args['mr_iid']}"
+        )
+
+    @tool(
+        "resolve_merge_request_discussion",
+        "Resolve (or unresolve) a discussion thread on a merge request — "
+        "review threads gate merging on some projects. Args: project, "
+        "mr_iid, discussion_id, resolved (default true; false reopens).",
+        {"project": str, "mr_iid": int, "discussion_id": str, "resolved": bool},
+    )
+    @_guarded
+    async def resolve_discussion_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        resolved = bool(args.get("resolved", True))
+        await client.resolve_discussion(
+            str(args["project"]), int(args["mr_iid"]),
+            str(args["discussion_id"]), resolved,
+        )
+        verb = "resolved" if resolved else "reopened"
+        return ToolResult.ok(
+            f"{verb} discussion {args['discussion_id']} on !{args['mr_iid']}"
+        )
+
+    @tool(
+        "retry_pipeline",
+        "Retry a failed CI pipeline's failed jobs. Args: project, "
+        "pipeline_id (from list_pipelines or an MR's head pipeline).",
+        {"project": str, "pipeline_id": int},
+    )
+    @_guarded
+    async def retry_pipeline_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        resp = await client.retry_pipeline(str(args["project"]), int(args["pipeline_id"]))
+        return ToolResult.ok(
+            f"retry started for pipeline {args['pipeline_id']} "
+            f"(now {resp.get('status', '?')})"
+        )
+
+    return [
+        update_merge_request_tool,
+        update_merge_request_note_tool,
+        delete_merge_request_note_tool,
+        reply_to_discussion_tool,
+        resolve_discussion_tool,
+        retry_pipeline_tool,
+    ]
 
 
 class GitLabConnector(Connector):
     name = "gitlab"
     TRIGGER_KEYWORDS = ("gitlab", "merge request", "pipeline", "branch",
                         "commit", "repo", "diff", "review", "deploy", "job")
-    WRITE_TOOLS = frozenset(
-        {"comment_on_merge_request", "create_branch", "create_merge_request"}
-    )
-    # All three CREATE a record on GitLab; "I've commented / branched /
-    # opened the MR" with no matching call is exactly the claim shape the
-    # record-hallucination layer exists to catch.
-    RECORD_CLAIM_TOOLS = frozenset(
-        {"comment_on_merge_request", "create_branch", "create_merge_request"}
-    )
+    WRITE_TOOLS = frozenset({
+        "comment_on_merge_request", "create_branch", "create_merge_request",
+        "rebase_merge_request", "approve_merge_request", "merge_merge_request",
+        "update_merge_request", "update_merge_request_note",
+        "delete_merge_request_note", "reply_to_merge_request_discussion",
+        "resolve_merge_request_discussion", "retry_pipeline",
+    })
+    # The tools that CREATE a record on GitLab; "I've commented / approved /
+    # merged / replied" with no matching call is exactly the claim shape the
+    # record-hallucination layer exists to catch. Updates, deletes, resolves
+    # and retries are deliberately absent — that layer matches created
+    # records only.
+    RECORD_CLAIM_TOOLS = frozenset({
+        "comment_on_merge_request", "create_branch", "create_merge_request",
+        "approve_merge_request", "merge_merge_request",
+        "reply_to_merge_request_discussion",
+    })
 
     TOOL_NAMES: ClassVar[list[str]] = [
         # read
@@ -637,6 +1004,7 @@ class GitLabConnector(Connector):
         "get_merge_request",
         "get_merge_request_diff",
         "list_merge_request_notes",
+        "list_merge_request_discussions",
         "list_pipelines",
         "list_pipeline_jobs",
         "get_job_log",
@@ -644,6 +1012,15 @@ class GitLabConnector(Connector):
         "comment_on_merge_request",
         "create_branch",
         "create_merge_request",
+        "rebase_merge_request",
+        "approve_merge_request",
+        "merge_merge_request",
+        "update_merge_request",
+        "update_merge_request_note",
+        "delete_merge_request_note",
+        "reply_to_merge_request_discussion",
+        "resolve_merge_request_discussion",
+        "retry_pipeline",
     ]
 
     STATUS: ClassVar[dict[str, str]] = {
@@ -661,6 +1038,16 @@ class GitLabConnector(Connector):
         "comment_on_merge_request": "Commenting on the merge request",
         "create_branch": "Creating the branch",
         "create_merge_request": "Opening the merge request",
+        "rebase_merge_request": "Rebasing the merge request",
+        "approve_merge_request": "Recording the operator's approval",
+        "merge_merge_request": "Merging the merge request",
+        "list_merge_request_discussions": "Reading the MR threads",
+        "update_merge_request": "Editing the merge request",
+        "update_merge_request_note": "Editing the comment",
+        "delete_merge_request_note": "Deleting the comment",
+        "reply_to_merge_request_discussion": "Replying in the thread",
+        "resolve_merge_request_discussion": "Resolving the thread",
+        "retry_pipeline": "Retrying the pipeline",
     }
 
     def __init__(
@@ -675,9 +1062,13 @@ class GitLabConnector(Connector):
 
     # ---- Connector contract ----
 
-    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
-        """One in-process MCP per enabled gitlab_<profile> profile."""
-        servers: dict[str, list[ToolSpec]] = {}
+    def build_clients(self) -> dict[str, GitLabClient]:
+        """One authenticated client per enabled profile.
+
+        The same accessor gmail exposes for its watcher: a trigger source
+        polls through this instead of reaching into the tool layer.
+        """
+        clients: dict[str, GitLabClient] = {}
         for profile in self._config.load_all():
             if not profile.enabled or not self.owns_profile(profile.name):
                 continue
@@ -689,9 +1080,15 @@ class GitLabConnector(Connector):
                 )
                 continue
             base_url = profile.env.get("GITLAB_BASE_URL") or DEFAULT_BASE_URL
-            client = GitLabClient(base_url=base_url, token=token)
-            servers[profile.name] = self._build_tools_for_profile(client)
-        return servers
+            clients[profile.name] = GitLabClient(base_url=base_url, token=token)
+        return clients
+
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
+        """One in-process MCP per enabled gitlab_<profile> profile."""
+        return {
+            name: self._build_tools_for_profile(client)
+            for name, client in self.build_clients().items()
+        }
 
     def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
@@ -833,6 +1230,8 @@ class GitLabConnector(Connector):
         return [
             *_project_read_tools(client),
             *_mr_read_tools(client),
+            *_discussion_read_tools(client),
             *_pipeline_read_tools(client),
             *_write_tools(client),
+            *_mr_manage_tools(client),
         ]
