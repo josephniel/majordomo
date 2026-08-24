@@ -46,6 +46,7 @@ connectors: {}
 #  clickup: true
 #  splitwise: true
 #  yahoo: true
+#  gitlab: true           # read_write adds MR writes (comment/branch/MR), gated
 
 # Background agents (heartbeat, mail_watch) get THIS toolset instead of the
 # chat one — same grammar as faculties:/connectors:. Every background fire
@@ -151,6 +152,17 @@ system_prompt: |
 # job scripts — a job that can edit those can grant itself permissions),
 # ~/Library/LaunchAgents, and your VCS identity/credential files.
 # job_sandbox_profile: ./jobs/sandbox.sb
+
+# MR activity alerts (needs the gitlab connector): a token-free poll every
+# N minutes. A merge request you haven't been told about gets ANNOUNCED —
+# a short summary of the proposal, never a review — and one already
+# announced reports again when it sees new commits, discussion, a pipeline
+# flip, or a state change (merged/closed). Activity that is only your own
+# doing stays silent. It never posts to GitLab; reviews happen in chat when
+# you ask.
+# gitlab_watch:
+#   project: group/repo
+#   every_minutes: 10
 
 # Event-driven triggers: POST /trigger/<name> with Bearer WEBHOOK_TOKEN.
 # webhooks:

@@ -179,17 +179,59 @@ class TestReadTools:
         assert "=== c.md -> d.md ===" in result.text
         assert "=== e.md (new file) ===" in result.text
 
-    async def test_huge_diff_is_truncated_and_says_so(self):
+    async def test_huge_diff_is_paged_and_names_the_next_offset(self):
         def handler(request):
             return httpx.Response(200, json={"changes": [
                 {"old_path": "a", "new_path": "a", "diff": "x" * (_DIFF_CHARS + 100)},
             ]})
 
         tools = _connector_tools(handler)
-        result = await tools["get_merge_request_diff"].handler(
+        first = await tools["get_merge_request_diff"].handler(
             {"project": "p", "mr_iid": 1}, CTX
         )
-        assert f"truncated at {_DIFF_CHARS} chars" in result.text
+        assert f"continue with offset={_DIFF_CHARS}" in first.text
+        rest = await tools["get_merge_request_diff"].handler(
+            {"project": "p", "mr_iid": 1, "offset": _DIFF_CHARS}, CTX
+        )
+        assert "continue with offset" not in rest.text
+        assert "of " in rest.text  # window coordinates present
+
+    async def test_diff_path_filter_selects_one_file(self):
+        def handler(request):
+            return httpx.Response(200, json={"changes": [
+                {"old_path": "a.md", "new_path": "a.md", "diff": "+aaa"},
+                {"old_path": "b.md", "new_path": "b.md", "diff": "+bbb"},
+            ]})
+
+        tools = _connector_tools(handler)
+        result = await tools["get_merge_request_diff"].handler(
+            {"project": "p", "mr_iid": 1, "path": "b.md"}, CTX
+        )
+        assert "+bbb" in result.text
+        assert "+aaa" not in result.text
+        missing = await tools["get_merge_request_diff"].handler(
+            {"project": "p", "mr_iid": 1, "path": "zzz.md"}, CTX
+        )
+        assert missing.is_error
+
+    async def test_read_file_pages_long_content(self):
+        body = "A" * 6000 + "B" * 100
+
+        def handler(request):
+            if request.url.path.endswith("%2Fraw") or "/raw" in request.url.path:
+                return httpx.Response(200, text=body)
+            return httpx.Response(200, json={"default_branch": "main"})
+
+        tools = _connector_tools(handler)
+        first = await tools["read_file"].handler(
+            {"project": "p", "file_path": "big.md", "ref": "main"}, CTX
+        )
+        assert "continue with offset=6000" in first.text
+        rest = await tools["read_file"].handler(
+            {"project": "p", "file_path": "big.md", "ref": "main", "offset": 6000}, CTX
+        )
+        assert "B" * 100 in rest.text
+        assert "continue with offset" not in rest.text
 
     async def test_notes_skip_system_entries(self):
         def handler(request):
@@ -295,15 +337,26 @@ class TestWriteTools:
 class TestContract:
     def test_write_tools_declared(self):
         assert frozenset(
-            {"comment_on_merge_request", "create_branch", "create_merge_request"}
+            {"comment_on_merge_request", "create_branch", "create_merge_request",
+             "rebase_merge_request", "approve_merge_request", "merge_merge_request",
+             "update_merge_request", "update_merge_request_note",
+             "delete_merge_request_note", "reply_to_merge_request_discussion",
+             "resolve_merge_request_discussion", "retry_pipeline"}
         ) == GitLabConnector.WRITE_TOOLS
-        # Reads must never be gated; merging/deleting must not exist at all.
+        # Reads must never be gated; BRANCH deletion and force ops must not
+        # exist at all (deleting one's own comment is a different animal).
         assert "get_merge_request" not in GitLabConnector.WRITE_TOOLS
-        assert not any("merge_branch" in t or "delete" in t or "accept" in t
+        assert not any("delete_branch" in t or "force" in t
                        for t in GitLabConnector.TOOL_NAMES)
 
     def test_writes_declare_record_claims(self):
-        assert GitLabConnector.RECORD_CLAIM_TOOLS == GitLabConnector.WRITE_TOOLS
+        # Only the writes that CREATE a record: the record-claim layer
+        # deliberately excludes updates, deletes, resolves and retries.
+        assert frozenset({
+            "comment_on_merge_request", "create_branch", "create_merge_request",
+            "approve_merge_request", "merge_merge_request",
+            "reply_to_merge_request_discussion",
+        }) == GitLabConnector.RECORD_CLAIM_TOOLS
 
     def test_routing_declared(self):
         assert "gitlab" in GitLabConnector.TRIGGER_KEYWORDS
@@ -344,3 +397,188 @@ class TestContract:
         servers = conn.builtin_servers()
         assert set(servers) == {"gitlab_crm"}
         assert {s.name for s in servers["gitlab_crm"]} == set(GitLabConnector.TOOL_NAMES)
+
+
+class TestApproveAndMerge:
+    async def test_approve_posts_to_the_approval_route(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = _wire_path(request)
+            return httpx.Response(201, json={"id": 1})
+
+        tools = _connector_tools(handler)
+        result = await tools["approve_merge_request"].handler(
+            {"project": "crm/crm-docs", "mr_iid": 89}, CTX
+        )
+        assert not result.is_error
+        assert seen["method"] == "POST"
+        assert seen["path"] == "/api/v4/projects/crm%2Fcrm-docs/merge_requests/89/approve"
+
+    async def test_merge_puts_to_the_merge_route_and_reports_the_sha(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = _wire_path(request)
+            return httpx.Response(200, json={
+                "state": "merged", "merge_commit_sha": "abc1234def",
+            })
+
+        tools = _connector_tools(handler)
+        result = await tools["merge_merge_request"].handler(
+            {"project": "crm/crm-docs", "mr_iid": 89}, CTX
+        )
+        assert not result.is_error
+        assert seen["method"] == "PUT"
+        assert seen["path"] == "/api/v4/projects/crm%2Fcrm-docs/merge_requests/89/merge"
+        assert "merged !89" in result.text
+        assert "abc1234d" in result.text
+
+    async def test_merge_refuses_unattended_turns_without_calling_the_api(self):
+        def handler(request):
+            raise AssertionError("no request should be made")
+
+        tools = _connector_tools(handler)
+        bg = ToolContext(chat_id=1, background=True)
+        result = await tools["merge_merge_request"].handler(
+            {"project": "p", "mr_iid": 1}, bg
+        )
+        assert result.is_error
+        assert "unattended" in result.text
+
+    async def test_unmergeable_is_surfaced_not_raised(self):
+        def handler(request):
+            return httpx.Response(405, json={"message": "405 Method Not Allowed"})
+
+        tools = _connector_tools(handler)
+        result = await tools["merge_merge_request"].handler(
+            {"project": "p", "mr_iid": 1}, CTX
+        )
+        assert result.is_error
+        assert "GitLab API error 405" in result.text
+
+    async def test_rebase_puts_to_the_rebase_route_and_says_async(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = _wire_path(request)
+            return httpx.Response(202, json={"rebase_in_progress": True})
+
+        tools = _connector_tools(handler)
+        result = await tools["rebase_merge_request"].handler(
+            {"project": "crm/crm-docs", "mr_iid": 89}, CTX
+        )
+        assert not result.is_error
+        assert seen["method"] == "PUT"
+        assert seen["path"] == "/api/v4/projects/crm%2Fcrm-docs/merge_requests/89/rebase"
+        assert "asynchronous" in result.text
+
+
+class TestMrManageTools:
+    async def test_update_mr_builds_body_from_nonempty_fields(self):
+        seen = {}
+
+        def handler(request):
+            seen["method"] = request.method
+            seen["path"] = _wire_path(request)
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"iid": 89})
+
+        tools = _connector_tools(handler)
+        result = await tools["update_merge_request"].handler(
+            {"project": "crm/crm-docs", "mr_iid": 89,
+             "title": "docs(TS-1): better title", "description": "",
+             "target_branch": "", "state_event": ""}, CTX
+        )
+        assert not result.is_error
+        assert seen["method"] == "PUT"
+        assert seen["path"] == "/api/v4/projects/crm%2Fcrm-docs/merge_requests/89"
+        assert seen["body"] == {"title": "docs(TS-1): better title"}
+        empty = await tools["update_merge_request"].handler(
+            {"project": "p", "mr_iid": 1}, CTX
+        )
+        assert empty.is_error
+
+    async def test_note_edit_and_delete_hit_the_note_route(self):
+        seen = []
+
+        def handler(request):
+            seen.append((request.method, _wire_path(request)))
+            return httpx.Response(200, json={"id": 5})
+
+        tools = _connector_tools(handler)
+        await tools["update_merge_request_note"].handler(
+            {"project": "p", "mr_iid": 89, "note_id": 5, "body": "fixed wording"}, CTX
+        )
+        await tools["delete_merge_request_note"].handler(
+            {"project": "p", "mr_iid": 89, "note_id": 5}, CTX
+        )
+        assert seen == [
+            ("PUT", "/api/v4/projects/p/merge_requests/89/notes/5"),
+            ("DELETE", "/api/v4/projects/p/merge_requests/89/notes/5"),
+        ]
+        blank = await tools["update_merge_request_note"].handler(
+            {"project": "p", "mr_iid": 89, "note_id": 5, "body": " "}, CTX
+        )
+        assert blank.is_error
+
+    async def test_reply_and_resolve_target_the_discussion(self):
+        seen = []
+
+        def handler(request):
+            seen.append((request.method, _wire_path(request),
+                         dict(request.url.params)))
+            return httpx.Response(200, json={"id": "abc"})
+
+        tools = _connector_tools(handler)
+        await tools["reply_to_merge_request_discussion"].handler(
+            {"project": "p", "mr_iid": 89, "discussion_id": "abc123",
+             "body": "agreed, will fix"}, CTX
+        )
+        result = await tools["resolve_merge_request_discussion"].handler(
+            {"project": "p", "mr_iid": 89, "discussion_id": "abc123"}, CTX
+        )
+        assert seen[0][:2] == (
+            "POST", "/api/v4/projects/p/merge_requests/89/discussions/abc123/notes"
+        )
+        assert seen[1][0] == "PUT"
+        assert seen[1][2] == {"resolved": "true"}
+        assert "resolved discussion abc123" in result.text
+
+    async def test_discussions_listing_carries_actionable_ids(self):
+        def handler(request):
+            return httpx.Response(200, json=[
+                {"id": "d1", "notes": [
+                    {"id": 10, "system": False, "resolvable": True, "resolved": False,
+                     "author": {"username": "jobelle.sarmiento"},
+                     "body": "please fold /extended into /clients/{id}"},
+                ]},
+                {"id": "d2", "notes": [
+                    {"id": 11, "system": True, "body": "added 1 commit"},
+                ]},
+            ])
+
+        tools = _connector_tools(handler)
+        result = await tools["list_merge_request_discussions"].handler(
+            {"project": "p", "mr_iid": 89}, CTX
+        )
+        assert "discussion d1 [open]:" in result.text
+        assert "note 10 @jobelle.sarmiento" in result.text
+        assert "d2" not in result.text  # system-only thread hidden
+
+    async def test_retry_pipeline_posts_retry(self):
+        seen = {}
+
+        def handler(request):
+            seen["path"] = _wire_path(request)
+            return httpx.Response(201, json={"status": "running"})
+
+        tools = _connector_tools(handler)
+        result = await tools["retry_pipeline"].handler(
+            {"project": "p", "pipeline_id": 233233}, CTX
+        )
+        assert seen["path"] == "/api/v4/projects/p/pipelines/233233/retry"
+        assert "running" in result.text

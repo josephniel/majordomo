@@ -81,6 +81,11 @@ class Persona:
     # Needs google_calendar AND google_drive connectors and the tasks faculty.
     # See adapters/trigger/meetingwatch.py.
     meeting_watch: dict[str, Any] | None = None
+    # MR activity alerts: {project: "group/name", every_minutes: 10,
+    # chat_id: <optional>}. Needs the gitlab connector enabled. New MRs and
+    # updates to already-announced ones get a SHORT SUMMARY in chat — never a
+    # review, and never a post to GitLab. See adapters/trigger/gitlabwatch.py.
+    gitlab_watch: dict[str, Any] | None = None
     # Named host commands for the `jobs` faculty: {<job_name>: {command:
     # "sh /path/job.sh", description: "...", timeout_minutes: 30,
     # report_begin/report_end: <optional marker pair>}}. Defining jobs here
@@ -148,6 +153,9 @@ class Persona:
             ),
             meeting_watch=(
                 dict(cfg["meeting_watch"]) if cfg.get("meeting_watch") else None
+            ),
+            gitlab_watch=(
+                dict(cfg["gitlab_watch"]) if cfg.get("gitlab_watch") else None
             ),
             jobs=dict(cfg["jobs"]) if cfg.get("jobs") else None,
             job_templates=(

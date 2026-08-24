@@ -1138,6 +1138,45 @@ class PersonaRuntime:
         )
 
     @cached_property
+    def gitlab_watch_source(self) -> WatchSource | None:
+        """MR activity alerts for one GitLab project.
+
+        None unless persona.yaml has gitlab_watch (with a project) and the
+        gitlab connector is enabled. Fires announce new MRs and updates to
+        already-announced ones with a short summary — never a review; the
+        read-only background toolset is exactly enough for that, and the
+        connector's write tools stay out of unattended reach.
+        """
+        cfg = self.persona.gitlab_watch
+        if not cfg or not self.persona.is_connector_enabled("gitlab"):
+            return None
+        project = str(cfg.get("project") or "").strip()
+        if not project:
+            log.warning(
+                "persona %r: gitlab_watch needs a `project`; disabled",
+                self.persona.id,
+            )
+            return None
+        chat_id = self._watch_chat_id(cfg, "gitlab_watch")
+        if chat_id is None:
+            return None
+        from adapters.trigger import GITLAB_WATCH_PROMPT_PREAMBLE, GitLabMRWatcher
+        from domain.triggers import WatchSource
+
+        every = max(1, int(cfg.get("every_minutes") or 10))
+        return WatchSource(
+            name="gitlab_watch",
+            cron=f"*/{every} * * * *",
+            conversation=chat_id,
+            watcher=GitLabMRWatcher(
+                gitlab_connector=self.provider("gitlab"),
+                project=project,
+                state_file=self.persona.data_dir / "gitlab_watch.json",
+            ),
+            preamble=GITLAB_WATCH_PROMPT_PREAMBLE,
+        )
+
+    @cached_property
     def meeting_watch_source(self) -> WatchSource | None:
         """Gemini's meeting notes, turned into the operator's task board.
 
@@ -1375,6 +1414,7 @@ class PersonaRuntime:
                 self.mail_watch_source,
                 self.splitwise_watch_source,
                 self.meeting_watch_source,
+                self.gitlab_watch_source,
             )
             if w is not None
         )
