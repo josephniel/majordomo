@@ -228,3 +228,64 @@ class TestResetSession:
         await agent.reset_session()
         assert agent._session_id is None
         assert calls == ["discard", ("open", None)]
+
+
+def _assistant_blocks(*blocks):
+    from claude_agent_sdk import AssistantMessage
+    return AssistantMessage(content=list(blocks), model="claude-sonnet-5")
+
+
+def _text(text):
+    from claude_agent_sdk import TextBlock
+    return TextBlock(text=text)
+
+
+def _tool_use(name="mcp__gitlab__get_merge_request", tool_id="t1"):
+    from claude_agent_sdk import ToolUseBlock
+    return ToolUseBlock(id=tool_id, name=name, input={})
+
+
+class TestNarrationDoesNotLeak:
+    """The reply is the text after the LAST tool call, never the narration.
+
+    Regression: watch fires arrived prefixed with "Let me check the diff:" —
+    every interim text block the model emitted between tool calls was joined
+    into the reply, and one live MR announcement was almost entirely the
+    model narrating its own reading.
+    """
+
+    async def test_pre_tool_narration_is_dropped(self):
+        reply = await _collect([
+            _assistant_blocks(_text("Let me check the diff:"), _tool_use()),
+            _assistant("The MR adds one file."),
+            _result(),
+        ])
+        assert reply == "The MR adds one file."
+
+    async def test_narration_between_tool_calls_is_dropped(self):
+        reply = await _collect([
+            _assistant_blocks(_text("Reading more:"), _tool_use(tool_id="t1")),
+            _assistant_blocks(_text("Now the notes:"), _tool_use(tool_id="t2")),
+            _assistant("Announcement."),
+            _result(),
+        ])
+        assert reply == "Announcement."
+
+    async def test_toolless_turn_is_unchanged(self):
+        assert await _collect([_assistant("plain"), _result()]) == "plain"
+
+    async def test_turn_ending_on_a_tool_call_falls_back_to_full_text(self):
+        # Narration beats an empty reply: empty counts as a vendor failure
+        # and the cascade would replay a turn whose tools already ran.
+        reply = await _collect([
+            _assistant_blocks(_text("Checking the queue:"), _tool_use()),
+            _result(),
+        ])
+        assert reply == "Checking the queue:"
+
+    async def test_max_turns_partial_keeps_the_full_transcript(self):
+        reply = await _collect([
+            _assistant_blocks(_text("Started work."), _tool_use()),
+            _result(is_error=True, subtype="error_max_turns"),
+        ])
+        assert reply == "Started work."
