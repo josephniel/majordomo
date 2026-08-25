@@ -14,6 +14,13 @@ watch or auto-approve list can ever merge anything — a human asked, in a
 live conversation, or it does not happen. Force-pushing and deleting remote
 branches remain absent on purpose: an unattended agent that can delete a
 branch is a category of incident, not a feature.
+
+Repo administration (create_project, add_project_member) follows the same
+shape: projects are only ever created inside an explicit GROUP (the tool
+refuses personal namespaces), membership grants stop at maintainer (owner
+is refused structurally), and there is no remove-member or delete-project
+tool at all — revoking access is an incident lever that stays in human
+hands on the GitLab UI.
 """
 from __future__ import annotations
 
@@ -216,7 +223,43 @@ class GitLabClient:
             params=params,
         ))
 
+    async def get_group(self, group: str) -> dict[str, Any]:
+        return json_object(await self._request(
+            "GET", f"/groups/{self.project_ref(group)}"
+        ))
+
+    async def list_project_members(self, project: str) -> list[dict[str, Any]]:
+        # /members/all includes members inherited from the group — that is
+        # the answer to "who can touch this repo", which is the question.
+        return json_array(await self._request(
+            "GET",
+            f"/projects/{self.project_ref(project)}/members/all",
+            params={"per_page": 100},
+        ))
+
+    async def find_users(
+        self, username: str = "", search: str = "",
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"per_page": 20}
+        if username:
+            params["username"] = username  # exact match
+        elif search:
+            params["search"] = search
+        return json_array(await self._request("GET", "/users", params=params))
+
     # ---- write ----
+
+    async def create_project(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return json_object(await self._request("POST", "/projects", body=payload))
+
+    async def add_project_member(
+        self, project: str, user_id: int, access_level: int,
+    ) -> dict[str, Any]:
+        return json_object(await self._request(
+            "POST",
+            f"/projects/{self.project_ref(project)}/members",
+            body={"user_id": user_id, "access_level": access_level},
+        ))
 
     async def create_merge_request_note(
         self, project: str, mr_iid: int, body: str,
@@ -445,6 +488,33 @@ def _format_branch_line(b: dict[str, Any]) -> str:
         f"- {b.get('name', '?')}{flags} — {commit.get('short_id', '?')} "
         f"{commit.get('title', '')} ({commit.get('author_name', '?')}, {when})"
     )
+
+
+# The grantable levels stop at maintainer BY DESIGN: owner can delete the
+# project, transfer it, or lock everyone else out — that stays a human act
+# on the GitLab UI (and the bot's own maintainer token could not grant it
+# anyway; the ceiling just makes the refusal loud instead of a 403).
+_GRANTABLE_ACCESS = {
+    "guest": 10,
+    "reporter": 20,
+    "developer": 30,
+    "maintainer": 40,
+}
+_ACCESS_NAMES = {
+    5: "minimal", 10: "guest", 15: "planner", 20: "reporter",
+    30: "developer", 40: "maintainer", 50: "owner",
+}
+
+
+def _format_member_line(m: dict[str, Any]) -> str:
+    level = _ACCESS_NAMES.get(int(m.get("access_level", 0)), str(m.get("access_level")))
+    state = f", {m['state']}" if m.get("state") not in (None, "active") else ""
+    return f"- @{m.get('username', '?')} {m.get('name', '')} — {level}{state}"
+
+
+def _format_user_line(u: dict[str, Any]) -> str:
+    state = f", {u['state']}" if u.get("state") not in (None, "active") else ""
+    return f"- [{u.get('id', '?')}] @{u.get('username', '?')} {u.get('name', '')}{state}"
 
 
 def _format_commit_line(c: dict[str, Any]) -> str:
@@ -1034,10 +1104,160 @@ def _mr_manage_tools(client: GitLabClient) -> list[ToolSpec]:
     ]
 
 
+async def _create_project(client: GitLabClient, args: dict[str, Any]) -> ToolResult:
+    group = str(args.get("group") or "").strip().strip("/")
+    name = str(args.get("name") or "").strip()
+    if not group:
+        return ToolResult.error(
+            "a group is required — this tool refuses to create projects "
+            "in a personal namespace"
+        )
+    if not name:
+        return ToolResult.error("a project name is required")
+    visibility = str(args.get("visibility") or "").strip() or "private"
+    if visibility not in ("private", "internal", "public"):
+        return ToolResult.error(
+            f"visibility {visibility!r} is not one of private/internal/public"
+        )
+    namespace = await client.get_group(group)
+    payload: dict[str, Any] = {
+        "name": name,
+        "namespace_id": int(namespace["id"]),
+        "visibility": visibility,
+        "initialize_with_readme": bool(args.get("initialize_with_readme", True)),
+    }
+    if str(args.get("path") or "").strip():
+        payload["path"] = str(args["path"]).strip()
+    if str(args.get("description") or "").strip():
+        payload["description"] = str(args["description"]).strip()
+    project = await client.create_project(payload)
+    return ToolResult.ok(
+        f"created {project.get('path_with_namespace', '?')} "
+        f"({visibility}, default branch "
+        f"{project.get('default_branch') or 'NONE — empty repo'}): "
+        f"{project.get('web_url', '(no url)')}"
+    )
+
+
+async def _add_project_member(
+    client: GitLabClient, args: dict[str, Any],
+) -> ToolResult:
+    username = str(args.get("username") or "").strip().lstrip("@")
+    level_word = str(args.get("access_level") or "").strip().lower()
+    if not username:
+        return ToolResult.error("a username is required")
+    if level_word not in _GRANTABLE_ACCESS:
+        grantable = "/".join(_GRANTABLE_ACCESS)
+        if level_word == "owner":
+            return ToolResult.error(
+                "owner is refused — ownership changes stay a human act "
+                f"on the GitLab UI. Grantable levels: {grantable}."
+            )
+        return ToolResult.error(
+            f"access_level {level_word!r} is not one of {grantable}"
+        )
+    users = await client.find_users(username=username)
+    if not users:
+        return ToolResult.error(
+            f"no GitLab user with username {username!r} — "
+            "use find_user to search by name first"
+        )
+    user = users[0]
+    await client.add_project_member(
+        str(args["project"]), int(user["id"]), _GRANTABLE_ACCESS[level_word]
+    )
+    return ToolResult.ok(
+        f"added @{user.get('username', username)} ({user.get('name', '?')}) "
+        f"to {args['project']} as {level_word}"
+    )
+
+
+def _admin_tools(client: GitLabClient) -> list[ToolSpec]:
+    """Repo administration: create projects, see and grant membership.
+
+    The two writes are gated like every other write; their structural
+    guards (group required, owner refused) run BEFORE any API call so a
+    denied shape never even reaches GitLab.
+    """
+
+    @tool(
+        "list_project_members",
+        "List everyone who can access a GitLab project, including members "
+        "inherited from its group, with their access level. Args: project.",
+        {"project": str},
+    )
+    @_guarded
+    async def list_project_members_tool(
+        args: dict[str, Any], _ctx: ToolContext
+    ) -> ToolResult:
+        members = await client.list_project_members(str(args["project"]))
+        if not members:
+            return ToolResult.ok(f"no members visible on {args['project']}")
+        lines = [_format_member_line(m) for m in members]
+        return ToolResult.ok(f"members of {args['project']}:\n" + "\n".join(lines))
+
+    @tool(
+        "find_user",
+        "Look up GitLab users: exact `username` match, or free-text "
+        "`search` over names and usernames (pass '' for the one you are "
+        "not using). Resolve a person HERE first, then pass the confirmed "
+        "username to add_project_member — so the approval prompt names a "
+        "real account, not a guess.",
+        {"username": str, "search": str},
+    )
+    @_guarded
+    async def find_user_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        username = str(args.get("username") or "").strip()
+        search = str(args.get("search") or "").strip()
+        if not username and not search:
+            return ToolResult.error("pass a username or a search term")
+        users = await client.find_users(username=username, search=search)
+        if not users:
+            return ToolResult.ok(f"no GitLab user matches {username or search!r}")
+        return ToolResult.ok("\n".join(_format_user_line(u) for u in users))
+
+    @tool(
+        "create_project",
+        "Create a new GitLab project (repo) inside a GROUP — personal "
+        "namespaces are refused. Args: group (namespace path, e.g. 'crm'), "
+        "name (human name), path (URL slug; '' derives it from name), "
+        "description (optional; '' to skip), visibility ('private' if ''), "
+        "initialize_with_readme (default true — without it the repo has no "
+        "default branch and commit_file cannot write to it).",
+        {"group": str, "name": str, "path": str, "description": str,
+         "visibility": str, "initialize_with_readme": bool},
+    )
+    @_guarded
+    async def create_project_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        return await _create_project(client, args)
+
+    @tool(
+        "add_project_member",
+        "Grant a GitLab user access to a project. access_level is a word: "
+        "guest, reporter, developer or maintainer — owner is refused. The "
+        "username must be exact (verify with find_user first). Args: "
+        "project, username, access_level.",
+        {"project": str, "username": str, "access_level": str},
+    )
+    @_guarded
+    async def add_project_member_tool(
+        args: dict[str, Any], _ctx: ToolContext
+    ) -> ToolResult:
+        return await _add_project_member(client, args)
+
+    return [
+        list_project_members_tool,
+        find_user_tool,
+        create_project_tool,
+        add_project_member_tool,
+    ]
+
+
 class GitLabConnector(Connector):
     name = "gitlab"
     TRIGGER_KEYWORDS = ("gitlab", "merge request", "pipeline", "branch",
-                        "commit", "repo", "diff", "review", "deploy", "job")
+                        "commit", "repo", "diff", "review", "deploy", "job",
+                        "member")
     WRITE_TOOLS = frozenset({
         "comment_on_merge_request", "commit_file", "create_branch",
         "create_merge_request",
@@ -1045,6 +1265,7 @@ class GitLabConnector(Connector):
         "update_merge_request", "update_merge_request_note",
         "delete_merge_request_note", "reply_to_merge_request_discussion",
         "resolve_merge_request_discussion", "retry_pipeline",
+        "create_project", "add_project_member",
     })
     # The tools that CREATE a record on GitLab; "I've commented / approved /
     # merged / replied" with no matching call is exactly the claim shape the
@@ -1056,11 +1277,14 @@ class GitLabConnector(Connector):
         "create_merge_request",
         "approve_merge_request", "merge_merge_request",
         "reply_to_merge_request_discussion",
+        "create_project", "add_project_member",
     })
 
     TOOL_NAMES: ClassVar[list[str]] = [
         # read
         "search_projects",
+        "list_project_members",
+        "find_user",
         "read_file",
         "list_branches",
         "list_commits",
@@ -1086,10 +1310,17 @@ class GitLabConnector(Connector):
         "reply_to_merge_request_discussion",
         "resolve_merge_request_discussion",
         "retry_pipeline",
+        # admin
+        "create_project",
+        "add_project_member",
     ]
 
     STATUS: ClassVar[dict[str, str]] = {
         "search_projects": "Searching GitLab projects",
+        "list_project_members": "Listing project members",
+        "find_user": "Looking up the GitLab user",
+        "create_project": "Creating the project",
+        "add_project_member": "Granting project access",
         "read_file": "Reading the file from GitLab",
         "list_branches": "Listing branches",
         "list_commits": "Listing commits",
@@ -1300,4 +1531,5 @@ class GitLabConnector(Connector):
             *_pipeline_read_tools(client),
             *_write_tools(client),
             *_mr_manage_tools(client),
+            *_admin_tools(client),
         ]
