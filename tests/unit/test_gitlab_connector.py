@@ -342,12 +342,16 @@ class TestContract:
              "rebase_merge_request", "approve_merge_request", "merge_merge_request",
              "update_merge_request", "update_merge_request_note",
              "delete_merge_request_note", "reply_to_merge_request_discussion",
-             "resolve_merge_request_discussion", "retry_pipeline"}
+             "resolve_merge_request_discussion", "retry_pipeline",
+             "create_project", "add_project_member"}
         ) == GitLabConnector.WRITE_TOOLS
         # Reads must never be gated; BRANCH deletion and force ops must not
         # exist at all (deleting one's own comment is a different animal).
         assert "get_merge_request" not in GitLabConnector.WRITE_TOOLS
         assert not any("delete_branch" in t or "force" in t
+                       for t in GitLabConnector.TOOL_NAMES)
+        # Membership is grant-only: revoking access stays a human act.
+        assert not any("remove" in t or "delete_project" in t
                        for t in GitLabConnector.TOOL_NAMES)
 
     def test_writes_declare_record_claims(self):
@@ -358,6 +362,7 @@ class TestContract:
             "create_merge_request",
             "approve_merge_request", "merge_merge_request",
             "reply_to_merge_request_discussion",
+            "create_project", "add_project_member",
         }) == GitLabConnector.RECORD_CLAIM_TOOLS
 
     def test_routing_declared(self):
@@ -650,3 +655,153 @@ class TestCommitFile:
         }, CTX)
         assert result.is_error
         assert "create" in result.text
+
+
+class TestAdminTools:
+    async def test_create_project_resolves_group_and_posts_namespace_id(self):
+        seen = {}
+
+        def handler(request):
+            path = _wire_path(request)
+            if path == "/api/v4/groups/crm":
+                return httpx.Response(200, json={"id": 318, "full_path": "crm"})
+            seen["method"] = request.method
+            seen["path"] = path
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(201, json={
+                "path_with_namespace": "crm/crm-payments",
+                "default_branch": "master",
+                "web_url": "https://gitlab.test/crm/crm-payments",
+            })
+
+        result = await _connector_tools(handler)["create_project"].handler(
+            {"group": "crm", "name": "crm-payments", "path": "", "description": "",
+             "visibility": "", "initialize_with_readme": True}, CTX
+        )
+        assert not result.is_error
+        assert seen["method"] == "POST"
+        assert seen["path"] == "/api/v4/projects"
+        assert seen["body"]["namespace_id"] == 318
+        assert seen["body"]["visibility"] == "private"
+        assert seen["body"]["initialize_with_readme"] is True
+        assert "path" not in seen["body"]
+        assert "crm/crm-payments" in result.text
+
+    async def test_create_project_without_a_group_is_refused_before_any_request(self):
+        def handler(request):
+            raise AssertionError("no request expected")
+
+        result = await _connector_tools(handler)["create_project"].handler(
+            {"group": "  ", "name": "x", "path": "", "description": "",
+             "visibility": "", "initialize_with_readme": True}, CTX
+        )
+        assert result.is_error
+        assert "personal namespace" in result.text
+
+    async def test_create_project_rejects_unknown_visibility(self):
+        def handler(request):
+            raise AssertionError("no request expected")
+
+        result = await _connector_tools(handler)["create_project"].handler(
+            {"group": "crm", "name": "x", "path": "", "description": "",
+             "visibility": "secret", "initialize_with_readme": True}, CTX
+        )
+        assert result.is_error
+
+    async def test_create_project_names_an_empty_repo(self):
+        def handler(request):
+            if _wire_path(request) == "/api/v4/groups/crm":
+                return httpx.Response(200, json={"id": 318})
+            return httpx.Response(201, json={
+                "path_with_namespace": "crm/x", "default_branch": None,
+                "web_url": "https://gitlab.test/crm/x",
+            })
+
+        result = await _connector_tools(handler)["create_project"].handler(
+            {"group": "crm", "name": "x", "path": "", "description": "",
+             "visibility": "", "initialize_with_readme": False}, CTX
+        )
+        assert "NONE — empty repo" in result.text
+
+    async def test_add_member_resolves_username_to_id(self):
+        seen = {}
+
+        def handler(request):
+            path = _wire_path(request)
+            if path == "/api/v4/users":
+                assert request.url.params.get("username") == "maria.reyes"
+                return httpx.Response(200, json=[
+                    {"id": 77, "username": "maria.reyes", "name": "Maria Reyes"}
+                ])
+            seen["path"] = path
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(201, json={"id": 77, "access_level": 30})
+
+        result = await _connector_tools(handler)["add_project_member"].handler(
+            {"project": "crm/crm-docs", "username": "@maria.reyes",
+             "access_level": "Developer"}, CTX
+        )
+        assert not result.is_error
+        assert seen["path"] == "/api/v4/projects/crm%2Fcrm-docs/members"
+        assert seen["body"] == {"user_id": 77, "access_level": 30}
+        assert "maria.reyes" in result.text
+
+    async def test_add_member_refuses_owner_before_any_request(self):
+        def handler(request):
+            raise AssertionError("no request expected")
+
+        result = await _connector_tools(handler)["add_project_member"].handler(
+            {"project": "p", "username": "x", "access_level": "owner"}, CTX
+        )
+        assert result.is_error
+        assert "owner is refused" in result.text
+
+    async def test_add_member_rejects_made_up_levels(self):
+        def handler(request):
+            raise AssertionError("no request expected")
+
+        result = await _connector_tools(handler)["add_project_member"].handler(
+            {"project": "p", "username": "x", "access_level": "admin"}, CTX
+        )
+        assert result.is_error
+
+    async def test_add_member_with_unknown_username_makes_no_grant(self):
+        posts = []
+
+        def handler(request):
+            if request.method == "POST":
+                posts.append(_wire_path(request))
+                return httpx.Response(201, json={})
+            return httpx.Response(200, json=[])
+
+        result = await _connector_tools(handler)["add_project_member"].handler(
+            {"project": "p", "username": "ghost", "access_level": "guest"}, CTX
+        )
+        assert result.is_error
+        assert posts == []
+        assert "find_user" in result.text
+
+    async def test_list_members_formats_levels_as_words(self):
+        def handler(request):
+            assert _wire_path(request) == "/api/v4/projects/crm%2Fcrm-docs/members/all"
+            return httpx.Response(200, json=[
+                {"username": "joseph.tuazon", "name": "Joseph Tuazon",
+                 "access_level": 40, "state": "active"},
+                {"username": "bot", "name": "Bot", "access_level": 30,
+                 "state": "blocked"},
+            ])
+
+        result = await _connector_tools(handler)["list_project_members"].handler(
+            {"project": "crm/crm-docs"}, CTX
+        )
+        assert "@joseph.tuazon Joseph Tuazon — maintainer" in result.text
+        assert "@bot Bot — developer, blocked" in result.text
+
+    async def test_find_user_requires_a_query(self):
+        def handler(request):
+            raise AssertionError("no request expected")
+
+        result = await _connector_tools(handler)["find_user"].handler(
+            {"username": "", "search": " "}, CTX
+        )
+        assert result.is_error
