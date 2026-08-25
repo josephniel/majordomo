@@ -236,6 +236,20 @@ class GitLabClient:
             params={"branch": branch, "ref": ref},
         ))
 
+    async def create_commit(
+        self, project: str, branch: str, message: str,
+        actions: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return json_object(await self._request(
+            "POST",
+            f"/projects/{self.project_ref(project)}/repository/commits",
+            body={
+                "branch": branch,
+                "commit_message": message,
+                "actions": actions,
+            },
+        ))
+
     async def create_merge_request(
         self, project: str, payload: dict[str, Any],
     ) -> dict[str, Any]:
@@ -714,6 +728,38 @@ def _pipeline_read_tools(client: GitLabClient) -> list[ToolSpec]:
     return [list_pipelines_tool, list_pipeline_jobs_tool, get_job_log_tool]
 
 
+async def _commit_file(client: GitLabClient, args: dict[str, Any]) -> ToolResult:
+    project = str(args["project"])
+    branch = str(args.get("branch") or "").strip()
+    file_path = str(args.get("file_path") or "").strip()
+    content = str(args.get("content") or "")
+    message = str(args.get("message") or "").strip()
+    action = str(args.get("action") or "create").strip().lower()
+    if not branch or not file_path or not message:
+        return ToolResult.error("branch, file_path and message are required")
+    if not content.strip():
+        return ToolResult.error("content is empty — nothing to commit")
+    if action not in ("create", "update"):
+        return ToolResult.error("action must be 'create' or 'update'")
+    # Direct commits to the default branch bypass review entirely — on this
+    # team humans merge, so the tool refuses rather than trusting every
+    # future prompt to remember that.
+    default = str((await client.get_project(project)).get("default_branch") or "")
+    if branch == default:
+        return ToolResult.error(
+            f"{branch!r} is the default branch — commit to a feature "
+            "branch and open an MR instead"
+        )
+    out = await client.create_commit(
+        project, branch, message,
+        [{"action": action, "file_path": file_path, "content": content}],
+    )
+    return ToolResult.ok(
+        f"committed {out.get('short_id', '?')} to {branch} in {project}: "
+        f"{action} {file_path} ({len(content)} chars)"
+    )
+
+
 def _write_tools(client: GitLabClient) -> list[ToolSpec]:
     """Everything that mutates GitLab — the gated ones (WRITE_TOOLS)."""
 
@@ -734,6 +780,21 @@ def _write_tools(client: GitLabClient) -> list[ToolSpec]:
             str(args["project"]), int(args["mr_iid"]), body
         )
         return ToolResult.ok(f"commented on !{args['mr_iid']} in {args['project']}")
+
+    @tool(
+        "commit_file",
+        "Commit ONE file to a NON-default branch (create the branch first). "
+        "This is how authored content becomes an MR: create_branch -> "
+        "commit_file per file -> create_merge_request. Args: project, "
+        "branch, file_path (repo-relative), content (the full file text), "
+        "message (commit message), action ('create' for a new file, "
+        "'update' to overwrite an existing one; default create).",
+        {"project": str, "branch": str, "file_path": str, "content": str,
+         "message": str, "action": str},
+    )
+    @_guarded
+    async def commit_file_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        return await _commit_file(client, args)
 
     @tool(
         "create_branch",
@@ -839,6 +900,7 @@ def _write_tools(client: GitLabClient) -> list[ToolSpec]:
 
     return [
         comment_on_merge_request_tool,
+        commit_file_tool,
         create_branch_tool,
         create_merge_request_tool,
         rebase_merge_request_tool,
@@ -977,7 +1039,8 @@ class GitLabConnector(Connector):
     TRIGGER_KEYWORDS = ("gitlab", "merge request", "pipeline", "branch",
                         "commit", "repo", "diff", "review", "deploy", "job")
     WRITE_TOOLS = frozenset({
-        "comment_on_merge_request", "create_branch", "create_merge_request",
+        "comment_on_merge_request", "commit_file", "create_branch",
+        "create_merge_request",
         "rebase_merge_request", "approve_merge_request", "merge_merge_request",
         "update_merge_request", "update_merge_request_note",
         "delete_merge_request_note", "reply_to_merge_request_discussion",
@@ -989,7 +1052,8 @@ class GitLabConnector(Connector):
     # and retries are deliberately absent — that layer matches created
     # records only.
     RECORD_CLAIM_TOOLS = frozenset({
-        "comment_on_merge_request", "create_branch", "create_merge_request",
+        "comment_on_merge_request", "commit_file", "create_branch",
+        "create_merge_request",
         "approve_merge_request", "merge_merge_request",
         "reply_to_merge_request_discussion",
     })
@@ -1010,6 +1074,7 @@ class GitLabConnector(Connector):
         "get_job_log",
         # write
         "comment_on_merge_request",
+        "commit_file",
         "create_branch",
         "create_merge_request",
         "rebase_merge_request",
@@ -1036,6 +1101,7 @@ class GitLabConnector(Connector):
         "list_pipeline_jobs": "Listing pipeline jobs",
         "get_job_log": "Reading the job log",
         "comment_on_merge_request": "Commenting on the merge request",
+        "commit_file": "Committing the file",
         "create_branch": "Creating the branch",
         "create_merge_request": "Opening the merge request",
         "rebase_merge_request": "Rebasing the merge request",
