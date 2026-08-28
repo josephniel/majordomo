@@ -69,6 +69,13 @@ manage — majordomo stack
                                      fight over Telegram getUpdates)
     agent-status                     list every installed majordomo agent
 
+  Log rotation (launchd writes the bot logs, so the app cannot rotate them):
+    logrotate-install                install the monthly rotation agent
+                                     (04:00 on the 1st; copy-truncate, gzip,
+                                     6 months of archives in logs/archive/)
+    logrotate-uninstall              unload + remove it
+    logrotate-run                    rotate now, without waiting for the 1st
+
   Postgres:
     db-up                            start Postgres in background
     db-down                          stop the whole compose stack
@@ -285,6 +292,56 @@ cmd_agent_status() {
     fi
 }
 
+# ---- log rotation ----
+#
+# The bots' logs are written by launchd, not by the app, so nothing inside the
+# Python process can rotate them. One agent for the box (not per persona)
+# rotates logs/*.log as a set on the 1st of each month.
+
+LOGROTATE_LABEL="$AGENT_PREFIX.logrotate"
+LOGROTATE_PLIST="$AGENT_DIR/$LOGROTATE_LABEL.plist"
+
+cmd_logrotate_run() {
+    local script="scripts/rotate-logs.sh"
+    [[ -x "$script" ]] || die "$script is missing or not executable"
+    "$script"
+}
+
+cmd_logrotate_install() {
+    local tpl="deploy/logrotate.plist.example"
+    [[ -f "$tpl" ]] || die "$tpl is missing"
+    local target="gui/$(id -u)/$LOGROTATE_LABEL"
+
+    mkdir -p "$AGENT_DIR" logs
+    # Same bootout-then-wait dance as the persona agents: bootstrap refuses to
+    # load over a registered label, and bootout returns before launchd has
+    # finished unloading.
+    if launchctl print "$target" >/dev/null 2>&1; then
+        launchctl bootout "$target" 2>/dev/null || true
+        local waited=0
+        while launchctl print "$target" >/dev/null 2>&1; do
+            sleep 1
+            waited=$((waited + 1))
+            [[ $waited -lt 30 ]] || die "timed out waiting for $LOGROTATE_LABEL to unload"
+        done
+    fi
+
+    sed -e "s|__LABEL__|$LOGROTATE_LABEL|g" \
+        -e "s|__PROJECT_DIR__|$(pwd)|g" \
+        "$tpl" > "$LOGROTATE_PLIST"
+    plutil -lint "$LOGROTATE_PLIST" >/dev/null || die "generated plist is malformed: $LOGROTATE_PLIST"
+
+    launchctl bootstrap "gui/$(id -u)" "$LOGROTATE_PLIST"
+    echo "[manage] installed $LOGROTATE_LABEL (04:00 on the 1st of each month)"
+    echo "[manage] archives: logs/archive/  keep: ${MAJORDOMO_LOG_KEEP_MONTHS:-6} months"
+}
+
+cmd_logrotate_uninstall() {
+    launchctl bootout "gui/$(id -u)/$LOGROTATE_LABEL" 2>/dev/null || true
+    rm -f "$LOGROTATE_PLIST"
+    echo "[manage] removed $LOGROTATE_LABEL"
+}
+
 # ---- postgres ----
 
 cmd_db_up() {
@@ -430,6 +487,9 @@ main() {
         agent-uninstall)    cmd_agent_uninstall "$@" ;;
         agent-restart)      cmd_agent_restart "$@" ;;
         agent-status)       cmd_agent_status ;;
+        logrotate-install)  cmd_logrotate_install ;;
+        logrotate-uninstall) cmd_logrotate_uninstall ;;
+        logrotate-run)      cmd_logrotate_run ;;
         backup)             cmd_backup "$@" ;;
         db-up)              cmd_db_up ;;
         db-down)            cmd_db_down ;;
