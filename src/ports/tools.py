@@ -76,6 +76,22 @@ _TYPE_TO_JSON: dict[Any, dict[str, str]] = {
 }
 
 
+# A write tool's chance to compute what the operator is about to approve.
+# Awaited by the approval gate BEFORE the prompt is rendered, and its text is
+# shown above the argument bullets — so the rows and the environment banner in
+# the prompt are computed by the tool, not claimed by the model.
+ApprovalPreview = Callable[[dict[str, Any], ToolContext], Awaitable[str]]
+
+
+class PreviewRefusedError(Exception):
+    """A write tool refusing BEFORE the operator is asked.
+
+    The gate denies without prompting. A statement the tool would refuse
+    anyway should never cost a human a decision, and a tap that means nothing
+    is a tap the operator learns to give reflexively.
+    """
+
+
 @dataclass
 class ToolSpec:
     """Vendor-neutral declaration of an agent-callable tool.
@@ -95,12 +111,20 @@ class ToolSpec:
                       ambient state. (Legacy MCP-shaped dict returns are
                       still accepted and normalized at the vendor edges via
                       as_tool_result.)
+        approval_preview — optional async (args, ctx) -> str, awaited by the
+                      approval gate before it renders the prompt. Use it when
+                      what the operator needs to see is something only the
+                      tool can compute (which rows a write would touch, which
+                      environment it targets). Raise PreviewRefusedError to deny
+                      without asking a human at all.
     """
 
     name: str
     description: str
     parameters: dict[str, Any]
     handler: Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
+    # Optional, and defaulted so every existing construction site is untouched.
+    approval_preview: ApprovalPreview | None = None
 
     def json_schema(self) -> dict[str, Any]:
         """Normalize `parameters` into a full JSON Schema object.
@@ -123,7 +147,10 @@ class ToolSpec:
 
 
 def tool(
-    name: str, description: str, parameters: dict[str, Any]
+    name: str,
+    description: str,
+    parameters: dict[str, Any],
+    approval_preview: ApprovalPreview | None = None,
 ) -> Callable[[ToolHandler], ToolSpec]:
     """Wrap an async handler as a ToolSpec.
 
@@ -138,6 +165,7 @@ def tool(
             description=description,
             parameters=parameters,
             handler=handler,
+            approval_preview=approval_preview,
         )
     return decorator
 

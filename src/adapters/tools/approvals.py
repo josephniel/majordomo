@@ -24,6 +24,7 @@ external servers off (today's state) or trusted end-to-end.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -31,7 +32,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Any
 
-from ports import ConversationRef, ToolContext, ToolResult, ToolSpec
+from ports import (
+    ApprovalPreview,
+    ConversationRef,
+    PreviewRefusedError,
+    ToolContext,
+    ToolResult,
+    ToolSpec,
+)
 
 log = logging.getLogger(__name__)
 
@@ -67,9 +75,22 @@ _MAX_VALUE_CHARS = 600
 _MAX_PRIORITY_VALUE_CHARS = 1000
 _MAX_PROMPT_CHARS = 3500
 _PRIORITY_FIELDS = (
+    # WHICH SYSTEM this acts on comes first and gets the larger allowance.
+    # Approving a production write while believing it is staging is the worst
+    # realistic failure of a tool that names its target in an argument.
+    "target", "database", "table",
     "to", "cc", "bcc", "recipient", "recipients",
     "name", "always", "when", "cron", "doc_id",
 )
+
+# A preview computes what the operator is about to approve, which for a
+# database write means a round trip. Bounded so a slow or wedged upstream
+# cannot hold a chat open indefinitely — and a preview that does not answer
+# in time denies, like every other failure here.
+_PREVIEW_TIMEOUT = 10.0
+# The preview gets the larger share of the prompt, but never all of it: the
+# argument bullets must still fit underneath.
+_MAX_PREVIEW_CHARS = 2400
 
 
 def _format_value(value: Any, limit: int = _MAX_VALUE_CHARS) -> str:
@@ -87,12 +108,31 @@ def _format_value(value: Any, limit: int = _MAX_VALUE_CHARS) -> str:
     return s
 
 
-def format_approval_prompt(connector_name: str, tool_name: str, args: dict[str, Any]) -> str:
+def format_approval_prompt(
+    connector_name: str,
+    tool_name: str,
+    args: dict[str, Any],
+    preview: str = "",
+) -> str:
     """Render a pending write for a human: one bullet per argument.
 
     Routing fields first — never a raw JSON dump.
+
+    `preview` is text the TOOL computed (which rows a write would touch, which
+    environment it targets). It renders above the arguments because it is the
+    part the model could not have fabricated, and it is truncated separately
+    so a long row list can never push the arguments out of the message.
     """
     lines = [f"🔐 Approval needed — {connector_name}/{tool_name}"]
+    if preview.strip():
+        block = preview.strip()
+        if len(block) > _MAX_PREVIEW_CHARS:
+            dropped = len(block) - _MAX_PREVIEW_CHARS
+            block = (
+                block[:_MAX_PREVIEW_CHARS].rstrip()
+                + f"\n… (+{dropped} more chars NOT SHOWN — deny if unsure)"
+            )
+        lines.extend(("", block))
     fields = [(k, v) for k, v in args.items() if v not in (None, "", [], {})]
     # Routing/persistence fields first, in a stable order.
     fields.sort(key=lambda kv: (
@@ -219,10 +259,18 @@ class WriteApprovalGate:
         inner = spec.handler
         tool_name = spec.name
 
+        preview_hook = spec.approval_preview
+
         async def gated_handler(args: dict[str, Any], ctx: ToolContext) -> Any:
+            preview, precheck = await self._preview(
+                preview_hook, connector_name, tool_name, args, ctx
+            )
+            if precheck is not None:
+                return precheck
             approved, reason = await self._confirm(
                 connector_name, tool_name, args,
                 chat_id=ctx.chat_id, background=ctx.background,
+                preview=preview,
             )
             if not approved:
                 log.warning("write tool %s denied: %s", tool_name, reason)
@@ -240,6 +288,61 @@ class WriteApprovalGate:
             handler=gated_handler,
         )
 
+    # ---- the preview ----
+
+    async def _preview(
+        self,
+        hook: ApprovalPreview | None,
+        connector_name: str,
+        tool_name: str,
+        args: dict[str, Any],
+        ctx: ToolContext,
+    ) -> tuple[str, ToolResult | None]:
+        """Compute what the operator is about to approve.
+
+        Returns the text for the prompt, or a refusal that skips the prompt
+        entirely. Every failure path denies: a preview exists so a human can
+        see the truth before deciding, so a preview that did not run means
+        there is nothing to decide on.
+        """
+        if hook is None:
+            return "", None
+        try:
+            async with asyncio.timeout(_PREVIEW_TIMEOUT):
+                return await hook(args, ctx), None
+        except PreviewRefusedError as refused:
+            # The tool would refuse this anyway. Deny without asking: a tap
+            # that changes nothing is a tap the operator learns to give
+            # without reading.
+            log.info("write tool %s refused before approval: %s", tool_name, refused)
+            await self._audit(
+                ctx.chat_id, connector_name, tool_name, args,
+                "refused_precheck", str(refused),
+            )
+            return "", _refusal(tool_name, str(refused))
+        except TimeoutError:
+            log.warning("approval preview for %s timed out; denying", tool_name)
+            await self._audit(
+                ctx.chat_id, connector_name, tool_name, args,
+                "preview_timeout", f"preview exceeded {_PREVIEW_TIMEOUT:.0f}s",
+            )
+            return "", _refusal(
+                tool_name,
+                "could not work out what this would change in time, so it was "
+                "not run. Nothing was executed.",
+            )
+        except Exception as err:
+            log.exception("approval preview for %s failed; denying", tool_name)
+            await self._audit(
+                ctx.chat_id, connector_name, tool_name, args,
+                "preview_failed", f"{type(err).__name__}: {err}",
+            )
+            return "", _refusal(
+                tool_name,
+                f"could not work out what this would change ({type(err).__name__}), "
+                "so it was not run. Nothing was executed.",
+            )
+
     # ---- the decision ----
 
     async def _confirm(
@@ -249,6 +352,7 @@ class WriteApprovalGate:
         args: dict[str, Any],
         chat_id: ConversationRef | None,
         background: bool = False,
+        preview: str = "",
     ) -> tuple[bool, str]:
         # Checked before the confirmer: an allow-listed write during a trigger
         # fire must not depend on a chat being reachable, and asking would only
@@ -279,7 +383,7 @@ class WriteApprovalGate:
             await self._audit(None, connector_name, tool_name, args, "no_chat", "")
             return False, "no chat context to request approval in"
 
-        prompt = format_approval_prompt(connector_name, tool_name, args)
+        prompt = format_approval_prompt(connector_name, tool_name, args, preview)
         # Publish before awaiting and clear in `finally`. The finally is what
         # matters: a denial, a timeout, a /cancel (CancelledError) or an
         # exception must all release the marker, or the chat reads as
