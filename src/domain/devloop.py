@@ -284,6 +284,8 @@ class DevLoop(Faculty):
         self._state_file = state_file
         self._tasks: dict[str, Task] = {}
         self._running: set[str] = set()
+        # Per-task warnings worth surfacing once, at start (a failed fetch).
+        self._notes: dict[str, str] = {}
         self._load()
 
     # ---- state ----
@@ -527,9 +529,23 @@ class DevLoop(Faculty):
         )
         self._tasks[task_id] = task
         self._save()
-        task.published.clear()
         log.info("devloop: %s on %s at %s%s", task_id, branch, sha[:8], stale_note)
+        self._notes[task_id] = stale_note
         return task
+
+    async def _base_age(self, task: Task) -> str:
+        """How old the commit this task branched from is.
+
+        The mirrors are only as fresh as the last estate sync, so "branched
+        from a commit three days old" is the thing worth saying — the task's
+        own age is always zero at this point and tells nobody anything.
+        """
+        code, stamp = await self._git(
+            task.mirror, "show", "-s", "--format=%ct", task.base_sha
+        )
+        if code != 0 or not stamp.isdigit():
+            return "age unknown"
+        return _ago(float(stamp))
 
     # ---- the check runner ----
 
@@ -644,10 +660,12 @@ class DevLoop(Faculty):
             if isinstance(created, str):
                 return ToolResult.error(created)
             checks = ", ".join(sorted(outer._config.repos[repo].checks)) or "(none)"
-            age = _ago(created.created)
+            age = await outer._base_age(created)
+            note = outer._notes.pop(created.task_id, "")
             return ToolResult.ok(
                 f"task {created.task_id} — {repo} on {branch}, from "
-                f"origin/{created.base_ref} at {created.base_sha[:8]} ({age}).\n"
+                f"origin/{created.base_ref} at {created.base_sha[:8]}, committed "
+                f"{age}.{note}\n"
                 f"checks available: {checks}\n"
                 "Edits and checks need no further approval; publishing does."
             )

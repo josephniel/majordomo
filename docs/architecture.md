@@ -728,6 +728,61 @@ identically. Unknown tool names get the same treatment: the error lists the
 real tools for that connector's prefix, because a bare "unknown tool" leaves
 the model to guess again, and it guesses the same way twice.
 
+## The code loop: a worktree, named checks, taps at the boundaries
+
+`workspace` reads the mirrors; `devloop` (domain/devloop.py) is where the agent
+can change something and find out whether it worked. Nine tools on a throwaway
+`git worktree add --detach` per task. The gap it closes is not capability — an
+approved job already ran `npm ci` and `make fmt` against a repo — it is
+ITERATION: every other surface here is one-shot-per-approval, and a fix loop is
+edit, check, read the failure, fix, check again.
+
+**Two classes of process, and the line between them is the design.** git runs
+from fixed argv the faculty builds (`create_subprocess_exec`, never a shell,
+`-c core.hooksPath=/dev/null` because hooks live in a shared 310-clone estate).
+Repo code runs ONLY under `sandbox-exec`, from an operator-authored argv keyed
+by name in persona.yaml. The model passes a NAME. This is jobs.py's rule — the
+security line is drawn at the CONFIG, not the model — with a tighter box.
+
+**The sandbox profile denies three things, and the third was learned the hard
+way.** No writes outside the worktree; no outbound network; and no READS of the
+credential material on the disk. The first two are obvious. The third is not:
+a check can read what the user can, copy a credential into a worktree file, and
+the free `devloop_diff` carries it into the chat — no network and no tap
+required. Verified before the fence existed: `cat ~/.git-credentials` succeeded
+inside the sandbox. Reads are a deny-list (a check legitimately reads most of
+the filesystem) naming `.ssh`, `.git-credentials`, `instances/`, the plaintext
+secret store and `~/.claude`.
+
+Also learned by rehearsal: `(allow network-outbound (local ip))` re-opens the
+internet. `local` is the socket's OWN endpoint, which every outbound connection
+has; loopback has to be expressed as `(remote ip "localhost:*")`. With the
+wrong spelling a curl returned 302 straight through a profile that read as
+restrictive.
+
+**Taps at the boundaries, not per edit** — a deliberate deviation from
+"one tap per write", recorded here because it is a real weakening. `devloop_start`
+authorises the loop and its description says so; `devloop_publish` is the only
+thing that reaches the forge, and shows the branch plus a file list the handler
+verifies against the worktree before the prompt is believed. A tap per
+`devloop_write` would render 600 characters of a file plus "+18,400 chars NOT
+SHOWN" (the gate's own truncation), twenty times in a fix loop — habituation,
+not review. Reverting is two strings in one frozenset.
+
+That model holds only because every mutating tool refuses `ctx.background` in
+the handler. `background_view()` downgrades `read_write` to read-only, which
+grants everything EXCEPT `WRITE_TOOLS` — precisely the free edit and check
+tools — so without the firebreak they would ride every heartbeat, watch and
+artifact-comment webhook.
+
+**The allow-list does not scale, on purpose.** Repos and their checks live in
+persona.yaml, so merging an MR into some repo cannot change what command runs
+on the operator's laptop. An in-repo manifest would scale and would hand that
+control to anyone who can merge.
+
+majordomo excludes itself by construction: the faculty's root IS the mirror
+estate, and majordomo is not in it.
+
 ## Layer 5: write-tool approval gate
 
 The persona tool policy decides which write tools are EXPOSED; the approval
