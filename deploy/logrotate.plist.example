@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Monthly log rotation for every persona's LaunchAgent logs.
+
+  ONE agent for the whole box, not one per persona: it rotates logs/*.log as a
+  set, so a second copy would race the first over the same files.
+
+  Do not install this file by hand — `./manage logrotate-install` fills the
+  placeholders in and loads it. See docs/DEPLOYING.md.
+
+  Placeholders: __LABEL__  __PROJECT_DIR__
+-->
+<plist version="1.0">
+	<dict>
+		<key>Label</key>
+		<string>__LABEL__</string>
+
+		<key>ProgramArguments</key>
+		<array>
+			<string>/bin/bash</string>
+			<string>-c</string>
+			<string>cd __PROJECT_DIR__ &amp;&amp; exec ./manage logrotate-run</string>
+		</array>
+
+		<key>EnvironmentVariables</key>
+		<dict>
+			<key>PATH</key>
+			<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		</dict>
+
+		<key>WorkingDirectory</key>
+		<string>__PROJECT_DIR__</string>
+
+		<!-- 04:00 on the 1st of every month. Not RunAtLoad: installing the agent
+		     should not truncate a log you are in the middle of reading. If the
+		     Mac is asleep at 04:00, launchd runs it once on wake. -->
+		<key>StartCalendarInterval</key>
+		<dict>
+			<key>Day</key>
+			<integer>1</integer>
+			<key>Hour</key>
+			<integer>4</integer>
+			<key>Minute</key>
+			<integer>0</integer>
+		</dict>
+
+		<!-- A run is seconds long and then exits. KeepAlive here would respawn it
+		     in a tight loop forever. -->
+		<key>RunAtLoad</key>
+		<false/>
+		<key>KeepAlive</key>
+		<false/>
+
+		<key>StandardOutPath</key>
+		<string>__PROJECT_DIR__/logs/logrotate.out.log</string>
+		<key>StandardErrorPath</key>
+		<string>__PROJECT_DIR__/logs/logrotate.err.log</string>
+	</dict>
+</plist>

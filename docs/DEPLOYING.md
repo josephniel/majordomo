@@ -142,6 +142,30 @@ right values depend on your hardware.
 WARNING in code so the bot token never appears in a polled-URL log line.
 `logs/` is gitignored; keep it out of any VCS regardless.
 
+### Rotation
+
+Nothing inside the app can rotate these: launchd opens the log files itself and
+holds the descriptors for the life of the bot. Install the monthly rotation
+agent instead — one for the box, not one per persona:
+
+```bash
+./manage logrotate-install     # 04:00 on the 1st of each month
+./manage logrotate-run         # rotate now, without waiting
+./manage logrotate-uninstall
+```
+
+It **copy-truncates**: the contents are gzipped into `logs/archive/` and the
+file is then truncated in place. Renaming would leave the running bot writing
+into the renamed inode until its next restart, so the live log would stay empty
+and the archive would keep growing. The cost is that a line or two written
+between the copy and the truncate is lost, which is why it runs at 04:00.
+
+Files under 4 KB are skipped, and archives older than six months are pruned.
+Both are tunable per run: `MAJORDOMO_LOG_MIN_BYTES`, `MAJORDOMO_LOG_KEEP_MONTHS`.
+
+Scheduler chatter is the bulk of it — apscheduler logs every job fire at INFO
+to stderr, roughly 1.3 MB a day per busy persona, compressing about 17:1.
+
 ## After a schema change
 
 Migrations are idempotent and applied on connect, so a deploy is just a
