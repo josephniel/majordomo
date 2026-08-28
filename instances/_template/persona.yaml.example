@@ -36,6 +36,7 @@ faculties:
   documents: read_write
 #  jobs: read_write      # named HOST commands (unsandboxed!) — see jobs: below
 #  workspace: true        # read-only local repo mirrors — see workspace: below
+#  devloop: read_write    # edit + run the repo's checks — see devloop: below
 
 # External-service adapters — multi-profile, credentialed. Configure
 # profiles via ./manage add/auth after enabling. Start read-only (true) and
@@ -162,6 +163,36 @@ system_prompt: |
 # and every path is confined to the root.
 # workspace:
 #   root: ~/projects/work
+
+# The bounded code loop (needs the devloop faculty above AND workspace, whose
+# root it works in). A throwaway git worktree per task: the agent edits there
+# and runs THE REPO'S OWN checks before anything is pushed. Two approvals —
+# devloop_start authorises the loop, devloop_publish is the only thing that
+# reaches the forge.
+#
+# `repos` is an ALLOW-LIST and `checks` is the ONLY place a command can come
+# from: the model passes a check NAME, never an argv. Adding either is an
+# operator edit plus a restart, which is the point.
+#
+# A check runs the repo's own code, so it runs under Seatbelt (macOS): no
+# outbound network, writes confined to the worktree, and a constructed
+# environment that cannot carry your tokens. With no sandbox_profile,
+# devloop_check REFUSES rather than running unconfined — so on a non-macOS
+# host devloop is read-only.
+# devloop:
+#   worktrees: ~/projects/.worktrees      # scratch; NOT inside the mirrors
+#   sandbox_profile: ./devloop/check.sb
+#   path: /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+#   committer: {name: dev-assistant, email: dev-assistant@example.com}
+#   repos:
+#     my-docs:
+#       default_branch: master
+#       seed: [node_modules]              # must be gitignored, or publish
+#                                         # would commit it (start refuses)
+#       commit_message_pattern: '^[a-z]+\([A-Z]+-[0-9]+\): .+'
+#       checks:
+#         fmt:       {argv: [make, fmt],       description: rewrite in place}
+#         fmt_check: {argv: [make, fmt-check], description: the CI gate}
 
 # Hosted artifact pages live in the STANDALONE artifact-pages service, not
 # in this process: enable the `artifacts` CONNECTOR (connectors: block above,

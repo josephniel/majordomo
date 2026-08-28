@@ -231,6 +231,34 @@ def _build_workspace(rt: RuntimeContext) -> ToolProvider:
     return Workspace(root=Path(root))
 
 
+def _build_devloop(rt: RuntimeContext) -> ToolProvider:
+    from pathlib import Path
+
+    from domain.devloop import DevLoop, parse_config
+
+    block = rt.persona.devloop
+    if not block:
+        raise SystemExit(
+            f"persona {rt.persona.id!r}: the devloop faculty needs a `devloop:` "
+            "block in persona.yaml (worktrees, sandbox_profile, repos)"
+        )
+    root = str((rt.persona.workspace or {}).get("root") or "").strip()
+    if not root:
+        raise SystemExit(
+            f"persona {rt.persona.id!r}: devloop works in the workspace mirrors, "
+            "so it needs `workspace: {root: <dir>}` too"
+        )
+    try:
+        config = parse_config(block, rt.persona.dir)
+    except ValueError as err:
+        raise SystemExit(f"persona {rt.persona.id!r}: {err}") from err
+    return DevLoop(
+        config=config,
+        repo_root=Path(root),
+        state_file=rt.persona.dir / "data" / "devloop_tasks.json",
+    )
+
+
 def _build_documents(rt: RuntimeContext) -> ToolProvider:
     from adapters.store import DocumentStore
     from domain import DocumentLibrary
@@ -345,6 +373,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     _faculty("documents", _build_documents),
     _faculty("jobs", _build_jobs),
     _faculty("workspace", _build_workspace),
+    _faculty("devloop", _build_devloop),
 )
 
 PROVIDERS_BY_NAME: dict[str, ProviderSpec] = {p.name: p for p in PROVIDERS}

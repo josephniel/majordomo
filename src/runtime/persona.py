@@ -112,6 +112,18 @@ class Persona:
     # (faculties: workspace: true) and this block are required.
     # See domain/workspace.py.
     workspace: dict[str, Any] | None = None
+    # `devloop` faculty: the bounded code-work loop. Shape:
+    #   {worktrees: <scratch dir>, sandbox_profile: ./devloop/check.sb,
+    #    path: <PATH for checks>, committer: {name, email},
+    #    repos: {<repo>: {default_branch, seed: [...],
+    #                     commit_message_pattern,
+    #                     checks: {<name>: {argv: [...], description,
+    #                                       timeout_seconds}}}}}
+    # `repos` is the ALLOW-LIST — devloop_start refuses any repo not keyed
+    # there, and `checks` is the only place a command may come from: the model
+    # passes a NAME, never an argv. Both the faculty and this block are
+    # required. See domain/devloop.py.
+    devloop: dict[str, Any] | None = None
     # Enablement map for BACKGROUND agents (heartbeat, mail-watch) — same
     # grammar as faculties:/connectors:. When unset, the chat map is used
     # downgraded to read-only. Background fires are unattended and pay the
@@ -171,6 +183,7 @@ class Persona:
                 if cfg.get("job_sandbox_profile") else None
             ),
             workspace=dict(cfg["workspace"]) if cfg.get("workspace") else None,
+            devloop=dict(cfg["devloop"]) if cfg.get("devloop") else None,
             background_tools=(
                 dict(cfg["background_tools"]) if cfg.get("background_tools") else None
             ),
