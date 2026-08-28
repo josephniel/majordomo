@@ -247,6 +247,29 @@ SETTINGS: tuple[Setting, ...] = (
             as_opt_str, None, Scope.HOST),
     Setting("code_exec_network", "code_exec.network", "CODE_EXEC_NETWORK",
             as_opt_str, None, Scope.HOST),
+    # ---- external database connector (Scope.PERSONA: which databases a bot
+    # may touch, and how hard, is a property of that bot's job) ----
+    # NOTE the YAML path is database_connector.*, not database.*: `database.url`
+    # is already memory_database_url, and colliding those two is exactly the
+    # class of bug this table exists to prevent.
+    Setting("database_statement_timeout_ms", "database_connector.statement_timeout_ms",
+            "DATABASE_STATEMENT_TIMEOUT_MS", as_int, 15000, Scope.PERSONA,
+            doc="statement_timeout for the database connector, in ms. A profile "
+                "may lower it, never raise it."),
+    Setting("database_max_write_rows", "database_connector.max_write_rows",
+            "DATABASE_MAX_WRITE_ROWS", as_int, 50, Scope.PERSONA,
+            doc="Hard cap on rows one write may touch. This, not the WHERE "
+                "clause, is what bounds a write."),
+    Setting("database_max_rows_returned", "database_connector.max_rows_returned",
+            "DATABASE_MAX_ROWS_RETURNED", as_int, 200, Scope.PERSONA,
+            doc="Hard cap on rows a read returns. Also bounds how much a "
+                "prompt-injected SELECT can move into the chat in one call."),
+    Setting("database_pending_write_ttl_seconds",
+            "database_connector.pending_write_ttl_seconds",
+            "DATABASE_PENDING_WRITE_TTL_SECONDS", as_int, 600, Scope.PERSONA,
+            doc="How long a sql_apply handle stays valid. Expiry is safe: "
+                "nothing is open server-side, so an expired handle means the "
+                "write never happened."),
     Setting("status_push_url", "status_push.url", "STATUS_PUSH_URL",
             as_str, "", Scope.HOST),
     Setting("status_push_token", "status_push.token", "STATUS_PUSH_TOKEN",

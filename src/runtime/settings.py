@@ -118,6 +118,11 @@ class RuntimeSettings:
     # ---- sandboxed code execution ----
     code_exec_image: str | None = None
     code_exec_network: str | None = None
+    # ---- external database connector ----
+    database_statement_timeout_ms: int = 15000
+    database_max_write_rows: int = 50
+    database_max_rows_returned: int = 200
+    database_pending_write_ttl_seconds: int = 600
 
     # ---- status dashboard push ----
     status_push_url: str = ""

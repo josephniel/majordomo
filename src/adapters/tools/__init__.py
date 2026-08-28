@@ -20,6 +20,7 @@ from .approvals import GatedToolProvider, PendingApproval, WriteApprovalGate
 from .artifacts import ArtifactPagesConnector
 from .budget import BudgetConnector
 from .clickup import ClickUpConnector
+from .database import DatabaseConnector
 from .gdrive import GoogleDriveConnector
 from .gitlab import GitLabConnector
 from .gmail import GmailConnector
@@ -39,6 +40,7 @@ __all__ = [
     "Connector",
     "ConnectorEntry",
     "ContextInjector",
+    "DatabaseConnector",
     "Faculty",
     "GatedToolProvider",
     "GitLabConnector",

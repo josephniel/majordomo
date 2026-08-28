@@ -304,6 +304,21 @@ def _build_gitlab(rt: RuntimeContext) -> ToolProvider:
     return GitLabConnector(config=rt.config)
 
 
+def _build_database(rt: RuntimeContext) -> ToolProvider:
+    # The caps arrive as constructor arguments rather than the connector
+    # reading settings: adapters may not import runtime, and the composition
+    # root is the only place allowed to know both.
+    from adapters.tools import DatabaseConnector
+    return DatabaseConnector(
+        config=rt.config,
+        persona_id=rt.persona.id,
+        statement_timeout_ms=rt.settings.database_statement_timeout_ms,
+        max_write_rows=rt.settings.database_max_write_rows,
+        max_rows_returned=rt.settings.database_max_rows_returned,
+        pending_ttl_seconds=rt.settings.database_pending_write_ttl_seconds,
+    )
+
+
 # ---- the registry ---------------------------------------------------------
 # Order matters in one visible way: it sets the order of the "== Connectors =="
 # section in the system prompt, and connectors precede faculties there for
@@ -319,6 +334,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     _connector("budget", _build_budget),
     _connector("gitlab", _build_gitlab),
     _connector("artifacts", _build_artifacts),
+    _connector("database", _build_database),
     _faculty("memory", _build_memory),
     _faculty("schedule", _build_schedule),
     _faculty("tasks", _build_tasks),
