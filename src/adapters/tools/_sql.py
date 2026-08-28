@@ -71,7 +71,7 @@ __all__ = [
 # allow-list purely so the refusal names the rule the operator broke; the
 # allow-list is what actually decides.
 _FORBIDDEN: tuple[tuple[type[exp.Expr], str], ...] = (
-    (exp.Command, "unsupported or unrecognised statement"),
+    (exp.Command, "this statement is not one this tool runs"),
     (exp.Set, "SET"),
     (exp.Grant, "GRANT"),
     (exp.Revoke, "REVOKE"),
@@ -201,7 +201,7 @@ def _forbidden(root: exp.Expr) -> Refusal | None:
         if isinstance(root, node_type):
             return Refusal(
                 "forbidden_statement",
-                f"{label} is refused by this tool and cannot be approved",
+                f"{label} — refused, and this refusal cannot be approved away",
             )
     return None
 
