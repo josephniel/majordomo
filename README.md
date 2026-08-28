@@ -221,7 +221,7 @@ turns, because the eval prompts were 1.5k tokens and production's are ~15.5k.
 - **Operations** — retention pruning for every growth table, `/status` introspection, turn-level observability (vendor, latency, tokens, failovers), per-chat rate limiting, restart-safe schedules, and `./manage backup` for the instance dirs — the only durable state in neither git nor Postgres (secrets excluded by default).
 
 **Built-in faculties:** memory · schedule · tasks · skills · documents · code · files · delegate · jobs · workspace
-**Service connectors:** Gmail · Google Calendar · Google Drive · Yahoo Mail · ClickUp · Splitwise · budget-tracker · GitLab · artifact-pages
+**Service connectors:** Gmail · Google Calendar · Google Drive · Yahoo Mail · ClickUp · Splitwise · budget-tracker · GitLab · artifact-pages · Postgres
 
 ## Before you grant writes
 

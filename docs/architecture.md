@@ -732,8 +732,9 @@ the model to guess again, and it guesses the same way twice.
 
 The persona tool policy decides which write tools are EXPOSED; the approval
 gate (`adapters/tools/approvals.py`) decides whether an exposed write may
-EXECUTE — one inline Approve/Deny tap in Telegram per call, 120s timeout =
-deny. It wraps `WRITE_TOOLS` handlers at the connector's `builtin_*`
+EXECUTE — one inline Approve/Deny tap in Telegram per call, 300s timeout =
+deny (`telegram.APPROVAL_TIMEOUT_SECONDS`; it was 120s until a real approval
+auto-denied at 121s mid-tap). It wraps `WRITE_TOOLS` handlers at the connector's `builtin_*`
 methods, so both vendors' tool paths (Claude in-process MCP, chat-completions
 dispatch) are covered by one mechanism. Only allowlisted humans can answer —
 control-room peer bots can talk to this bot but never authorize its writes.
@@ -741,6 +742,32 @@ Rationale: agents run bypassPermissions while reading untrusted content
 (email, task descriptions); without a runtime gate, anything the model reads
 can mutate any read_write system. Opt out per persona with
 `write_approval: false`.
+
+### What the prompt shows: arguments, and what only the tool can compute
+
+Rendering a pending write from its ARGUMENTS is enough when the argument IS the
+payload — an email body says what the email will say. It is not enough when the
+argument is a statement whose effect only the tool can work out.
+`UPDATE ... WHERE id = 88214` tells the operator nothing about how many rows
+that is, or which database it lands in.
+
+A ToolSpec may therefore carry an `approval_preview`: an async (args, ctx) -> str
+the gate awaits BEFORE rendering, whose text appears above the argument bullets.
+The point is provenance — the database connector's preview runs the equivalent
+SELECT against the live server, so the rows and the PRODUCTION banner are the
+one part of the prompt the model could not have fabricated.
+
+Fail-closed on every path, because a preview exists so a human can see the truth
+before deciding, and a preview that did not run means there is nothing to decide
+on: `PreviewRefusedError` denies WITHOUT prompting (a statement the tool would
+refuse anyway must not cost a human a decision — a tap that changes nothing is a
+tap the operator learns to give without reading); a timeout denies; any other
+exception denies. All four outcomes are audited (`refused_precheck`,
+`preview_timeout`, `preview_failed`).
+
+`target`, `database` and `table` sort ahead of the routing fields. Approving a
+production write while believing it is staging is the worst realistic failure of
+a tool that names its target in an argument.
 
 A pending approval blocks inside the turn, and the turn holds the per-chat
 lock for the whole 120s. Anything the user typed in that window used to sit
