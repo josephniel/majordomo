@@ -8,7 +8,13 @@ from adapters.tools.approvals import (
     WriteApprovalGate,
     format_approval_prompt,
 )
-from ports import Connector, ToolContext, ToolResult, tool
+from ports import (
+    Connector,
+    PreviewRefusedError,
+    ToolContext,
+    ToolResult,
+    tool,
+)
 
 
 class FakeMailConnector(Connector):
@@ -295,3 +301,166 @@ class TestTelegramApproval:
         query = FakeQuery("apr|deadbeef|y", 7)
         await p._on_approval_callback(SimpleNamespace(callback_query=query), None)
         assert "expired" in query.answers[0][0][0]
+
+
+class PreviewConnector(Connector):
+    """A write tool that computes what the operator is about to approve."""
+
+    name = "previewy"
+    WRITE_TOOLS = frozenset({"do_write"})
+
+    def __init__(self, preview=None):
+        self.calls = []
+        self.previews = []
+        self._preview = preview
+
+    def builtin_tools(self) -> list:
+        outer = self
+
+        async def preview(args, ctx):
+            outer.previews.append(args)
+            if outer._preview is None:
+                return ""
+            return await outer._preview(args, ctx)
+
+        @tool(
+            "do_write",
+            "Write something.",
+            {"target": str, "sql": str},
+            approval_preview=preview,
+        )
+        async def write_tool(args, _ctx):
+            outer.calls.append(args)
+            return ToolResult.ok("done")
+
+        return [write_tool]
+
+
+def _gated_preview(preview=None, confirmer=None):
+    gate = WriteApprovalGate()
+    if confirmer is not None:
+        gate.bind(confirmer)
+    conn = PreviewConnector(preview)
+    return conn, _specs_by_name(GatedToolProvider(conn, gate))["do_write"]
+
+
+class TestApprovalPreview:
+    def test_preview_text_renders_above_the_arguments(self):
+        prompt = format_approval_prompt(
+            "database", "sql_apply", {"sql": "UPDATE t SET x=1 WHERE id=1"},
+            "PRODUCTION — rds-core / crm\nmatches 1 row",
+        )
+        assert "PRODUCTION" in prompt
+        assert prompt.index("PRODUCTION") < prompt.index("• sql:")
+
+    def test_prompts_without_a_preview_are_byte_identical(self):
+        """The core change must not alter any existing connector's prompt."""
+        args = {"to": "a@b.c", "body": "hello", "cc": "d@e.f"}
+        assert format_approval_prompt("gmail", "send_email", args) == (
+            format_approval_prompt("gmail", "send_email", args, "")
+        )
+        assert format_approval_prompt("gmail", "send_email", args, "   ") == (
+            format_approval_prompt("gmail", "send_email", args)
+        )
+
+    def test_target_renders_before_other_arguments(self):
+        prompt = format_approval_prompt(
+            "database", "sql_apply",
+            {"sql": "UPDATE t SET x=1", "reason": "asked", "target": "production"},
+        )
+        assert prompt.index("• target:") < prompt.index("• sql:")
+        assert prompt.index("• target:") < prompt.index("• reason:")
+
+    def test_a_long_preview_truncates_and_says_so(self):
+        prompt = format_approval_prompt(
+            "database", "sql_apply", {"sql": "x"}, "row\n" * 4000
+        )
+        assert "NOT SHOWN — deny if unsure" in prompt
+        assert "• sql:" in prompt, "arguments must survive a long preview"
+
+    def test_preview_refusal_denies_without_asking_a_human(self):
+        asked = []
+
+        async def confirmer(_chat, prompt):
+            asked.append(prompt)
+            return True
+
+        async def refusing(_args, _ctx):
+            raise PreviewRefusedError("an UPDATE with no WHERE is refused")
+
+        conn, spec = _gated_preview(refusing, confirmer)
+        result = asyncio.run(spec.handler({"target": "staging"}, CHAT_CTX))
+        assert result.is_error
+        assert "no WHERE" in result.text
+        assert asked == [], "a structurally refused write must not cost a tap"
+        assert conn.calls == [], "the inner handler must never run"
+
+    def test_preview_timeout_denies(self):
+        asked = []
+
+        async def confirmer(_chat, prompt):
+            asked.append(prompt)
+            return True
+
+        async def hangs(_args, _ctx):
+            await asyncio.sleep(30)
+            return "never"
+
+        import adapters.tools.approvals as approvals_module
+
+        original = approvals_module._PREVIEW_TIMEOUT
+        approvals_module._PREVIEW_TIMEOUT = 0.01
+        try:
+            conn, spec = _gated_preview(hangs, confirmer)
+            result = asyncio.run(spec.handler({"target": "staging"}, CHAT_CTX))
+        finally:
+            approvals_module._PREVIEW_TIMEOUT = original
+        assert result.is_error
+        assert asked == []
+        assert conn.calls == []
+
+    def test_preview_exception_denies(self):
+        asked = []
+
+        async def confirmer(_chat, prompt):
+            asked.append(prompt)
+            return True
+
+        async def explodes(_args, _ctx):
+            raise RuntimeError("upstream is down")
+
+        conn, spec = _gated_preview(explodes, confirmer)
+        result = asyncio.run(spec.handler({"target": "staging"}, CHAT_CTX))
+        assert result.is_error
+        assert "RuntimeError" in result.text
+        assert asked == []
+        assert conn.calls == []
+
+    def test_preview_text_reaches_the_confirmer(self):
+        seen = []
+
+        async def confirmer(_chat, prompt):
+            seen.append(prompt)
+            return True
+
+        async def preview(_args, _ctx):
+            return "⛔ PRODUCTION — matches 1 row"
+
+        conn, spec = _gated_preview(preview, confirmer)
+        result = asyncio.run(spec.handler({"target": "production"}, CHAT_CTX))
+        assert not result.is_error
+        assert conn.calls, "an approved write must reach the inner handler"
+        assert "⛔ PRODUCTION" in seen[0]
+
+    def test_a_tool_without_a_hook_is_untouched(self):
+        gate = WriteApprovalGate()
+        gate.bind(_approve)
+        conn = FakeMailConnector()
+        spec = _specs_by_name(GatedToolProvider(conn, gate))["send_mail"]
+        result = asyncio.run(spec.handler({"to": "a@b.c", "body": "hi"}, CHAT_CTX))
+        assert not result.is_error
+        assert conn.sent == [{"to": "a@b.c", "body": "hi"}]
+
+
+async def _approve(_chat, _prompt):
+    return True

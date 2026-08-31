@@ -66,8 +66,10 @@ from .tasks import (
     clamp_priority,
 )
 from .tools import (
+    ApprovalPreview,
     Connector,
     Faculty,
+    PreviewRefusedError,
     ToolProvider,
     ToolResult,
     ToolSpec,
@@ -89,6 +91,7 @@ __all__ = [
     "VALID_SCOPES",
     "AddCron",
     "Agent",
+    "ApprovalPreview",
     "Attachment",
     "AttachmentIngestor",
     "CanaryRunner",
@@ -110,6 +113,7 @@ __all__ = [
     "PartialReplyCallback",
     "PersonaIdentity",
     "PersonaLike",
+    "PreviewRefusedError",
     "Reconciliation",
     "Scored",
     "ServiceCatalog",

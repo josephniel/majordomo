@@ -40,6 +40,28 @@ approvals:
   # background_auto_approve: [gemini, claude, groq]
 
 # ------------------------------------------------------------------
+database_connector:
+  # statement_timeout for the database connector, in ms. A profile may
+  # lower it, never raise it.
+  # env fallback: DATABASE_STATEMENT_TIMEOUT_MS
+  # statement_timeout_ms: 15000
+
+  # Hard cap on rows one write may touch. This, not the WHERE clause, is
+  # what bounds a write.
+  # env fallback: DATABASE_MAX_WRITE_ROWS
+  # max_write_rows: 50
+
+  # Hard cap on rows a read returns. Also bounds how much a
+  # prompt-injected SELECT can move into the chat in one call.
+  # env fallback: DATABASE_MAX_ROWS_RETURNED
+  # max_rows_returned: 200
+
+  # How long a sql_apply handle stays valid. Expiry is safe: nothing is
+  # open server-side, so an expired handle means the write never happened.
+  # env fallback: DATABASE_PENDING_WRITE_TTL_SECONDS
+  # pending_write_ttl_seconds: 600
+
+# ------------------------------------------------------------------
 llm:
   # env fallback: PRIMARY_LLM
   # primary:

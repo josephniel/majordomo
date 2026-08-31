@@ -18,6 +18,7 @@ they act on their own triggers and never appear in a tool schema.
 """
 from .code_exec import CodeExecutor
 from .delegate import Delegator
+from .devloop import DevLoop
 from .documents import DocumentLibrary
 from .files import FileCourier
 from .ideation import Ideator
@@ -34,6 +35,7 @@ from .workspace import Workspace
 __all__ = [
     "CodeExecutor",
     "Delegator",
+    "DevLoop",
     "DocumentLibrary",
     "FileCourier",
     "HostJobs",

@@ -11,3 +11,4 @@ openai>=1.40
 # Local, provider-independent embeddings for semantic memory recall (ONNX, no API).
 fastembed>=0.3
 pypdf
+sqlglot>=30,<31        # SQL statement classification for the database connector
