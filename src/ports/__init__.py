@@ -30,6 +30,7 @@ from .llm import (
     ToolOutcomeCallback,
     ToolUseCallback,
     UsageLimitError,
+    VendorTimeoutError,
 )
 from .memory import (
     LINK_RELATIONS,
@@ -138,6 +139,7 @@ __all__ = [
     "TriggerSource",
     "UsageLimitError",
     "VendorIntrospectable",
+    "VendorTimeoutError",
     "as_tool_result",
     "chat_key",
     "clamp_priority",

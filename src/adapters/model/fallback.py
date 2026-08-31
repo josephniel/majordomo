@@ -49,6 +49,7 @@ from .base import (
     ToolOutcomeCallback,
     ToolUseCallback,
     UsageLimitError,
+    VendorTimeoutError,
 )
 from .health import VendorHealthBoard
 from .history import TurnRecord
@@ -463,6 +464,23 @@ class CascadingAgent(Agent):
         error.__cause__ = last_exc
         return error
 
+    def _bench(self, vendor: str, e: UsageLimitError) -> None:
+        """Record why this vendor is being skipped, and for how long.
+
+        VendorTimeoutError subclasses UsageLimitError, so both arrive here and
+        both advance the chain — that part was always right. What differs is
+        the sentence. A timeout says nothing about quota: benching a healthy
+        primary for five minutes over one slow request is a self-inflicted
+        outage, and calling it a "usage limit" in the log sends whoever reads
+        it looking for a quota problem that does not exist.
+        """
+        if isinstance(e, VendorTimeoutError):
+            self._board.mark_timed_out(vendor)
+            log.warning("%s timed out; advancing chain (%s)", vendor, e)
+            return
+        self._board.mark_limited(vendor)
+        log.warning("%s reported usage limit; advancing chain (%s)", vendor, e)
+
     async def send(
         self,
         text: str,
@@ -520,8 +538,7 @@ class CascadingAgent(Agent):
             except UsageLimitError as e:
                 last_exc = e
                 failovers += 1
-                self._board.mark_limited(vendor)
-                log.warning("%s reported usage limit; advancing chain (%s)", vendor, e)
+                self._bench(vendor, e)
                 continue
             except Exception as e:
                 # Broader failover (A6): a broken vendor shouldn't fail the

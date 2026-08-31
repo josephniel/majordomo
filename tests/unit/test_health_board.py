@@ -24,6 +24,13 @@ class TestCooldowns:
         b.mark_failed("openai")
         assert 0 < b.cooldown_remaining("openai") <= 120
 
+    def test_a_timeout_benches_the_vendor_for_a_minute_not_five(self):
+        # Timeouts used to be classified as usage limits, so one slow request
+        # took the primary out of rotation for 300s — seven times in a day.
+        b = VendorHealthBoard()
+        b.mark_timed_out("gemini")
+        assert 0 < b.cooldown_remaining("gemini") <= 60
+
     def test_mark_healthy_clears(self):
         b = VendorHealthBoard()
         b.mark_limited("gemini", 300)
