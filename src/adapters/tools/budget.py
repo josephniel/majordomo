@@ -1288,10 +1288,23 @@ def _amend_tools(client: BudgetClient) -> list[ToolSpec]:
         if counterparty:
             payload["counterparty"] = str(counterparty)[:120]
         row = await client.update_transaction(transaction_id, payload)
+        # The tracker books most rows as transfer legs, and replacing one mints
+        # a fresh id rather than editing in place — verified against the live
+        # ledger on 2026-08-31, where amending #3628 answered with #3646. The
+        # entry is still corrected exactly once and the balance does not move,
+        # but reporting the id the caller PASSED would be a message that is not
+        # true, and the model would go on quoting an id that no longer exists.
+        new_id = row.get("id")
+        moved = (
+            f" (now id {new_id}; the tracker re-issues the id on an edit)"
+            if isinstance(new_id, int) and new_id != transaction_id
+            else ""
+        )
         return ToolResult.ok(
             f"amended transaction {transaction_id}: {row.get('type', kind)} "
             f"{row.get('amount', payload['amount'])} at "
             f"{_local_time(row.get('occurred_at') or payload['occurred_at'])}"
+            f"{moved}"
         )
 
     return [amend_transaction_tool]
@@ -1385,11 +1398,14 @@ left", "how much do I owe on the card" -> account_balances. list_accounts
 gives ids, not money. Never tell the user to go look in the app himself.
 
 TO CORRECT AN EXISTING ENTRY, USE amend_transaction — its time, amount,
-description, tag or counterparty. Do NOT delete it and record it again: the
-tracker's delete reverses rather than removes, so that leaves reversal legs
-behind and a new id every time. delete_transaction is for an entry that should
-never have existed. The one thing amend_transaction cannot change is the
-account, which genuinely does mean delete + re-record; say so before doing it.
+description, tag or counterparty. Pass only what changes; it keeps the rest.
+Do NOT delete the entry and record it again: that is two writes instead of
+one, it silently loses every field you forget to re-type, and the tracker's
+delete reverses rather than removes. Note the tracker re-issues the id on an
+edit, so use the id the tool reports back, not the one you sent.
+delete_transaction is for an entry that should never have existed at all. The
+one thing amend_transaction cannot change is the ACCOUNT, which genuinely does
+mean delete + re-record; tell the user before doing that.
 
 Solo expense/income -> record_transaction. Payment SHARED with other people
 (a Splitwise-style split) -> record_split with the FULL amount paid plus

@@ -1019,6 +1019,36 @@ class TestAmendTransaction:
         # And the new time is normalised the same way a fresh write would be.
         assert seen["body"]["occurred_at"].startswith("2026-08-31T03:40:00")
 
+    async def test_reports_the_id_the_tracker_actually_returned(self):
+        # Verified against the live ledger 2026-08-31: amending #3628 answered
+        # with #3646. Most rows are transfer legs and replacing one mints a new
+        # id, so echoing the id the caller PASSED would be untrue and the model
+        # would keep quoting an id that no longer exists.
+        seen = {}
+
+        def handler(request):
+            if request.method == "GET":
+                return httpx.Response(200, json={"items": [self.ROW]})
+            return httpx.Response(200, json={**self.ROW, "id": 3646})
+
+        result = await _connector_tools(handler)["amend_transaction"].handler(
+            {"transaction_id": 3636, "amount": 500}, CTX,
+        )
+        assert not result.is_error
+        assert "3646" in result.text
+        assert seen == {}
+
+    async def test_says_nothing_about_a_new_id_when_it_did_not_change(self):
+        def handler(request):
+            if request.method == "GET":
+                return httpx.Response(200, json={"items": [self.ROW]})
+            return httpx.Response(200, json=self.ROW)
+
+        result = await _connector_tools(handler)["amend_transaction"].handler(
+            {"transaction_id": 3636, "amount": 500}, CTX,
+        )
+        assert "now id" not in result.text
+
     async def test_uses_the_account_hint_to_narrow_the_lookup(self):
         seen = {}
         await _connector_tools(self._handler(seen))["amend_transaction"].handler(
