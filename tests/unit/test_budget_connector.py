@@ -263,10 +263,19 @@ class TestContract:
     def test_write_tools_declared(self):
         assert frozenset(
             {"record_transaction", "record_split", "record_transfer", "settle_person",
-             "delete_transaction"}
+             "delete_transaction", "amend_transaction", "amend_pending_payment"}
         ) == BudgetConnector.WRITE_TOOLS
         # Reads must never be gated.
         assert "list_accounts" not in BudgetConnector.WRITE_TOOLS
+        assert "account_balances" not in BudgetConnector.WRITE_TOOLS
+
+    def test_amending_a_row_is_a_record_claim(self):
+        # amend_transaction rewrites a row the user will rely on, so Layer 3d
+        # has to catch a claimed-but-unmade correction the same way it catches
+        # a claimed-but-unmade entry. Amending a SCHEDULE is not a claim: it
+        # changes a plan, no money moves.
+        assert "amend_transaction" in BudgetConnector.RECORD_CLAIM_TOOLS
+        assert "amend_pending_payment" not in BudgetConnector.RECORD_CLAIM_TOOLS
 
     def test_routing_declared(self):
         assert "expense" in BudgetConnector.TRIGGER_KEYWORDS
@@ -827,3 +836,319 @@ class TestRecordTransfer:
         # A transfer moves real money; it must not run unapproved.
         assert "record_transfer" in BudgetConnector.WRITE_TOOLS
         assert "record_transfer" in BudgetConnector.RECORD_CLAIM_TOOLS
+
+
+class TestNaiveTimestampsOnEveryWritePath:
+    """The 8-hour mis-dating, closed on all three write paths.
+
+    `_occurred_at` shipped wired into record_transfer only, so a naive Manila
+    stamp on the other two still reached Postgres as UTC. Real damage: on
+    2026-08-31 the user asked for Popeyes at 11:24 and the row landed at 11:24
+    UTC — 19:24 on his screen. These are the regressions.
+    """
+
+    @staticmethod
+    def _capture(seen):
+        def handler(request):
+            if request.url.path == "/tags":
+                return httpx.Response(200, json=[
+                    {"id": 11, "name": "Dining Out", "allow_debit": True,
+                     "allow_credit": False, "children": None},
+                ])
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": 3636, "my_share": 100, "lent_amount": 0})
+
+        return handler
+
+    async def test_record_transaction_converts_manila_to_utc(self):
+        seen = {}
+        await _connector_tools(self._capture(seen))["record_transaction"].handler(
+            {"account_id": 10, "tag_id": 11, "amount": 476.3, "type": "debit",
+             "description": "Popeyes via Grabfood", "occurred_at": "2026-08-31T11:24:00"},
+            CTX,
+        )
+        # 11:24 Manila == 03:24 UTC. Sent verbatim it would display as 19:24.
+        assert seen["body"]["occurred_at"].startswith("2026-08-31T03:24:00")
+
+    async def test_record_split_converts_manila_to_utc(self):
+        seen = {}
+        await _connector_tools(self._capture(seen))["record_split"].handler(
+            {"account_id": 10, "tag_id": 11, "total_amount": 900,
+             "shares": [{"person": "Paul", "amount": 300}],
+             "occurred_at": "2026-08-31T11:24:00"},
+            CTX,
+        )
+        assert seen["body"]["occurred_at"].startswith("2026-08-31T03:24:00")
+
+
+class TestAccountBalances:
+    """The question the bot could not answer: "how much is in my checking?"."""
+
+    SUMMARY: ClassVar[dict] = {
+        "net": {"status": "green", "items": [
+            {"currency": "PHP", "net_amount": "250000.00", "receivables": "1000.00",
+             "net_excluding_receivables": "249000.00", "status": "green"},
+        ]},
+        "accounts": [
+            {"account_id": 8, "name": "UnionBank 5243", "type": "checking account",
+             "currency": "PHP", "status": "green",
+             "checking": {"balance_amount": "60000.00", "total_credit": "170000.00",
+                          "total_debit": "110000.00", "spend_percent": 64}},
+            {"account_id": 10, "name": "Maya Credit Card 4022", "type": "credit card",
+             "currency": "PHP", "status": "red",
+             "credit_card": {"credit_limit": "400000.00",
+                             "outstanding_amount": "334352.27",
+                             "available_amount": "65647.73", "utilization_percent": 83}},
+            {"account_id": 13, "name": "SB Finance Loan", "type": "loan",
+             "currency": "PHP", "status": "red",
+             "loan": {"principal": "300000.00", "outstanding_amount": "180000.00",
+                      "paid_amount": "120000.00", "paid_percent": 40}},
+            {"account_id": 34, "name": "People", "type": "people",
+             "currency": "PHP", "status": "green"},
+            {"account_id": 99, "name": "Old Wallet", "type": "cash", "currency": "PHP",
+             "status": "green", "archived": True,
+             "cash": {"balance_amount": "0.00", "total_credit": "0",
+                      "total_debit": "0", "spend_percent": None}},
+        ],
+    }
+
+    def _tools(self):
+        return _connector_tools(lambda r: httpx.Response(200, json=self.SUMMARY))
+
+    async def test_reads_each_account_type_from_its_own_sub_object(self):
+        result = await self._tools()["account_balances"].handler({}, CTX)
+        # A bank account reports a balance…
+        assert "UnionBank 5243" in result.text
+        assert "60000.00" in result.text
+        # …a card reports DEBT and headroom, never a "balance" that would read
+        # as money available…
+        assert "334352.27 owed" in result.text
+        assert "65647.73 available" in result.text
+        # …and a loan what is still outstanding.
+        assert "180000.00 outstanding" in result.text
+
+    async def test_an_account_with_no_totals_says_so_rather_than_guessing(self):
+        # The People ledger has no sub-object at all; inventing a zero would
+        # claim nobody owes the user anything.
+        result = await self._tools()["account_balances"].handler({}, CTX)
+        assert "People" in result.text
+        assert "no balance reported" in result.text
+
+    async def test_archived_accounts_are_left_out(self):
+        result = await self._tools()["account_balances"].handler({}, CTX)
+        assert "Old Wallet" not in result.text
+
+    async def test_reports_the_net_position(self):
+        result = await self._tools()["account_balances"].handler({}, CTX)
+        assert "NET: PHP 250000.00" in result.text
+        assert "249000.00" in result.text
+
+    async def test_empty_ledger_does_not_look_like_a_failure(self):
+        tools = _connector_tools(
+            lambda r: httpx.Response(200, json={"net": {}, "accounts": []})
+        )
+        result = await tools["account_balances"].handler({}, CTX)
+        assert not result.is_error
+        assert "No accounts yet" in result.text
+
+
+class TestLocalTimeRendering:
+    """Rows come back as UTC; the user does not live there."""
+
+    async def test_recent_transactions_prints_manila_time(self):
+        def handler(request):
+            return httpx.Response(200, json={"items": [
+                {"id": 3640, "type": "debit", "amount": "10000.00",
+                 "occurred_at": "2026-08-31T06:51:00+00:00",
+                 "description": "Transfer to UnionBank savings"},
+            ]})
+
+        result = await _connector_tools(handler)["recent_transactions"].handler({}, CTX)
+        # The user made this at 14:51; it was being read back to him as 06:51.
+        assert "2026-08-31 14:51" in result.text
+        assert "06:51" not in result.text
+
+    async def test_an_unparseable_stamp_is_passed_through_not_dropped(self):
+        def handler(request):
+            return httpx.Response(200, json={"items": [
+                {"id": 1, "type": "debit", "amount": "5", "occurred_at": "sometime",
+                 "description": "mystery"},
+            ]})
+
+        result = await _connector_tools(handler)["recent_transactions"].handler({}, CTX)
+        assert "sometime" in result.text
+
+
+class TestAmendTransaction:
+    """Correcting a row in place instead of delete + re-record."""
+
+    ROW: ClassVar[dict] = {
+        "id": 3636, "type": "debit", "amount": "476.30", "tag_id": 11,
+        "occurred_at": "2026-08-31T03:24:00+00:00",
+        "description": "Popeyes via Grabfood", "counterparty": "Grabfood",
+    }
+
+    def _handler(self, seen, rows=None):
+        def handler(request):
+            if request.url.path == "/transactions" and request.method == "GET":
+                seen["params"] = dict(request.url.params)
+                items = [self.ROW] if rows is None else rows
+                return httpx.Response(200, json={"items": items})
+            if request.method == "PUT":
+                seen["path"] = request.url.path
+                seen["body"] = json.loads(request.content)
+                return httpx.Response(200, json={**self.ROW, **seen["body"]})
+            return httpx.Response(200, json=[])
+
+        return handler
+
+    async def test_keeps_every_field_the_caller_did_not_change(self):
+        seen = {}
+        result = await _connector_tools(self._handler(seen))["amend_transaction"].handler(
+            {"transaction_id": 3636, "account_id": 10, "occurred_at": "2026-08-31T11:40:00"},
+            CTX,
+        )
+        assert not result.is_error
+        assert seen["path"] == "/transactions/3636"
+        # PUT is a full replacement — dropping any of these would blank the row.
+        assert seen["body"]["amount"] == "476.30"
+        assert seen["body"]["tag_id"] == 11
+        assert seen["body"]["type"] == "debit"
+        assert seen["body"]["description"] == "Popeyes via Grabfood"
+        assert seen["body"]["counterparty"] == "Grabfood"
+        # And the new time is normalised the same way a fresh write would be.
+        assert seen["body"]["occurred_at"].startswith("2026-08-31T03:40:00")
+
+    async def test_reports_the_id_the_tracker_actually_returned(self):
+        # Verified against the live ledger 2026-08-31: amending #3628 answered
+        # with #3646. Most rows are transfer legs and replacing one mints a new
+        # id, so echoing the id the caller PASSED would be untrue and the model
+        # would keep quoting an id that no longer exists.
+        seen = {}
+
+        def handler(request):
+            if request.method == "GET":
+                return httpx.Response(200, json={"items": [self.ROW]})
+            return httpx.Response(200, json={**self.ROW, "id": 3646})
+
+        result = await _connector_tools(handler)["amend_transaction"].handler(
+            {"transaction_id": 3636, "amount": 500}, CTX,
+        )
+        assert not result.is_error
+        assert "3646" in result.text
+        assert seen == {}
+
+    async def test_says_nothing_about_a_new_id_when_it_did_not_change(self):
+        def handler(request):
+            if request.method == "GET":
+                return httpx.Response(200, json={"items": [self.ROW]})
+            return httpx.Response(200, json=self.ROW)
+
+        result = await _connector_tools(handler)["amend_transaction"].handler(
+            {"transaction_id": 3636, "amount": 500}, CTX,
+        )
+        assert "now id" not in result.text
+
+    async def test_uses_the_account_hint_to_narrow_the_lookup(self):
+        seen = {}
+        await _connector_tools(self._handler(seen))["amend_transaction"].handler(
+            {"transaction_id": 3636, "account_id": 10, "amount": 500}, CTX,
+        )
+        assert seen["params"]["account_ids"] == "10"
+
+    async def test_a_missing_row_says_how_to_find_it(self):
+        seen = {}
+        result = await _connector_tools(self._handler(seen, rows=[]))[
+            "amend_transaction"
+        ].handler({"transaction_id": 9999}, CTX)
+        assert result.is_error
+        assert "9999" in result.text
+        assert "account_id" in result.text
+
+    async def test_prose_instead_of_an_id_is_refused(self):
+        seen = {}
+        result = await _connector_tools(self._handler(seen))["amend_transaction"].handler(
+            {"transaction_id": "the latest entry"}, CTX,
+        )
+        assert result.is_error
+        assert "must be a number" in result.text
+
+
+class TestAmendPendingPayment:
+    """The clearing-date and wrong-account fix, before anything posts."""
+
+    ROW: ClassVar[dict] = {
+        "id": 490, "account_id": 8, "account_name": "UnionBank 5243",
+        "counter_account_id": None, "type": "debit", "amount": "50000.00",
+        "description": "Rent - The Gentry Residences", "due_date": "2026-08-16",
+        "tag_id": 20, "status": "scheduled",
+    }
+
+    def _handler(self, seen, row=None, scheduled=None):
+        row = self.ROW if row is None else row
+
+        def handler(request):
+            path = request.url.path
+            if path == "/scheduled-transactions/pending":
+                return httpx.Response(200, json={"due": [row], "upcoming": []})
+            if path == "/scheduled-transactions" and request.method == "GET":
+                seen["fell_back"] = True
+                return httpx.Response(200, json=scheduled or [])
+            if request.method == "PUT":
+                seen["path"] = path
+                seen["body"] = json.loads(request.content)
+                return httpx.Response(200, json={**row, **seen["body"],
+                                                 "account_name": "UnionBank 5243"})
+            return httpx.Response(200, json=[])
+
+        return handler
+
+    async def test_sets_the_clearing_date_the_user_asked_for(self):
+        seen = {}
+        result = await _connector_tools(self._handler(seen))[
+            "amend_pending_payment"
+        ].handler({"id": 490, "due_date": "2026-08-25"}, CTX)
+        assert not result.is_error
+        assert seen["path"] == "/scheduled-transactions/490"
+        assert seen["body"]["due_date"] == "2026-08-25"
+        # Everything else survives the full-replacement PUT.
+        assert seen["body"]["amount"] == "50000.00"
+        assert seen["body"]["tag_id"] == 20
+        assert seen["body"]["account_id"] == 8
+
+    async def test_redirects_the_paying_account(self):
+        seen = {}
+        await _connector_tools(self._handler(seen))["amend_pending_payment"].handler(
+            {"id": 490, "account_id": 7}, CTX,
+        )
+        assert seen["body"]["account_id"] == 7
+
+    async def test_falls_back_past_the_thirty_day_pending_window(self):
+        # An id outside the forecast is not a missing id.
+        far = {**self.ROW, "id": 777, "due_date": "2026-12-01"}
+        seen = {}
+        result = await _connector_tools(self._handler(seen, scheduled=[far]))[
+            "amend_pending_payment"
+        ].handler({"id": 777, "amount": 51000}, CTX)
+        assert seen["fell_back"] is True
+        assert not result.is_error
+        assert seen["body"]["amount"] == 51000
+
+    async def test_an_already_posted_item_is_refused_with_the_way_forward(self):
+        seen = {}
+        posted = {**self.ROW, "status": "posted"}
+        result = await _connector_tools(self._handler(seen, row=posted))[
+            "amend_pending_payment"
+        ].handler({"id": 490, "due_date": "2026-08-25"}, CTX)
+        assert result.is_error
+        assert "already posted" in result.text
+        assert "amend_transaction" in result.text
+        assert "body" not in seen  # nothing was written
+
+    async def test_an_unknown_id_is_refused(self):
+        seen = {}
+        result = await _connector_tools(self._handler(seen, row={"id": 1}))[
+            "amend_pending_payment"
+        ].handler({"id": 490}, CTX)
+        assert result.is_error
+        assert "list_pending_payments" in result.text
