@@ -12,6 +12,7 @@ from adapters.model.chat_completions import (
     OpenAIAgent,
     _extract_text_from_tool_result,
     _fit_tool_name,
+    _is_timeout,
     _is_usage_limit,
     _spec_to_openai_function,
 )
@@ -104,6 +105,53 @@ class TestUsageLimitClassification:
         resp = httpx.Response(429, request=req)
         exc = openai.RateLimitError("rl", response=resp, body=None)
         assert _is_usage_limit(exc)
+
+
+class TestTimeoutIsNotAUsageLimit:
+    """A timed-out request says nothing about quota.
+
+    Both still fail over — _is_usage_limit stays true for a timeout, because
+    VendorTimeoutError subclasses UsageLimitError and every catch site depends
+    on that. What _is_timeout adds is the ability to tell them apart, so a
+    timeout earns a 60s bench and an honest log line instead of gemini being
+    parked for five minutes as "usage limit" seven times in one day.
+    """
+
+    def test_sdk_timeout_is_recognised(self):
+        import httpx
+        import openai
+        exc = openai.APITimeoutError(request=httpx.Request("POST", "http://x"))
+        assert _is_timeout(exc)
+        # Still a failover trigger — the chain must keep advancing.
+        assert _is_usage_limit(exc)
+
+    def test_a_408_is_a_timeout(self):
+        import httpx
+        import openai
+        req = httpx.Request("POST", "http://x")
+        exc = openai.APIStatusError(
+            "timeout", response=httpx.Response(408, request=req), body=None
+        )
+        assert _is_timeout(exc)
+
+    def test_a_real_rate_limit_is_not_a_timeout(self):
+        import httpx
+        import openai
+        req = httpx.Request("POST", "http://x")
+        exc = openai.RateLimitError(
+            "rl", response=httpx.Response(429, request=req), body=None
+        )
+        assert not _is_timeout(exc)
+        assert _is_usage_limit(exc)
+
+    def test_builtin_timeout_and_wrapped_causes(self):
+        assert _is_timeout(TimeoutError("Request timed out."))
+        outer = RuntimeError("call failed")
+        outer.__cause__ = TimeoutError("Request timed out.")
+        assert _is_timeout(outer)
+
+    def test_an_unrelated_failure_is_neither(self):
+        assert not _is_timeout(RuntimeError("KeyError: 'foo'"))
 
 
 class TestAssembleContext:

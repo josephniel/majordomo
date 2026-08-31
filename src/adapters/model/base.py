@@ -20,6 +20,7 @@ from ports.llm import (
     ToolOutcomeCallback,
     ToolUseCallback,
     UsageLimitError,
+    VendorTimeoutError,
 )
 from ports.messaging import Attachment
 
@@ -38,6 +39,7 @@ __all__ = [
     "ToolOutcomeCallback",
     "ToolUseCallback",
     "UsageLimitError",
+    "VendorTimeoutError",
 ]
 
 

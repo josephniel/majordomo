@@ -49,6 +49,7 @@ from .base import (
     ToolOutcomeCallback,
     ToolUseCallback,
     UsageLimitError,
+    VendorTimeoutError,
 )
 
 log = logging.getLogger(__name__)
@@ -107,9 +108,46 @@ def _signals_usage_limit(exc: BaseException) -> bool:
     return "ratelimit" in cls_name or "overloaded" in cls_name
 
 
+def _signals_timeout(exc: BaseException) -> bool:
+    """Narrower than _signals_usage_limit: the request never got an answer.
+
+    Both fail over, so this does not change WHETHER the chain advances — only
+    what the failure is called and how long the vendor is benched for it. A
+    408 and an SDK APITimeoutError are the same event seen from two layers.
+    """
+    try:
+        import openai
+
+        if isinstance(exc, openai.APITimeoutError):
+            return True
+        if (
+            isinstance(exc, openai.APIStatusError)
+            and getattr(exc, "status_code", None) == _REQUEST_TIMEOUT_STATUS
+        ):
+            return True
+    except Exception:
+        log.debug("openai types unavailable; falling through to heuristics", exc_info=True)
+    if isinstance(exc, TimeoutError):
+        return True
+    return "timeout" in exc.__class__.__name__.lower()
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """_signals_timeout over the whole __cause__/__context__ chain."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if _signals_timeout(cur):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 # Statuses worth failing over on: the explicit rate/conflict/timeout trio, and
 # anything 5xx (the vendor is having a bad time, another might not be).
-_RETRYABLE_STATUS = (408, 409, 429)
+_REQUEST_TIMEOUT_STATUS = 408
+_RETRYABLE_STATUS = (_REQUEST_TIMEOUT_STATUS, 409, 429)
 _SERVER_ERROR = 500
 
 
@@ -1004,6 +1042,10 @@ class ChatCompletionsAgent(Agent):
                         on_tool_outcome,
                     )
                     continue
+                if _is_timeout(e):
+                    raise VendorTimeoutError(
+                        f"{self.__class__.__name__} timed out: {e}"
+                    ) from e
                 if _is_usage_limit(e):
                     raise UsageLimitError(f"{self.__class__.__name__} usage limit hit: {e}") from e
                 raise
@@ -1171,17 +1213,25 @@ class GeminiAgent(ChatCompletionsAgent):
 
 
 class GroqAgent(ChatCompletionsAgent):
-    # Groq via its OpenAI-compatible endpoint. Default is Llama 3.3 70B — a
-    # strong, reliable function-caller (unlike gemini-flash, which hallucinates
-    # tool use), which is why it's the preferred primary for this tool-heavy
-    # agent. Override with GROQ_MODEL. Key: GROQ_API_KEY (free at
-    # console.groq.com). Llama 3.3 70B is text-only, so image turns fail over
-    # to a vision-capable vendor (gemini/claude) further down the chain.
+    # Groq via its OpenAI-compatible endpoint. A strong, reliable
+    # function-caller (unlike gemini-flash, which hallucinates tool use), which
+    # is why it's the preferred primary for this tool-heavy agent. Override
+    # with GROQ_MODEL. Key: GROQ_API_KEY (free at console.groq.com). Text-only,
+    # so image turns fail over to a vision-capable vendor (gemini/claude)
+    # further down the chain.
     #
-    # Free tier is 12k tokens/minute; the full ~60-tool schema alone is ~6.8k,
-    # so SUBSET_TOOLS keeps only relevant tools per turn and the history cap is
-    # tightened — together a turn lands well under the limit.
-    DEFAULT_MODEL = "llama-3.3-70b-versatile"
+    # This default was llama-3.3-70b-versatile until 2026-08-31, by which point
+    # Groq had retired it — the model was gone from /v1/models entirely and
+    # every call 404'd, so groq was a dead hop that benched itself on each
+    # fallback. VERIFY AGAINST /v1/models BEFORE CHANGING IT; a remembered
+    # model id is how it broke. gpt-oss-120b was checked live, both for
+    # presence and for an actual tool call.
+    #
+    # Rate limit measured on this key: 8k tokens/minute (it was 12k under the
+    # old model). The full ~60-tool schema alone is ~6.8k, so SUBSET_TOOLS
+    # keeps only relevant tools per turn and the history cap is tightened —
+    # together a turn lands under the limit.
+    DEFAULT_MODEL = "openai/gpt-oss-120b"
     DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
     API_KEY_ENV = "GROQ_API_KEY"
     REQUIRED_ENV: ClassVar[list[str]] = ["GROQ_API_KEY"]

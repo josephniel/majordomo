@@ -24,6 +24,11 @@ log = logging.getLogger(__name__)
 # Default cooldowns before a vendor is retried, by failure kind.
 USAGE_LIMIT_COOLDOWN_SECONDS = 300   # rate-limit / quota: give it a real break
 FAILURE_COOLDOWN_SECONDS = 120       # other errors: retry sooner
+# A timeout is one slow request, not a closed door. Benching the primary for
+# five minutes over it — which is what happened while timeouts were classified
+# as usage limits — costs far more than retrying a minute later and finding it
+# healthy.
+TIMEOUT_COOLDOWN_SECONDS = 60
 
 
 class VendorHealthBoard:
@@ -72,6 +77,9 @@ class VendorHealthBoard:
 
     def mark_failed(self, vendor: str, seconds: float = FAILURE_COOLDOWN_SECONDS) -> None:
         self._set_cooldown(vendor, seconds, reason="failure")
+
+    def mark_timed_out(self, vendor: str, seconds: float = TIMEOUT_COOLDOWN_SECONDS) -> None:
+        self._set_cooldown(vendor, seconds, reason="timeout")
 
     def mark_healthy(self, vendor: str) -> None:
         if self._cooldown_until.pop(vendor, None) is not None:

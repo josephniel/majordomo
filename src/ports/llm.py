@@ -141,6 +141,21 @@ class UsageLimitError(Exception):
     """
 
 
+class VendorTimeoutError(UsageLimitError):
+    """The request to the vendor timed out — it never answered either way.
+
+    A SUBCLASS of UsageLimitError on purpose: failing over is the right move
+    for both, and every `except UsageLimitError` already in the tree keeps
+    working untouched. What differs is what the failure MEANS. A rate limit is
+    the vendor telling you to come back later, and earns a long bench. A
+    timeout says nothing about quota at all — it is one slow request — so
+    benching the vendor for five minutes over it takes a healthy primary out
+    of rotation, and logging it as "usage limit" sends whoever reads the log
+    to the wrong dashboard. Both happened: gemini was benched seven times in
+    one day for `Request timed out.`
+    """
+
+
 class Agent(ABC):
     """Vendor-neutral conversational agent contract."""
 

@@ -28,6 +28,7 @@ from .base import (
     ToolOutcomeCallback,
     ToolUseCallback,
     UsageLimitError,
+    VendorTimeoutError,
 )
 from .chat_completions import (
     ChatCompletionsSummarizer,
@@ -68,5 +69,6 @@ __all__ = [
     "UsageLimitError",
     "VendorEndpoint",
     "VendorHealthBoard",
+    "VendorTimeoutError",
     "summarize_with_subscription_auth",
 ]
