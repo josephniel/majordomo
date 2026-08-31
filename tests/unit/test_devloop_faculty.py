@@ -8,6 +8,7 @@ faculty's fence, not prettier.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import time
 
@@ -23,11 +24,28 @@ from ports import ToolContext
 CHAT = ToolContext(chat_id=1)
 BACKGROUND = ToolContext(chat_id=1, background=True)
 
+# Seatbelt is macOS-only, and the faculty refuses to run a check unconfined —
+# so on Linux CI these do not fail, they cannot run at all. Skipped rather than
+# quietly asserted around: a check test that never executes a check would keep
+# passing while proving nothing (the token test below asserts an ABSENCE, and
+# is exactly the shape that goes vacuously green).
+requires_seatbelt = pytest.mark.skipif(
+    shutil.which("sandbox-exec") is None,
+    reason="Seatbelt (sandbox-exec) is macOS-only; a check cannot run confined here",
+)
+
 # Fully literal argv with a dynamic cwd — the house pattern for touching git
 # from a test (see test_workspace_faculty.py). Relative paths keep the argv
 # literal where a repository location would otherwise be interpolated.
 # check= stays explicit at each call: ruff cannot see it through **RUN.
 RUN = {"capture_output": True, "text": True}
+
+
+def _devloop_run():
+    """The real `_run`, captured before a test monkeypatches the name."""
+    from domain.devloop import _run
+
+    return _run
 
 
 def _head(repo) -> str:
@@ -257,6 +275,43 @@ class TestWorktreeLifecycle:
         worktree = faculty._tasks[_task_id(started)].worktree
         assert (worktree / "deps" / "lib.txt").read_text() == "seeded\n"
 
+    async def test_a_seed_that_cannot_be_copied_is_reported_not_swallowed(
+        self, tmp_path, estate, profile, monkeypatch
+    ):
+        # `cp -Rc` is APFS clonefile and does not exist on Linux, and the
+        # result used to be discarded — so every seed silently did not happen
+        # and the task ran on against a worktree missing its dependencies.
+        async def always_fails(argv):
+            return 1, "cp: illegal option -- c"
+
+        monkeypatch.setattr("domain.devloop._run", always_fails)
+        faculty = _faculty(tmp_path, estate, profile)
+        started = await _start(faculty)
+        assert started.is_error
+        assert "could not seed" in started.text
+        # And no orphan worktree is left behind to block the next attempt.
+        assert not list((tmp_path / "worktrees").glob("demo-*"))
+
+    async def test_the_plain_copy_is_the_fallback_when_clonefile_is_refused(
+        self, tmp_path, estate, profile, monkeypatch
+    ):
+        real = _devloop_run()
+        seen = []
+
+        async def record(argv):
+            seen.append(argv)
+            if "-Rc" in argv:
+                return 1, "cp: illegal option -- c"
+            return await real(argv)
+
+        monkeypatch.setattr("domain.devloop._run", record)
+        faculty = _faculty(tmp_path, estate, profile)
+        started = await _start(faculty)
+        assert not started.is_error
+        worktree = faculty._tasks[_task_id(started)].worktree
+        assert (worktree / "deps" / "lib.txt").read_text() == "seeded\n"
+        assert any("-R" in a and "-Rc" not in a for a in seen)
+
     async def test_one_task_per_repo(self, tmp_path, estate, profile):
         faculty = _faculty(tmp_path, estate, profile)
         assert not (await _start(faculty)).is_error
@@ -423,6 +478,7 @@ class TestChecks:
         assert not result.is_error
         assert "always passes" in result.text
 
+    @requires_seatbelt
     async def test_a_failing_check_is_an_answer_not_an_error(
         self, tmp_path, estate, profile
     ):
@@ -446,6 +502,7 @@ class TestChecks:
         )
         assert "unconfined" in result.text
 
+    @requires_seatbelt
     async def test_the_check_environment_cannot_carry_a_token(
         self, tmp_path, estate, profile, monkeypatch
     ):
@@ -460,8 +517,27 @@ class TestChecks:
         result = await _tools(faculty)["devloop_check"].handler(
             {"task_id": task_id, "name": "echo"}, CHAT
         )
+        # The check really ran: an empty [] is the echo with nothing in it.
+        # Without this the assertion below is satisfied by any refusal.
+        assert "[]" in result.text
         assert "leaked-secret-value" not in result.text
 
+    async def test_a_host_without_seatbelt_refuses_rather_than_crashing(
+        self, tmp_path, estate, profile, monkeypatch
+    ):
+        # Same rule as a missing profile: refuse, and say which reason it is.
+        # Before this the caller got a bare FileNotFoundError from exec, which
+        # reads like a broken check rather than a host that cannot confine one.
+        monkeypatch.setattr("domain.devloop.shutil.which", lambda _name: None)
+        faculty = _faculty(tmp_path, estate, profile)
+        task_id = _task_id(await _start(faculty))
+        result = await _tools(faculty)["devloop_check"].handler(
+            {"task_id": task_id, "name": "ok"}, CHAT
+        )
+        assert "unconfined" in result.text
+        assert "macOS-only" in result.text
+
+    @requires_seatbelt
     async def test_a_check_runs_in_the_worktree(self, tmp_path, estate, profile):
         faculty = _faculty(
             tmp_path, estate, profile,

@@ -518,10 +518,14 @@ class DevLoop(Faculty):
         for path in spec.seed:
             source = mirror / path
             if source.exists():
-                # -c is APFS clonefile: near-instant, copy-on-write, and
-                # writable inside the worktree (a symlink would resolve back
-                # into the mirror and hit the sandbox's write denial).
-                await _run(["cp", "-Rc", str(source), str(worktree / path)])
+                problem = await _copy_seed(source, worktree / path)
+                if problem:
+                    # The worktree exists by now, so bailing without removing
+                    # it would leave an orphan that makes the next `worktree
+                    # add` for this task fail.
+                    shutil.rmtree(worktree, ignore_errors=True)
+                    await self._git(mirror, "worktree", "prune")
+                    return problem
 
         task = Task(
             task_id=task_id, repo=repo, mirror=mirror, worktree=worktree,
@@ -565,7 +569,18 @@ class DevLoop(Faculty):
                 f"the sandbox profile {profile} is missing; a check will not run "
                 "unconfined"
             )
-        argv = ["sandbox-exec", "-f", str(profile), *check.argv]
+        sandbox = shutil.which("sandbox-exec")
+        if sandbox is None:
+            # Seatbelt is macOS-only. Everything above this line refuses rather
+            # than run a check unconfined; a host with no sandbox-exec at all
+            # has to refuse for the same reason, and say which it is. Without
+            # this the caller got a bare FileNotFoundError, which reads like a
+            # broken check rather than a host that cannot confine one.
+            return 126, (
+                "this host has no sandbox-exec (Seatbelt is macOS-only); a check "
+                "will not run unconfined"
+            )
+        argv = [sandbox, "-f", str(profile), *check.argv]
         env = {
             "PATH": self._config.path,
             "HOME": str(Path.home()),
@@ -1088,6 +1103,28 @@ class DevLoop(Faculty):
     def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
 
+
+
+async def _copy_seed(source: Path, dest: Path) -> str:
+    """Copy one seeded path into the worktree, or say why it could not be.
+
+    `-c` is APFS clonefile: near-instant, copy-on-write, and writable inside
+    the worktree (a symlink would resolve back into the mirror and hit the
+    sandbox's write denial). It is also macOS-only — GNU cp has no such flag —
+    so the plain recursive copy is the fallback rather than the failure.
+
+    The result used to be discarded entirely. On Linux that meant every seed
+    silently did not happen and the task ran on against a worktree missing the
+    dependencies it was seeded for, which surfaces much later as a check
+    failing for the wrong reason.
+    """
+    code, out = await _run(["cp", "-Rc", str(source), str(dest)])
+    if code == 0:
+        return ""
+    code, out = await _run(["cp", "-R", str(source), str(dest)])
+    if code == 0:
+        return ""
+    return f"could not seed {source.name} into the worktree: {out.strip()[:200]}"
 
 
 async def _run(argv: Sequence[str]) -> tuple[int, str]:
