@@ -12,6 +12,7 @@ localhost requests bypass it entirely.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import json
 import logging
@@ -83,6 +84,16 @@ class BudgetClient:
     async def list_accounts(self) -> list[dict[str, Any]]:
         return json_array(await self._request("GET", "/accounts"))
 
+    async def account_summary(self) -> dict[str, Any]:
+        """Balances for every account (`GET /accounts/summary`).
+
+        Separate from list_accounts because the tracker keeps them apart: that
+        route answers "which accounts exist", this one answers "how much is in
+        them". Without it the bot cannot answer "check my checking balance" at
+        all -- on 2026-08-31 it told the user to go look in the app himself.
+        """
+        return json_object(await self._request("GET", "/accounts/summary"))
+
     async def list_tags(self) -> list[dict[str, Any]]:
         return json_array(await self._request("GET", "/tags"))
 
@@ -101,6 +112,16 @@ class BudgetClient:
             await self._request("GET", "/scheduled-transactions/pending")
         )
 
+    async def list_scheduled(self) -> list[dict[str, Any]]:
+        """Every scheduled row, not just the ones due soon.
+
+        `/scheduled-transactions/pending` previews 30 days ahead, so an item
+        further out -- or an id the model quotes from an older listing -- is
+        simply absent from it. This is the fallback lookup, not the everyday
+        one: the pending view is what a person means by "what do I owe".
+        """
+        return json_array(await self._request("GET", "/scheduled-transactions"))
+
     async def approve_pending_payment(
         self, sid: int, amount: float | None = None,
     ) -> dict[str, Any]:
@@ -111,6 +132,17 @@ class BudgetClient:
             await self._request(
                 "POST", f"/scheduled-transactions/{sid}/approve", body=body or None,
             )
+        )
+
+    async def update_pending_payment(self, sid: int, payload: dict[str, Any]) -> dict[str, Any]:
+        """Edit a not-yet-posted scheduled row (`PUT /scheduled-transactions/{sid}`).
+
+        A FULL replacement -- account_id, type, amount, due_date and tag_id are
+        all required -- so callers must merge onto the row as it stands rather
+        than send only what changed.
+        """
+        return json_object(
+            await self._request("PUT", f"/scheduled-transactions/{sid}", body=payload)
         )
 
     async def list_people(self) -> list[dict[str, Any]]:
@@ -144,6 +176,21 @@ class BudgetClient:
         """
         return json_object(await self._request("POST", "/transfers", body=payload))
 
+    async def update_transaction(
+        self, transaction_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Correct a transaction in place (`PUT /transactions/{id}`).
+
+        Also a full replacement (type, amount, occurred_at and tag_id are all
+        required), and it cannot move a row to a different account. The
+        alternative -- delete then re-record -- is worse than it looks: the
+        tracker's DELETE reverses rather than removes, so every correction
+        leaves a pair of reversal legs behind and a fresh row id.
+        """
+        return json_object(
+            await self._request("PUT", f"/transactions/{transaction_id}", body=payload)
+        )
+
     async def delete_transaction(self, transaction_id: int) -> dict[str, Any]:
         return json_object(await self._request("DELETE", f"/transactions/{transaction_id}"))
 
@@ -162,6 +209,39 @@ def _format_account(a: dict[str, Any]) -> str:
         f"- [{a.get('id', '?')}] {a.get('name', '(unnamed)')} — "
         f"{a.get('type', '?')}, {a.get('currency', '?')}{archived}"
     )
+
+
+def _format_balance(row: dict[str, Any]) -> str:
+    """One line of `GET /accounts/summary`, whichever shape it arrived in.
+
+    The tracker does not publish a flat `balance`: each account carries a
+    type-specific sub-object and every other one is null -- a card reports what
+    is owed and what is left to spend, a loan what is outstanding, a bank
+    account a balance. Flattening them all to "balance" would report a credit
+    card's DEBT as though it were money available.
+    """
+    name = row.get("name", "(unnamed)")
+    head = f"- [{row.get('account_id', '?')}] {name} ({row.get('type', '?')})"
+    currency = row.get("currency", "")
+    card = row.get("credit_card")
+    loan = row.get("loan")
+    if isinstance(card, dict):
+        return (
+            f"{head}: {currency} {card.get('outstanding_amount', '?')} owed, "
+            f"{card.get('available_amount', '?')} available of "
+            f"{card.get('credit_limit', '?')} limit"
+        )
+    if isinstance(loan, dict):
+        return (
+            f"{head}: {currency} {loan.get('outstanding_amount', '?')} outstanding, "
+            f"{loan.get('paid_amount', '?')} paid"
+        )
+    for key in ("savings", "checking", "debit_card", "cash"):
+        plain = row.get(key)
+        if isinstance(plain, dict):
+            return f"{head}: {currency} {plain.get('balance_amount', '?')}"
+    # The People account, and anything else the tracker declines to total.
+    return f"{head}: no balance reported"
 
 
 def _format_tags(tags: list[dict[str, Any]], indent: str = "") -> list[str]:
@@ -192,8 +272,31 @@ def _format_tags(tags: list[dict[str, Any]], indent: str = "") -> list[str]:
     return lines
 
 
+def _local_time(raw: Any) -> str:
+    """Render a stored UTC timestamp in the user's own timezone.
+
+    The mirror image of `_occurred_at`. Rows come back as true UTC, and this
+    used to slice the ISO string raw -- so a transfer the user made at 14:51
+    Manila was read back to him as 06:51, and the model reasoned about it in a
+    timezone nobody lives in. An unparseable value is passed through rather
+    than dropped: a slightly ugly stamp beats a missing one.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text[:16].replace("T", " ")
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    with contextlib.suppress(ZoneInfoNotFoundError, ValueError):
+        stamp = stamp.astimezone(ZoneInfo(DEFAULT_TIMEZONE))
+    return stamp.strftime("%Y-%m-%d %H:%M")
+
+
 def _format_transaction(tx: dict[str, Any]) -> str:
-    when = str(tx.get("occurred_at", ""))[:16].replace("T", " ")
+    when = _local_time(tx.get("occurred_at"))
     desc = tx.get("description") or "(no description)"
     tag = tx.get("tag_name") or tx.get("tag_display_name") or ""
     cp = f" @ {tx['counterparty']}" if tx.get("counterparty") else ""
@@ -377,7 +480,40 @@ def _read_tools(client: BudgetClient) -> list[ToolSpec]:
             return ToolResult.ok("(no transactions)")
         return ToolResult.ok("\n".join(_format_transaction(t) for t in items))
 
-    return [list_accounts_tool, list_tags_tool, recent_transactions_tool]
+    @tool(
+        "account_balances",
+        "How much money is actually IN each account, right now — balances for "
+        "bank/cash/wallet accounts, what is owed and still available on each "
+        "credit card, what is outstanding on each loan, plus overall net "
+        "position. This is the tool for 'what's my balance', 'how much do I "
+        "have left', 'how much do I owe on the card', 'can I afford X'.\n\n"
+        "list_accounts is NOT this: it lists which accounts exist and their "
+        "ids, and says nothing about money. Never answer a balance question "
+        "by saying you have no way to look it up — call this.",
+        {},
+    )
+    @_guarded
+    async def account_balances_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        data = await client.account_summary()
+        rows = data.get("accounts") or []
+        if not rows:
+            return ToolResult.ok("No accounts yet — create one in the budget tracker UI first.")
+        lines = [_format_balance(r) for r in rows if not r.get("archived")]
+        net: list[dict[str, Any]] = (data.get("net") or {}).get("items") or []
+        lines.extend(
+            f"NET: {item.get('currency', '')} {item.get('net_amount', '?')} "
+            f"(excluding money people owe you: "
+            f"{item.get('net_excluding_receivables', '?')})"
+            for item in net
+        )
+        return ToolResult.ok("\n".join(lines))
+
+    return [
+        list_accounts_tool,
+        list_tags_tool,
+        recent_transactions_tool,
+        account_balances_tool,
+    ]
 
 
 def _write_tools(client: BudgetClient) -> list[ToolSpec]:
@@ -469,7 +605,7 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
                 "type": kind,
                 "amount": args["amount"],
                 "tag_id": tag_id,
-                "occurred_at": args.get("occurred_at") or datetime.now(UTC).isoformat(),
+                "occurred_at": _occurred_at(args.get("occurred_at")),
             }
             if args.get("description"):
                 payload["description"] = str(args["description"])
@@ -597,6 +733,28 @@ def _transfer_tools(client: BudgetClient) -> list[ToolSpec]:
     return [record_transfer_tool]
 
 
+async def _find_scheduled(client: BudgetClient, sid: int) -> dict[str, Any] | None:
+    """Locate one scheduled row by id, pending view first.
+
+    `/scheduled-transactions/pending` is the everyday answer to "what do I
+    owe", but it only previews 30 days ahead -- an item further out, or an id
+    the model is quoting from an older listing, is simply not in it. So a miss
+    there falls through to the full list rather than reporting a row that
+    exists as missing. Projected recurring occurrences carry a null id and are
+    skipped: there is no row yet to edit.
+    """
+    pending = await client.list_pending_payments()
+    for bucket in ("due", "upcoming"):
+        rows: list[dict[str, Any]] = pending.get(bucket) or []
+        for row in rows:
+            if row.get("id") == sid:
+                return row
+    for row in await client.list_scheduled():
+        if row.get("id") == sid:
+            return row
+    return None
+
+
 def _pending_tools(client: BudgetClient) -> list[ToolSpec]:
     """Serve the scheduled-payment queue: see what is owed, and settle it.
 
@@ -684,6 +842,101 @@ def _pending_tools(client: BudgetClient) -> list[ToolSpec]:
     return [list_pending_payments_tool, approve_pending_payment_tool]
 
 
+def _amend_pending_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Fix a scheduled payment's date, account or amount before it posts.
+
+    Its own factory rather than another arm of _pending_tools: the queue
+    module was already at the complexity ceiling, and "look at what is owed
+    and settle it" is a different job from "the schedule has it wrong".
+    """
+    @tool(
+        "amend_pending_payment",
+        "Change a scheduled payment BEFORE approving it — which account pays "
+        "it, what date it clears, the amount, the category, the "
+        "description.\n\n"
+        "This is how you honour 'approve the rent but date it Aug 25' or 'that "
+        "allowance came out of checking, not savings'. approve_pending_payment "
+        "posts the row exactly as it stands and cannot override either: amend "
+        "FIRST, then approve. Never bury a requested clearing date in the "
+        "description instead — it belongs in due_date.\n\n"
+        "The posted transaction is dated the due_date, or today if the due "
+        "date is still in the future (approving a bill early files it on the "
+        "day it actually left, not a day that has not happened).\n\n"
+        "Only works on an item still waiting. Once approved the money has "
+        "moved, and fixing it means amend_transaction or a delete + re-record.",
+        {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "Scheduled payment id, from list_pending_payments.",
+                },
+                "account_id": {
+                    "type": "integer",
+                    "description": "Account that should pay it (list_accounts).",
+                },
+                "due_date": {
+                    "type": "string",
+                    "description": "Clearing date, YYYY-MM-DD.",
+                },
+                "amount": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Corrected amount.",
+                },
+                "tag_id": {"type": "integer", "description": "Corrected leaf tag."},
+                "description": {"type": "string", "description": "Corrected description."},
+            },
+            "required": ["id"],
+        },
+    )
+    @_guarded
+    async def amend_pending_payment_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        raw = args.get("id")
+        sid = _as_transaction_id(raw)
+        if sid is None:
+            return ToolResult.error(
+                f"id must be a number from list_pending_payments, got {raw!r}"
+            )
+        current = await _find_scheduled(client, sid)
+        if current is None:
+            return ToolResult.error(
+                f"error: no scheduled payment with id {sid}. Call "
+                "list_pending_payments to get the current ids."
+            )
+        status = current.get("status")
+        if status != "scheduled":
+            return ToolResult.error(
+                f"error: scheduled payment {sid} is already {status}, so it cannot "
+                "be edited. If it has posted, correct the ledger row with "
+                "amend_transaction instead."
+            )
+        payload: dict[str, Any] = {
+            "account_id": int(args["account_id"]) if args.get("account_id")
+            else current.get("account_id"),
+            "counter_account_id": current.get("counter_account_id"),
+            "type": current.get("type"),
+            "amount": args.get("amount") if args.get("amount") is not None
+            else current.get("amount"),
+            "due_date": str(args["due_date"]) if args.get("due_date")
+            else current.get("due_date"),
+            "tag_id": int(args["tag_id"]) if args.get("tag_id") else current.get("tag_id"),
+        }
+        description = args.get("description") or current.get("description")
+        if description:
+            payload["description"] = str(description)
+        row = await client.update_pending_payment(sid, payload)
+        return ToolResult.ok(
+            f"amended scheduled payment {sid}: "
+            f"{row.get('description') or 'scheduled payment'} "
+            f"{row.get('amount', payload['amount'])} due "
+            f"{row.get('due_date', payload['due_date'])} on "
+            f"{row.get('account_name', '?')} — not posted yet, approve it when paid"
+        )
+
+    return [amend_pending_payment_tool]
+
+
 def _split_tools(client: BudgetClient) -> list[ToolSpec]:
     """Record a payment the user made and others owe a share of."""
     @tool(
@@ -767,7 +1020,7 @@ def _split_tools(client: BudgetClient) -> list[ToolSpec]:
                 "total_amount": args["total_amount"],
                 "shares": shares,
                 "tag_id": tag_id,
-                "occurred_at": args.get("occurred_at") or datetime.now(UTC).isoformat(),
+                "occurred_at": _occurred_at(args.get("occurred_at")),
             }
             if args.get("description"):
                 payload["description"] = str(args["description"])
@@ -913,6 +1166,137 @@ def _undo_tools(client: BudgetClient) -> list[ToolSpec]:
 
     return [delete_transaction_tool]
 
+
+async def _find_transaction(
+    client: BudgetClient, transaction_id: int, account_id: int | None
+) -> dict[str, Any] | None:
+    """Locate one ledger row by id.
+
+    The tracker has no `GET /transactions/{id}`, and `PUT` is a full
+    replacement -- type, amount, occurred_at and tag_id are all required -- so
+    an amendment has to read the row before it can write it. With an account_id
+    the search is one page of that account's ledger; without one it is the
+    combined ledger's newest page, which is where a row the user is still
+    talking about will be.
+    """
+    page_size = 50 if account_id is not None else 200
+    resp = await client.list_transactions(account_id=account_id, page_size=page_size)
+    items: list[dict[str, Any]] = resp.get("items") or resp.get("transactions") or []
+    for row in items:
+        if row.get("id") == transaction_id:
+            return row
+    return None
+
+
+def _amend_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Correct a row that belongs in the ledger but says the wrong thing."""
+    @tool(
+        "amend_transaction",
+        "Correct an EXISTING budget transaction in place — its time, amount, "
+        "description, category or counterparty. Pass only what changes; "
+        "everything else is kept.\n\n"
+        "Use this, not delete_transaction + record_transaction. The tracker's "
+        "delete REVERSES rather than removes, so the delete-and-re-record "
+        "dance leaves reversal legs in the ledger and hands the entry a new id "
+        "every time. delete_transaction is only for a row that should not "
+        "exist at all.\n\n"
+        "The one thing this CANNOT change is which account the money moved on. "
+        "That really is delete + re-record, and worth telling the user before "
+        "you do it.\n\n"
+        "Args: transaction_id (from recent_transactions), account_id (optional "
+        "but helpful — the account the row is on), then any of occurred_at, "
+        "amount, description, counterparty, tag_id, type.",
+        {
+            "type": "object",
+            "properties": {
+                "transaction_id": {
+                    "type": "integer",
+                    "description": "Transaction id from recent_transactions.",
+                },
+                "account_id": {
+                    "type": "integer",
+                    "description": "Account the row sits on; speeds up the lookup.",
+                },
+                "occurred_at": {
+                    "type": "string",
+                    "description": "Corrected ISO 8601 datetime.",
+                },
+                "amount": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Corrected positive amount.",
+                },
+                "description": {"type": "string", "description": "Corrected description."},
+                "counterparty": {
+                    "type": "string",
+                    "description": "Corrected merchant or person.",
+                    "maxLength": 120,
+                },
+                "tag_id": {"type": "integer", "description": "Corrected leaf tag."},
+                "type": {
+                    "type": "string",
+                    "enum": ["debit", "credit"],
+                    "description": "Corrected direction; omit to keep it.",
+                },
+            },
+            "required": ["transaction_id"],
+        },
+    )
+    @_guarded
+    async def amend_transaction_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        raw = args.get("transaction_id")
+        transaction_id = _as_transaction_id(raw)
+        if transaction_id is None:
+            return ToolResult.error(
+                f"transaction_id must be a number from recent_transactions, got {raw!r}"
+            )
+        account_id = int(args["account_id"]) if args.get("account_id") else None
+        current = await _find_transaction(client, transaction_id, account_id)
+        if current is None:
+            return ToolResult.error(
+                f"error: could not find transaction {transaction_id}. If it is not "
+                "among the most recent entries, pass account_id so the right "
+                "ledger is searched."
+            )
+        kind = args.get("type") or current.get("type")
+        if kind not in ("debit", "credit"):
+            return ToolResult.error(
+                f"error: cannot tell the direction of transaction {transaction_id}; "
+                "pass type='debit' or type='credit'."
+            )
+        tag_id = int(args["tag_id"]) if args.get("tag_id") else current.get("tag_id")
+        if not isinstance(tag_id, int):
+            return ToolResult.error(
+                f"error: transaction {transaction_id} has no tag to keep; pass tag_id."
+            )
+        if args.get("tag_id") or args.get("type"):
+            bad = await _reject_bad_tag(client, tag_id, kind)
+            if bad is not None:
+                return bad
+        payload: dict[str, Any] = {
+            "type": kind,
+            "amount": args.get("amount") if args.get("amount") is not None
+            else current.get("amount"),
+            "tag_id": tag_id,
+            "occurred_at": _occurred_at(args["occurred_at"]) if args.get("occurred_at")
+            else current.get("occurred_at"),
+        }
+        description = args.get("description") or current.get("description")
+        if description:
+            payload["description"] = str(description)
+        counterparty = args.get("counterparty") or current.get("counterparty")
+        if counterparty:
+            payload["counterparty"] = str(counterparty)[:120]
+        row = await client.update_transaction(transaction_id, payload)
+        return ToolResult.ok(
+            f"amended transaction {transaction_id}: {row.get('type', kind)} "
+            f"{row.get('amount', payload['amount'])} at "
+            f"{_local_time(row.get('occurred_at') or payload['occurred_at'])}"
+        )
+
+    return [amend_transaction_tool]
+
+
 class BudgetConnector(Connector):
     name = "budget"
     TRIGGER_KEYWORDS = (
@@ -930,11 +1314,12 @@ class BudgetConnector(Connector):
     )
     WRITE_TOOLS = frozenset({
         "record_transaction", "record_split", "record_transfer", "settle_person",
-        "delete_transaction",
+        "delete_transaction", "amend_transaction", "amend_pending_payment",
     })
     # All write a ledger row the user will later rely on — chat Layer 3d.
     RECORD_CLAIM_TOOLS = frozenset({
         "record_transaction", "record_split", "record_transfer", "settle_person",
+        "amend_transaction",
     })
 
     TOOL_NAMES: ClassVar[list[str]] = [
@@ -942,27 +1327,33 @@ class BudgetConnector(Connector):
         "list_accounts",
         "list_tags",
         "recent_transactions",
+        "account_balances",
         # write
         "record_transaction",
         "record_split",
         "record_transfer",
         "settle_person",
         "delete_transaction",
+        "amend_transaction",
         "list_pending_payments",
         "approve_pending_payment",
+        "amend_pending_payment",
     ]
 
     STATUS: ClassVar[dict[str, str]] = {
         "list_accounts": "Listing budget accounts",
         "list_tags": "Listing budget tags",
         "recent_transactions": "Reading recent transactions",
+        "account_balances": "Reading account balances",
         "record_transaction": "Recording the transaction",
         "record_split": "Recording the split payment",
         "record_transfer": "Moving money between accounts",
         "settle_person": "Recording the settle-up",
         "delete_transaction": "Deleting the budget transaction",
+        "amend_transaction": "Correcting the budget transaction",
         "list_pending_payments": "Checking scheduled payments",
         "approve_pending_payment": "Settling the scheduled payment",
+        "amend_pending_payment": "Adjusting the scheduled payment",
     }
 
     SYSTEM_PROMPT_SECTION = """== Budget tracker ==
@@ -983,6 +1374,22 @@ record_transaction when nothing in the pending list matches. Pick the
 account and tag from list_accounts/list_tags (they rarely change; remember
 the user's usual ones). If the paying account is genuinely ambiguous, ask
 once and remember the answer.
+
+If the user names a clearing DATE or a paying ACCOUNT that differs from the
+schedule, call amend_pending_payment FIRST and then approve. approve posts the
+row exactly as it stands, so it cannot honour either on its own — and a date
+written into the description is not a date, it is a note nobody will read.
+
+BALANCES ARE READABLE. "how much is in my checking", "how much do I have
+left", "how much do I owe on the card" -> account_balances. list_accounts
+gives ids, not money. Never tell the user to go look in the app himself.
+
+TO CORRECT AN EXISTING ENTRY, USE amend_transaction — its time, amount,
+description, tag or counterparty. Do NOT delete it and record it again: the
+tracker's delete reverses rather than removes, so that leaves reversal legs
+behind and a new id every time. delete_transaction is for an entry that should
+never have existed. The one thing amend_transaction cannot change is the
+account, which genuinely does mean delete + re-record; say so before doing it.
 
 Solo expense/income -> record_transaction. Payment SHARED with other people
 (a Splitwise-style split) -> record_split with the FULL amount paid plus
@@ -1049,6 +1456,8 @@ problem when the real answer is that you are using the wrong tool."""
             *_split_tools(client),
             *_settle_tools(client),
             *_undo_tools(client),
+            *_amend_tools(client),
+            *_amend_pending_tools(client),
         ]
 
     # ---- CLI ----
