@@ -195,6 +195,16 @@ class BudgetClient:
     async def delete_transaction(self, transaction_id: int) -> dict[str, Any]:
         return json_object(await self._request("DELETE", f"/transactions/{transaction_id}"))
 
+    async def create_person(self, name: str) -> dict[str, Any]:
+        """Add someone to the people roster (`POST /people`).
+
+        The tracker refuses to invent people from a transaction — that is how it
+        accumulated 51 names of which 6 were real, every merchant string that
+        ever landed in a counterparty field. Creating one is a deliberate act,
+        which is exactly why this is a write tool and asks first.
+        """
+        return json_object(await self._request("POST", "/people", body={"name": name}))
+
     async def find_external(self, source: str, external_id: str) -> dict[str, Any] | None:
         """Look up what an upstream entry became here, or None if never recorded.
 
@@ -1150,6 +1160,54 @@ def _split_tools(client: BudgetClient) -> list[ToolSpec]:
     return [record_split_tool]
 
 
+def _people_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Add someone to the roster, so a split can name them."""
+    @tool(
+        "create_person",
+        "Add a NEW person to the budget tracker's people list. Only needed when "
+        "a record_split / record_transaction / settle_person was refused because "
+        "the name is unknown.\n\n"
+        "ASK THE USER FIRST, in words, before calling this: 'X isn't in your "
+        "people list — add them?' A person is a lasting entity, and the ledger "
+        "filled up with merchants precisely because names used to be created by "
+        "typing them. Never add a shop, a service or a bank — those belong in the "
+        "description. Only actual people you settle up with.\n\n"
+        "After it succeeds, make the original write again with the same name.",
+        {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "The person's name, spelled the way the ledger should hold "
+                        "it. Reuse the spelling already used elsewhere for them."
+                    ),
+                    "maxLength": 120,
+                },
+            },
+            "required": ["name"],
+        },
+    )
+    async def create_person_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        try:
+            name = str(args["name"]).strip()[:120]
+            if not name:
+                return ToolResult.error("error: a name is required")
+            person = await client.create_person(name)
+            return ToolResult.ok(
+                f"added {person.get('name', name)} (person #{person.get('id', '?')}) — "
+                f"now make the entry you were trying to record"
+            )
+        except KeyError as e:
+            return ToolResult.error(f"error: missing required arg {e}")
+        except httpx.HTTPStatusError as e:
+            return ToolResult.error(format_http_error(_VENDOR, e))
+        except Exception as e:
+            return ToolResult.error(f"error: {e}")
+
+    return [create_person_tool]
+
+
 def _settle_tools(client: BudgetClient) -> list[ToolSpec]:
     """Close out what a person owes (or is owed) — direction derived server-side."""
     @tool(
@@ -1437,6 +1495,9 @@ class BudgetConnector(Connector):
     WRITE_TOOLS = frozenset({
         "record_transaction", "record_split", "record_transfer", "settle_person",
         "delete_transaction", "amend_transaction", "amend_pending_payment",
+        # A person is a lasting entity in the ledger, not a side effect of a
+        # transaction — see _people_tools.
+        "create_person",
         # Added 2026-09-16. It was the odd one out: AMENDING a schedule asked
         # for a tap while APPROVING one posted a real ledger row without any —
         # the wrong way round, since the amendment changes a plan and the
@@ -1460,6 +1521,7 @@ class BudgetConnector(Connector):
         "record_split",
         "record_transfer",
         "settle_person",
+        "create_person",
         "delete_transaction",
         "amend_transaction",
         "list_pending_payments",
@@ -1476,6 +1538,7 @@ class BudgetConnector(Connector):
         "record_split": "Recording the split payment",
         "record_transfer": "Moving money between accounts",
         "settle_person": "Recording the settle-up",
+        "create_person": "Adding the person",
         "delete_transaction": "Deleting the budget transaction",
         "amend_transaction": "Correcting the budget transaction",
         "list_pending_payments": "Checking scheduled payments",
@@ -1488,6 +1551,14 @@ class BudgetConnector(Connector):
 The user's personal ledger, and the place a shared expense is recorded FIRST.
 IMPORTANT: whenever the user reports spending or receiving money — including
 what you read from email — record it here so the ledger stays complete.
+
+PEOPLE ARE NOT CREATED BY NAMING THEM. If a write is refused because the
+person is unknown, do not retry with a different spelling and do not drop the
+person — ASK the user whether to add them ("Ana isn't in your people list — add
+her?"), call create_person once they say yes, then make the original entry
+again. Only real people you settle up with: a shop, a service or a bank belongs
+in the description, and the ledger filled up with merchants precisely because
+names used to become people by being typed.
 
 A SHARED expense is recorded here ONCE, with record_split and
 `share_to_splitwise: true`, and the Splitwise entry is created from it minutes
@@ -1605,6 +1676,7 @@ problem when the real answer is that you are using the wrong tool."""
             *_pending_tools(client),
             *_split_tools(client),
             *_settle_tools(client),
+            *_people_tools(client),
             *_undo_tools(client),
             *_amend_tools(client),
             *_amend_pending_tools(client),

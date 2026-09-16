@@ -264,7 +264,7 @@ class TestContract:
         assert frozenset(
             {"record_transaction", "record_split", "record_transfer", "settle_person",
              "delete_transaction", "amend_transaction", "amend_pending_payment",
-             "approve_pending_payment"}
+             "approve_pending_payment", "create_person"}
         ) == BudgetConnector.WRITE_TOOLS
         # Reads must never be gated.
         assert "list_accounts" not in BudgetConnector.WRITE_TOOLS
@@ -280,6 +280,13 @@ class TestContract:
         """
         assert "approve_pending_payment" in BudgetConnector.WRITE_TOOLS
         assert "approve_pending_payment" in BudgetConnector.RECORD_CLAIM_TOOLS
+
+    def test_adding_a_person_is_gated(self):
+        """A person is a lasting entity in the ledger, not a side effect of a
+        transaction. The tracker refuses to invent one from a write — this is
+        the deliberate path, so it asks like every other write."""
+        assert "create_person" in BudgetConnector.WRITE_TOOLS
+        assert "create_person" in BudgetConnector.TOOL_NAMES
 
     def test_amending_a_row_is_a_record_claim(self):
         # amend_transaction rewrites a row the user will rely on, so Layer 3d
