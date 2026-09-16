@@ -56,6 +56,13 @@ class Persona:
     # their own LLM calls and so never see `system_prompt`. Optional: unset
     # just means those prompts refer to the persona by name alone.
     role: str = ""
+    # What the shared-room addressing gate is told this persona is for (see
+    # domain/addressing.py). `role` is written for the memory prompts and is
+    # a noun phrase — "a personal assistant" — which is thin evidence for
+    # routing when two bots both sound plausible. Set this to the concrete
+    # subject list instead ("code review, GitLab repo ops, deploys"). Unset
+    # falls back to role, then to the name.
+    addressing_charter: str = ""
     enabled_connectors: dict[str, EnabledValue] = field(default_factory=dict)
     model: str | None = None
     # Layer 5: write tools require an in-chat operator approval per call.
@@ -76,6 +83,9 @@ class Persona:
     # chat_id: <optional>}. Needs splitwise AND budget connectors enabled.
     # Polling — Splitwise's API has no webhooks. See adapters/trigger/splitwisewatch.py.
     splitwise_watch: dict[str, Any] | None = None
+    # Outbound: ledger splits queued for Splitwise. Opt-in and absent by
+    # default — this one WRITES to a service other people can see.
+    splitwise_push: dict[str, Any] | None = None
     # Action items out of Gemini's meeting notes: {every_minutes: 5,
     # notes_grace_minutes: 45, calendar_id: "primary", chat_id: <optional>}.
     # Needs google_calendar AND google_drive connectors and the tasks faculty.
@@ -153,6 +163,7 @@ class Persona:
             name=str(cfg.get("name") or persona_id),
             system_prompt=str(cfg.get("system_prompt") or ""),
             role=str(cfg.get("role") or "").strip(),
+            addressing_charter=str(cfg.get("addressing_charter") or "").strip(),
             # Canonical keys are `faculties:` (the agent's own — memory,
             # schedule, skills, code, files, documents, delegate) and
             # `connectors:` (external services). They merge into one policy
@@ -167,6 +178,9 @@ class Persona:
             mail_watch=dict(cfg["mail_watch"]) if cfg.get("mail_watch") else None,
             splitwise_watch=(
                 dict(cfg["splitwise_watch"]) if cfg.get("splitwise_watch") else None
+            ),
+            splitwise_push=(
+                dict(cfg["splitwise_push"]) if cfg.get("splitwise_push") else None
             ),
             meeting_watch=(
                 dict(cfg["meeting_watch"]) if cfg.get("meeting_watch") else None

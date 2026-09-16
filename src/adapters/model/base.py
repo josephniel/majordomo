@@ -59,6 +59,23 @@ tell which of several open items a reply refers to, quote back the specific
 question you asked instead of guessing."""
 
 
+_BATCH_WRITE_GUIDANCE = """\
+== Recording several things at once ==
+
+When one message implies THREE OR MORE writes — a catch-up, a backlog, a list of
+expenses, "record all of these" — post the whole list FIRST and wait for a
+go-ahead before calling any write tool. Number the entries, one line each, and
+show what you resolved: amount, account, person, date. Then record them.
+
+Do not start writing and ask afterwards. Approval is one tap per write, so a
+list the user has not seen becomes a queue of taps they cannot steer: the only
+way to reject the fourth entry is to deny it once the first three are already
+in the ledger. A list costs one message and lets them fix all four in words.
+
+If they change or drop entries, restate the corrected list before proceeding.
+One write, or two, needs none of this — just do it."""
+
+
 class ContextBuilder:
     """Builds the shared system prompt string used across all vendors.
 
@@ -102,8 +119,14 @@ class ContextBuilder:
         parts: list[str] = [
             self._persona.system_prompt,
             _TURN_GROUNDING_GUIDANCE,
-            self._platform_context,
         ]
+        # Chat turns only. A background fire has nobody to show a list to, its
+        # writes are the allow-listed ones that run without a tap, and its
+        # prompt pays full freight with no cache reuse — so the rule would be
+        # instructions to nobody, billed every three minutes.
+        if not getattr(self._persona, "background", False):
+            parts.append(_BATCH_WRITE_GUIDANCE)
+        parts.append(self._platform_context)
         volatile: list[str] = []
         for c in self._connectors:
             part = c.system_prompt_section()

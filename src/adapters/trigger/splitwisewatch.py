@@ -10,6 +10,30 @@ State (per profile) lives in data/splitwise_watch.json: an ISO watermark
 plus a seen {expense_id: updated_at} map (the query overlaps the watermark
 by a minute to never miss boundary items; the map dedupes the overlap AND
 lets edits re-report, because an edit bumps updated_at).
+
+Since 2026-09-16 the poll also RESOLVES each expense against the ledger before
+deciding anything, via `source`/`external_id` on the tracker's transactions.
+That replaces the instruction that used to open the prompt — "check
+recent_transactions and skip anything already recorded" — which asked the model
+to re-derive, from a list of amounts, a fact the ledger can state. It held while
+expenses arrived one at a time and failed in bulk: 1-2 and 16 September 2026
+produced 23 ledger deletes between them, undoing re-records of expenses that
+were already there.
+
+What the resolve decides:
+  * already recorded, unchanged  -> nothing to say; if every expense lands here
+                                    the poll costs no inference at all
+  * deleted upstream, recorded   -> retired here directly, no turn needed
+  * edited upstream, recorded    -> retired here, then re-recorded BY THE MODEL
+                                    (the shares moved; the account and tag it
+                                    used before are handed over as a starting
+                                    point)
+  * not recorded                 -> the model records it, and is given the
+                                    external_id to stamp so the next poll
+                                    resolves it instead of re-reporting it
+
+The model keeps the judgement calls that need one — which account paid, which
+category — and loses the one it was bad at.
 """
 from __future__ import annotations
 
@@ -26,16 +50,30 @@ from ._state import WatchState
 
 log = logging.getLogger(__name__)
 
+LEDGER_SOURCE = "splitwise"
+# Ledger rows only started carrying their Splitwise id on this date. Anything
+# older is mirrored but unlinked, so a lookup answers "not recorded" for an
+# expense that IS recorded — the one case where the resolve below can still be
+# wrong, and the only one where the model should go and look for itself. The
+# window closes on its own: it can only matter for an expense dated before the
+# cutover that someone edits afterwards.
+STAMPING_SINCE = "2026-09-16"
 MAX_NEW_PER_PROFILE = 8
 SEEN_IDS_CAP = 300
 WATERMARK_OVERLAP = timedelta(seconds=60)
 FIRST_RUN_LOOKBACK = timedelta(hours=1)
 
 SPLITWISE_WATCH_PROMPT_PREAMBLE = """\
-[splitwise watch — automated, not a user message] New or updated Splitwise \
-expenses were detected. Mirror them into the budget tracker ledger:
-- FIRST check recent_transactions and skip anything already recorded there \
-(you may have recorded it yourself during a chat).
+[splitwise watch — automated, not a user message] Splitwise expenses that are \
+NOT yet in the budget tracker were detected. Mirror them into the ledger:
+- Every expense below has been resolved against the ledger already: anything \
+already recorded has been left out, and anything deleted or edited upstream has \
+already been retired here. Do NOT check recent_transactions to decide whether \
+to record — that question is answered. Record exactly what is listed.
+- EACH LINE CARRIES `record with source=... external_id=...`. Pass BOTH to \
+record_split / record_transaction, exactly as given. That stamp is what stops \
+the next poll re-reporting the same expense, so an entry recorded without it \
+will come back and be recorded twice.
 - Expense the user paid, shared with others -> record_split (full amount + \
 each other person's owed share). Only the user involved -> record_transaction.
 - Expense someone ELSE paid (the user owes a share): record_transaction as a \
@@ -50,10 +88,10 @@ as the ledger spells it — settle_person lists the known names if it cannot \
 match, and creating a second spelling splits the balance across two people. \
 If it reports no open balance, the debt was already settled: say so and \
 record nothing.
-- EDITED expense already in the ledger: bring the ledger into line with \
-Splitwise (the tracker has no edit — delete the stale rows with \
-delete_transaction, then record the corrected entry) and say what you \
-changed. DELETED in Splitwise: delete the matching ledger rows and say so.
+- An expense marked `re-record` was EDITED upstream: its stale rows are already \
+retired, so simply record it as it now stands and say what changed. The account \
+and tag it used before are named on the line — reuse them unless the edit makes \
+them wrong.
 - Pick the paying account from list_accounts / memory; ask only if genuinely \
 unknowable.
 - tag_id must be a LEAF tag (list_tags marks which are selectable); a GROUP \
@@ -62,10 +100,11 @@ tag is refused.
 something — the tools you need here run without an approval prompt, so just \
 do the work and report it. If a tool IS refused, say what failed; never \
 claim a record you did not write.
-Reply with one short line per expense recorded (or <silent> if everything \
-was already recorded and nothing needs attention).
+Reply with one short line per expense recorded (or <silent> if there is \
+nothing to say — retirements listed below already happened and need no comment \
+unless something looks wrong).
 
-New Splitwise activity:
+Splitwise activity needing a ledger entry:
 """
 
 
@@ -111,8 +150,10 @@ class SplitwiseWatcher:
         splitwise_connector: Any,  # narrow surface: build_clients() -> {name: client}
         state_file: Path,
         default_timezone: str | None = None,
+        budget_connector: Any | None = None,  # same surface; None = resolve nothing
     ) -> None:
         self._splitwise = splitwise_connector
+        self._budget = budget_connector
         self._tz = default_timezone or DEFAULT_TIMEZONE
         # Two-phase state, exactly like MailWatcher: check() stages and the
         # caller commit()s only after the turn was DELIVERED — a vendor outage at
@@ -151,6 +192,123 @@ class SplitwiseWatcher:
         """
         self._state.commit()
 
+
+    # ---- resolving against the ledger ----
+
+    def _budget_client(self) -> Any | None:
+        """Build a client for the first configured budget profile, or None.
+
+        None is a supported state, not a failure: without it the watch behaves
+        the way it did before this resolution existed — every fresh expense is
+        handed to the model, which decides for itself what is already recorded.
+        """
+        if self._budget is None:
+            return None
+        try:
+            clients = self._budget.build_clients()
+        except Exception:
+            log.exception("splitwise_watch: could not build a budget client")
+            return None
+        return next(iter(clients.values()), None)
+
+    async def _retire(self, budget: Any, entry: dict[str, Any]) -> bool:
+        """Reverse every leg of a mirrored entry.
+
+        True when something was retired.
+
+        Deletes by TRANSACTION id even though the unit is a transfer: the
+        tracker's delete reverses the whole transfer and is idempotent, so
+        walking the legs costs a redundant call per transfer and needs no
+        mapping between the two id spaces.
+        """
+        ids = list(entry.get("transaction_ids") or [])
+        if not ids:
+            return False
+        for tx_id in ids:
+            try:
+                await budget.delete_transaction(int(tx_id))
+            except Exception:
+                log.exception("splitwise_watch: could not retire ledger tx %s", tx_id)
+                return False
+        return True
+
+    async def _resolve(
+        self, fresh: list[dict[str, Any]], my_id: int | None, seen: dict[str, str]
+    ) -> tuple[list[str], list[str]]:
+        """Split fresh expenses into model work and work already done here.
+
+        `seen` is what this watch recorded for each expense LAST time, and it is
+        what separates "already in the ledger" from "edited since we mirrored
+        it". Both look identical to a ledger lookup — the rows exist either way.
+        An expense the watch has never seen before but the ledger already holds
+        was recorded some other way (in chat, or by an earlier generation of
+        this watch), and retiring those rows to "re-record" them would destroy a
+        correct entry to rewrite it from scratch.
+
+        So an edit is only an edit when we knew a PREVIOUS updated_at and it
+        moved. First sight plus a ledger hit means: already done, say nothing.
+
+        Returns (lines for the prompt, notes about retirements already done).
+        """
+        budget = self._budget_client()
+        if budget is None:
+            return [_format_expense(e, my_id, self._tz) for e in fresh], []
+
+        lines: list[str] = []
+        notes: list[str] = []
+        for e in fresh:
+            eid = str(e.get("id") or "")
+            line = _format_expense(e, my_id, self._tz)
+            try:
+                entry = await budget.find_external(LEDGER_SOURCE, eid)
+            except Exception:
+                # Unresolved is not unreported: hand it over with the doubt
+                # stated, rather than dropping an expense or asserting a state
+                # nobody checked.
+                log.exception("splitwise_watch: ledger lookup failed for expense %s", eid)
+                lines.append(f"{line}  (ledger lookup FAILED — verify before recording)")
+                continue
+
+            if e.get("deleted_at"):
+                if entry and await self._retire(budget, entry):
+                    notes.append(f"- retired ledger rows for deleted expense [{eid}]")
+                continue
+
+            if entry:
+                prior = seen.get(eid)
+                if prior is None or prior == str(e.get("updated_at") or ""):
+                    continue  # already recorded and unchanged — nothing to do
+                # An edit: the ledger cannot amend a split in place, so the old
+                # rows go and the model writes the new shape.
+                if not await self._retire(budget, entry):
+                    lines.append(
+                        f"{line}  (EDITED upstream; could not retire the old "
+                        f"rows — fix by hand)"
+                    )
+                    continue
+                hint = ""
+                if entry.get("account_id"):
+                    hint = (
+                        f" previously account {entry['account_id']}"
+                        f" tag {entry.get('tag_id')};"
+                    )
+                lines.append(
+                    f"{line}  (re-record — stale rows retired;{hint}"
+                    f" record with source={LEDGER_SOURCE} external_id={eid})"
+                )
+                continue
+
+            note = ""
+            if str(e.get("date") or "")[:10] < STAMPING_SINCE:
+                note = (
+                    "  NOTE: predates ledger stamping — check recent_transactions"
+                    " before recording this one"
+                )
+            lines.append(
+                f"{line}  (record with source={LEDGER_SOURCE} external_id={eid}){note}"
+            )
+        return lines, notes
+
     async def _check_profile(
         self, name: str, client: Any, now: datetime,
     ) -> tuple[list[str], dict[str, Any]]:
@@ -188,6 +346,7 @@ class SplitwiseWatcher:
                 len(fresh), name,
             )
 
+
         lines: list[str] = []
         if fresh:
             my_id: int | None = None
@@ -195,11 +354,22 @@ class SplitwiseWatcher:
                 my_id = await client.current_user_id()
             except Exception:
                 log.debug("splitwise_watch: could not resolve own user id", exc_info=True)
-            lines.extend(
-                _format_expense(e, my_id, self._tz) for e in fresh[:MAX_NEW_PER_PROFILE]
-            )
-            if len(fresh) > MAX_NEW_PER_PROFILE:
-                lines.append(f"- … and {len(fresh) - MAX_NEW_PER_PROFILE} more")
+            # Resolve BEFORE capping. The cap exists to bound one prompt, and
+            # the expenses it would drop are usually the ones already recorded —
+            # capping first would spend the budget on those and push real work
+            # into "… and N more".
+            resolved, notes = await self._resolve(fresh, my_id, seen)
+            if notes:
+                log.info(
+                    "splitwise_watch: handled %d upstream deletion(s) for profile %s "
+                    "without a turn", len(notes), name,
+                )
+            lines.extend(resolved[:MAX_NEW_PER_PROFILE])
+            if len(resolved) > MAX_NEW_PER_PROFILE:
+                lines.append(f"- … and {len(resolved) - MAX_NEW_PER_PROFILE} more")
+            # Retirements are stated, not asked about: they already happened, and
+            # a turn that only reports them can answer <silent>.
+            lines.extend(notes)
 
         # Staged state: ALL fresh items mark (id -> updated_at) seen — the
         # ones beyond the cap were still surfaced via the "+N more" line,

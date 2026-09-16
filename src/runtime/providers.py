@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     )
     from adapters.store import Embedder, MemoryDatabase
     from adapters.tools import ServiceRegistry
+    from adapters.tools.approvals import WriteApprovalGate
     from domain.schedule import ScheduleEngine
     from ports import ConversationMirror, ConversationRef, ToolProvider
 
@@ -82,6 +83,11 @@ class RuntimeContext(Protocol):
     def conversation_history(self) -> ConversationHistory: ...
     @property
     def schedule_runtime(self) -> ScheduleEngine: ...
+    # Ninth member, added 2026-09-16 for the batch-approval faculty, which
+    # hands the gate a manifest and is meaningless without one. None when the
+    # persona set write_approval: false.
+    @property
+    def approval_gate(self) -> WriteApprovalGate | None: ...
 
     # Narrow on purpose: PersonaRuntime.create_agent takes more, but a provider
     # builder only ever needs these two, so only these two are promised.
@@ -172,6 +178,24 @@ def _build_tasks(rt: RuntimeContext) -> ToolProvider:
         # host already declares that wall clock once for crons and heartbeats.
         timezone=rt.settings.schedule_timezone,
     )
+
+
+def _build_batch(rt: RuntimeContext) -> ToolProvider:
+    """One approval for a set of writes. Requires the gate it feeds.
+
+    A persona with write_approval: false has nothing to batch — every write
+    already runs unasked — so mounting it there would spend prompt tokens on a
+    tool whose whole output is "approved".
+    """
+    from adapters.tools.approvals import BatchApprovalProvider
+
+    gate = rt.approval_gate
+    if gate is None:
+        raise ValueError(
+            "the batch faculty needs write_approval: true — with approvals off "
+            "there is nothing for propose_writes to ask about"
+        )
+    return BatchApprovalProvider(gate)
 
 
 def _build_skills(rt: RuntimeContext) -> ToolProvider:
@@ -367,6 +391,10 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     _faculty("schedule", _build_schedule),
     _faculty("tasks", _build_tasks),
     _faculty("skills", _build_skills),
+    # Registered under the provider's own name: persona.yaml keys are matched
+    # against `provider.name`, so a faculty registered as anything else resolves
+    # to "not enabled" and mounts no tools at all.
+    _faculty("approvals", _build_batch),
     _faculty("delegate", _build_delegate),
     _faculty("code", _build_code),
     _faculty("files", _build_files),
