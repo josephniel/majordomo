@@ -97,12 +97,26 @@ CREATE TABLE IF NOT EXISTS turn_log (
     latency_ms     INT NOT NULL DEFAULT 0,
     input_tokens   INT,
     output_tokens  INT,
+    -- UNCACHED input only. A turn with a warm prefix reports a value near
+    -- zero here while really sending ~10k tokens; read the cache columns
+    -- below before drawing any conclusion from this one.
+    cache_read_tokens  INT,
+    cache_write_tokens INT,
     tool_calls     INT NOT NULL DEFAULT 0,
     failovers      INT NOT NULL DEFAULT 0,
     error          TEXT NOT NULL DEFAULT '',
     ts             TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS turn_log_chat_idx ON turn_log (persona_id, chat_id, ts DESC);
+
+-- Prompt-cache counters. Nullable on purpose: NULL means "this vendor never
+-- told us", which is a different fact from 0 ("nothing was served from
+-- cache") and the two must not be averaged together.
+--
+-- Added after the fact, so existing deployments need the ALTER as well as
+-- the column list above.
+ALTER TABLE turn_log ADD COLUMN IF NOT EXISTS cache_read_tokens INT;
+ALTER TABLE turn_log ADD COLUMN IF NOT EXISTS cache_write_tokens INT;
 
 -- One row per write-approval decision (Layer 5 audit trail).
 CREATE TABLE IF NOT EXISTS approval_log (
@@ -152,6 +166,12 @@ class TurnRecord:
     latency_ms: int = 0
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # Prompt-cache counters, None when the vendor doesn't report them. Kept
+    # separate from input_tokens because input_tokens counts only what was
+    # NOT served from cache — on its own it makes a 10k-token prompt look
+    # like a 2-token one.
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
     tool_calls: int = 0
     failovers: int = 0
     error: str = ""
@@ -492,8 +512,9 @@ class ConversationHistory:
                     """
                     INSERT INTO turn_log
                         (persona_id, chat_id, vendor, model, status, latency_ms,
-                         input_tokens, output_tokens, tool_calls, failovers, error)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                         input_tokens, output_tokens, cache_read_tokens,
+                         cache_write_tokens, tool_calls, failovers, error)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                     """,
                     persona_id,
                     chat_key(chat_id),
@@ -503,6 +524,8 @@ class ConversationHistory:
                     turn.latency_ms,
                     turn.input_tokens,
                     turn.output_tokens,
+                    turn.cache_read_tokens,
+                    turn.cache_write_tokens,
                     turn.tool_calls,
                     turn.failovers,
                     turn.error[:_MAX_LOGGED_ERROR],
@@ -612,6 +635,8 @@ class ConversationHistory:
                 SELECT COUNT(*) AS turns,
                        COALESCE(SUM(input_tokens), 0) AS input_tokens,
                        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                       COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+                       COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
                        COALESCE(SUM(failovers), 0) AS failovers
                 FROM turn_log
                 WHERE persona_id = $1 AND chat_id = $2 AND ts >= date_trunc('day', NOW())

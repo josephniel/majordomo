@@ -112,3 +112,32 @@ class TestTheChatIdIsAConversationRef:
         relay = make_relay(collected)
         await relay._on_comms_entry(entry(chat_id="12345"))  # pre-migration bare id
         assert collected == []
+
+
+class TestAttribution:
+    """A peer bot's words must not reach the agent looking like the operator's.
+
+    Live for the first time: the relay had no rows to deliver until outbound
+    logging was restored (ChatPlatform.note_outbound).
+    """
+
+    async def test_a_peers_reply_is_labelled_with_its_handle(self):
+        got = []
+        e = entry(text="on it @me_bot")
+        e["from_username"] = "peer_bot"
+        await make_relay(got)._on_comms_entry(e)
+        assert got[0][1] == "[@peer_bot]: on it @me_bot"
+
+    async def test_an_already_labelled_message_is_left_alone(self):
+        got = []
+        e = entry(text="[@jntz119]: ping @me_bot")
+        e["from_username"] = "peer_bot"
+        await make_relay(got)._on_comms_entry(e)
+        assert got[0][1] == "[@jntz119]: ping @me_bot"
+
+    async def test_a_row_with_no_username_is_not_given_a_fake_one(self):
+        got = []
+        e = entry(text="hi @me_bot")
+        e["from_username"] = None
+        await make_relay(got)._on_comms_entry(e)
+        assert got[0][1] == "hi @me_bot"

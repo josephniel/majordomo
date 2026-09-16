@@ -25,18 +25,21 @@ external servers off (today's state) or trusted end-to-end.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any
+from decimal import Decimal, InvalidOperation
+from typing import Any, cast
 
 from ports import (
     ApprovalPreview,
     ConversationRef,
     PreviewRefusedError,
     ToolContext,
+    ToolProvider,
     ToolResult,
     ToolSpec,
 )
@@ -199,6 +202,151 @@ class PendingApproval:
         return f"{self.connector}/{self.tool}"
 
 
+
+# ---- batch manifests -------------------------------------------------------
+
+# A manifest is the operator's answer to "record all of these", and it exists
+# because approval is per call: four months of this bot's ledger writes show an
+# 18% denial rate concentrated in catch-up sessions, where the only way to
+# reject the fourth entry was to deny it once the first three were recorded.
+#
+# The binding is the whole safety property. A manifest authorises the EXACT
+# calls it was shown for — matched on a fingerprint of connector, tool and
+# arguments — and never "writes for the next five minutes". Without that, a
+# model can show six modest rows, bank one approval, and write a seventh nobody
+# read. Anything unmatched falls through to an ordinary tap.
+_MANIFEST_TTL = 15 * 60.0
+_MAX_MANIFEST_ITEMS = 20
+
+
+def _norm(value: Any) -> Any:
+    """Canonical form of one argument value, for fingerprinting.
+
+    Numbers go through Decimal so 500, 500.0 and "500" fingerprint alike — the
+    model writes an amount into the manifest and then into the call, and those
+    two spellings differing is not a difference the operator agreed to anything
+    about.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, Decimal)):
+        return str(Decimal(str(value)).normalize())
+    if isinstance(value, dict):
+        return {k: _norm(v) for k, v in sorted(value.items())}
+    if isinstance(value, (list, tuple)):
+        return [_norm(v) for v in value]
+    return _norm_text(value if isinstance(value, str) else str(value))
+
+
+def _norm_text(value: str) -> str:
+    """Normalise a string, resolving one that spells a number to that number."""
+    stripped = value.strip()
+    try:
+        return str(Decimal(stripped).normalize())
+    except (InvalidOperation, ValueError):
+        return stripped
+
+
+def _fingerprint(connector: str, tool: str, args: dict[str, Any]) -> str:
+    """Identify one intended call.
+
+    Empty-ish arguments are ignored: a key the model omits at call time and a
+    key it sends as null are the same call.
+    """
+    payload = {
+        k: _norm(v) for k, v in sorted(args.items()) if v not in (None, "", [], {})
+    }
+    blob = json.dumps(
+        [connector.strip().lower(), tool.strip().lower(), payload],
+        sort_keys=True, default=str,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _proposal_blocker(
+    chat_id: ConversationRef | None, *, background: bool
+) -> str:
+    """Why this turn cannot propose a batch at all, or "".
+
+    Both cases are the same thing said twice: a batch is a question, and these
+    are the turns with nobody to ask.
+    """
+    if background:
+        return (
+            "a batch cannot be proposed on an automated turn — nobody is there "
+            "to read it. Call the write tools directly."
+        )
+    if chat_id is None:
+        return "no chat context to propose a batch in"
+    return ""
+
+
+def _compose_manifest(
+    items: list[dict[str, Any]], summary: str
+) -> tuple[dict[str, str], str, str]:
+    """Validate a proposed set and render the one message that asks about it.
+
+    Returns (entries, prompt, problem). A non-empty `problem` means nothing is
+    approvable and the model is told why — every rejection here is a case where
+    the operator would otherwise be approving something they cannot fully read.
+    """
+    if not items:
+        return {}, "", "nothing to propose"
+    if len(items) > _MAX_MANIFEST_ITEMS:
+        return {}, "", (
+            f"{len(items)} entries is more than one approval should carry "
+            f"(max {_MAX_MANIFEST_ITEMS}). Propose them in smaller sets."
+        )
+
+    entries: dict[str, str] = {}
+    lines = [f"🔐 Approve {len(items)} write(s)"]
+    if summary.strip():
+        lines.extend(("", summary.strip()))
+    lines.append("")
+    for n, item in enumerate(items, 1):
+        connector = str(item.get("connector") or "").strip()
+        tool = str(item.get("tool") or "").strip()
+        args = item.get("args") or {}
+        if not connector or not tool or not isinstance(args, dict):
+            return {}, "", (
+                f"entry {n} is missing connector, tool or args — every entry "
+                f"must name exactly the call you will make."
+            )
+        label = str(item.get("label") or f"{connector}/{tool}").strip()
+        # The operator reads the model's label AND the real arguments. A label
+        # is prose the model wrote; the arguments are what will actually run.
+        shown = ", ".join(
+            f"{k}={_format_value(v, 120)}"
+            for k, v in args.items() if v not in (None, "", [], {})
+        )
+        lines.append(f"{n}. {label}")
+        lines.append(f"   {connector}/{tool} · {shown}")
+        entries[_fingerprint(connector, tool, args)] = label
+
+    if len(entries) != len(items):
+        return {}, "", "two entries describe the identical call. List each write once."
+    prompt = "\n".join(lines)
+    if len(prompt) > _MAX_PROMPT_CHARS:
+        # Truncating an approval is how a payload hides in the tail. Refuse the
+        # batch instead and let the model split it.
+        return {}, "", (
+            "that batch does not fit in one approval message. Propose it in "
+            "smaller sets so the user can read every entry."
+        )
+    return entries, prompt, ""
+
+
+@dataclass
+class _Manifest:
+    """Calls the operator approved as a set, and has not been spent yet."""
+
+    entries: dict[str, str]  # fingerprint -> the label shown for it
+    created: float
+
+    def expired(self, now: float) -> bool:
+        return now - self.created > _MANIFEST_TTL
+
+
 class WriteApprovalGate:
     """Wraps write-tool handlers with an in-chat operator confirmation."""
 
@@ -214,6 +362,10 @@ class WriteApprovalGate:
         # removed in a finally so a denial, timeout, cancellation or crash
         # can't leave a chat looking permanently blocked.
         self._pending: dict[ConversationRef, PendingApproval] = {}
+        # conversation -> the set of calls the operator approved as a batch and
+        # that have not been spent. One manifest per chat: proposing a second
+        # replaces the first, so a superseded plan cannot authorise anything.
+        self._manifests: dict[ConversationRef, _Manifest] = {}
 
     def pending_for(self, chat_id: ConversationRef) -> PendingApproval | None:
         """Return the write this conversation is waiting on, if any."""
@@ -247,6 +399,95 @@ class WriteApprovalGate:
             await self._auditor(chat_id, connector, tool, preview, decision, reason)
         except Exception:
             log.debug("approval audit failed (continuing)", exc_info=True)
+
+    # ---- batch manifests ----
+
+    def _manifest_take(
+        self, chat_id: ConversationRef, connector: str, tool: str, args: dict[str, Any]
+    ) -> str | None:
+        """Spend this call's entry in the chat's manifest, if it has one.
+
+        Returns the label the operator approved it under, or None. Entries are
+        ONE-SHOT: the same call arriving twice gets one free pass and then asks,
+        because "record this once" is what was agreed to.
+        """
+        manifest = self._manifests.get(chat_id)
+        if manifest is None:
+            return None
+        if manifest.expired(time.monotonic()):
+            self._manifests.pop(chat_id, None)
+            log.info("batch manifest for %s expired before it was spent", chat_id)
+            return None
+        label = manifest.entries.pop(_fingerprint(connector, tool, args), None)
+        if not manifest.entries:
+            self._manifests.pop(chat_id, None)
+        return label
+
+    async def propose(
+        self,
+        chat_id: ConversationRef | None,
+        items: list[dict[str, Any]],
+        summary: str,
+        *,
+        background: bool = False,
+    ) -> tuple[bool, str]:
+        """Ask once about a whole set of writes. Returns (approved, message).
+
+        The prompt renders each item's REAL arguments, not only the label the
+        model wrote for it — the operator has to be approving what will run, not
+        a description of it.
+        """
+        if blocked := _proposal_blocker(chat_id, background=background):
+            return False, blocked
+        entries, prompt, problem = _compose_manifest(items, summary)
+        if problem:
+            return False, problem
+
+        # `_proposal_blocker` has already refused a None chat; bind it so the
+        # checker knows, and bind the confirmer too so the awaits below cannot
+        # read a different object than the one that was checked.
+        chat = cast("ConversationRef", chat_id)
+        confirmer = self._confirmer
+        audit_args = {"items": len(items)}
+
+        if confirmer is None:
+            log.warning("batch proposed with no confirmer bound; allowing")
+            self._manifests[chat] = _Manifest(entries=entries, created=time.monotonic())
+            return True, f"{len(entries)} write(s) approved"
+
+        self._pending[chat] = PendingApproval(
+            connector="approvals", tool="propose_writes", since=time.monotonic(),
+        )
+        try:
+            approved = await confirmer(chat, prompt)
+        except Exception:
+            log.exception("batch approval request failed; denying")
+            await self._audit(
+                chat, "approvals", "propose_writes", audit_args,
+                "error", "approval request could not be delivered",
+            )
+            return False, "the approval request could not be delivered; nothing was approved"
+        finally:
+            self._pending.pop(chat, None)
+
+        # A superseded or rejected plan must not leave an older manifest
+        # standing — the operator's last word is the only one.
+        self._manifests.pop(chat, None)
+        if not approved:
+            await self._audit(
+                chat, "approvals", "propose_writes", audit_args,
+                "denied", "operator denied or timed out",
+            )
+            return False, (
+                "the user did not approve that set. Do not write anything; ask "
+                "what to change."
+            )
+        self._manifests[chat] = _Manifest(entries=entries, created=time.monotonic())
+        await self._audit(chat, "approvals", "propose_writes", audit_args, "approved", "")
+        return True, (
+            f"{len(entries)} write(s) approved — make exactly those calls now, with "
+            f"the same arguments. Anything else will still ask."
+        )
 
     # ---- spec wrapping ----
 
@@ -345,20 +586,22 @@ class WriteApprovalGate:
 
     # ---- the decision ----
 
-    async def _confirm(
+    async def _settle_without_asking(
         self,
         connector_name: str,
         tool_name: str,
         args: dict[str, Any],
         chat_id: ConversationRef | None,
-        background: bool = False,
-        preview: str = "",
-    ) -> tuple[bool, str]:
-        # Checked before the confirmer: an allow-listed write during a trigger
-        # fire must not depend on a chat being reachable, and asking would only
-        # burn the approval timeout against an operator who is not looking.
-        # Still audited — auto-approved is a decision, and approval_log is where
-        # the operator goes to find out what ran while they were away.
+        background: bool,
+    ) -> tuple[bool, str] | None:
+        """Decide the cases that must not reach a human, or None to ask one.
+
+        Order matters. The background allow-list comes first because an
+        unattended write must not depend on a chat being reachable, and asking
+        would only burn the timeout against an operator who is not looking.
+        The batch manifest comes last of the allow paths, after `chat_id` is
+        known to exist, because a manifest belongs to one conversation.
+        """
         if background and _auto_approved(
             self._background_auto_approve, connector_name, tool_name
         ):
@@ -375,38 +618,70 @@ class WriteApprovalGate:
             # create_conversation() binds the confirmer before the platform
             # serves traffic. Allow so cli.py flows keep working.
             log.warning(
-                "write tool %s invoked with no confirmer bound; allowing",
-                tool_name,
+                "write tool %s invoked with no confirmer bound; allowing", tool_name,
             )
             return True, ""
         if chat_id is None:
             await self._audit(None, connector_name, tool_name, args, "no_chat", "")
             return False, "no chat context to request approval in"
+        # An approved manifest covers THIS call only if it was one of the calls
+        # the operator saw. Reached after the preview has already run, so a
+        # precheck that would refuse still refuses — a batch approves what the
+        # user agreed to, it does not skip the tool's own veto.
+        batched = self._manifest_take(chat_id, connector_name, tool_name, args)
+        if batched is not None:
+            log.info("write tool %s covered by an approved batch", tool_name)
+            await self._audit(
+                chat_id, connector_name, tool_name, args,
+                "approved", f"batch-approved as {batched!r}",
+            )
+            return True, ""
+        return None
+
+    async def _confirm(
+        self,
+        connector_name: str,
+        tool_name: str,
+        args: dict[str, Any],
+        chat_id: ConversationRef | None,
+        background: bool = False,
+        preview: str = "",
+    ) -> tuple[bool, str]:
+        settled = await self._settle_without_asking(
+            connector_name, tool_name, args, chat_id, background,
+        )
+        if settled is not None:
+            return settled
+        # It returns None only once a chat and a confirmer both exist — the
+        # checker cannot see that through the call, so state it here rather
+        # than re-testing and inventing a second "no chat" answer.
+        chat = cast("ConversationRef", chat_id)
+        confirmer = cast("Confirmer", self._confirmer)
 
         prompt = format_approval_prompt(connector_name, tool_name, args, preview)
         # Publish before awaiting and clear in `finally`. The finally is what
         # matters: a denial, a timeout, a /cancel (CancelledError) or an
         # exception must all release the marker, or the chat reads as
         # permanently blocked on a write that already resolved.
-        self._pending[chat_id] = PendingApproval(
+        self._pending[chat] = PendingApproval(
             connector=connector_name, tool=tool_name, since=time.monotonic(),
         )
         try:
-            approved = await self._confirmer(chat_id, prompt)
+            approved = await confirmer(chat, prompt)
         except Exception:
             log.exception("approval request failed; denying %s", tool_name)
             await self._audit(
-                chat_id, connector_name, tool_name, args, "error",
+                chat, connector_name, tool_name, args, "error",
                 "approval request could not be delivered",
             )
             return False, "the approval request could not be delivered; denied by default"
         finally:
-            self._pending.pop(chat_id, None)
+            self._pending.pop(chat, None)
         if approved:
-            await self._audit(chat_id, connector_name, tool_name, args, "approved", "")
+            await self._audit(chat, connector_name, tool_name, args, "approved", "")
             return True, ""
         await self._audit(
-            chat_id, connector_name, tool_name, args, "denied", "operator denied or timed out",
+            chat, connector_name, tool_name, args, "denied", "operator denied or timed out",
         )
         return False, (
             "the user denied this action (or the request timed out). "
@@ -447,3 +722,121 @@ class GatedToolProvider:
 
     def __getattr__(self, item: str) -> Any:
         return getattr(self._inner, item)
+
+
+class BatchApprovalProvider(ToolProvider):
+    """The `propose_writes` tool: one approval for a whole set of writes.
+
+    A provider rather than a faculty in `domain/` because it is inseparable from
+    the gate — it hands the gate a manifest and the gate spends it. Its own tool
+    is NOT a write: it changes nothing, it asks. So WRITE_TOOLS is empty and
+    `GatedToolProvider` leaves it alone, which is what stops the obvious
+    absurdity of an approval prompt for the tool that exists to reduce them.
+    """
+
+    name = "approvals"
+    # Explicit even though it matches the base default: this is the line that
+    # keeps the gate from wrapping its own escape hatch.
+    WRITE_TOOLS: frozenset[str] = frozenset()
+    # Rides every turn. A vendor that subsets tools by keyword would otherwise
+    # drop propose_writes from exactly the turn that needs it — the user says
+    # "record all of these" and names no tool at all.
+    ALWAYS_ATTACH = True
+
+    SYSTEM_PROMPT_SECTION = """== Approving several writes at once ==
+
+propose_writes is how you show the list: it puts the whole set in ONE message
+and asks once, instead of one approval tap per write. Prefer it to writing the
+list out by hand.
+
+Each entry must name the call EXACTLY as you will make it — connector, tool, and
+the same arguments. What the user approves is those calls. A call that differs in
+any argument still asks for its own tap, and that is the point: they cannot be
+shown one thing and given another.
+
+Entries are single-use and the set expires after 15 minutes. If the user changes
+something, propose the corrected set again."""
+
+    def __init__(self, gate: WriteApprovalGate) -> None:
+        self._gate = gate
+
+    def system_prompt_section(self) -> str:
+        return self.SYSTEM_PROMPT_SECTION
+
+    def builtin_tools(self) -> list[ToolSpec]:
+        async def propose_writes(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+            raw = args.get("items")
+            items = raw if isinstance(raw, list) else []
+            ok, message = await self._gate.propose(
+                ctx.chat_id, items, str(args.get("summary") or ""),
+                background=ctx.background,
+            )
+            return ToolResult.ok(message) if ok else ToolResult.error(message)
+
+        return [
+            ToolSpec(
+                name="propose_writes",
+                description=(
+                    "Ask the user to approve a WHOLE SET of writes in one message, "
+                    "instead of one approval tap per write. Use it when you are "
+                    "about to make three or more writes — recording a backlog, a "
+                    "catch-up, a list of expenses.\n\n"
+                    "Every entry must state the call exactly as you will make it: "
+                    "connector, tool, and identical arguments. After approval, make "
+                    "exactly those calls; each one then executes without asking "
+                    "again. Anything you call that was not in the set still asks, "
+                    "so do not use this to get blanket permission.\n\n"
+                    "Entries are single-use and the approval expires after 15 "
+                    "minutes. If the user wants changes, propose the new set."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": (
+                                "One line naming what this set is, e.g. "
+                                "'5 expenses from Sep 12-14'."
+                            ),
+                        },
+                        "items": {
+                            "type": "array",
+                            "minItems": 1,
+                            "description": "The writes you intend to make, in order.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "connector": {
+                                        "type": "string",
+                                        "description": (
+                                            "Connector that owns the tool, e.g. 'budget'."
+                                        ),
+                                    },
+                                    "tool": {
+                                        "type": "string",
+                                        "description": "Tool name, e.g. 'record_split'.",
+                                    },
+                                    "args": {
+                                        "type": "object",
+                                        "description": (
+                                            "The exact arguments you will pass. Any "
+                                            "difference means that call asks separately."
+                                        ),
+                                    },
+                                    "label": {
+                                        "type": "string",
+                                        "description": (
+                                            "One short line the user will read, e.g. "
+                                            "'Dinner at Lagrima, 1,437.86 split with Paul'."
+                                        ),
+                                    },
+                                },
+                                "required": ["connector", "tool", "args", "label"],
+                            },
+                        },
+                    },
+                    "required": ["items"],
+                },
+                handler=propose_writes,
+            )
+        ]

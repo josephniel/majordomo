@@ -59,10 +59,14 @@ class _Persona:
         return None
 
 
-def build(connectors=(), enabled=(), platform=""):
+class _BackgroundPersona(_Persona):
+    background = True
+
+
+def build(connectors=(), enabled=(), platform="", persona=None):
     return ContextBuilder(
         config=_Registry(enabled), connectors=list(connectors),
-        persona=_Persona(), platform_context=platform,
+        persona=persona or _Persona(), platform_context=platform,
     ).build()
 
 
@@ -129,3 +133,28 @@ class TestContent:
 
     def test_turn_grounding_guidance_always_present(self):
         assert "Answering your own questions" in build()
+
+
+class TestBatchWriteGuidance:
+    """Show the whole list before a run of writes — chat turns only.
+
+    The rule exists because approval is one tap per write: 18% of four months of
+    ledger writes were denied, concentrated in catch-up sessions where the only
+    way to reject the fourth entry was to deny it after the first three were
+    already recorded.
+    """
+
+    def test_chat_turns_carry_it(self):
+        assert "Recording several things at once" in build()
+
+    def test_background_fires_do_not(self):
+        """Nobody is watching a watch fire, its writes are the allow-listed ones
+        that run without a tap, and its prompt pays full freight with no cache
+        reuse — so the rule would be instructions to nobody, billed every poll."""
+        assert "Recording several things at once" not in build(persona=_BackgroundPersona())
+
+    def test_it_sits_in_the_stable_prefix(self):
+        """Before the platform context and the connector sections, so it does not
+        land among the parts that change between turns."""
+        out = build(platform="PLATFORM-CTX")
+        assert out.index("Recording several things at once") < out.index("PLATFORM-CTX")

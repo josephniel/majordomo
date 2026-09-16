@@ -7,6 +7,7 @@ by name — callers should not reach into _REGISTRY directly.
 from __future__ import annotations
 
 from .base import (
+    SILENT_SENTINEL,
     ChatPlatform,
     CommandEvent,
     InboundMessage,
@@ -15,6 +16,7 @@ from .base import (
     OnMessage,
     ReplyStream,
     StatusTracker,
+    is_silent,
 )
 from .config import PlatformConfig
 from .telegram import TelegramPlatform
@@ -35,6 +37,7 @@ def registered_platform_names() -> list[str]:
 
 
 __all__ = [
+    "SILENT_SENTINEL",
     "ChatPlatform",
     "CommandEvent",
     "InboundMessage",
@@ -46,5 +49,6 @@ __all__ = [
     "StatusTracker",
     "TelegramPlatform",
     "get_platform_cls",
+    "is_silent",
     "registered_platform_names",
 ]

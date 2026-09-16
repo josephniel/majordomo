@@ -263,11 +263,30 @@ class TestContract:
     def test_write_tools_declared(self):
         assert frozenset(
             {"record_transaction", "record_split", "record_transfer", "settle_person",
-             "delete_transaction", "amend_transaction", "amend_pending_payment"}
+             "delete_transaction", "amend_transaction", "amend_pending_payment",
+             "approve_pending_payment", "create_person"}
         ) == BudgetConnector.WRITE_TOOLS
         # Reads must never be gated.
         assert "list_accounts" not in BudgetConnector.WRITE_TOOLS
         assert "account_balances" not in BudgetConnector.WRITE_TOOLS
+
+    def test_approving_a_scheduled_payment_is_gated(self):
+        """It posts a real ledger row, so it asks like every other write.
+
+        Until 2026-09-16 it did not, which left the approval surface backwards:
+        AMENDING a schedule (a plan changes, no money moves) asked for a tap,
+        while APPROVING one (money moves) did not. A four-month read of
+        approval_log is what surfaced it — the tool never appears there.
+        """
+        assert "approve_pending_payment" in BudgetConnector.WRITE_TOOLS
+        assert "approve_pending_payment" in BudgetConnector.RECORD_CLAIM_TOOLS
+
+    def test_adding_a_person_is_gated(self):
+        """A person is a lasting entity in the ledger, not a side effect of a
+        transaction. The tracker refuses to invent one from a write — this is
+        the deliberate path, so it asks like every other write."""
+        assert "create_person" in BudgetConnector.WRITE_TOOLS
+        assert "create_person" in BudgetConnector.TOOL_NAMES
 
     def test_amending_a_row_is_a_record_claim(self):
         # amend_transaction rewrites a row the user will rely on, so Layer 3d

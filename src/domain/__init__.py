@@ -16,6 +16,7 @@ persona, no accounts, no auth flows.
 Runtime services (webhooks, mail watch, retention) live in `adapters/trigger/` —
 they act on their own triggers and never appear in a tool schema.
 """
+from .addressing import AddressingGate
 from .code_exec import CodeExecutor
 from .delegate import Delegator
 from .devloop import DevLoop
@@ -33,6 +34,7 @@ from .tasks import TaskBoard
 from .workspace import Workspace
 
 __all__ = [
+    "AddressingGate",
     "CodeExecutor",
     "Delegator",
     "DevLoop",

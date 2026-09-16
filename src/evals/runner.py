@@ -77,6 +77,14 @@ class EvalCase:
     # this: a model that re-asks a clarifying question the user already
     # answered, instead of calling the tool.
     history: tuple[tuple[str, str], ...] = ()
+    # Extra system-prompt text for THIS case only, appended to the fixture
+    # prompt. The baseline stays byte-identical for every case that doesn't
+    # set one, so cross-model comparability is unaffected; a case that does
+    # set one is comparable against itself across models and runs, which is
+    # all a scenario-specific case ever needed. Exists because some
+    # behaviours only exist inside a context — control-room silence cannot be
+    # evaluated without a control room in the prompt.
+    system_suffix: str = ""
 
 
 @dataclass
@@ -102,11 +110,34 @@ class _EvalPersona:
     name = "Eval"
     model: str | None = None
     system_prompt = EVAL_SYSTEM_PROMPT
+
+    def __init__(self, system_suffix: str = "") -> None:
+        if system_suffix:
+            self.system_prompt = f"{EVAL_SYSTEM_PROMPT}\n\n{system_suffix}"
     # Evals drive the agent directly, never through a trigger fire.
     background = False
 
     def allowed_tool_names(self, _connector: Any) -> list[str] | None:
         return None  # all tools
+
+
+# Platform prompt sections a case can pull in by name, so a scenario case
+# evaluates the prompt that SHIPS rather than a copy of it pasted into the
+# case file — which would pass forever after the real one was edited.
+_PROMPTS_DIR = Path(__file__).resolve().parents[1] / "adapters/chat/prompts"
+
+# Stand-in handle for the bot under evaluation, substituted into a prompt
+# section that expects one. Fixed, because the prompt must be byte-identical
+# across runs for scores to mean anything.
+EVAL_BOT_HANDLE = "eval_bot"
+
+
+def load_prompt_section(name: str) -> str:
+    """Read a shipped platform prompt section for use as a case's suffix."""
+    path = (_PROMPTS_DIR / f"{name}.md").resolve()
+    if path.parent != _PROMPTS_DIR.resolve() or not path.is_file():
+        raise ValueError(f"unknown prompt section {name!r}")
+    return path.read_text(encoding="utf-8").format(bot_username=EVAL_BOT_HANDLE)
 
 
 def load_cases(path: Path) -> list[EvalCase]:
@@ -129,6 +160,11 @@ def load_cases(path: Path) -> list[EvalCase]:
             expect_no_tool=bool(item.get("expect_no_tool")),
             reply_matches=item.get("reply_matches"),
             history=history,
+            system_suffix=(
+                load_prompt_section(str(item["system_suffix_prompt"]))
+                if item.get("system_suffix_prompt")
+                else str(item.get("system_suffix") or "")
+            ),
         ))
     return cases
 
@@ -145,7 +181,7 @@ async def run_case(vendor: str, case: EvalCase) -> CaseResult:
     agent_cls, model_env = VENDORS[vendor]
     # Production-sized tool surface, not a toy one — see FakeBulkTools.
     fakes = [FakeMemory(), FakeSchedule(), FakeGmail(), FakeBulkTools()]
-    persona = _EvalPersona()
+    persona = _EvalPersona(case.system_suffix)
     history = EphemeralConversationHistory()
     agent = agent_cls(
         context_builder=ContextBuilder(

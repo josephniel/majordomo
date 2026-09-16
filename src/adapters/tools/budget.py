@@ -17,6 +17,7 @@ import getpass
 import json
 import logging
 import sys
+import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -194,6 +195,43 @@ class BudgetClient:
     async def delete_transaction(self, transaction_id: int) -> dict[str, Any]:
         return json_object(await self._request("DELETE", f"/transactions/{transaction_id}"))
 
+    async def create_person(self, name: str) -> dict[str, Any]:
+        """Add someone to the people roster (`POST /people`).
+
+        The tracker refuses to invent people from a transaction — that is how it
+        accumulated 51 names of which 6 were real, every merchant string that
+        ever landed in a counterparty field. Creating one is a deliberate act,
+        which is exactly why this is a write tool and asks first.
+        """
+        return json_object(await self._request("POST", "/people", body={"name": name}))
+
+    async def find_external(self, source: str, external_id: str) -> dict[str, Any] | None:
+        """Look up what an upstream entry became here, or None if never recorded.
+
+        The tracker answers null rather than 404 for "not recorded", and it only
+        counts LIVE entries — a reversed one reads as absent, so an expense that
+        was deleted upstream and re-created can be mirrored again.
+        """
+        got = await self._request(
+            "GET", "/transactions/external",
+            params={"source": source, "external_id": external_id},
+        )
+        obj = json_object(got)
+        return obj or None
+
+    async def link_external(
+        self, source: str, external_id: str, transfer_ids: list[int]
+    ) -> dict[str, Any]:
+        """Stamp entries recorded HERE with the id they got upstream.
+
+        Safe to retry: re-linking the same key to the same transfers is a no-op.
+        Pointing a used key at different transfers is refused with a 409.
+        """
+        return json_object(await self._request(
+            "POST", "/transactions/external",
+            body={"source": source, "external_id": external_id, "transfer_ids": transfer_ids},
+        ))
+
 
 # ---- formatting helpers ----
 
@@ -357,6 +395,39 @@ def _tag_problem(tag_id: int, kind: str, index: dict[int, dict[str, Any]]) -> st
             f"Tags that accept {kind}: {alternatives}"
         )
     return ""
+
+
+SPLITWISE_QUEUE_SOURCE = "splitwise-queue"
+
+
+def _queue_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Mark a split for the Splitwise push, if the caller asked for it.
+
+    The generated id is the grouping key the tracker otherwise lacks: it is what
+    lets a later pass reassemble "these five legs were one shared expense"
+    without matching descriptions and timestamps. It is replaced by the real
+    Splitwise id once the expense exists.
+    """
+    if not args.get("share_to_splitwise"):
+        return {}
+    return {
+        "source": SPLITWISE_QUEUE_SOURCE,
+        "external_id": uuid.uuid4().hex,
+    }
+
+
+def _origin_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Return the upstream identity to stamp on this write, if there is one.
+
+    Both halves or neither — the tracker refuses half a reference, and a
+    half-stamped row is worse than an unstamped one because it looks linked and
+    cannot be looked up.
+    """
+    source = str(args.get("source") or "").strip()
+    external_id = str(args.get("external_id") or "").strip()
+    if source and external_id:
+        return {"source": source[:32], "external_id": external_id[:64]}
+    return {}
 
 
 async def _tag_index_or_none(client: BudgetClient) -> dict[int, dict[str, Any]] | None:
@@ -577,6 +648,22 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
                     "type": "string",
                     "description": "ISO 8601 datetime; omit for now.",
                 },
+                "source": {
+                    "type": "string",
+                    "description": (
+                        "System this mirrors, e.g. 'splitwise'. Supply ONLY the "
+                        "values a watch handed you; never invent one."
+                    ),
+                    "maxLength": 32,
+                },
+                "external_id": {
+                    "type": "string",
+                    "description": (
+                        "That system's id for the entry, so it is never recorded "
+                        "twice. Pass it together with source or not at all."
+                    ),
+                    "maxLength": 64,
+                },
             },
             "required": ["account_id", "tag_id", "amount", "type"],
         },
@@ -611,6 +698,7 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
                 payload["description"] = str(args["description"])
             if args.get("counterparty"):
                 payload["counterparty"] = str(args["counterparty"])[:120]
+            payload.update(_origin_args(args))
             tx = await client.create_transaction(account_id, payload)
             return ToolResult.ok(
                 f"recorded: {payload['type']} {payload['amount']} on account "
@@ -999,6 +1087,33 @@ def _split_tools(client: BudgetClient) -> list[ToolSpec]:
                     "type": "string",
                     "description": "ISO 8601 datetime; omit for now.",
                 },
+                "source": {
+                    "type": "string",
+                    "description": (
+                        "System this mirrors, e.g. 'splitwise'. Supply ONLY the "
+                        "values a watch handed you; never invent one."
+                    ),
+                    "maxLength": 32,
+                },
+                "external_id": {
+                    "type": "string",
+                    "description": (
+                        "That system's id for the entry, so it is never recorded "
+                        "twice. Pass it together with source or not at all."
+                    ),
+                    "maxLength": 64,
+                },
+                "share_to_splitwise": {
+                    "type": "boolean",
+                    "description": (
+                        "Queue this split to be created in Splitwise shortly. Use "
+                        "INSTEAD of calling create_expense yourself — recording it "
+                        "in both places by hand is what produces duplicates. Leave "
+                        "it off for a split that already exists in Splitwise (one "
+                        "a watch reported), and off when the user did not ask for "
+                        "Splitwise at all."
+                    ),
+                },
             },
             "required": ["account_id", "tag_id", "total_amount", "shares"],
         },
@@ -1024,6 +1139,10 @@ def _split_tools(client: BudgetClient) -> list[ToolSpec]:
             }
             if args.get("description"):
                 payload["description"] = str(args["description"])
+            payload.update(_origin_args(args))
+            # An explicit push request wins over an inbound stamp: an entry
+            # cannot both have come FROM Splitwise and be waiting to go there.
+            payload.update(_queue_args(args))
             out = await client.create_split(account_id, payload)
             lent = ", ".join(f"{s['counterparty']} owes {s['amount']}" for s in shares)
             return ToolResult.ok(
@@ -1039,6 +1158,54 @@ def _split_tools(client: BudgetClient) -> list[ToolSpec]:
             return ToolResult.error(f"error: {e}")
 
     return [record_split_tool]
+
+
+def _people_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Add someone to the roster, so a split can name them."""
+    @tool(
+        "create_person",
+        "Add a NEW person to the budget tracker's people list. Only needed when "
+        "a record_split / record_transaction / settle_person was refused because "
+        "the name is unknown.\n\n"
+        "ASK THE USER FIRST, in words, before calling this: 'X isn't in your "
+        "people list — add them?' A person is a lasting entity, and the ledger "
+        "filled up with merchants precisely because names used to be created by "
+        "typing them. Never add a shop, a service or a bank — those belong in the "
+        "description. Only actual people you settle up with.\n\n"
+        "After it succeeds, make the original write again with the same name.",
+        {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "The person's name, spelled the way the ledger should hold "
+                        "it. Reuse the spelling already used elsewhere for them."
+                    ),
+                    "maxLength": 120,
+                },
+            },
+            "required": ["name"],
+        },
+    )
+    async def create_person_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        try:
+            name = str(args["name"]).strip()[:120]
+            if not name:
+                return ToolResult.error("error: a name is required")
+            person = await client.create_person(name)
+            return ToolResult.ok(
+                f"added {person.get('name', name)} (person #{person.get('id', '?')}) — "
+                f"now make the entry you were trying to record"
+            )
+        except KeyError as e:
+            return ToolResult.error(f"error: missing required arg {e}")
+        except httpx.HTTPStatusError as e:
+            return ToolResult.error(format_http_error(_VENDOR, e))
+        except Exception as e:
+            return ToolResult.error(f"error: {e}")
+
+    return [create_person_tool]
 
 
 def _settle_tools(client: BudgetClient) -> list[ToolSpec]:
@@ -1328,11 +1495,19 @@ class BudgetConnector(Connector):
     WRITE_TOOLS = frozenset({
         "record_transaction", "record_split", "record_transfer", "settle_person",
         "delete_transaction", "amend_transaction", "amend_pending_payment",
+        # A person is a lasting entity in the ledger, not a side effect of a
+        # transaction — see _people_tools.
+        "create_person",
+        # Added 2026-09-16. It was the odd one out: AMENDING a schedule asked
+        # for a tap while APPROVING one posted a real ledger row without any —
+        # the wrong way round, since the amendment changes a plan and the
+        # approval moves money.
+        "approve_pending_payment",
     })
     # All write a ledger row the user will later rely on — chat Layer 3d.
     RECORD_CLAIM_TOOLS = frozenset({
         "record_transaction", "record_split", "record_transfer", "settle_person",
-        "amend_transaction",
+        "amend_transaction", "approve_pending_payment",
     })
 
     TOOL_NAMES: ClassVar[list[str]] = [
@@ -1346,6 +1521,7 @@ class BudgetConnector(Connector):
         "record_split",
         "record_transfer",
         "settle_person",
+        "create_person",
         "delete_transaction",
         "amend_transaction",
         "list_pending_payments",
@@ -1362,6 +1538,7 @@ class BudgetConnector(Connector):
         "record_split": "Recording the split payment",
         "record_transfer": "Moving money between accounts",
         "settle_person": "Recording the settle-up",
+        "create_person": "Adding the person",
         "delete_transaction": "Deleting the budget transaction",
         "amend_transaction": "Correcting the budget transaction",
         "list_pending_payments": "Checking scheduled payments",
@@ -1371,9 +1548,26 @@ class BudgetConnector(Connector):
 
     SYSTEM_PROMPT_SECTION = """== Budget tracker ==
 
-The user's personal ledger. IMPORTANT: whenever the user reports spending or
-receiving money — including expenses you just recorded in Splitwise or read
-from email — ALSO record it here so the ledger stays complete.
+The user's personal ledger, and the place a shared expense is recorded FIRST.
+IMPORTANT: whenever the user reports spending or receiving money — including
+what you read from email — record it here so the ledger stays complete.
+
+PEOPLE ARE NOT CREATED BY NAMING THEM. If a write is refused because the
+person is unknown, do not retry with a different spelling and do not drop the
+person — ASK the user whether to add them ("Ana isn't in your people list — add
+her?"), call create_person once they say yes, then make the original entry
+again. Only real people you settle up with: a shop, a service or a bank belongs
+in the description, and the ledger filled up with merchants precisely because
+names used to become people by being typed.
+
+A SHARED expense is recorded here ONCE, with record_split and
+`share_to_splitwise: true`, and the Splitwise entry is created from it minutes
+later. Do not also call create_expense: recording the same expense in both
+places by hand is what produced September 2026's duplicates, because the two
+systems shared no key and the Splitwise watch could not tell your entry from a
+new one. An expense the watch REPORTED already exists in Splitwise — record it
+with the `source` and `external_id` the watch gave you, and leave
+share_to_splitwise off.
 
 RECURRING PAYMENTS ARE ALREADY IN THE LEDGER, WAITING. Bills, rent,
 subscriptions, installments, allowances and loan amortizations exist as
@@ -1440,9 +1634,14 @@ problem when the real answer is that you are using the wrong tool."""
 
     # ---- Connector contract ----
 
-    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
-        """One in-process MCP per enabled budget_<profile> profile."""
-        servers: dict[str, list[ToolSpec]] = {}
+    def build_clients(self) -> dict[str, BudgetClient]:
+        """One client per enabled budget_<profile> profile.
+
+        Public because the ledger is no longer reached only through tools: the
+        splitwise watch asks it "is this expense already recorded?" before it
+        decides whether a turn is needed at all.
+        """
+        clients: dict[str, BudgetClient] = {}
         for profile in self._config.load_all():
             if not profile.enabled or not self.owns_profile(profile.name):
                 continue
@@ -1454,9 +1653,15 @@ problem when the real answer is that you are using the wrong tool."""
                     profile.name,
                 )
                 continue
-            client = BudgetClient(base_url=base_url, api_key=api_key)
-            servers[profile.name] = self._build_tools_for_profile(client)
-        return servers
+            clients[profile.name] = BudgetClient(base_url=base_url, api_key=api_key)
+        return clients
+
+    def builtin_servers(self) -> dict[str, list[ToolSpec]]:
+        """One in-process MCP per enabled budget_<profile> profile."""
+        return {
+            name: self._build_tools_for_profile(client)
+            for name, client in self.build_clients().items()
+        }
 
     def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:
         return self.STATUS.get(local)
@@ -1471,6 +1676,7 @@ problem when the real answer is that you are using the wrong tool."""
             *_pending_tools(client),
             *_split_tools(client),
             *_settle_tools(client),
+            *_people_tools(client),
             *_undo_tools(client),
             *_amend_tools(client),
             *_amend_pending_tools(client),

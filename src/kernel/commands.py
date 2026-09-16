@@ -8,7 +8,7 @@ _cancel_chat().
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ports import ConversationRef, VendorIntrospectable
 
@@ -21,6 +21,27 @@ if TYPE_CHECKING:
     from ports import Agent, ServiceCatalog, ToolProviderView, TriggerSource
 
 log = logging.getLogger(__name__)
+
+
+def _cache_line(today: dict[str, Any]) -> str:
+    """Report today's prompt-cache hit rate, or nothing if it isn't measured.
+
+    Worth its own line rather than folding into the tokens line, because
+    `input_tokens` counts only what was NOT cached: on a warm prefix it
+    reads near zero, which looks like a tiny prompt instead of a cheap one.
+    The hit rate is what says which of those it is.
+    """
+    read = today.get("cache_read_tokens") or 0
+    written = today.get("cache_write_tokens") or 0
+    uncached = today.get("input_tokens") or 0
+    if not read and not written:
+        return ""  # vendor doesn't report it, or nothing cached yet today
+    total = read + written + uncached
+    rate = (100 * read // total) if total else 0
+    return (
+        f"Prompt cache: {rate}% of input served from cache "
+        f"({read} read / {written} written / {uncached} uncached)"
+    )
 
 
 class CommandsMixin:
@@ -270,6 +291,9 @@ class CommandsMixin:
                     f"{today.get('output_tokens', 0)} out tokens, "
                     f"{today.get('failovers', 0)} failovers"
                 )
+                cache_line = _cache_line(today)
+                if cache_line:
+                    out.append(cache_line)
             last = stats.get("last")
             if last:
                 out.append(

@@ -33,6 +33,30 @@ OnRelay = Callable[[ConversationRef, str, int | None], Awaitable[None]]
 MAX_BOT_HOPS_WITHOUT_HUMAN = 8
 
 
+def _attributed(text: str, from_username: Any) -> str:
+    """Label a peer's message with who said it.
+
+    Platform-delivered room messages carry a "[@sender]: " prefix, and the
+    room prompt tells the agent to route on it. A relayed message did not:
+    the comms_log `out` row holds the reply text exactly as sent, so a peer
+    bot's words reached the agent looking like the OPERATOR had typed them —
+    which is both a routing error and the wrong trust level for content
+    another model wrote.
+
+    Nobody noticed because the relay had no rows to deliver: outbound
+    logging broke when streaming landed, and reviving it (ChatPlatform
+    .note_outbound) is what made this path live again.
+
+    The sender is already in the row; this just puts it where the agent
+    looks. A row with no username keeps the text unchanged rather than
+    inventing an attribution.
+    """
+    handle = str(from_username or "").strip()
+    if not handle or text.startswith("["):
+        return text
+    return f"[@{handle}]: {text}"
+
+
 def _as_ref(raw: Any) -> ConversationRef | None:
     """Turn the comms_log chat_id column back into a ref, or None if it is junk.
 
@@ -91,6 +115,7 @@ class CommsRelay:
         if chat_id is None:
             log.warning("relay: unusable chat_id %r on a comms entry", raw_chat_id)
             return
+        text = _attributed(text, entry.get("from_username"))
         hops = self._bot_hops.get(chat_id, 0)
         if hops > MAX_BOT_HOPS_WITHOUT_HUMAN:
             log.warning(

@@ -16,6 +16,7 @@ import secrets
 import time
 from collections.abc import Callable, Coroutine
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -44,11 +45,12 @@ from .base import (
     OnMessage,
     ReplyStream,
     StatusTracker,
+    is_silent,
 )
 from .transcription import CascadingTranscriber, filename_for_mime
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import AsyncIterator, Mapping, Sequence
     from types import TracebackType
 
     from telegram import Bot, Chat, Message, User
@@ -116,6 +118,50 @@ def _native(chat_id: ConversationRef | int) -> int:
     return int(chat_id.chat_key)
 
 
+def _attachment_placeholder(attachments: Sequence[Attachment]) -> str:
+    """Stand-in text for a message that is nothing but attachments.
+
+    Shared rooms route on what a message looks like, so a caption-less photo
+    needs SOMETHING for the sender label to be attached to and for the
+    addressing check to reason over. "[image]" is not a description of the
+    photo — it is the fact that a photo is what arrived, which is the part
+    routing actually depends on.
+    """
+    if not attachments:
+        return "[no text]"
+    images = sum(1 for a in attachments if a.media_type.startswith("image/"))
+    files = len(attachments) - images
+    parts = []
+    if images:
+        parts.append("[image]" if images == 1 else f"[{images} images]")
+    if files:
+        parts.append("[file]" if files == 1 else f"[{files} files]")
+    return " ".join(parts)
+
+
+# How long to wait for the rest of an album before treating it as complete.
+#
+# Telegram sends an album as N separate Updates sharing a media_group_id and
+# never says which one is last, so "complete" can only ever be a guess at a
+# gap. The items are emitted back-to-back by the client and normally land
+# within tens of milliseconds of each other; a second is far longer than the
+# gap being detected and short enough that nobody reads it as lag.
+#
+# Guessing short splits one album into two turns — the exact bug this
+# removes. Guessing long only delays a reply. So it is deliberately generous.
+_MEDIA_GROUP_DEBOUNCE = 1.0
+
+
+@dataclass
+class _MediaGroup:
+    """Items of one album seen so far, plus the timer that will flush them."""
+
+    text: str = ""
+    attachments: list[Attachment] = field(default_factory=list)
+    message_id: int | None = None
+    timer: asyncio.Task[None] | None = None
+
+
 class TelegramPlatform(ChatPlatform):
     name = "telegram"
     REQUIRED_ENV: ClassVar[list[str]] = ["TELEGRAM_TOKEN"]
@@ -144,6 +190,11 @@ class TelegramPlatform(ChatPlatform):
         self._app: Application[Any, Any, Any, Any, Any, Any] | None = None
         # nonce -> future resolved by the inline-keyboard callback.
         self._pending_approvals: dict[str, asyncio.Future[bool]] = {}
+        # Telegram albums: one Update PER ITEM, all sharing a media_group_id
+        # and no "that was the last one" signal. Buffered here and dispatched
+        # as ONE message. See _handle_message_update.
+        self._media_groups: dict[tuple[int, str], _MediaGroup] = {}
+        self._media_group_lock = asyncio.Lock()
         self._on_message: OnMessage | None = None
         self._on_command: OnCommand | None = None
         self._on_startup: OnLifecycle | None = None
@@ -259,19 +310,35 @@ class TelegramPlatform(ChatPlatform):
             # rather than erroring out.
             kwargs["reply_to_message_id"] = reply_to
             kwargs["allow_sending_without_reply"] = True
-        sent = await self._app.bot.send_message(native_id, text, **kwargs)
-        if self._is_control_room(native_id) and self._comms_log is not None:
-            try:
-                await self._comms_log.append(
-                    instance=self._persona_id,
-                    direction="out",
-                    text=text,
-                    chat_id=chat_id,
-                    message_id=getattr(sent, "message_id", None),
-                    from_username=self._username,
-                )
-            except Exception:
-                log.exception("could not append outbound to comms_log")
+        await self._app.bot.send_message(native_id, text, **kwargs)
+
+    def is_shared_room(self, chat_id: ConversationRef) -> bool:
+        return self._is_control_room(_native(chat_id))
+
+    async def note_outbound(
+        self,
+        chat_id: ConversationRef,
+        text: str,
+        message_id: int | None = None,
+    ) -> None:
+        """Mirror a control-room reply so peer bots can hear it.
+
+        This used to live in send_text, where it only saw replies that took
+        the send path — and once streaming landed, almost none did.
+        """
+        if self._comms_log is None or not self._is_control_room(_native(chat_id)):
+            return
+        try:
+            await self._comms_log.append(
+                instance=self._persona_id,
+                direction="out",
+                text=text,
+                chat_id=chat_id,
+                message_id=message_id,
+                from_username=self._username,
+            )
+        except Exception:
+            log.exception("could not append outbound to comms_log")
 
     def keep_typing(self, chat_id: ConversationRef) -> AbstractAsyncContextManager[None]:
         if self._app is None:
@@ -559,7 +626,9 @@ class TelegramPlatform(ChatPlatform):
             return None  # silently ignore stickers/gifs
         return voice_text or msg.text or msg.caption or ""
 
-    async def _mirror_inbound(self, chat: Chat, msg: Message, user: User, text: str) -> None:
+    async def _mirror_inbound_text(
+        self, chat: Chat, message_id: int | None, user: User, text: str
+    ) -> None:
         """Put a control-room message on the comms log, so peer bots see it."""
         if self._comms_log is None:
             return
@@ -569,7 +638,7 @@ class TelegramPlatform(ChatPlatform):
                 direction="in",
                 text=text,
                 chat_id=_ref(chat.id),
-                message_id=msg.message_id,
+                message_id=message_id,
                 from_user=user.id,
                 from_username=user.username,
             )
@@ -602,14 +671,84 @@ class TelegramPlatform(ChatPlatform):
         if not text and not attachments:
             return
 
+        # An album is N Updates sharing a media_group_id. Hold them until the
+        # stream stops, then send ONE message: three screenshots of the same
+        # statement are one thing the user showed us, and dispatching them
+        # separately spends three turns arguing with itself about partial
+        # evidence.
+        if msg.media_group_id:
+            await self._buffer_media_group(
+                chat, user, msg, text, attachments, msg.media_group_id,
+            )
+            return
+
+        await self._dispatch(chat, user, text, attachments, msg.message_id)
+
+    async def _buffer_media_group(
+        self,
+        chat: Chat,
+        user: User,
+        msg: Message,
+        text: str,
+        attachments: list[Attachment],
+        group_id: str,
+    ) -> None:
+        """Accumulate one album item and (re)arm the flush timer."""
+        key = (chat.id, group_id)
+        async with self._media_group_lock:
+            group = self._media_groups.get(key)
+            if group is None:
+                group = _MediaGroup(message_id=msg.message_id)
+                self._media_groups[key] = group
+            # Telegram puts the caption on ONE item of the album, not
+            # necessarily the first to arrive. Whichever carries it wins;
+            # the rest contribute only their media.
+            if text and not group.text:
+                group.text = text
+            group.attachments.extend(attachments)
+            if group.timer is not None:
+                group.timer.cancel()
+            group.timer = asyncio.create_task(self._flush_media_group(chat, user, key))
+
+    async def _flush_media_group(
+        self, chat: Chat, user: User, key: tuple[int, str]
+    ) -> None:
+        """Dispatch a buffered album once its items stop arriving."""
+        try:
+            await asyncio.sleep(_MEDIA_GROUP_DEBOUNCE)
+        except asyncio.CancelledError:
+            return  # another item landed; that item re-armed the timer
+        async with self._media_group_lock:
+            group = self._media_groups.pop(key, None)
+        if group is None:
+            return
+        await self._dispatch(
+            chat, user, group.text, group.attachments, group.message_id,
+        )
+
+    async def _dispatch(
+        self,
+        chat: Chat,
+        user: User,
+        text: str,
+        attachments: list[Attachment],
+        message_id: int | None,
+    ) -> None:
+        """Hand one complete user message up to the orchestrator."""
         if self._is_control_room(chat.id):
             # Prefix the sender label so the agent can tell who is talking and
             # decide whether the message is for it, then mirror the labelled
             # text to the comms log so peer bots get the NOTIFY.
-            if text:
-                sender = f"@{user.username}" if user.username else f"user-{user.id}"
-                text = f"[{sender}]: {text}"
-            await self._mirror_inbound(chat, msg, user, text)
+            #
+            # The label goes on even when there is no text to label. A
+            # caption-less photo used to arrive as the empty string, which
+            # dropped the one piece of routing context the room runs on — and
+            # those were precisely the turns least likely to be routed
+            # correctly, because the agent could not see who had spoken.
+            sender = f"@{user.username}" if user.username else f"user-{user.id}"
+            body = text or _attachment_placeholder(attachments)
+            text = f"[{sender}]: {body}"
+            await self._mirror_inbound_text(chat, message_id, user, text)
 
         if self._on_message is None:
             return
@@ -618,7 +757,7 @@ class TelegramPlatform(ChatPlatform):
             sender_id=str(user.id),
             text=text,
             attachments=attachments,
-            message_id=msg.message_id,
+            message_id=message_id,
         ))
 
     async def _transcribe_voice(self, msg: Message, bot: Bot) -> str | None:
@@ -911,7 +1050,6 @@ _STREAM_CURSOR = "▌"
 #     silent turn is never rendered at all.
 _STREAM_MIN_CHARS = 40
 
-_SILENT_SENTINEL = "<silent>"
 
 
 def _typed_prefix(body: str) -> str:
@@ -993,7 +1131,7 @@ class _TelegramReplyStream:
     async def finish(self, text: str) -> int:
         await self._stop_painter()
         body = text.strip()
-        if not body or body.lower() == _SILENT_SENTINEL:
+        if not body or is_silent(body):
             await self._withdraw()
             return 0
         await self._paint(body, final=True)

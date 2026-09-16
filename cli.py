@@ -200,6 +200,9 @@ class ConnectorCLI:
             if s.description:
                 print(f"        {s.description}")
 
+    def _cmd_context(self, _args: argparse.Namespace) -> None:
+        asyncio.run(_report_context(self.runtime))
+
     def _cmd_documents_inspect(self, _args: argparse.Namespace) -> None:
         asyncio.run(_inspect_documents(self.runtime))
 
@@ -358,6 +361,12 @@ class ConnectorCLI:
         sub.add_parser(
             "skills", help="list this persona's skill notes",
         ).set_defaults(func=self._cmd_skills)
+
+        # `context` — where this persona's prompt tokens actually go.
+        sub.add_parser(
+            "context",
+            help="measure the cached prompt prefix (system prompt + tool schemas)",
+        ).set_defaults(func=self._cmd_context)
 
         # `documents inspect` — document library contents.
         p_docs = sub.add_parser("documents", help="document library (RAG corpus)")
@@ -593,6 +602,80 @@ async def _inspect_memory(container: PersonaRuntime) -> None:
         print(f"    {r['content'][:300]}")
 
     await db.close()
+
+
+async def _report_context(container: PersonaRuntime) -> None:
+    """Print where this persona's cached prompt prefix actually goes.
+
+    Exists because estimating it is badly wrong. Counting characters and
+    dividing by four put dev_assistant's tool schemas at ~4k tokens; the real
+    figure is ~16k, and tool schemas turned out to be 71% of the prefix
+    rather than the system prompt's 29%. Every decision about what to trim
+    was being made against the wrong number.
+
+    Costs ONE cheap turn. The CLI does not mount the in-process MCP servers
+    until a query runs, so a reading taken before that reports zero tools and
+    a prefix less than a third of its real size — which is the wrong number
+    again, just quieter.
+    """
+    from ports import ConversationRef
+
+    chat_id = ConversationRef("cli", "context")
+    agent = container.create_agent(chat_id)
+    chain = getattr(agent, "_chain", None) or []
+    claude = next((a for name, a in chain if name == "claude"), None)
+    if claude is None:
+        print("This report reads the Claude CLI's own accounting; this persona's")
+        print("chain does not include claude, so there is nothing to read.")
+        return
+
+    await claude.start()
+    try:
+        client = getattr(claude, "_client", None)
+        if client is None:
+            print("claude agent exposed no client; cannot measure")
+            return
+        print("warming the tool mounts (one short turn)…")
+        await client.query("Reply with exactly: ok")
+        async for _ in client.receive_response():
+            pass
+        usage = await client.get_context_usage()
+    finally:
+        await claude.stop()
+
+    total = int(usage.get("totalTokens") or 0)
+    print(f"\n=== Context for {container.persona.id} ({usage.get('model', '?')}) ===\n")
+    for cat in usage.get("categories") or []:
+        name = str(cat.get("name", "?"))
+        if name.lower().startswith("free"):
+            continue
+        tokens = int(cat.get("tokens") or 0)
+        print(f"  {name:<22} {tokens:>7,} tok  {_pct(tokens, total):>3}%")
+    print(f"  {'TOTAL PREFIX':<22} {total:>7,} tok")
+
+    tools = usage.get("mcpTools") or []
+    if not tools:
+        return
+    per_server: dict[str, list[int]] = {}
+    for entry in tools:
+        row = per_server.setdefault(str(entry.get("serverName") or "?"), [0, 0])
+        row[0] += int(entry.get("tokens") or 0)
+        row[1] += 1
+    tool_total = sum(v[0] for v in per_server.values())
+    print(f"\n  Tool schemas by connector ({len(tools)} tools, {tool_total:,} tok):\n")
+    for server, (tokens, count) in sorted(per_server.items(), key=lambda kv: -kv[1][0]):
+        print(
+            f"    {server:<22} {tokens:>6,} tok  {count:>3} tools  "
+            f"{_pct(tokens, tool_total):>3}%"
+        )
+    print(
+        "\n  Every one of these rides in the cached prefix on every turn. "
+        "Disabling\n  a connector in persona.yaml is what removes its rows."
+    )
+
+
+def _pct(part: int, whole: int) -> int:
+    return (100 * part // whole) if whole else 0
 
 
 async def _inspect_documents(container: PersonaRuntime) -> None:

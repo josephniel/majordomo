@@ -983,6 +983,40 @@ class ChatCompletionsAgent(Agent):
                 await on_partial_reply(text)
         return state.current_completion_snapshot
 
+    def _note_usage(
+        self,
+        resp: Any,
+        total_in: int,
+        total_out: int,
+        total_cached: int | None,
+    ) -> tuple[int, int, int | None]:
+        """Fold one response's token counts into the turn's running totals.
+
+        ACCUMULATED, not overwritten: a single turn can span several requests
+        through the tool loop, and reporting only the last one understates
+        every turn that used a tool.
+
+        `cached_tokens` (OpenAI-compatible prompt-cache reporting) stays None
+        until some response actually carries it, so a vendor that never sends
+        the field stays distinguishable from one reporting no cache hits.
+        """
+        usage = getattr(resp, "usage", None)
+        if usage is None:
+            return total_in, total_out, total_cached
+        total_in += getattr(usage, "prompt_tokens", 0) or 0
+        total_out += getattr(usage, "completion_tokens", 0) or 0
+        details = getattr(usage, "prompt_tokens_details", None)
+        cached = getattr(details, "cached_tokens", None) if details else None
+        if cached is not None:
+            total_cached = (total_cached or 0) + int(cached)
+        self.last_turn_usage = {
+            "input_tokens": total_in,
+            "output_tokens": total_out,
+        }
+        if total_cached is not None:
+            self.last_turn_usage["cache_read_tokens"] = total_cached
+        return total_in, total_out, total_cached
+
     async def _run_tool_loop(
         self,
         messages: list[dict[str, Any]],
@@ -998,6 +1032,9 @@ class ChatCompletionsAgent(Agent):
             tools = self._openai_tools
         total_in = 0
         total_out = 0
+        # None until some response actually reports cache hits, so "this
+        # vendor doesn't tell us" stays distinguishable from "zero hits".
+        total_cached: int | None = None
         for iteration in range(MAX_TOOL_LOOP_ITERATIONS):
             try:
                 resp = await self._complete(
@@ -1051,14 +1088,9 @@ class ChatCompletionsAgent(Agent):
                 raise
 
             # Accumulate token usage across the whole tool loop.
-            usage = getattr(resp, "usage", None)
-            if usage is not None:
-                total_in += getattr(usage, "prompt_tokens", 0) or 0
-                total_out += getattr(usage, "completion_tokens", 0) or 0
-                self.last_turn_usage = {
-                    "input_tokens": total_in,
-                    "output_tokens": total_out,
-                }
+            total_in, total_out, total_cached = self._note_usage(
+                resp, total_in, total_out, total_cached,
+            )
 
             choice = resp.choices[0] if resp.choices else None
             msg = choice.message if choice else None

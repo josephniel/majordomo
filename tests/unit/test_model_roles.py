@@ -62,11 +62,20 @@ class TestVendorSafety:
 
 class TestRoleShape:
     def test_every_role_resolves(self):
+        """Derived from the enum, so a new role that nobody wired up fails
+        here rather than falling back to chat in production."""
         r = roles(llm_chain=("gemini",))
-        assert set(r) == {
-            ModelRole.CHAT, ModelRole.BACKGROUND,
-            ModelRole.SUMMARIZE, ModelRole.IDEATE,
-        }
+        assert set(r) == set(ModelRole)
+
+    def test_router_defaults_to_background_not_chat(self):
+        """The gate runs before every room message reaches the chat model.
+        Inheriting chat would spend the turn the gate exists to avoid."""
+        r = roles(llm_chain=("claude", "gemini"), background_llm_chain=("groq",))
+        assert r[ModelRole.ROUTER].chain == ("groq",)
+
+    def test_router_chain_is_honoured_when_set(self):
+        r = roles(llm_chain=("claude",), router_llm=("gemini",))
+        assert r[ModelRole.ROUTER].chain == ("gemini",)
 
     def test_ideate_defaults_to_chat_not_background(self):
         """Ideation invents candidate facts from existing memory — it wants

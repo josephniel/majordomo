@@ -54,6 +54,7 @@ from adapters.tools import (
     WriteApprovalGate,
 )
 from domain import (
+    AddressingGate,
     DocumentLibrary,
     FileCourier,
     LongTermMemory,
@@ -203,25 +204,78 @@ class PersonaRuntime:
         # Routed by the SUMMARIZE role: one resolution path, so a
         # gemini-primary bot summarizes with gemini and a claude-primary one
         # uses subscription auth, without either being special-cased here.
+        return self._oneshot_for_role(
+            ModelRole.SUMMARIZE,
+            claude_model=self.settings.compaction_model,
+        )
+
+    def _oneshot_for_role(
+        self, role_name: ModelRole, *, claude_model: str, deterministic: bool = False,
+    ) -> Summarizer:
+        """One-shot, vendor-neutral text call routed by a model role.
+
+        Two callers with the same shape — compaction and the shared-room
+        addressing gate — and the resolution is fiddly enough (chain order,
+        enabled-ness, the Claude branch that has no backend because it goes
+        through subscription auth) that a second hand-rolled copy would be a
+        second place for it to drift.
+
+        `claude_model` is the fallback for the subscription-auth path only,
+        where there is no vendor spec to read a default off.
+
+        `deterministic` pins temperature to 0. Summarization is prose and
+        wants the vendor's default sampling; a one-word YES/NO gate does not.
+        Left sampled, the addressing gate answered YES and NO to the SAME
+        room message on consecutive calls — and a sampled NO does not degrade
+        gracefully, it drops the operator's message.
+        """
         s = self.settings
-        role = self.model_roles[ModelRole.SUMMARIZE]
+        role = self.model_roles[role_name]
         for name in role.chain:
             spec = VENDORS_BY_NAME.get(name)
             if spec is None or not spec.enabled(s):
                 continue
             if spec.backend is None:
                 break  # claude leads: fall through to subscription auth below
+            extra = dict(spec.extra_kwargs(s) or {})
+            if deterministic:
+                extra["temperature"] = 0
             return ChatCompletionsSummarizer.for_backend(
                 spec.backend, model=role.model or spec.model(s),
                 api_key=spec.api_key(s), base_url=spec.base_url(s),
-                extra=spec.extra_kwargs(s),
+                extra=extra,
             )
 
         # Claude path: Haiku routine, Sonnet deep — NOT the persona chat model
         # (that would put frequent background work on Sonnet too).
         return SubscriptionAuthSummarizer(
-            primary_model=role.model or self.settings.compaction_model,
+            primary_model=role.model or claude_model,
             deep_model=self.settings.compaction_deep_model,
+        )
+
+    @cached_property
+    def addressing_gate(self) -> AddressingGate | None:
+        """The shared-room "is this for me?" check, or None if there is no room.
+
+        Gated on the same control_room config as the comms log: a persona
+        that shares no room with anyone has nothing to route, and building
+        the gate anyway would put a model call in front of its DMs.
+        """
+        if not self.platform_config.raw.get("control_room"):
+            return None
+        persona = self.persona
+        charter = (
+            persona.addressing_charter or persona.role or persona.name
+        )
+        # The handle is bound at startup, not here: the platform has not
+        # fetched its own identity yet (see AddressingGate.bind_handle).
+        return AddressingGate(
+            self._oneshot_for_role(
+                ModelRole.ROUTER,
+                claude_model=self.settings.compaction_model,
+                deterministic=True,
+            ),
+            charter=charter,
         )
 
     @cached_property
@@ -1084,7 +1138,11 @@ class PersonaRuntime:
         chat_id = self._watch_chat_id(cfg, "mail_watch")
         if chat_id is None:
             return None
-        from adapters.trigger.mailwatch import MAIL_WATCH_PROMPT_PREAMBLE, MailWatcher
+        from adapters.trigger.mailwatch import (
+            DEFAULT_QUERY,
+            MAIL_WATCH_PROMPT_PREAMBLE,
+            MailWatcher,
+        )
         from domain.triggers import WatchSource
 
         every = max(1, int(cfg.get("every_minutes") or 3))
@@ -1095,6 +1153,10 @@ class PersonaRuntime:
             watcher=MailWatcher(
                 gmail_connector=self.provider("gmail"),
                 state_file=self.persona.data_dir / "mail_watch.json",
+                # Which mail is worth waking the model for is a property of THIS
+                # person's inbox, not of the watcher — see the persona file for
+                # the evidence behind the exclusions.
+                query=str(cfg.get("query") or "").strip() or DEFAULT_QUERY,
             ),
             preamble=MAIL_WATCH_PROMPT_PREAMBLE,
         )
@@ -1133,8 +1195,56 @@ class PersonaRuntime:
                 splitwise_connector=self.provider("splitwise"),
                 state_file=self.persona.data_dir / "splitwise_watch.json",
                 default_timezone=self.settings.schedule_timezone,
+                # The ledger decides what is already recorded, so the poll can
+                # skip a turn entirely when nothing is new. Guaranteed present:
+                # the guard above disables this watch without it.
+                budget_connector=self.provider("budget"),
             ),
             preamble=SPLITWISE_WATCH_PROMPT_PREAMBLE,
+        )
+
+    @cached_property
+    def splitwise_push_source(self) -> WatchSource | None:
+        """Outbound: ledger splits queued for Splitwise (see splitwisepush.py).
+
+        Opt-in and absent by default, unlike the inbound watch. This one WRITES
+        to a service other people can see, so it runs only when persona.yaml
+        asks for it by name — an accidental enable would file expenses against
+        someone else's account.
+        """
+        cfg = self.persona.splitwise_push
+        if not cfg:
+            return None
+        if not (
+            self.persona.is_connector_enabled("splitwise")
+            and self.persona.is_connector_enabled("budget")
+        ):
+            log.warning(
+                "persona %r: splitwise_push needs both the splitwise and budget "
+                "connectors; disabled", self.persona.id,
+            )
+            return None
+        chat_id = self._watch_chat_id(cfg, "splitwise_push")
+        if chat_id is None:
+            return None
+        from adapters.trigger.splitwisepush import (
+            SPLITWISE_PUSH_PROMPT_PREAMBLE,
+            SplitwisePusher,
+        )
+        from domain.triggers import WatchSource
+
+        every = max(1, int(cfg.get("every_minutes") or 15))
+        return WatchSource(
+            name="splitwise_push",
+            cron=f"*/{every} * * * *",
+            conversation=chat_id,
+            watcher=SplitwisePusher(
+                splitwise_connector=self.provider("splitwise"),
+                budget_connector=self.provider("budget"),
+                default_timezone=self.settings.schedule_timezone,
+                group_ids=dict(cfg.get("group_ids") or {}),
+            ),
+            preamble=SPLITWISE_PUSH_PROMPT_PREAMBLE,
         )
 
     @cached_property
@@ -1387,6 +1497,7 @@ class PersonaRuntime:
                 trigger_sources=self.trigger_sources(schedule_conn),
                 background_agent_factory=self._background_agent_factory,
                 approval_gate=self.approval_gate,
+                addressing_gate=self.addressing_gate,
             ),
         )
 
@@ -1413,6 +1524,7 @@ class PersonaRuntime:
             for w in (
                 self.mail_watch_source,
                 self.splitwise_watch_source,
+                self.splitwise_push_source,
                 self.meeting_watch_source,
                 self.gitlab_watch_source,
             )

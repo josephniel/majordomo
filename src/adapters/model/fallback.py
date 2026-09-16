@@ -70,6 +70,23 @@ HISTORY_COMPACTION_CHAR_THRESHOLD = 20_000  # ≈ 5k tokens
 # After a failed summarization, don't retry compaction for this long.
 COMPACTION_FAILURE_BACKOFF_SECONDS = 600
 
+# How long stop() waits for short-lived bookkeeping (the turn_log write)
+# before cancelling it. Named so a test can shrink it; compaction is NOT
+# governed by this — see COMPACTION_STOP_GRACE_SECONDS.
+BG_TASK_STOP_GRACE_SECONDS = 5.0
+
+# Cap on how long one compaction's summarize call may run. Observed healthy
+# runs are 8-77s; past this the summarizer is assumed wedged and the
+# compaction is abandoned to the normal failure backoff rather than holding
+# _compact_lock (and so blocking every later compaction) forever.
+SUMMARIZE_TIMEOUT_SECONDS = 120.0
+
+# How long stop() waits for an in-flight compaction before cancelling it.
+# Must exceed SUMMARIZE_TIMEOUT_SECONDS so a summarize that is merely slow
+# gets abandoned by its OWN timeout (which backs off and logs) rather than by
+# teardown.
+COMPACTION_STOP_GRACE_SECONDS = 150.0
+
 # Cap on the size of the missed-turns digest prepended after failover.
 DIGEST_CHAR_LIMIT = 3_000
 
@@ -226,6 +243,10 @@ class CascadingAgent(Agent):
         # stay bounded instead of replaying the whole conversation forever.
         self._pending_rotation: set[str] = set()
         self._bg_tasks: set[asyncio.Task[None]] = set()
+        # The post-turn compaction, tracked apart from _bg_tasks: it is the
+        # one background task that is NOT short-lived bookkeeping, so stop()
+        # has to wait for it on its own terms. See _spawn_compaction.
+        self._compact_task: asyncio.Task[None] | None = None
         # Tools invoked during the most recent successful turn — the
         # orchestrator's hallucination detector (Layer 3) reads these to spot
         # a model that CLAIMED a save/schedule but never called the tool.
@@ -279,15 +300,18 @@ class CascadingAgent(Agent):
         await self._ensure_started(self._chain[0][0])
 
     async def stop(self) -> None:
-        # Give short-lived bookkeeping (turn_log write, compaction check) a
-        # moment to finish — ephemeral agents (heartbeat) call stop() right
+        # Give short-lived bookkeeping (the turn_log write) a moment to
+        # finish — ephemeral agents (heartbeat, watch fires) call stop() right
         # after their turn, and cancelling immediately raced away their
         # turn_log rows. Anything still running after the grace is cancelled.
+        # Compaction is deliberately NOT in here; it gets its own, longer
+        # settle below because it is a multi-second LLM call, not bookkeeping.
         pending = [t for t in self._bg_tasks if not t.done()]
         if pending:
-            await asyncio.wait(pending, timeout=5)
+            await asyncio.wait(pending, timeout=BG_TASK_STOP_GRACE_SECONDS)
         for task in list(self._bg_tasks):
             task.cancel()
+        await self._settle_compaction()
         for name, agent in self._chain:
             if not self._started.get(name):
                 continue
@@ -437,7 +461,7 @@ class CascadingAgent(Agent):
         self._spawn_bg(self._log_turn_safe(
             vendor, agent, "ok", started_at, trace.calls, failovers,
         ))
-        self._spawn_bg(self._maybe_compact())
+        self._spawn_compaction()
 
     def _all_failed(
         self,
@@ -866,6 +890,55 @@ class CascadingAgent(Agent):
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
 
+    def _spawn_compaction(self) -> None:
+        """Start the post-turn compaction, held OUTSIDE _bg_tasks.
+
+        Compaction is not the short-lived bookkeeping the _bg_tasks grace was
+        sized for: the summarize call inside it runs 8-77s, while stop() gives
+        _bg_tasks five seconds. A DEDICATED background agent (every mail_watch
+        / splitwise_watch fire) is torn down immediately after its turn, so
+        every compaction such a fire started was cancelled mid-summarize --
+        after the LLM call had already been paid for, and silently. On
+        2026-09-01 that was 6 of 15 compactions, and the history it failed to
+        fold is what grew the context until groq started refusing turns as
+        "request too large".
+
+        Tracked in its own slot so stop() can wait for THIS task specifically
+        without also waiting on the turn_log writes.
+        """
+        if self._compact_task is not None and not self._compact_task.done():
+            return  # one in flight already; _maybe_compact would no-op anyway
+        task = asyncio.create_task(self._maybe_compact())
+        self._compact_task = task
+        task.add_done_callback(self._clear_compact_task)
+
+    def _clear_compact_task(self, task: asyncio.Task[None]) -> None:
+        # Identity-guarded: a later compaction may already own the slot.
+        if self._compact_task is task:
+            self._compact_task = None
+
+    async def _settle_compaction(self) -> None:
+        """Let an in-flight compaction finish before this agent goes away.
+
+        It writes to the SHARED conversation mirror, so the work belongs to
+        the CHAT, not to this agent instance -- an ephemeral agent abandoning
+        it threw away a summarize call already made and left the history
+        uncompacted until some later turn happened to try again. Waiting costs
+        nothing: dedicated-agent teardown is fire-and-forget
+        (_spawn_agent_stop), so nothing is behind this and the per-chat lock
+        is already released.
+        """
+        task = self._compact_task
+        if task is None or task.done():
+            return
+        await asyncio.wait({task}, timeout=COMPACTION_STOP_GRACE_SECONDS)
+        if not task.done():
+            log.warning(
+                "compaction still running after %.0fs at teardown; cancelling",
+                COMPACTION_STOP_GRACE_SECONDS,
+            )
+            task.cancel()
+
     async def _log_turn_safe(
         self,
         vendor: str,
@@ -888,6 +961,8 @@ class CascadingAgent(Agent):
                     latency_ms=int((time.monotonic() - started_at) * 1000),
                     input_tokens=usage.get("input_tokens"),
                     output_tokens=usage.get("output_tokens"),
+                    cache_read_tokens=usage.get("cache_read_tokens"),
+                    cache_write_tokens=usage.get("cache_write_tokens"),
                     tool_calls=tool_calls,
                     failovers=failovers,
                     error=error,
@@ -949,6 +1024,13 @@ class CascadingAgent(Agent):
                     if a.USES_SERVER_SIDE_HISTORY and isinstance(a, SessionResettable):
                         self._pending_rotation.add(name)
             except asyncio.CancelledError:
+                # Never silent again: a cancelled compaction used to log
+                # nothing at all, which is how ephemeral agents killing their
+                # own compactions mid-summarize stayed invisible.
+                log.warning(
+                    "compaction for chat %s cancelled before it completed",
+                    self._chat_id,
+                )
                 raise
             except Exception:
                 log.exception("background compaction failed (continuing)")
@@ -978,7 +1060,18 @@ class CascadingAgent(Agent):
         # otherwise autocomplete the format instead of summarizing it, and the
         # invented turns land in history as though they had happened.
         prompt = f"{instruction}\n\n---\n{transcript}\n---\n\n{instruction}"
-        summary = await self._summarizer.summarize(prompt)
+        try:
+            async with asyncio.timeout(SUMMARIZE_TIMEOUT_SECONDS):
+                summary = await self._summarizer.summarize(prompt)
+        except TimeoutError:
+            # Empty string -> the caller's existing failure backoff. Without
+            # this bound a wedged summarizer holds _compact_lock for the life
+            # of the process and compaction never runs again.
+            log.warning(
+                "summarizer exceeded %.0fs for chat %s; abandoning this "
+                "compaction", SUMMARIZE_TIMEOUT_SECONDS, self._chat_id,
+            )
+            return ""
         if _looks_like_transcript(summary):
             log.warning(
                 "summarizer continued the transcript instead of summarizing it; "

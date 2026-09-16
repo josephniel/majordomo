@@ -146,6 +146,17 @@ llm:
       # env fallback: IDEATE_MODEL
       # model:
 
+    # --------------------------------------------------------------
+    router:
+      # Vendor order for the shared-room addressing gate. Unset inherits
+      # the background chain — this call fires once per room message, so
+      # it wants the cheapest vendor available.
+      # env fallback: ROUTER_LLM
+      # chain: [gemini, claude, groq]
+
+      # env fallback: ROUTER_MODEL
+      # model:
+
 # ------------------------------------------------------------------
 transcription:
   # Whisper vendor order. Unset leaves voice notes politely rejected
