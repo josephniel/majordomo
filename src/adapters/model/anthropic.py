@@ -255,6 +255,48 @@ class SubscriptionAuthSummarizer(Summarizer):
         )
 
 
+def _cache_tokens(usage: dict[str, Any], msg: Any) -> dict[str, int]:
+    """Pull prompt-cache counters out of a result message.
+
+    These are the only numbers that say whether the cached prefix is working,
+    and they were being dropped. `input_tokens` alone is actively misleading:
+    it counts UNCACHED tokens only, so a healthy turn reports a value near
+    zero and turn_log has been recording `input_tokens: 2` for turns whose
+    real prompt is ~10k. Read as "we barely send anything", that number
+    invites exactly the wrong optimisation.
+
+    Two sources, because the shape is not guaranteed. `model_usage` is the
+    CLI's per-model breakdown and passes camelCase through verbatim;
+    `usage` is the flatter summary and uses the API's snake_case. Whichever
+    exists wins, and a version carrying neither leaves the fields absent
+    rather than reporting a confident zero — "not measured" and "no cache
+    hits" must not look the same in the data.
+    """
+    out: dict[str, int] = {}
+    per_model = getattr(msg, "model_usage", None) or {}
+    if isinstance(per_model, dict):
+        read = sum(
+            int(m.get("cacheReadInputTokens") or 0)
+            for m in per_model.values() if isinstance(m, dict)
+        )
+        written = sum(
+            int(m.get("cacheCreationInputTokens") or 0)
+            for m in per_model.values() if isinstance(m, dict)
+        )
+        if per_model:
+            out["cache_read_tokens"] = read
+            out["cache_write_tokens"] = written
+            return out
+    for key, field in (
+        ("cache_read_tokens", "cache_read_input_tokens"),
+        ("cache_write_tokens", "cache_creation_input_tokens"),
+    ):
+        value = usage.get(field)
+        if value is not None:
+            out[key] = int(value)
+    return out
+
+
 def _to_claude_sdk_tool(spec: ToolSpec, ctx: ToolContext) -> Any:
     """Translate a vendor-neutral ToolSpec into a claude_agent_sdk @tool.
 
@@ -636,6 +678,7 @@ class AnthropicAgent(Agent):
                 "input_tokens": usage.get("input_tokens"),
                 "output_tokens": usage.get("output_tokens"),
             }
+            self.last_turn_usage.update(_cache_tokens(usage, msg))
             cost = getattr(msg, "total_cost_usd", None)
             if cost is not None:
                 self.last_turn_usage["cost_usd"] = cost

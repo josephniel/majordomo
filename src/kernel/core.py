@@ -26,7 +26,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from adapters.chat import ChatPlatform, InboundMessage, ReplyStream
+from adapters.chat import ChatPlatform, InboundMessage, ReplyStream, is_silent
 from adapters.comms import CommsLog, CommsRelay
 from ports import (
     CanaryRunner,
@@ -59,7 +59,7 @@ if TYPE_CHECKING:
         ToolUseCallback,
     )
     from adapters.tools import ServiceRegistry, WriteApprovalGate
-    from domain import ReflectionEngine
+    from domain import AddressingGate, ReflectionEngine
     from ports import ToolProviderView
 
     from .sessions import SessionStore
@@ -74,6 +74,11 @@ _MCP_NAME_PARTS = 3
 # a peer bot gone chatty), not throttling a human.
 RATE_LIMIT_MAX_TURNS = 15
 RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+# How much of a shared room's history the addressing gate is shown. Read
+# here rather than in the gate because reading the mirror is the kernel's
+# job; the gate is handed rows and never learns where they live.
+ROOM_CONTEXT_ROWS = 12
 
 
 @dataclass(frozen=True)
@@ -107,6 +112,12 @@ class OptionalSubsystems:
     # Read-only, and only to tell a WAITING turn from a WORKING one — see
     # _pending_approval_notice. The orchestrator never approves anything.
     approval_gate: WriteApprovalGate | None = None
+
+    # Decides whether a message in a SHARED ROOM is for this bot at all.
+    # Absent on a persona with no such room, and consulted only where
+    # ChatPlatform.is_shared_room says the question is live — a DM never
+    # asks it.
+    addressing_gate: AddressingGate | None = None
 
 
 class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
@@ -145,6 +156,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._trigger_sources: list[TriggerSource] = list(optional.trigger_sources)
         self._bg_agent_factory = optional.background_agent_factory
         self._approval_gate = optional.approval_gate
+        self._addressing_gate = optional.addressing_gate
         self._relay: CommsRelay | None = (
             CommsRelay(optional.comms_log, persona_id, self._on_peer_message)
             if optional.comms_log is not None else None
@@ -237,13 +249,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 self._status_reporter.start_heartbeat()
             except Exception:
                 log.exception("status heartbeat failed to start")
-        if self._relay is not None:
-            # Provider has finished its identity fetch by now; pass the handle
-            # so the relay can detect peer @-mentions of us.
-            try:
-                await self._relay.start(self._platform.mention_handle)
-            except Exception:
-                log.exception("comms relay start failed")
+        await self._publish_identity()
         # Layer 4: probe that the chain's vendors actually call tools. Runs
         # once, shortly after boot, off the hot path.
         # Two independent warmups, both started the moment the bot is live and
@@ -254,6 +260,24 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             task = asyncio.create_task(coro)
             self._stale_agent_stops.add(task)
             task.add_done_callback(self._stale_agent_stops.discard)
+
+    async def _publish_identity(self) -> None:
+        """Hand our own @-handle to everything that routes on it.
+
+        The platform has finished its identity fetch by the time startup gets
+        here, and not one moment earlier — which is why neither of these can
+        read the handle at construction. The relay uses it to spot peer
+        mentions of us; the addressing gate uses it to skip its check when we
+        are named outright.
+        """
+        handle = self._platform.mention_handle
+        if self._addressing_gate is not None:
+            self._addressing_gate.bind_handle(handle)
+        if self._relay is not None:
+            try:
+                await self._relay.start(handle)
+            except Exception:
+                log.exception("comms relay start failed")
 
     async def _warm_providers(self) -> None:
         """Ask every provider to prime itself, in parallel.
@@ -329,10 +353,10 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
     ) -> None:
         """Bridge a peer instance's message into the normal message flow.
 
-        Delivered via the comms log relay. The text already arrives prefixed
-        with the originating sender's [@username]: by the source instance's
-        platform, so the agent sees the same shape it would for a
-        real platform update.
+        Delivered via the comms log relay, which labels the text with the
+        peer's [@username]: on the way through — so the agent sees the same
+        shape it would for a real platform update, and can tell a peer bot's
+        words from the operator's.
         """
         msg = InboundMessage(
             chat_id=chat_id,
@@ -340,6 +364,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             text=text,
             attachments=[],
             message_id=original_message_id,
+            from_relay=True,
         )
         await self._handle_message(msg)
 
@@ -392,16 +417,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             await self._cmd_cancel(chat_id, reply_to=msg.message_id)
             return
 
-        if not self._check_rate_limit(chat_id):
-            now = time.monotonic()
-            # Warn once per window, then drop silently.
-            if now - self._rate_warned_at.get(chat_id, 0.0) > RATE_LIMIT_WINDOW_SECONDS:
-                self._rate_warned_at[chat_id] = now
-                await self._platform.send_text(
-                    chat_id,
-                    "I'm getting a lot of messages at once — give me a minute to catch up.",
-                )
-            log.warning("rate limit hit for chat %s; dropping message", chat_id)
+        if not await self._admits_turn(msg):
             return
 
         # Auto-ingest supported attachments into the document library and
@@ -463,7 +479,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             # Honor the silence sentinel from group/control-room contexts:
             # the agent emits a literal "<silent>" when the message wasn't
             # for it, and we drop the send so the room stays quiet.
-            if reply.strip().lower() == "<silent>":
+            if is_silent(reply):
                 log.debug("agent silenced for chat %s", chat_id)
                 return
 
@@ -480,6 +496,11 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                     reply_to=msg.message_id if i == 0 else None,
                 )
 
+            # One record per REPLY, not per send — the streamed path puts
+            # text on screen without ever calling send_text, so anything
+            # counting sends counted almost nothing.
+            await self._note_outbound(chat_id, reply)
+
             if self._reflection is not None:
                 self._reflection.note_activity(chat_id)
                 self._detect_missed_save(chat_id, reply, agent)
@@ -489,6 +510,86 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             await self._recover_missed_schedule(chat_id, reply, agent)
             await self._recover_missed_send(chat_id, reply, agent)
             await self._recover_missed_record(chat_id, reply, agent)
+
+    async def _admits_turn(self, msg: InboundMessage) -> bool:
+        """Whether this message gets to start a turn at all.
+
+        The two reasons it might not — too many messages, or a message meant
+        for someone else — are both answered BEFORE anything is spent on it,
+        ingestion included: a screenshot aimed at the other bot has no
+        business landing in this one's document library on its way to being
+        ignored.
+        """
+        chat_id = msg.chat_id
+        if not self._check_rate_limit(chat_id):
+            now = time.monotonic()
+            # Warn once per window, then drop silently.
+            if now - self._rate_warned_at.get(chat_id, 0.0) > RATE_LIMIT_WINDOW_SECONDS:
+                self._rate_warned_at[chat_id] = now
+                await self._platform.send_text(
+                    chat_id,
+                    "I'm getting a lot of messages at once — give me a minute to catch up.",
+                )
+            log.warning("rate limit hit for chat %s; dropping message", chat_id)
+            return False
+        return await self._is_addressed_to_us(msg)
+
+    async def _note_outbound(self, chat_id: ConversationRef, reply: str) -> None:
+        """Tell the platform what we just said, best-effort.
+
+        Best-effort because the reply is already delivered by this point:
+        failing to record it must not turn a successful turn into an error
+        the operator sees.
+        """
+        try:
+            await self._platform.note_outbound(chat_id, reply)
+        except Exception:
+            log.exception("could not record an outbound reply for %s", chat_id)
+
+    async def _is_addressed_to_us(self, msg: InboundMessage) -> bool:
+        """Whether to take a turn on this shared-room message.
+
+        True for every chat that isn't a shared room, for every shared room
+        on a persona with no gate configured, and for anything the relay
+        handed us — the question only exists where someone else might have
+        been the intended recipient.
+
+        A message we decline is still MIRRORED to chat_history. Skipping the
+        turn must not cost the bot the thread: the next message that IS for
+        it arrives with the room's history intact (the missed-turns digest
+        carries the unseen rows into the prompt), and this gate's own next
+        call can read what it declined. Without that, gating would trade a
+        chatty bot for an amnesiac one.
+        """
+        chat_id, text = msg.chat_id, msg.text
+        gate = self._addressing_gate
+        if gate is None or msg.from_relay or not self._platform.is_shared_room(chat_id):
+            return True
+
+        recent: list[dict[str, Any]] = []
+        history = self._conversation_history
+        if history is not None:
+            try:
+                recent = await history.recent(self._persona_id, chat_id, limit=ROOM_CONTEXT_ROWS)
+            except Exception:
+                log.exception("could not read room context; routing on the message alone")
+
+        if await gate.is_for_us(text, recent):
+            return True
+
+        log.info("addressing gate: message in %s is not for us; staying quiet", chat_id)
+        if history is not None:
+            try:
+                await history.append(
+                    persona_id=self._persona_id,
+                    chat_id=chat_id,
+                    role="user",
+                    content=text,
+                    metadata={"addressed": False},
+                )
+            except Exception:
+                log.exception("could not mirror an unaddressed room message")
+        return False
 
     def _stream_pusher(self, stream: ReplyStream | None) -> PartialReplyCallback | None:
         """Adapt a ReplyStream to the agent's partial-reply callback.
@@ -605,7 +706,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
 
             # Scheduled turns honor the silence sentinel too — a heartbeat
             # (or any schedule) with nothing to report sends nothing.
-            if reply.strip().lower() == "<silent>":
+            if is_silent(reply):
                 log.info("trigger %r: nothing to report", event.source)
                 return True
 
@@ -618,6 +719,8 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
                 except Exception:
                     log.exception("could not deliver scheduled reply to chat %s", chat_id)
                     return False
+
+            await self._note_outbound(chat_id, reply)
 
             if self._reflection is not None:
                 self._reflection.note_activity(chat_id)

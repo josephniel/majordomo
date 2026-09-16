@@ -107,6 +107,7 @@ manage — majordomo stack
   Introspection & maintenance:
     schedules [persona]              list scheduled tasks (+ timezone)
     skills [persona]                 list skill notes
+    context [persona]                where the cached prompt prefix goes (costs 1 turn)
     documents inspect [persona]      list the document library
     prune [persona]                  run retention now (nightly cron does this too)
 
@@ -507,6 +508,7 @@ main() {
         comms)              cmd_comms "$@" ;;
         schedules)          cmd_simple_cli schedules "$@" ;;
         skills)             cmd_simple_cli skills "$@" ;;
+        context)            cmd_simple_cli context "$@" ;;
         documents)          cmd_documents "$@" ;;
         prune)              cmd_simple_cli prune "$@" ;;
         cli)                cmd_cli "$@" ;;

@@ -55,3 +55,44 @@
       content: "Would you like me to check your calendar for this week?"
   prompt: "Yes"
   expect_tool: calendar
+
+# Regression, 2026-09-01. In a control room shared with a peer bot, the dev
+# assistant answered five consecutive messages about a credit-card statement
+# — each one to say the topic belonged to the other bot. Five turns on the
+# chat model to produce five apologies, in a room where the bot that COULD
+# answer was already answering.
+#
+# The room prompt had always said to emit <silent>. What it did not say was
+# that this rule outranks a persona's own instruction to explain plainly what
+# it cannot do — so the model obeyed the more specific-sounding one. These
+# cases pin the precedence, against the prompt section that actually ships.
+- name: control_room_declines_a_peers_topic
+  system_suffix_prompt: telegram_control_room
+  prompt: "[@operator]: Hi, I just paid my wave credit card using my payroll account"
+  expect_no_tool: true
+  reply_matches: '^\s*<silent>'
+
+# The other half of the rule, and the one that makes silence safe to enforce:
+# being named must always break it. Asserted as "did not go silent" rather
+# than as a specific tool call — a weaker model may reasonably ask which day
+# first, and that is still the behaviour under test. What must never happen
+# is <silent> in reply to its own name.
+- name: control_room_answers_when_at_mentioned
+  system_suffix_prompt: telegram_control_room
+  prompt: "[@operator]: @eval_bot remind me at 4pm to file the expense report"
+  reply_matches: '\A(?!\s*<silent>)'
+
+# The follow-up messages are the ones that actually hurt: each looks like a
+# fresh ask, and a bot that reasons per-message re-announces its absence
+# every time. The peer bot's answer is in history, so there is nothing left
+# for this one to add.
+- name: control_room_stays_quiet_on_a_follow_up
+  system_suffix_prompt: telegram_control_room
+  history:
+    - role: user
+      content: "[@operator]: I just paid my wave credit card"
+    - role: assistant
+      content: "<silent>"
+  prompt: "[@operator]: No, the 22k is the min amount I paid. Just approve the pending ones from the list"
+  expect_no_tool: true
+  reply_matches: '^\s*<silent>'

@@ -38,6 +38,9 @@ class ModelRole(StrEnum):
     BACKGROUND = "background"  # heartbeats, watch fires — nobody is waiting
     SUMMARIZE = "summarize"    # compaction, reflection; fires constantly
     IDEATE = "ideate"          # offline memory synthesis; wants the best model
+    ROUTER = "router"          # "is this shared-room message for me?"; runs
+                               # BEFORE the chat model, so it must be cheaper
+                               # than the turn it exists to avoid
 
 
 class Summarizer(ABC):

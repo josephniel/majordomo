@@ -410,7 +410,7 @@ re-learns); Postgres holds everything that must survive.
 Which LLM answers which kind of work is a ROLE, and every role resolves to a
 vendor chain plus an optional model override (`runtime/model_roles.py`):
 
-All four are persona-scoped — they are how one assistant differs from
+All of them are persona-scoped — they are how one assistant differs from
 another — so they live in `instances/<id>/config.yaml` under `llm:`. The env
 column is the fallback layer, still read.
 
@@ -420,8 +420,12 @@ column is the fallback layer, still read.
 | `background` | heartbeats, watch fires | `llm.roles.background.chain` / `.model` | `BACKGROUND_LLM_CHAIN` / `BACKGROUND_MODEL` |
 | `summarize` | compaction, reflection | `llm.roles.summarize.chain` / `.model` | `COMPACTION_LLM` / `COMPACTION_MODEL` |
 | `ideate` | offline memory synthesis | `llm.roles.ideate.chain` / `.model` | `IDEATE_LLM` / `IDEATE_MODEL` |
+| `router` | "is this room message for me?" | `llm.roles.router.chain` / `.model` | `ROUTER_LLM` / `ROUTER_MODEL` |
 
-A role left unconfigured inherits the chat chain, failover included.
+A role left unconfigured inherits the chat chain, failover included — except
+`router`, which inherits `background`. It runs BEFORE every shared-room
+message reaches the chat model, so a gate priced like the turn it prevents
+would save nothing.
 
 **A chain that names an unusable vendor says so.** `[gemini, claude, groq]`
 with no Gemini credentials resolves to `[claude, groq]` and everything keeps
@@ -445,6 +449,66 @@ every fire. `_vendor_safe_model` drops a `claude-*` name when the leader isn't
 Claude — narrow by design: an operator naming a model for their own vendor is
 never second-guessed. The first cut of this phase did exactly the wrong thing
 to the `summarize` role and the round-trip check caught it.
+
+## The control room: who answers, and who pays for deciding
+
+A control room is one Telegram group holding the operator and every persona.
+Telegram delivers each message to all of them and never says who it was for,
+so "a message arrived" and "a message is for me" are different facts that
+the runtime has to keep apart.
+
+**Peer bots cannot hear each other.** Telegram does not deliver one bot's
+messages as updates to another. `comms_log` (Postgres + `LISTEN/NOTIFY`) is
+the substitute: each instance writes what it says, and `adapters/comms/relay.py`
+routes an entry back into the normal turn flow when it names our @-handle.
+
+That mirror is only as good as its writes, and it silently stopped getting
+them. The `out` row was appended inside `send_text` — correct until streaming
+arrived and began painting replies with message edits, after which the send
+path handled only the overflow chunks of long replies. Twenty replies in the
+room produced one row. The record is therefore taken ONCE PER REPLY by the
+kernel (`ChatPlatform.note_outbound`), whatever path put it on screen.
+
+**Two gates, in front of each other.** Deciding who answers used to rest
+entirely on the room prompt asking a bot to emit `<silent>`. That instruction
+loses to a persona's own — dev_assistant was told to say plainly when
+something is outside its tools, so it answered five consecutive messages
+about a credit-card statement to say the topic was the other bot's. Both
+layers were fixed:
+
+1. *The prompt states precedence.* `<silent>` is how you say "not my lane" in
+   the room, and that outranks any instruction elsewhere to explain what you
+   cannot do. The bot who CAN answer is present and already answering.
+2. *A cheap model decides before an expensive one runs.*
+   `domain/addressing.py` asks one YES/NO on the `router` role before the
+   message reaches the chat model, the turn pipeline, or attachment
+   ingestion.
+
+**The gate fails open, always.** Vendor error, timeout, empty answer, or a
+verdict that answered some other question all run the turn. A bot that
+occasionally says something unnecessary is a visible annoyance the operator
+can correct; a bot that silently eats a message is indistinguishable from a
+crash. Only an unambiguous "NO" costs a reply.
+
+**A declined message is still remembered.** Skipping the turn must not skip
+the message: the kernel mirrors it to `chat_history` anyway. The bot's next
+real turn picks it up through the missed-turns digest, and the gate's own
+next call can read what it declined. Without that, gating would trade a
+chatty bot for an amnesiac one — "No, the 22k is the minimum" is only
+routable against what came before it.
+
+**Being named is not a judgement call.** A message containing our own handle
+skips the model entirely. There is deliberately no mirror-image rule for
+"some other @bot was named": every room message carries a `[@operator]:`
+sender label, so "contains an @-token that isn't mine" is true of all of
+them. That one stays with the model.
+
+**Albums are one message.** Telegram sends an N-item album as N updates
+sharing a `media_group_id`, with no last-item marker, so three screenshots of
+one statement became three turns reasoning over a third of the evidence each.
+The adapter buffers by group id and dispatches once the items stop arriving.
+Guessing the gap short splits an album; guessing long only delays a reply, so
+the debounce is deliberately generous.
 
 ## Conversation identity: ConversationRef
 

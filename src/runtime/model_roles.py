@@ -126,9 +126,21 @@ def resolve_roles(s: RuntimeSettings) -> dict[ModelRole, RoleChain]:
         ModelRole.IDEATE, ideate.chain, _vendor_safe_model(ideate.model, ideate.chain)
     )
 
+    # ROUTER — the shared-room addressing gate. It inherits BACKGROUND, not
+    # CHAT, deliberately: the gate runs BEFORE every room message reaches the
+    # chat model, so routing it to the chat chain would spend the expensive
+    # turn it exists to avoid. Its whole job is one yes/no, which is the
+    # cheapest thing any vendor does.
+    router = RoleChain(ModelRole.ROUTER, s.router_llm, s.router_model or None)
+    router = router.with_fallback(background)
+    router = RoleChain(
+        ModelRole.ROUTER, router.chain, _vendor_safe_model(router.model, router.chain)
+    )
+
     return {
         ModelRole.CHAT: chat,
         ModelRole.BACKGROUND: background,
         ModelRole.SUMMARIZE: summarize,
         ModelRole.IDEATE: ideate,
+        ModelRole.ROUTER: router,
     }

@@ -343,6 +343,13 @@ SETTINGS: tuple[Setting, ...] = (
             "IDEATE_LLM", as_csv, (), Scope.PERSONA),
     Setting("ideate_model", "llm.roles.ideate.model",
             "IDEATE_MODEL", as_str, "", Scope.PERSONA),
+    Setting("router_llm", "llm.roles.router.chain",
+            "ROUTER_LLM", as_csv, (), Scope.PERSONA,
+            doc="Vendor order for the shared-room addressing gate. Unset "
+                "inherits the background chain — this call fires once per "
+                "room message, so it wants the cheapest vendor available."),
+    Setting("router_model", "llm.roles.router.model",
+            "ROUTER_MODEL", as_str, "", Scope.PERSONA),
 
     # ---- voice transcription: persona scope ----
     # Reuses the LLM vendors' API keys (host scope, above) — only the chain

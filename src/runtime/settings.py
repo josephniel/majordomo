@@ -76,6 +76,8 @@ class RuntimeSettings:
     background_model: str = ""
     ideate_llm: tuple[str, ...] = ()
     ideate_model: str = ""
+    router_llm: tuple[str, ...] = ()
+    router_model: str = ""
 
     # ---- background summarization ----
     compaction_llm: tuple[str, ...] = ()  # falls back to primary_llm

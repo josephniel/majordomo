@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "SILENT_SENTINEL",
     "Attachment",
     "ChatPlatform",
     "CommandEvent",
@@ -51,7 +52,33 @@ __all__ = [
     "OnMessage",
     "ReplyStream",
     "StatusTracker",
+    "is_silent",
 ]
+
+
+# The literal an agent emits to mean "say nothing" — shared rooms and
+# triggers both rely on it. It lives here, not in the Telegram adapter and
+# not in the kernel, because BOTH ends have to agree on it: the kernel drops
+# the send, and the reply stream must never paint it on screen. Two private
+# copies of the same string is how the streaming path and the send path came
+# to disagree about what counted as silence.
+SILENT_SENTINEL = "<silent>"
+
+
+def is_silent(reply: str) -> bool:
+    """Whether a reply means "stay quiet".
+
+    STARTSWITH, not equality. The exact-match rule this replaces held only
+    when the model emitted the sentinel and nothing else; the moment it wrote
+    "<silent> — this one is for the other bot" the whole thing, sentinel
+    included, went to the room. A reply that OPENS with the sentinel has
+    already declared its intent, so the tail is commentary and goes with it.
+
+    The one false positive — a reply that legitimately opens by quoting the
+    literal string — only arises when discussing this mechanism, which is a
+    conversation to have outside the room it silences.
+    """
+    return reply.strip().lower().startswith(SILENT_SENTINEL)
 
 
 @dataclass(frozen=True)
@@ -68,6 +95,11 @@ class InboundMessage:
     # Platform-native id of this inbound message, when supported. Lets the
     # core reply-quote it back via platform.send_text(reply_to=...).
     message_id: int | None = None
+    # True when this arrived over the inter-instance relay rather than from
+    # the platform. The relay only delivers what already named us, so the
+    # shared-room addressing check has nothing left to decide — asking it
+    # anyway would just be a round trip to reconfirm the premise.
+    from_relay: bool = False
 
 
 @dataclass(frozen=True)
@@ -170,6 +202,43 @@ class ChatPlatform(ABC):
         stay platform-agnostic. Default: empty.
         """
         return ""
+
+    def is_shared_room(self, chat_id: ConversationRef) -> bool:
+        """Whether this chat has participants who may be the intended recipient.
+
+        False for a 1:1 DM, where every message is addressed to us by
+        construction. True for a group the operator shares with peer bots,
+        where "a message arrived" and "a message is for us" stop being the
+        same fact — and where answering anyway is not merely noisy but
+        actively wrong, because the peer who SHOULD answer is also here.
+
+        The kernel reads this to decide whether to spend an addressing check
+        before the turn. Default False keeps every existing platform on the
+        old path: no room, no gate.
+        """
+        del chat_id
+        return False
+
+    async def note_outbound(
+        self,
+        chat_id: ConversationRef,
+        text: str,
+        message_id: int | None = None,
+    ) -> None:
+        """Record a reply we delivered, for platforms that mirror their rooms.
+
+        Called ONCE per completed reply by the kernel, whatever path actually
+        put it on screen. That is the whole point: `send_text` used to do this
+        itself, which was correct until streaming arrived and started painting
+        replies with message edits instead. From then on every streamed reply
+        — which is to say nearly all of them — went unrecorded, and the
+        Telegram mirror that peer bots read to hear each other simply stopped
+        being written. Twenty replies in the control room produced one row.
+
+        Default no-op: a platform with no peers to inform owes nobody a
+        record.
+        """
+        del chat_id, text, message_id
 
     @property
     def mention_handle(self) -> str | None:
