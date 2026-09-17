@@ -267,6 +267,60 @@ class TestExpiry:
         assert row is not None
         assert row.valid_to is not None
 
+    async def test_an_expired_neighbour_is_not_rendered_beside_a_live_fact(
+        self, memdb, persona_id
+    ):
+        """How the retired belief kept reaching the model after expiry.
+
+        Links are rendered with the neighbour's content inline, so a live fact
+        pointing at a dead one carries the dead one's text with it. `neighbors`
+        excluded superseded and forgotten rows but not expired ones.
+        """
+        live = await memdb.save_entry(
+            persona_id, FactCandidate(scope="user", content="The user shares expenses with Paul U.")
+        )
+        dead = await memdb.save_entry(
+            persona_id,
+            FactCandidate(scope="user", content="The Splitwise watch is nonfunctional."),
+        )
+        await memdb.add_link(live.id, dead.id, "relates_to")
+        assert len(await memdb.neighbors(live.id)) == 1
+
+        await memdb.expire_entry(dead.id, datetime.now(UTC) - timedelta(minutes=1))
+        assert await memdb.neighbors(live.id) == []
+
+    async def test_an_expired_pin_is_not_injected(self, memdb, persona_id):
+        """Pinned facts go into every prompt verbatim — the loudest place for
+        something nobody believes any more."""
+        e = await memdb.save_entry(
+            persona_id, FactCandidate(scope="user", content="The user is on secondment.")
+        )
+        await memdb.set_pinned(e.id, True)
+        assert len(await memdb.list_pinned(persona_id)) == 1
+        await memdb.expire_entry(e.id, datetime.now(UTC) - timedelta(minutes=1))
+        assert await memdb.list_pinned(persona_id) == []
+
+    async def test_expired_facts_leave_the_counts(self, memdb, persona_id):
+        e = await memdb.save_entry(
+            persona_id, FactCandidate(scope="user", content="A fact that will end.")
+        )
+        before = await memdb.count_active(persona_id, "user")
+        await memdb.expire_entry(e.id, datetime.now(UTC) - timedelta(minutes=1))
+        assert await memdb.count_active(persona_id, "user") == before - 1
+        assert (await memdb.counts_by_scope(persona_id)).get("user", 0) == before - 1
+
+    async def test_a_fact_that_comes_back_can_be_saved_again(self, memdb, persona_id):
+        """Dedup must not be blocked by history.
+
+        If a fact ended and then becomes true again, the expired row is the
+        record of the old window — it is not a reason to refuse the new one.
+        """
+        text = "The user is working from the Cebu office."
+        e = await memdb.save_entry(persona_id, FactCandidate(scope="user", content=text))
+        assert await memdb.find_similar(persona_id, text) is not None
+        await memdb.expire_entry(e.id, datetime.now(UTC) - timedelta(minutes=1))
+        assert await memdb.find_similar(persona_id, text) is None
+
     async def test_a_future_end_date_is_still_active(self, memdb, persona_id):
         e = await memdb.save_entry(
             persona_id, FactCandidate(scope="user", content="The user is on leave this week.")
