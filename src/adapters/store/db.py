@@ -73,7 +73,13 @@ async def _embed_pg(
         vec = await asyncio.to_thread(fn, text)
         return _to_pgvector(vec)
     except Exception:
-        log.debug("embedding failed; continuing without a vector", exc_info=True)
+        # WARNING because of what continuing costs. Every caller has a keyword
+        # fallback, so nothing raises and nothing looks broken — but recall
+        # loses the arm that handles paraphrase, and the dedup check falls back
+        # to a trigram score measured against a threshold calibrated for
+        # cosine, which passes almost everything. A degraded path that reports
+        # nothing is indistinguishable from a healthy one.
+        log.warning("embedding failed; continuing without a vector", exc_info=True)
         return None
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
@@ -400,6 +406,7 @@ class MemoryDatabase:
         self,
         persona_id: str,
         content: str,
+        title: str = "",
         threshold: float = 0.90,
     ) -> tuple[MemoryEntry, float] | None:
         """Nearest active entry for this persona, by cosine similarity.
@@ -415,8 +422,15 @@ class MemoryDatabase:
         `domain/clickup`, and a compartment-scoped query cannot see across
         that. The compartment decides what gets RECALLED together; it has no
         business deciding what counts as already known.
+
+        The query text is built the way `save_entry` builds the stored one —
+        title first, then content. They used to differ: rows were embedded from
+        the title joined to the content, and this check embedded the content
+        alone, so every comparison ran between two differently-constructed
+        vectors and read low by ~0.03. Against a 0.90 gate that is the
+        difference between catching a restatement and filing a second copy.
         """
-        qpg = await _embed_pg(self._embed, content)
+        qpg = await _embed_pg(self._embed, f"{title}\n{content}" if title else content)
         async with self._acquire() as conn:
             if qpg:
                 row = await conn.fetchrow(
@@ -432,6 +446,10 @@ class MemoryDatabase:
                     persona_id, qpg, self._embed.model_name,
                 )
             else:
+                # Trigram fallback stays content-to-content: the stored `content`
+                # column is the only text it can compare against, and mixing the
+                # title into one side of a character-trigram score would make it
+                # worse, not symmetric.
                 row = await conn.fetchrow(
                     """
                     SELECT *, similarity(content, $2) AS sim

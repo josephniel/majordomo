@@ -80,6 +80,48 @@ class TestSaveAndFindSimilar:
         assert len(found) == 2
         assert {e.scope for e in found} == {"user", "domain"}
 
+    async def test_a_restatement_of_a_stored_fact_is_caught(self, memdb, persona_id):
+        """The pair that got through on 2026-09-17, with the real embedder.
+
+        Stored 7 September, restated 17 September under a different title —
+        same compartment, both embedded, and a second row was written anyway.
+
+        Note what this does and does not show. It clears the gate on content
+        alone (0.92), so the title asymmetry fixed alongside it does NOT
+        explain the duplicate; why that save was not refused was never
+        established, because the branch that skips the check logged at DEBUG.
+        It is pinned here as the case that must never pass again, from either
+        side of the comparison.
+        """
+        await memdb.save_entry(
+            persona_id,
+            FactCandidate(
+                scope="user", title="Shares expenses with Paul Uy",
+                content="The user shares household expenses with Paul Uy through Splitwise.",
+            ),
+        )
+        dup = await memdb.find_similar(
+            persona_id,
+            "The user regularly shares household expenses with Paul U in Splitwise.",
+            "Paul U shares expenses",
+        )
+        assert dup is not None, "a restatement under a new title must still be a duplicate"
+        _entry, sim = dup
+        assert sim > 0.90
+
+    async def test_the_title_is_part_of_the_comparison(self, memdb, persona_id):
+        """Like-for-like scores higher than the old mismatched comparison did."""
+        title = "Where the user works"
+        content = "The user is an Engineering Manager at BillEase."
+        await memdb.save_entry(
+            persona_id, FactCandidate(scope="user", title=title, content=content)
+        )
+        with_title = await memdb.find_similar(persona_id, content, title)
+        without = await memdb.find_similar(persona_id, content)
+        assert with_title is not None
+        assert without is not None
+        assert with_title[1] > without[1]
+
     async def test_find_by_title_ignores_an_empty_title(self, memdb, persona_id):
         await memdb.save_entry(
             persona_id, FactCandidate(scope="user", content="A fact with no title at all")

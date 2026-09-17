@@ -17,6 +17,11 @@ Choose exactly one verdict:
              it (a plan was cancelled, not rescheduled). Give the id to remove.
 
 Rules:
+- The same fact in different words is "noop", not "add". Rephrasing, a
+  different name for the same person or system, a shorter or longer version,
+  or the same claim with one extra adjective — all "noop". Ask whether someone
+  who had read the existing facts would learn anything from the candidate; if
+  not, it is a restatement however differently it is worded.
 - "update" and "delete" DESTROY the current value. Only choose them when the
   candidate genuinely contradicts a specific existing fact. If in doubt, "add".
 - Two facts about different things are not a contradiction. The user having a

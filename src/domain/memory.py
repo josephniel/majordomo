@@ -284,11 +284,19 @@ class LongTermMemory(Faculty):
 
         try:
             dup = await self._db.find_similar(
-                self._persona_id, content,
+                self._persona_id, content, fact.title,
                 threshold=DEDUP_SIMILARITY_THRESHOLD,
             )
         except Exception:
-            log.debug("dedup check failed; saving anyway", exc_info=True)
+            # WARNING, not debug. This is the branch that turns dedup OFF, and
+            # it used to be the quietest line in the file — a save that should
+            # have been refused looked exactly like a save that passed the
+            # check. When a duplicate later shows up in memory, this is the
+            # only record that nothing ever looked.
+            log.warning(
+                "dedup check failed; saving anyway — this save was NOT checked "
+                "for duplicates", exc_info=True,
+            )
             dup = None
         if dup is not None:
             entry, sim = dup
@@ -373,7 +381,9 @@ class LongTermMemory(Faculty):
         try:
             return await self._db.find_by_title(self._persona_id, title)
         except Exception:
-            log.debug("title lookup failed; treating as none", exc_info=True)
+            # Same reasoning as the dedup branch above: failing here silently
+            # removes the cross-compartment guard rather than the search result.
+            log.warning("title lookup failed; duplicate check is degraded", exc_info=True)
             return []
 
     async def list_active(

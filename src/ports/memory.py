@@ -281,6 +281,7 @@ class MemoryStore(Protocol):
         self,
         persona_id: str,
         content: str,
+        title: str = "",
         threshold: float = 0.90,
     ) -> tuple[MemoryEntry, float] | None:
         """Nearest active entry for this persona, if it clears `threshold`.
@@ -289,6 +290,9 @@ class MemoryStore(Protocol):
         it. Deliberately NOT scoped to one compartment — the same fact arriving under a different
         scope is still the same fact, and compartment-scoped dedup is how one ClickUp habit came to
         be stored three times.
+
+        Pass the candidate's `title`: entries are embedded from title AND content, so a check that
+        embeds content alone is comparing two different texts and reads low.
         """
         ...
 
