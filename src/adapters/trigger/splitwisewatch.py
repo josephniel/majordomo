@@ -266,7 +266,14 @@ class SplitwiseWatcher:
                 # stated, rather than dropping an expense or asserting a state
                 # nobody checked.
                 log.exception("splitwise_watch: ledger lookup failed for expense %s", eid)
-                lines.append(f"{line}  (ledger lookup FAILED — verify before recording)")
+                # Still carry the stamp. The preamble promises every line does,
+                # and this is the line that most needs it: an unstamped row is
+                # invisible to the next poll, which then records it again.
+                lines.append(
+                    f"{line}  (ledger lookup FAILED — check recent_transactions "
+                    f"before recording; if you record it, use source={LEDGER_SOURCE} "
+                    f"external_id={eid})"
+                )
                 continue
 
             if e.get("deleted_at"):

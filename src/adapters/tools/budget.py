@@ -27,7 +27,13 @@ import httpx
 from adapters.timefmt import DEFAULT_TIMEZONE
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
-from ._failures import api_errors, format_http_error, json_array, json_object
+from ._failures import (
+    api_errors,
+    format_http_error,
+    json_array,
+    json_object,
+    json_object_or_none,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -216,7 +222,10 @@ class BudgetClient:
             "GET", "/transactions/external",
             params={"source": source, "external_id": external_id},
         )
-        obj = json_object(got)
+        # json_object() would raise on that null — the shape guard cannot tell
+        # "the endpoint answers nothing" from "the endpoint answers wrongly",
+        # and every unrecorded expense took the raising path until 17 September.
+        obj = json_object_or_none(got)
         return obj or None
 
     async def link_external(

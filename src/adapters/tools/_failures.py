@@ -60,6 +60,25 @@ def json_object(response: httpx.Response) -> dict[str, Any]:
     return body
 
 
+def json_object_or_none(response: httpx.Response) -> dict[str, Any] | None:
+    """Read an object body, or None when the endpoint answers a JSON `null`.
+
+    For a LOOKUP, `null` is an answer rather than a wrong shape: it says
+    "nothing is recorded under this key", which is the ordinary case and not a
+    fault. json_object() is right to refuse it everywhere else — a create that
+    answers null IS broken — so the tolerance lives here, at the one call that
+    asks a question whose answer may be nothing.
+    """
+    if response.status_code == HTTP_NO_CONTENT or not response.text:
+        return None
+    body = response.json()
+    if body is None:
+        return None
+    if not isinstance(body, dict):
+        raise TypeError(f"expected a JSON object or null, got {type(body).__name__}")
+    return body
+
+
 def json_array(response: httpx.Response) -> list[dict[str, Any]]:
     """Read the response body as a list of objects; [] for a 204 or empty body."""
     if response.status_code == HTTP_NO_CONTENT or not response.text:

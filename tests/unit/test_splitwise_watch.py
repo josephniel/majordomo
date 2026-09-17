@@ -255,6 +255,15 @@ class TestLedgerResolve:
         block = await w.check()
         assert "ledger lookup FAILED" in block
 
+    async def test_a_failed_lookup_still_carries_the_stamp(self, tmp_path):
+        """A failed lookup must not cost the external_id: a row recorded
+        without it is invisible to the next poll, which records it again — the
+        duplicate this whole resolve exists to prevent."""
+        budget = FakeBudgetClient(fail_lookup=True)
+        w = make_watcher(tmp_path, {"splitwise": FakeClient([_expense()])}, budget=budget)
+        block = await w.check()
+        assert f"source=splitwise external_id={_expense()['id']}" in block
+
     async def test_without_a_budget_connector_everything_is_reported(self, tmp_path):
         """The pre-resolution behaviour still works, so a persona without the
         budget connector is not silently broken."""

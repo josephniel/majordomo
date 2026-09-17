@@ -87,6 +87,39 @@ class TestClient:
         assert seen["path"] == "/people"
         assert out[0]["name"] == "Annika T"
 
+    async def test_find_external_reads_a_recorded_entry(self):
+        seen = {}
+
+        def handler(request):
+            seen["path"] = request.url.path
+            seen["params"] = dict(request.url.params)
+            return httpx.Response(200, json={"external_id": "466", "transfer_ids": [2109]})
+
+        out = await _client_with(handler).find_external("splitwise", "466")
+        assert seen["path"] == "/transactions/external"
+        assert seen["params"] == {"source": "splitwise", "external_id": "466"}
+        assert out is not None
+        assert out["transfer_ids"] == [2109]
+
+    async def test_find_external_reads_a_null_body_as_not_recorded(self):
+        # The tracker answers 200 with a literal `null`, not a 404 and not an
+        # empty body. Reading that as a shape error raised instead of
+        # returning None, and the splitwise watch — whose whole job is asking
+        # this question about expenses it has NOT mirrored — took the failure
+        # path on every genuinely new expense.
+        def handler(request):
+            return httpx.Response(
+                200, content=b"null", headers={"content-type": "application/json"}
+            )
+
+        assert await _client_with(handler).find_external("splitwise", "466") is None
+
+    async def test_find_external_reads_an_empty_body_as_not_recorded(self):
+        def handler(request):
+            return httpx.Response(204)
+
+        assert await _client_with(handler).find_external("splitwise", "466") is None
+
 
 class TestTools:
     async def test_record_transaction_defaults_and_confirms(self):
