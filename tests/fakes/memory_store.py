@@ -109,6 +109,7 @@ class FakeMemoryStore:
         self,
         persona_id: str,
         content: str,
+        title: str = "",
         threshold: float = 0.90,
     ):
         """Jaccard over tokens standing in for embedding cosine. Crude, but it
@@ -117,12 +118,12 @@ class FakeMemoryStore:
         Compares against every compartment, like the real store: scoping this
         to the candidate's own scope is what let the same fact be saved three
         times under two different ones."""
-        want = _tokens(content)
+        want = _tokens(f"{title} {content}" if title else content)
         if not want:
             return None
         best, best_sim = None, 0.0
         for e in self._active(persona_id):
-            have = _tokens(e.content)
+            have = _tokens(f"{e.title} {e.content}" if e.title else e.content)
             union = want | have
             sim = len(want & have) / len(union) if union else 0.0
             if sim > best_sim:
