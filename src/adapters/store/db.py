@@ -722,9 +722,17 @@ class MemoryDatabase:
         domain_key: str | None = None,
         limit: int = 200,
     ) -> list[MemoryEntry]:
+        # Expired rows are not active. `expire_fact` exists so a fact that WAS
+        # true can stop being injected without being retracted, and recall has
+        # always honoured that — but this query did not, and compaction reads
+        # through here. So an expired belief kept being handed to the
+        # summariser and could be written straight back into the core
+        # narrative, which is the text injected into every prompt: expired
+        # everywhere except the one place the model actually reads.
         sql = [
             "SELECT * FROM memory_entries",
             "WHERE persona_id = $1 AND superseded_by IS NULL",
+            "AND (valid_to IS NULL OR valid_to > NOW())",
         ]
         params: list[Any] = [persona_id]
         if scope is not None:
