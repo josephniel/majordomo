@@ -1,6 +1,8 @@
 """MemoryDatabase against live Postgres with REAL local embeddings —
 dedup, hybrid recall (keyword / natural-language / semantic / multilingual),
 supersession, soft-delete, rollups."""
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from ports import FactCandidate
@@ -226,6 +228,51 @@ class TestForget:
         e = await memdb.save_entry(persona_id, FactCandidate(scope="user", content="x"))
         await memdb.forget_entry(e.id)
         assert await memdb.forget_entry(e.id) is False
+
+
+class TestExpiry:
+    """A fact that WAS true and no longer is.
+
+    The distinction from forget matters at read time: an expired fact must
+    disappear from everything that speaks for the present, while the row stays
+    readable so "what did I believe in August" still answers.
+    """
+
+    async def test_an_expired_fact_leaves_active_and_recall(self, memdb, persona_id):
+        """list_active is the one that bit us.
+
+        It filtered only on superseded_by, and COMPACTION reads through it —
+        so an expired belief kept being handed to the summariser and could be
+        written back into the core narrative, which is the text injected into
+        every prompt. Expired everywhere except the one place the model reads.
+
+        The unit fakes could not catch this: FakeMemoryStore applies both
+        halves of the predicate, so expiry looked like it worked.
+        """
+        e = await memdb.save_entry(
+            persona_id,
+            FactCandidate(
+                scope="user", title="Broken watch",
+                content="The user's Splitwise watch is nonfunctional and needs debugging.",
+            ),
+        )
+        assert any(x.id == e.id for x in await memdb.list_active(persona_id))
+
+        await memdb.expire_entry(e.id, datetime.now(UTC) - timedelta(minutes=1))
+
+        assert not any(x.id == e.id for x in await memdb.list_active(persona_id))
+        assert all(x.id != e.id for x, _ in await memdb.recall_scored(persona_id, "watch"))
+        # The row survives — expiry is not retraction.
+        row = await memdb.get_entry(e.id)
+        assert row is not None
+        assert row.valid_to is not None
+
+    async def test_a_future_end_date_is_still_active(self, memdb, persona_id):
+        e = await memdb.save_entry(
+            persona_id, FactCandidate(scope="user", content="The user is on leave this week.")
+        )
+        await memdb.expire_entry(e.id, datetime.now(UTC) + timedelta(days=2))
+        assert any(x.id == e.id for x in await memdb.list_active(persona_id))
 
 
 class TestReferenceScope:
