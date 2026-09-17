@@ -439,6 +439,7 @@ class MemoryDatabase:
                     FROM memory_entries
                     WHERE persona_id = $1
                       AND superseded_by IS NULL
+                      AND (valid_to IS NULL OR valid_to > NOW())
                       AND embedding IS NOT NULL AND embedding_model = $3
                     ORDER BY embedding <=> $2::vector
                     LIMIT 1
@@ -455,6 +456,7 @@ class MemoryDatabase:
                     SELECT *, similarity(content, $2) AS sim
                     FROM memory_entries
                     WHERE persona_id = $1 AND superseded_by IS NULL
+                      AND (valid_to IS NULL OR valid_to > NOW())
                     ORDER BY similarity(content, $2) DESC
                     LIMIT 1
                     """,
@@ -486,6 +488,7 @@ class MemoryDatabase:
                 """
                 SELECT * FROM memory_entries
                 WHERE persona_id = $1 AND superseded_by IS NULL
+                  AND (valid_to IS NULL OR valid_to > NOW())
                   AND lower(btrim(title)) = lower(btrim($2))
                 ORDER BY created_at
                 """,
@@ -626,8 +629,10 @@ class MemoryDatabase:
         """Directly-linked ACTIVE entries.
 
         Returns (neighbor, relation, direction) where direction is 'out' (entry_id --rel-->
-        neighbor) or 'in' (neighbor --rel--> entry_id). Superseded/forgotten neighbors are excluded
-        so recall never surfaces stale links.
+        neighbor) or 'in' (neighbor --rel--> entry_id). Superseded, forgotten and EXPIRED neighbors
+        are excluded so recall never surfaces stale links — expiry was the one this missed, and a
+        link is how a retired fact kept reaching the model: rendered inline beside a live fact that
+        happened to point at it.
         """
         async with self._acquire() as conn:
             rows = await conn.fetch(
@@ -635,10 +640,12 @@ class MemoryDatabase:
                 SELECT m.*, l.relation AS _rel, 'out' AS _dir
                 FROM memory_links l JOIN memory_entries m ON m.id = l.to_id
                 WHERE l.from_id = $1 AND m.superseded_by IS NULL
+                  AND (m.valid_to IS NULL OR m.valid_to > NOW())
                 UNION ALL
                 SELECT m.*, l.relation AS _rel, 'in' AS _dir
                 FROM memory_links l JOIN memory_entries m ON m.id = l.from_id
                 WHERE l.to_id = $1 AND m.superseded_by IS NULL
+                  AND (m.valid_to IS NULL OR m.valid_to > NOW())
                 """,
                 entry_id,
             )
@@ -701,12 +708,17 @@ class MemoryDatabase:
         return str(result).split()[-1] != "0"
 
     async def list_pinned(self, persona_id: str) -> list[MemoryEntry]:
-        """All active pinned entries for a persona, newest first."""
+        """All active pinned entries for a persona, newest first.
+
+        Pinned facts are injected verbatim into every prompt, so an expired one
+        here is the loudest possible place for a fact nobody believes any more.
+        """
         async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM memory_entries
                 WHERE persona_id = $1 AND pinned AND superseded_by IS NULL
+                  AND (valid_to IS NULL OR valid_to > NOW())
                 ORDER BY created_at DESC
                 """,
                 persona_id,
@@ -916,6 +928,7 @@ class MemoryDatabase:
                 """
                 SELECT scope, COUNT(*) AS n FROM memory_entries
                 WHERE persona_id = $1 AND superseded_by IS NULL
+                  AND (valid_to IS NULL OR valid_to > NOW())
                 GROUP BY scope
                 """,
                 persona_id,
@@ -935,6 +948,7 @@ class MemoryDatabase:
                 FROM memory_entries
                 WHERE persona_id = $1 AND scope = $2 AND domain_key = $3
                   AND superseded_by IS NULL
+                  AND (valid_to IS NULL OR valid_to > NOW())
                 """,
                 persona_id, scope, domain_key,
             )
