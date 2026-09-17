@@ -280,15 +280,23 @@ class MemoryStore(Protocol):
     async def find_similar(
         self,
         persona_id: str,
-        scope: str,
-        domain_key: str,
         content: str,
         threshold: float = 0.90,
     ) -> tuple[MemoryEntry, float] | None:
-        """Nearest active entry in the same compartment, if it clears `threshold`.
+        """Nearest active entry for this persona, if it clears `threshold`.
 
         The dedup hook: without it the model re-learns the same fact every time the user mentions
-        it.
+        it. Deliberately NOT scoped to one compartment — the same fact arriving under a different
+        scope is still the same fact, and compartment-scoped dedup is how one ClickUp habit came to
+        be stored three times.
+        """
+        ...
+
+    async def find_by_title(self, persona_id: str, title: str) -> list[MemoryEntry]:
+        """Active entries whose title matches, case-insensitively, across every compartment.
+
+        Titles are model-written, so an exact collision is a strong signal that two rows are about
+        the same thing even when their wording scores far below the cosine threshold.
         """
         ...
 

@@ -108,26 +108,37 @@ class FakeMemoryStore:
     async def find_similar(
         self,
         persona_id: str,
-        scope: str,
-        domain_key: str,
         content: str,
         threshold: float = 0.90,
     ):
         """Jaccard over tokens standing in for embedding cosine. Crude, but it
-        has to answer the same question: is this the same fact again?"""
+        has to answer the same question: is this the same fact again?
+
+        Compares against every compartment, like the real store: scoping this
+        to the candidate's own scope is what let the same fact be saved three
+        times under two different ones."""
         want = _tokens(content)
         if not want:
             return None
         best, best_sim = None, 0.0
         for e in self._active(persona_id):
-            if e.scope != scope or e.domain_key != domain_key:
-                continue
             have = _tokens(e.content)
             union = want | have
             sim = len(want & have) / len(union) if union else 0.0
             if sim > best_sim:
                 best, best_sim = e, sim
         return (best, best_sim) if best is not None and best_sim >= threshold else None
+
+    async def find_by_title(self, persona_id: str, title: str):
+        """Same-title rows, any compartment — the store's cheap "about the same
+        thing" check, which catches what the similarity score is too blunt for."""
+        want = (title or "").strip().lower()
+        if not want:
+            return []
+        return [
+            e for e in self._active(persona_id)
+            if (e.title or "").strip().lower() == want
+        ]
 
     # ---- replacement & retraction ----
 
