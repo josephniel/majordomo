@@ -24,7 +24,7 @@ class TestSaveAndFindSimilar:
             ),
         )
         dup = await memdb.find_similar(
-            persona_id, "user", "", "The user prefers concise bullet point replies in chats"
+            persona_id, "The user prefers concise bullet point replies in chats"
         )
         assert dup is not None
         _entry, sim = dup
@@ -36,22 +36,55 @@ class TestSaveAndFindSimilar:
         )
         assert (
             await memdb.find_similar(
-                persona_id, "user", "", "Quarterly OKR planning happens every third Thursday"
+                persona_id, "Quarterly OKR planning happens every third Thursday"
             )
             is None
         )
 
-    async def test_similarity_scoped_to_compartment(self, memdb, persona_id):
+    async def test_similarity_spans_compartments(self, memdb, persona_id):
+        """The inverse of what this asserted until 2026-09-17.
+
+        Dedup used to be scoped to the candidate's own compartment, on the
+        reading that compartments are separate stores. They are not — they are
+        a recall device, and which one a fact lands in is the extractor's guess.
+        The same ClickUp habit was saved as `user` once and `domain/clickup`
+        twice, each save invisible to the others.
+        """
         await memdb.save_entry(
             persona_id, FactCandidate(scope="user", content="The user's favorite fruit is mango")
         )
-        # Same text, DIFFERENT compartment -> no dedup hit.
-        assert (
-            await memdb.find_similar(
-                persona_id, "domain", "gmail", "The user's favorite fruit is mango"
-            )
-            is None
+        dup = await memdb.find_similar(persona_id, "The user's favorite fruit is mango")
+        assert dup is not None
+        entry, _sim = dup
+        assert entry.scope == "user"
+
+    async def test_find_by_title_crosses_compartments_and_ignores_case(
+        self, memdb, persona_id
+    ):
+        await memdb.save_entry(
+            persona_id,
+            FactCandidate(
+                scope="user", title="Uses ClickUp for task management",
+                content="Joseph tracks his work in ClickUp.",
+            ),
         )
+        await memdb.save_entry(
+            persona_id,
+            FactCandidate(
+                scope="domain", domain_key="clickup",
+                title="Uses ClickUp for task management",
+                content="Tasks and projects are managed in ClickUp boards.",
+            ),
+        )
+        found = await memdb.find_by_title(persona_id, "  uses clickup FOR task management ")
+        assert len(found) == 2
+        assert {e.scope for e in found} == {"user", "domain"}
+
+    async def test_find_by_title_ignores_an_empty_title(self, memdb, persona_id):
+        await memdb.save_entry(
+            persona_id, FactCandidate(scope="user", content="A fact with no title at all")
+        )
+        assert await memdb.find_by_title(persona_id, "") == []
 
 
 class TestRecall:

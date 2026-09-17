@@ -201,6 +201,26 @@ class Reconciler:
                                   reason="could not read existing memory")
 
         neighbours = [e for e, s in scored if s >= MIN_NEIGHBOUR_SCORE]
+
+        # The recall above is scoped to the candidate's own compartment, which
+        # is the right neighbourhood for judging a contradiction and the wrong
+        # one for noticing the fact is already held elsewhere. Which scope the
+        # extractor picks is not stable across runs: "Uses ClickUp for task
+        # management" arrived once as `user` and twice as `domain/clickup`, and
+        # each time the scoped recall came back empty, took the no-model ADD
+        # below, and appended a third copy.
+        #
+        # A shared title is the cheap cross-compartment signal. It costs one
+        # indexed lookup, it needs no embedding (84 rows here have none), and it
+        # fires on pairs scoring 0.68-0.93 — under any threshold safe enough to
+        # act on blindly. So these rows join the neighbourhood and the model
+        # decides, rather than being merged or dropped here.
+        known = {e.id for e in neighbours}
+        for e in await self._memory.same_title(candidate.title):
+            if e.id not in known:
+                neighbours.append(e)
+                known.add(e.id)
+
         if not neighbours:
             # No model call. An empty neighbourhood cannot hold a
             # contradiction, and this is the majority path.

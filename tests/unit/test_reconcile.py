@@ -189,6 +189,60 @@ class TestCostControl:
         assert "English" not in prompt, "other compartments are not relevant"
 
 
+class TestTheDuplicatesThisFixes:
+    """The second way a fact piles up: not a contradiction, a re-file.
+
+    Recall for the verdict is scoped to the candidate's compartment, so when
+    the extractor files the same fact under a different scope the second time,
+    the neighbourhood comes back empty and the cheap ADD path appends a copy.
+    That is how one ClickUp habit ended up stored three times across `user` and
+    `domain/clickup`, at cosine similarities too low (0.68-0.93) to dedup on.
+    """
+
+    async def test_a_same_title_fact_in_another_compartment_reaches_the_model(
+        self, mem, store
+    ):
+        await mem.save_fact(FactCandidate(
+            "domain", "Tasks and projects are managed in ClickUp boards.",
+            domain_key="clickup", title="Uses ClickUp for task management",
+        ))
+        model = Scripted(verdict_json("noop"))
+        decision = await Reconciler(mem, model).decide(candidate(
+            "Joseph tracks his work in ClickUp.",
+            title="Uses ClickUp for task management",
+        ))
+        assert model.prompts, "the collision must be judged, not silently added"
+        assert "ClickUp boards" in model.prompts[0]
+        assert decision.verdict is MemoryVerdict.NOOP
+        assert len(store.entries) == 1
+
+    async def test_the_model_may_update_the_row_it_was_shown(self, mem, store):
+        """A title collision is a legal UPDATE target, not just prompt text —
+        a verdict naming an id outside the candidate set is rejected."""
+        existing = (await mem.save_fact(FactCandidate(
+            "domain", "Paul is a Splitwise friend.", domain_key="splitwise",
+            title="Paul Uy Splitwise contact",
+        )))[1]
+        model = Scripted(verdict_json("update", target=existing.id))
+        decision = await Reconciler(mem, model).decide(candidate(
+            "Paul Uy is the user's boyfriend, 'Paul U' in the budget tracker.",
+            title="Paul Uy Splitwise contact",
+        ))
+        assert decision.verdict is MemoryVerdict.UPDATE
+        assert decision.target_id == existing.id
+
+    async def test_an_unrelated_title_still_costs_no_model_call(self, mem):
+        await mem.save_fact(FactCandidate(
+            "user", "the user lives in Manila", title="Where the user lives",
+        ))
+        model = Scripted(verdict_json("noop"))
+        decision = await Reconciler(mem, model).decide(candidate(
+            "a brand new fact", title="Something else entirely",
+        ))
+        assert decision.verdict is MemoryVerdict.ADD
+        assert model.prompts == []
+
+
 class TestExtractionValidation:
     """Validation happens before the (model-priced) verdict step."""
 

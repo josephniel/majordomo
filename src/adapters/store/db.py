@@ -399,48 +399,81 @@ class MemoryDatabase:
     async def find_similar(
         self,
         persona_id: str,
-        scope: str,
-        domain_key: str,
         content: str,
         threshold: float = 0.90,
     ) -> tuple[MemoryEntry, float] | None:
-        """Nearest active entry in the same compartment, by cosine similarity.
+        """Nearest active entry for this persona, by cosine similarity.
 
         Returned only if it clears `threshold`. Used to dedup near-identical
         saves (the model re-learning the same fact) before they accumulate.
         Returns (entry, similarity) or None. Trigram fallback when the
         embedding isn't available.
+
+        Searches EVERY compartment, not the candidate's own. Which scope a
+        fact lands in is the extractor's judgement call and it is not stable —
+        "uses ClickUp for task management" arrived once as `user` and twice as
+        `domain/clickup`, and a compartment-scoped query cannot see across
+        that. The compartment decides what gets RECALLED together; it has no
+        business deciding what counts as already known.
         """
         qpg = await _embed_pg(self._embed, content)
         async with self._acquire() as conn:
             if qpg:
                 row = await conn.fetchrow(
                     """
-                    SELECT *, (1 - (embedding <=> $4::vector)) AS sim
+                    SELECT *, (1 - (embedding <=> $2::vector)) AS sim
                     FROM memory_entries
-                    WHERE persona_id = $1 AND scope = $2 AND domain_key = $3
+                    WHERE persona_id = $1
                       AND superseded_by IS NULL
-                      AND embedding IS NOT NULL AND embedding_model = $5
-                    ORDER BY embedding <=> $4::vector
+                      AND embedding IS NOT NULL AND embedding_model = $3
+                    ORDER BY embedding <=> $2::vector
                     LIMIT 1
                     """,
-                    persona_id, scope, domain_key, qpg, self._embed.model_name,
+                    persona_id, qpg, self._embed.model_name,
                 )
             else:
                 row = await conn.fetchrow(
                     """
-                    SELECT *, similarity(content, $4) AS sim
+                    SELECT *, similarity(content, $2) AS sim
                     FROM memory_entries
-                    WHERE persona_id = $1 AND scope = $2 AND domain_key = $3
-                      AND superseded_by IS NULL
-                    ORDER BY similarity(content, $4) DESC
+                    WHERE persona_id = $1 AND superseded_by IS NULL
+                    ORDER BY similarity(content, $2) DESC
                     LIMIT 1
                     """,
-                    persona_id, scope, domain_key, content,
+                    persona_id, content,
                 )
         if row is None or float(row["sim"] or 0) < threshold:
             return None
         return _entry(row), float(row["sim"])
+
+    async def find_by_title(self, persona_id: str, title: str) -> list[MemoryEntry]:
+        """Active entries sharing this title, case-insensitively, any compartment.
+
+        The vector query above answers "is this the same wording"; this one
+        answers "is this about the same thing". They are not the same question:
+        two rows titled *Paul Uy Splitwise contact* scored 0.79 — well under
+        any safe dedup threshold — while plainly belonging together. A title is
+        the model's own claim about what a fact IS, so a collision is worth
+        putting in front of the reconciler even when the prose diverges.
+
+        Rows with no embedding (written before the embedding pipeline, 84 of
+        them here) are invisible to the vector query and reachable only this
+        way.
+        """
+        want = title.strip()
+        if not want:
+            return []
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM memory_entries
+                WHERE persona_id = $1 AND superseded_by IS NULL
+                  AND lower(btrim(title)) = lower(btrim($2))
+                ORDER BY created_at
+                """,
+                persona_id, want,
+            )
+        return [_entry(r) for r in rows]
 
     async def get_entry(self, entry_id: UUID) -> MemoryEntry | None:
         async with self._acquire() as conn:

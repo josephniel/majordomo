@@ -284,7 +284,7 @@ class LongTermMemory(Faculty):
 
         try:
             dup = await self._db.find_similar(
-                self._persona_id, scope, domain_key, content,
+                self._persona_id, content,
                 threshold=DEDUP_SIMILARITY_THRESHOLD,
             )
         except Exception:
@@ -292,8 +292,13 @@ class LongTermMemory(Faculty):
             dup = None
         if dup is not None:
             entry, sim = dup
+            # Name the compartment: the match may well be in a different one
+            # from the save that was just refused, and "near-duplicate of
+            # id=..." with no location reads like a bug when the caller goes
+            # looking in its own scope and finds nothing.
             return (
                 (f"not saved: near-duplicate of existing id={entry.id} "
+                f"in {entry.scope}{('/' + entry.domain_key) if entry.domain_key else ''} "
                 f"(similarity {sim:.2f}). If the fact CHANGED, use "
                 f"memory_update on that id instead."),
                 None,
@@ -357,6 +362,19 @@ class LongTermMemory(Faculty):
         return await self._db.recall_scored(
             self._persona_id, query, scope=scope, domain_key=domain_key, limit=limit,
         )
+
+    async def same_title(self, title: str) -> list[MemoryEntry]:
+        """Active facts carrying this exact title, in any compartment.
+
+        The reconciler's second opinion. Cosine answers "was this said again";
+        an identical title says the model itself has twice claimed two rows are
+        about the same thing, which is the case the threshold keeps missing.
+        """
+        try:
+            return await self._db.find_by_title(self._persona_id, title)
+        except Exception:
+            log.debug("title lookup failed; treating as none", exc_info=True)
+            return []
 
     async def list_active(
         self,
