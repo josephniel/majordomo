@@ -31,6 +31,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from adapters.timefmt import DEFAULT_TIMEZONE  # noqa: E402
 from adapters.trigger.splitwisemirror import ExpenseMirror, read_shape  # noqa: E402
 from runtime import Persona, PersonaRuntime  # noqa: E402
 
@@ -39,6 +40,17 @@ from runtime import Persona, PersonaRuntime  # noqa: E402
 READS = frozenset({
     "list_accounts", "list_tags", "list_people", "list_transactions", "find_external",
 })
+
+
+def _clients(provider: Any) -> dict[str, Any]:
+    """Build the profile clients a connector exposes.
+
+    `Any` because `build_clients` is not on the ToolProvider contract — it is
+    the same duck-typed surface the Splitwise watch takes, for the same
+    reason: the ledger is reached without going through a tool call.
+    """
+    clients: dict[str, Any] = provider.build_clients()
+    return clients
 
 
 class ReadOnlyBudget:
@@ -68,13 +80,13 @@ async def run(persona_id: str, days: int, limit: int) -> int:
         print("no TYPESAFE_API_KEY configured for this persona — nothing to smoke")
         return 2
 
-    budgets = runtime.provider("budget").build_clients()
-    splitwise = runtime.provider("splitwise").build_clients()
+    budgets = _clients(runtime.provider("budget"))
+    splitwise = _clients(runtime.provider("splitwise"))
     if not budgets or not splitwise:
         print("this persona has no budget and/or splitwise profile configured")
         return 2
 
-    tz = runtime.settings.schedule_timezone
+    tz = runtime.settings.schedule_timezone or DEFAULT_TIMEZONE
     mirror = ExpenseMirror(
         ReadOnlyBudget(next(iter(budgets.values()))), decider, tz, dry_run=True
     )
