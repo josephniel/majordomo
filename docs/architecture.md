@@ -507,6 +507,36 @@ it on. Per-watch, in that watch's `persona.yaml` block: `gate: false` opts
 out, `gate_wake_above:` moves the threshold. Gating is opt-OUT because a
 watch with a judge available and no opinion wants the cheap path.
 
+### Only the mail watch is gated, and the reason generalises
+
+The gate works for mail because the block carries sender, subject and
+snippet — enough to judge. Applying it by analogy to the other watches was
+tried and rejected, on a test worth keeping: **can the block answer the
+question the turn is being asked?**
+
+For `gitlab_watch` it could not. That watch's silence rule is "stay quiet
+when the only new activity is the operator's own", and the block named the
+MR's AUTHOR, never who had just acted. A gate reading it would have been
+guessing from an author field — and its failure mode is suppressing a
+reviewer's comment on the operator's own MR. The question is also the wrong
+kind: "is this urgent?" is fuzzy and belongs to a model, while "did anyone
+other than this token act?" is a string comparison.
+
+So the fix there was not a gate but a better prefilter. `check()` reads each
+reported MR's notes (one token-free call per MR, capped at ten a poll;
+GitLab's system notes cover commits as well as comments) and collects the
+usernames behind activity newer than the baseline. The bot writes with the
+operator's own token, so his commits, his comments and the ones it posted
+for him all arrive under the single username `current_user()` reports — the
+three cases the rule names collapse into one identity, and code decides it
+exactly. Anything unestablished is announced.
+
+The remaining two watches fail the same test for a different reason:
+`splitwise_watch`/`splitwise_push` fires do ledger WRITES and
+`meeting_watch` files tasks, so "skip the turn" means skipped work rather
+than a skipped announcement. Measured, the economics agreed: mail was ~91%
+silent over four months, gitlab ~11% over 102 fires.
+
 ## The control room: who answers, and who pays for deciding
 
 A control room is one Telegram group holding the operator and every persona.

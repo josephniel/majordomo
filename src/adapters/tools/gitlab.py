@@ -148,13 +148,28 @@ class GitLabClient:
         ))
 
     async def list_merge_request_notes(
-        self, project: str, mr_iid: int,
+        self, project: str, mr_iid: int, sort: str = "asc",
     ) -> list[dict[str, Any]]:
+        """List an MR's notes, oldest first by default.
+
+        `sort="desc"` matters for callers that want the LATEST activity: the page size is 50, so on
+        a busy MR ascending order returns the fifty notes nobody is asking about.
+        """
         return json_array(await self._request(
             "GET",
             f"/projects/{self.project_ref(project)}/merge_requests/{mr_iid}/notes",
-            params={"sort": "asc", "per_page": 50},
+            params={"sort": sort, "per_page": 50},
         ))
+
+    async def current_user(self) -> dict[str, Any]:
+        """Whoever this token authenticates as.
+
+        Worth its own call because it answers a question no other endpoint does: which activity on
+        an MR is the OPERATOR's. The bot writes with the operator's own token, so his commits, his
+        comments, and the ones the bot posted on his behalf all come back under this one username —
+        which is exactly the three-way distinction the watch would otherwise have to guess at.
+        """
+        return json_object(await self._request("GET", "/user"))
 
     async def list_merge_request_discussions(
         self, project: str, mr_iid: int,
