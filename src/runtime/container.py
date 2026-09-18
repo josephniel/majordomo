@@ -84,7 +84,8 @@ if TYPE_CHECKING:
     from adapters.trigger.retention import RetentionJob
     from adapters.trigger.webhook import WebhookServer
     from domain.triggers import HeartbeatSource, WatchSource
-    from ports import ToolSpec
+    from domain.watch_gate import WatchGate
+    from ports import Decider, Question, ToolSpec
 
 _F = TypeVar("_F")
 
@@ -276,6 +277,46 @@ class PersonaRuntime:
                 deterministic=True,
             ),
             charter=charter,
+        )
+
+    @cached_property
+    def decider(self) -> Decider | None:
+        """The System One judge, shared by every gate that wants one.
+
+        None when no key is configured, and that is a supported state rather
+        than a degraded one: everything that takes a Decider here takes it
+        optionally, and does what it did before this existed when it is
+        absent. Nothing in the turn pipeline depends on it.
+
+        Not a member of `model_roles`, deliberately. A role resolves to a
+        chain of things that can hold a conversation; this cannot write a
+        word, so putting it in a chain would mean a failover could land on a
+        vendor that is incapable of the work.
+        """
+        key = self.settings.typesafe_api_key
+        if not key:
+            return None
+        from adapters.model.typesafe import TypeSafeDecider
+        return TypeSafeDecider(key, model=self.settings.typesafe_model)
+
+    def _watch_gate(
+        self, cfg: dict[str, Any], question: Question, name: str,
+    ) -> WatchGate | None:
+        """Build a watch's pre-turn judge, if it has one and it is wanted.
+
+        Opt-OUT (`gate: false` in the watch's persona.yaml block) rather than opt-in: a watch
+        configured with a decider available and no opinion about gating wants the cheap path, and
+        the expensive default is the one nobody notices they are paying for.
+        """
+        decider = self.decider
+        if decider is None or not bool(cfg.get("gate", True)):
+            return None
+        from domain.watch_gate import WAKE_ABOVE, WatchGate
+        return WatchGate(
+            decider,
+            question,
+            name=name,
+            wake_above=float(cfg.get("gate_wake_above") or WAKE_ABOVE),
         )
 
     @cached_property
@@ -1140,6 +1181,7 @@ class PersonaRuntime:
             return None
         from adapters.trigger.mailwatch import (
             DEFAULT_QUERY,
+            MAIL_WATCH_GATE_QUESTION,
             MAIL_WATCH_PROMPT_PREAMBLE,
             MailWatcher,
         )
@@ -1159,6 +1201,9 @@ class PersonaRuntime:
                 query=str(cfg.get("query") or "").strip() or DEFAULT_QUERY,
             ),
             preamble=MAIL_WATCH_PROMPT_PREAMBLE,
+            # Nine of ten fires here have historically produced <silent>. The
+            # gate is what stops the tenth from costing ten turns.
+            gate=self._watch_gate(cfg, MAIL_WATCH_GATE_QUESTION, "mail_watch"),
         )
 
     @cached_property

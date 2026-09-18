@@ -73,6 +73,7 @@ stopped being a layer violation once it lived in the same package as it.
 | `ports/llm.py` | `Agent`, `Summarizer`, `ModelRole` | `adapters/model/*` |
 | `ports/memory.py` | `MemoryStore`, `MemoryEntry`, verdicts | `adapters/store/db.py` |
 | `ports/triggers.py` | `TriggerEvent`, `TriggerSource` | `domain/triggers.py` |
+| `ports/decisions.py` | `Decider`, `Question`, `Likelihood` | `adapters/model/typesafe.py` |
 
 plus `ports/conversation.py` (`ConversationRef` — chat identity without a
 platform in it), `ports/documents.py` and `ports/tools.py`.
@@ -449,6 +450,62 @@ every fire. `_vendor_safe_model` drops a `claude-*` name when the leader isn't
 Claude — narrow by design: an operator naming a model for their own vendor is
 never second-guessed. The first cut of this phase did exactly the wrong thing
 to the `summarize` role and the round-trip check caught it.
+
+## Decisions: the model that cannot write a sentence
+
+Several things here ask a model a question whose whole answer is a judgment,
+and then pay a text model to render that judgment as English so the caller
+can parse it back out. The addressing gate asks for "exactly one word: YES or
+NO" and string-matches the reply. The watch fires ask for a `<silent>`
+sentinel. In both the prose is overhead, and the decoding is a heuristic each
+caller reinvents.
+
+`ports/decisions.py` is the contract for asking without the prose: one state,
+any number of typed questions, a calibrated probability back per question.
+`adapters/model/typesafe.py` implements it against TypeSafe's System One
+model (Jev), which answers in ~100ms for roughly a four-hundredth of what a
+chat model charges to answer the same question in English.
+
+**It is not a vendor and not a role.** A `ModelRole` resolves to a chain of
+things that can hold a conversation; this cannot write a word, so putting it
+in a chain would mean a failover could land on something incapable of the
+work. It is a separate, optional collaborator: `PersonaRuntime.decider` is
+`None` when no key is configured, and everything that takes one takes it
+optionally.
+
+### The watch gate
+
+The first use is the one that pays for itself. `watcher.check()` is already a
+token-free REST prefilter, so a quiet inbox costs nothing — but it cannot
+tell whether the mail it DID find is worth waking the model for, and measured
+across four months of transcripts ~91% of the turns it woke replied
+`<silent>`. Nine fires in ten paid a full turn to decide, in English, that
+there was nothing to say.
+
+`domain/watch_gate.py` is the second prefilter, between "there is news" and
+"take a turn about it". `WatchSource` takes one optionally; without it the
+source behaves exactly as it always has.
+
+The bias is deliberate and asymmetric. A turn that did not need to happen
+costs a fraction of a cent and produces `<silent>`, which nobody sees. A
+suppressed alert is mail the operator never hears about, and unlike a dropped
+reminder there is nothing to notice missing. So the threshold is low (skip
+only below `WAKE_ABOVE`, 0.15), every non-answer wakes the model — no key,
+timeout, outage, malformed response, a key the gate did not ask about — and
+every skip is logged at INFO with the probability that caused it. `/status`
+says `gated` when one is in the path, because "my mail watch is alive" and
+"my mail watch has been deciding not to tell me things" must not look
+identical.
+
+**A skip commits the watermark.** It is a handled outcome, the same one a
+`<silent>` reply reaches. Leaving the watermark unadvanced would re-judge the
+same mail every poll forever, paying for one saved turn with an unbounded
+number of judgments.
+
+Config: `TYPESAFE_API_KEY` (host scope, `decisions.typesafe.api_key`) turns
+it on. Per-watch, in that watch's `persona.yaml` block: `gate: false` opts
+out, `gate_wake_above:` moves the threshold. Gating is opt-OUT because a
+watch with a judge available and no opinion wants the cheap path.
 
 ## The control room: who answers, and who pays for deciding
 

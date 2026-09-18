@@ -280,6 +280,14 @@ SETTINGS: tuple[Setting, ...] = (
             "ANTHROPIC_API_KEY", as_str, "", Scope.HOST, secret=True),
     Setting("groq_api_key", "llm.vendors.groq.api_key",
             "GROQ_API_KEY", as_str, "", Scope.HOST, secret=True),
+    Setting("typesafe_api_key", "decisions.typesafe.api_key",
+            "TYPESAFE_API_KEY", as_str, "", Scope.HOST, secret=True,
+            doc="TypeSafe (Jev) key for typed decisions. Not a chat vendor — "
+                "it writes no text and joins no chain. Unset leaves every "
+                "decision gate open, i.e. the behaviour before it existed."),
+    Setting("typesafe_model", "decisions.typesafe.model",
+            "TYPESAFE_MODEL", as_str, "", Scope.HOST,
+            doc="System One model id. Empty uses the adapter's default alias."),
     Setting("gemini_api_key", "llm.vendors.gemini.api_key",
             "GEMINI_API_KEY", as_str, "", Scope.HOST, secret=True),
     Setting("openai_api_key", "llm.vendors.openai.api_key",

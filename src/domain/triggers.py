@@ -7,7 +7,8 @@ owns its whole story: when it fires, whether the fire produced work, what
 prompt that work becomes, and what to do once the turn has been delivered.
 
     HeartbeatSource   cron; skips when the operator's prompt is empty
-    WatchSource       cron + a token-free prefilter; two-phase watermark
+    WatchSource       cron + a token-free prefilter; two-phase watermark,
+                      and optionally a judging model in front of the turn
     WebhookSource     an HTTP POST arrives
     ScheduleSource    the user's own reminders and one-shots
     RetentionSource   cron; prunes storage and never wakes the model
@@ -31,6 +32,8 @@ from ports import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from .watch_gate import WatchGate
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +120,12 @@ class WatchSource:
     time therefore re-reports the same activity on the next poll rather than
     dropping it forever — and unlike a dropped reminder, nobody would ever
     notice the mail that was never mentioned.
+
+    An optional `gate` adds a SECOND prefilter, between "there is news" and
+    "take a turn about it": most of what these watches find turns out not to
+    be worth saying, and the model currently discovers that by being asked in
+    full. See domain/watch_gate.py. Without one the source behaves exactly as
+    it always has.
     """
 
     def __init__(
@@ -126,12 +135,14 @@ class WatchSource:
         conversation: ConversationRef,
         watcher: Any,  # check() -> Optional[str]; commit() -> None
         preamble: str,
+        gate: WatchGate | None = None,
     ) -> None:
         self.name = name
         self.cron = cron
         self._conversation = conversation
         self._watcher = watcher
         self._preamble = preamble
+        self._gate = gate
         self._emit: Any = None
 
     async def start(self, ctx: TriggerContext) -> None:
@@ -148,7 +159,11 @@ class WatchSource:
         """Nothing to release."""
 
     def describe(self) -> str:
-        return f"{self.name.replace('_', ' ')} ({self.cron})"
+        # The gate suppresses turns, so /status has to say when one is in the
+        # path — otherwise "my mail watch is alive" and "my mail watch has
+        # been silently deciding not to tell me things" look identical.
+        gated = ", gated" if self._gate is not None else ""
+        return f"{self.name.replace('_', ' ')} ({self.cron}{gated})"
 
     async def _fire(self) -> None:
         try:
@@ -157,6 +172,14 @@ class WatchSource:
             log.exception("%s poll failed", self.name)
             return
         if not block:
+            return
+        if self._gate is not None and not await self._gate.worth_waking(block):
+            # Commit, don't retry. "Nothing here worth saying" is a HANDLED
+            # outcome — the same one the turn itself reaches when it replies
+            # <silent> — and leaving the watermark unadvanced would re-judge
+            # the same mail every poll forever, turning a saved turn into an
+            # unbounded number of judgments.
+            self._watcher.commit()
             return
         delivered = await self._emit(TriggerEvent(
             source=self.name,
