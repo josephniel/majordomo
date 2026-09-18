@@ -164,6 +164,17 @@ class TestTheGrammarRecognisesOneSentence:
         the same mis-dating that had to be fixed on three write paths."""
         assert parse(message) is None
 
+    @pytest.mark.parametrize("message", [
+        "I paid it 11:30pm",
+        "I paid 200 pesos for fries at 7:30pm",
+        "I bought mcdo worth 486 around 11pm",
+    ])
+    def test_a_clock_time_is_not_an_amount(self, message):
+        """Found by replaying the real history: "I paid it 11:30pm" recorded
+        eleven pesos, because "30pm" is not a second number and the one-number
+        rule was satisfied."""
+        assert parse(message) is None
+
     def test_a_date_word_inside_an_account_name_is_not_a_date(self):
         """'may' lives inside 'Maya CC', which is the account half of the one
         real message this module exists for."""

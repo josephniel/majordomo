@@ -105,6 +105,13 @@ _WHEN = re.compile(
 # amount is two, and a message with two numbers is one this cannot read.
 _NUMBER = re.compile(r"\b\d[\d,]*(?:\.\d{1,2})?\b")
 
+# A clock time, which is not an amount however much it looks like one. Found
+# by replaying the real history (scripts/smoke_ledger_parse.py): "I paid it
+# 11:30pm" read as eleven pesos, because "30pm" is not a second number and so
+# the one-number rule was satisfied. A time in the message also usually means
+# the expense is being dated, which this path cannot do.
+_TIME = re.compile(r"\b\d{1,2}:\d{2}\b|\b\d{1,2}\s?[ap]\.?m\.?\b", re.IGNORECASE)
+
 # Stripped from the description so it reads like a ledger entry rather than a
 # sentence: the verb, the amount, and the little words around them.
 _NOISE = re.compile(
@@ -161,7 +168,7 @@ def _is_plain_spend(message: str) -> bool:
     lowered = message.lower()
     if not any(verb in lowered for verb in SPEND_VERBS):
         return False
-    if _WHEN.search(message):
+    if _WHEN.search(message) or _TIME.search(message):
         return False
     return not any(blocker in lowered for blocker in BLOCKERS)
 
