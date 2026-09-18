@@ -20,6 +20,29 @@ DELIVERED — an LLM outage at fire time re-reports the same activity next
 poll rather than dropping it forever. Alongside the watermark and seen-iids
 list, a per-MR `mr_updated` map records the last `updated_at` announced for
 each seen MR; activity is anything newer than that.
+
+Who acted is fetched, not guessed
+---------------------------------
+The prompt's one silence rule is about IDENTITY — stay quiet when the only
+new activity is the operator's own. That is not a judgment call, it is a
+string comparison, and it used to be impossible at this layer: the poll knew
+an MR had moved and who had OPENED it, never who had just acted. So every
+push of the operator's own woke the model, which then spent a turn and
+several tool calls rediscovering whose commits they were.
+
+`check()` now reads each reported MR's notes (one token-free call per MR,
+capped at ten a poll) and collects the usernames behind the activity newer
+than the baseline. GitLab's system notes cover commits as well as comments,
+so one call answers both. The bot writes with the operator's own token, so
+his commits, his comments and the ones it posted for him all arrive under
+the single username `current_user()` reports — the three cases the rule
+names collapse into one identity.
+
+Anything the poll cannot establish is REPORTED: a failed notes call, an MR
+whose `updated_at` moved with no note behind it (a label, a title edit), or
+a token whose identity could not be read. Same bias as `_is_newer` — a
+needless announcement is a minor annoyance, a swallowed one defeats the
+watch.
 """
 from __future__ import annotations
 
@@ -30,6 +53,7 @@ from typing import TYPE_CHECKING, Any
 from ._state import WatchState
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -59,8 +83,11 @@ the MR URL.
 3. STOP there. Do NOT begin the operator's review protocol — no use-case \
 listing, no findings, no verdicts. The thorough staged review happens in \
 chat when the operator asks for it.
-4. If the ONLY new activity is the operator's own doing (his commits, his \
-comments, or ones you posted on his behalf), reply exactly <silent>.
+4. Each entry lists `activity by:` when the actors are known — use it \
+rather than re-deriving who acted. If the ONLY new activity is the \
+operator's own doing (his commits, his comments, or ones you posted on his \
+behalf), reply exactly <silent>. The poll already drops those, so this is a \
+backstop for what it could not establish.
 5. Never post anything to GitLab — the announcement lives in this chat \
 until the operator decides what to send.
 
@@ -90,6 +117,11 @@ class GitLabMRWatcher:
         self._gitlab = gitlab_connector
         self._project = project
         self._state = WatchState(state_file, label="gitlab_watch")
+        # Resolved from the token on first success and kept. Only successes
+        # are cached: caching a failed lookup would disable the operator
+        # filter for the life of the process over one flaky request, and
+        # re-asking costs one call per poll.
+        self._operator: str = ""
 
     async def check(self) -> str | None:
         """Poll for MRs with activity since the watermark.
@@ -138,19 +170,47 @@ class GitLabMRWatcher:
             and self._is_newer(m, announced.get(str(int(m.get("iid", 0)))) or watermark)
         ]
 
+        operator = await self._operator_username(client)
         lines: list[str] = []
-        if fresh:
+        own = 0
+
+        # A NEW MR seeds the author, because opening one IS activity and an
+        # MR the operator raised himself with nothing else on it is his own
+        # doing. An UPDATE does not: the author of an MR is not the person
+        # who just commented on it, and seeding them would silence a
+        # reviewer whenever the operator happened to own the branch.
+        new_rows, new_own = await self._rows(
+            client, fresh, operator, lambda _m: since.isoformat(),
+            self._format_mr, seed_author=True,
+        )
+        own += new_own
+        if new_rows:
             lines.append("new merge requests:")
-            lines.extend(self._format_mr(m) for m in fresh[:MAX_NEW_PER_POLL])
+            lines.extend(new_rows)
             if len(fresh) > MAX_NEW_PER_POLL:
                 lines.append(f"- … and {len(fresh) - MAX_NEW_PER_POLL} more new MRs")
-        if updated:
+
+        upd_rows, upd_own = await self._rows(
+            client, updated, operator,
+            lambda m: announced.get(str(int(m.get("iid", 0)))) or watermark,
+            self._format_update, seed_author=False,
+        )
+        own += upd_own
+        if upd_rows:
             lines.append("updated merge requests:")
-            lines.extend(self._format_update(m) for m in updated[:MAX_NEW_PER_POLL])
+            lines.extend(upd_rows)
             if len(updated) > MAX_NEW_PER_POLL:
                 lines.append(
                     f"- … and {len(updated) - MAX_NEW_PER_POLL} more updated MRs"
                 )
+        if own:
+            # INFO, not debug: this is the count of turns that did not happen,
+            # and a filter nobody can see the effect of is one nobody can
+            # tell has started over-filtering.
+            log.info(
+                "gitlab_watch: %d MR(s) carried only @%s's own activity; not announced",
+                own, operator,
+            )
 
         new_seen = (seen + [int(m.get("iid", 0)) for m in fresh])[-SEEN_IIDS_CAP:]
         keep = {str(i) for i in new_seen}
@@ -173,6 +233,88 @@ class GitLabMRWatcher:
         """
         self._state.commit()
 
+    async def _operator_username(self, client: Any) -> str:
+        """Read the username this token acts as; "" when it cannot be established.
+
+        "" disables the operator filter for this poll — everything is announced, which is what the
+        watch did before it could tell who acted.
+        """
+        if self._operator:
+            return self._operator
+        try:
+            user = await client.current_user()
+        except Exception:
+            log.debug("gitlab_watch: could not read the token's identity; announcing everything")
+            return ""
+        self._operator = str((user or {}).get("username") or "")
+        return self._operator
+
+    async def _rows(
+        self,
+        client: Any,
+        mrs: list[dict[str, Any]],
+        operator: str,
+        baseline: Callable[[dict[str, Any]], str],
+        render: Callable[[dict[str, Any], set[str] | None], str],
+        *,
+        seed_author: bool,
+    ) -> tuple[list[str], int]:
+        """Render the MRs worth announcing, and count the ones that were only the operator's.
+
+        Capped at MAX_NEW_PER_POLL before the actor lookup, not after: the cap exists to bound the
+        prompt, and spending ten more REST calls to decide the fate of entries that would have been
+        summarized as "… and N more" anyway buys nothing.
+        """
+        rows: list[str] = []
+        own = 0
+        for mr in mrs[:MAX_NEW_PER_POLL]:
+            actors = await self._new_actors(
+                client, mr, baseline(mr), seed_author=seed_author,
+            )
+            if operator and actors is not None and actors == {operator}:
+                own += 1
+                continue
+            rows.append(render(mr, actors))
+        return rows, own
+
+    async def _new_actors(
+        self, client: Any, mr: dict[str, Any], baseline: str, *, seed_author: bool,
+    ) -> set[str] | None:
+        """Who is behind the activity newer than `baseline`.
+
+        None means UNKNOWN and the caller must announce — the notes call failed, or the client has
+        no notes method at all. An empty set is a different answer: the MR moved without a note
+        behind it (a label, a milestone, a title edit), which is also announced, because an empty
+        set never equals the operator.
+        """
+        iid = int(mr.get("iid", 0))
+        try:
+            notes = await client.list_merge_request_notes(self._project, iid, sort="desc")
+        except Exception:
+            log.debug("gitlab_watch: no note list for !%s; announcing it", iid)
+            return None
+        base = _parse_ts(baseline)
+        actors: set[str] = set()
+        for note in notes:
+            stamp = _parse_ts(str(note.get("created_at") or ""))
+            if base is not None and stamp is not None and stamp <= base:
+                break  # sorted newest first, so everything from here is older
+            name = (note.get("author") or {}).get("username")
+            if name:
+                actors.add(str(name))
+        if seed_author:
+            author = (mr.get("author") or {}).get("username")
+            if author:
+                actors.add(str(author))
+        return actors
+
+    @staticmethod
+    def _actor_line(actors: set[str] | None) -> str:
+        """Render the `activity by:` suffix, or nothing when there is nobody to name."""
+        if not actors:
+            return ""
+        return "\n  activity by: " + ", ".join(f"@{a}" for a in sorted(actors))
+
     @staticmethod
     def _is_newer(mr: dict[str, Any], baseline: str) -> bool:
         """Tell whether the MR's updated_at moved past the last announced value.
@@ -186,7 +328,7 @@ class GitLabMRWatcher:
             return True
         return updated_at > base
 
-    def _format_mr(self, mr: dict[str, Any]) -> str:
+    def _format_mr(self, mr: dict[str, Any], actors: set[str] | None = None) -> str:
         author = (mr.get("author") or {}).get("username", "?")
         desc = " ".join(str(mr.get("description") or "").split())[:200]
         line = (
@@ -196,12 +338,12 @@ class GitLabMRWatcher:
         )
         if desc:
             line += f"\n  {desc}"
-        return line
+        return line + self._actor_line(actors)
 
-    def _format_update(self, mr: dict[str, Any]) -> str:
+    def _format_update(self, mr: dict[str, Any], actors: set[str] | None = None) -> str:
         author = (mr.get("author") or {}).get("username", "?")
         return (
             f"- !{mr.get('iid', '?')} {mr.get('title', '(no title)')} "
             f"(@{author}) — state: {mr.get('state', '?')}, "
             f"updated {mr.get('updated_at', '?')}\n  {mr.get('web_url', '')}"
-        )
+        ) + self._actor_line(actors)
