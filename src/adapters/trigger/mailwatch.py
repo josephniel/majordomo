@@ -18,6 +18,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from ports import Question
+
 from ._state import WatchState
 
 if TYPE_CHECKING:
@@ -39,6 +41,30 @@ briefly — lead with who/what/why it matters. If none do, reply exactly \
 
 New messages:
 """
+
+
+# The same judgment the preamble asks the LLM to make, asked of a model that
+# only makes judgments — so the common case (nothing here is urgent) costs one
+# cheap typed answer instead of a full turn that replies <silent>. Worded from
+# the preamble deliberately: if the two ever disagree about what "needs
+# attention" means, the gate will suppress mail the turn would have reported.
+MAIL_WATCH_GATE_QUESTION = Question(
+    instructions=(
+        "These are new emails that just arrived in the user's inbox, as "
+        "sender, subject and snippet. Does any one of them genuinely need "
+        "the user's attention RIGHT NOW?"
+    ),
+    yes_means=(
+        "At least one is urgent or time-sensitive, or is a real person "
+        "waiting on a reply from the user."
+    ),
+    no_means=(
+        "All of them can wait for the user to check their inbox: "
+        "newsletters, receipts, notifications, automated reports, "
+        "marketing, calendar noise, CI and alerting chatter, or anything "
+        "the user is only copied on."
+    ),
+)
 
 
 class MailWatcher:

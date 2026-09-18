@@ -113,3 +113,17 @@ llm:
       # Where the local daemon listens — a property of the host.
       # env fallback: OLLAMA_BASE_URL
       # base_url:
+
+# ------------------------------------------------------------------
+decisions:
+  # ----------------------------------------------------------------
+  typesafe:
+    # TypeSafe (Jev) key for typed decisions. Not a chat vendor — it
+    # writes no text and joins no chain. Unset leaves every decision gate
+    # open, i.e. the behaviour before it existed.
+    # env fallback: TYPESAFE_API_KEY
+    # api_key: ${TYPESAFE_API_KEY}
+
+    # System One model id. Empty uses the adapter's default alias.
+    # env fallback: TYPESAFE_MODEL
+    # model:

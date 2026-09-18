@@ -148,7 +148,7 @@ type = "forbidden"
 source_modules = ["ports"]
 forbidden_modules = [
     "anthropic", "claude_agent_sdk", "openai", "telegram",
-    "asyncpg", "apscheduler", "fastembed", "httpx",
+    "asyncpg", "apscheduler", "fastembed", "httpx", "typesafe_sdk",
 ]
 
 [[tool.importlinter.contracts]]

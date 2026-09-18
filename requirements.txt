@@ -12,3 +12,6 @@ openai>=1.40
 fastembed>=0.3
 pypdf
 sqlglot>=30,<31        # SQL statement classification for the database connector
+# System One decisions (ports/decisions.py). NOT a chat vendor — it answers typed
+# questions that would otherwise cost a model turn. Inert without TYPESAFE_API_KEY.
+typesafe-sdk>=0.6

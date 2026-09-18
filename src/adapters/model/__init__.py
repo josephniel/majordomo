@@ -43,6 +43,7 @@ from .external_mcp import ExternalMCPManager
 from .fallback import CascadingAgent
 from .health import VendorHealthBoard
 from .history import ConversationHistory, EphemeralConversationHistory, TurnRecord
+from .typesafe import TypeSafeDecider
 
 __all__ = [
     "Agent",
@@ -66,6 +67,7 @@ __all__ = [
     "ToolOutcomeCallback",
     "ToolUseCallback",
     "TurnRecord",
+    "TypeSafeDecider",
     "UsageLimitError",
     "VendorEndpoint",
     "VendorHealthBoard",

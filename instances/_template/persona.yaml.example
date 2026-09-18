@@ -87,8 +87,17 @@ system_prompt: |
 
 # Push-style mail alerts (needs the gmail connector): a token-free REST
 # check every N minutes; the LLM wakes only when new mail arrived.
+#
+# With TYPESAFE_API_KEY set there is a SECOND prefilter in front of the turn:
+# a decision model judges whether the new mail needs attention at all, for
+# roughly a four-hundredth of the turn it replaces. Historically ~9 in 10 of
+# these fires answered <silent>. It is on by default wherever a key exists —
+# `gate: false` opts out, and anything that is not a confident no still wakes
+# the model. Raise gate_wake_above only with the skip log in hand.
 # mail_watch:
 #   every_minutes: 3
+#   gate: true
+#   gate_wake_above: 0.15
 
 # Splitwise -> budget-ledger mirroring (needs splitwise AND budget
 # connectors): Splitwise has no webhooks, so a token-free poll every N

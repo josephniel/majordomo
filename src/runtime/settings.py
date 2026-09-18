@@ -79,6 +79,15 @@ class RuntimeSettings:
     router_llm: tuple[str, ...] = ()
     router_model: str = ""
 
+    # ---- typed decisions (System One — see ports/decisions.py) ----
+    # NOT a chat vendor and not a member of any chain: it cannot write a
+    # sentence, so it can never stand in for one. It answers typed questions
+    # that would otherwise cost a full turn. Empty key = every gate that
+    # would have used it stays open, which is the pre-existing behaviour.
+    typesafe_api_key: str = ""
+    # Empty means the adapter's default alias; see adapters/model/typesafe.py.
+    typesafe_model: str = ""
+
     # ---- background summarization ----
     compaction_llm: tuple[str, ...] = ()  # falls back to primary_llm
     compaction_model: str = "claude-haiku-4-5"

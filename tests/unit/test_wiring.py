@@ -795,3 +795,74 @@ class TestMeetingWatchGating:
         rt = self._runtime(tmp_path, monkeypatch)
         watcher = rt.meeting_watch_source._watcher
         assert watcher._state._path == rt.persona.data_dir / "meeting_watch.json"
+
+
+class TestTheDeciderIsOptionalEverywhere:
+    """The System One judge, and the watch gates it makes possible.
+
+    Every assertion here is about the same property: nothing in the runtime
+    REQUIRES a decider. Without a key the container must build the watches
+    exactly as it did before this existed, because the alternative — a watch
+    that silently stops firing when a key expires — is the failure this is
+    supposed to prevent, not cause.
+    """
+
+    def _runtime(self, tmp_path, **settings_kw):
+        from runtime.container import PersonaRuntime
+        from runtime.persona import Persona
+        from runtime.settings import RuntimeSettings
+        rt = PersonaRuntime(Persona(
+            id="t", dir=tmp_path / "instances" / "t", name="T", system_prompt="x",
+        ))
+        # settings is a cached_property; seeding it keeps the test off the
+        # real config files and out of the host environment.
+        rt.settings = RuntimeSettings(**settings_kw)
+        return rt
+
+    def test_no_key_means_no_decider(self, tmp_path):
+        assert self._runtime(tmp_path).decider is None
+
+    def test_a_key_builds_one(self, tmp_path):
+        from adapters.model.typesafe import TypeSafeDecider
+        rt = self._runtime(tmp_path, typesafe_api_key="k")
+        assert isinstance(rt.decider, TypeSafeDecider)
+        assert rt.decider.configured
+
+    def test_the_model_id_reaches_the_adapter(self, tmp_path):
+        rt = self._runtime(tmp_path, typesafe_api_key="k", typesafe_model="jev-1.13.0")
+        assert "jev-1.13.0" in repr(rt.decider)
+
+    def test_without_a_decider_a_watch_gets_no_gate(self, tmp_path):
+        from adapters.trigger.mailwatch import MAIL_WATCH_GATE_QUESTION
+        rt = self._runtime(tmp_path)
+        assert rt._watch_gate({}, MAIL_WATCH_GATE_QUESTION, "mail_watch") is None
+
+    def test_with_a_decider_a_watch_is_gated_by_default(self, tmp_path):
+        """Opt-out, not opt-in: a watch with a judge available and no opinion
+        wants the cheap path, and the expensive default is the one nobody
+        notices they are paying for."""
+        from adapters.trigger.mailwatch import MAIL_WATCH_GATE_QUESTION
+        rt = self._runtime(tmp_path, typesafe_api_key="k")
+        assert rt._watch_gate({}, MAIL_WATCH_GATE_QUESTION, "mail_watch") is not None
+
+    def test_a_watch_can_refuse_the_gate(self, tmp_path):
+        from adapters.trigger.mailwatch import MAIL_WATCH_GATE_QUESTION
+        rt = self._runtime(tmp_path, typesafe_api_key="k")
+        assert rt._watch_gate(
+            {"gate": False}, MAIL_WATCH_GATE_QUESTION, "mail_watch") is None
+
+    def test_a_watch_can_move_its_threshold(self, tmp_path):
+        """The knob lives with the watch, not in the host table: what counts
+        as worth waking someone for differs per watch."""
+        from adapters.trigger.mailwatch import MAIL_WATCH_GATE_QUESTION
+        rt = self._runtime(tmp_path, typesafe_api_key="k")
+        gate = rt._watch_gate(
+            {"gate_wake_above": 0.4}, MAIL_WATCH_GATE_QUESTION, "mail_watch")
+        assert gate._wake_above == 0.4
+
+    def test_an_empty_threshold_falls_back_to_the_default(self, tmp_path):
+        from adapters.trigger.mailwatch import MAIL_WATCH_GATE_QUESTION
+        from domain.watch_gate import WAKE_ABOVE
+        rt = self._runtime(tmp_path, typesafe_api_key="k")
+        gate = rt._watch_gate({"gate_wake_above": None}, MAIL_WATCH_GATE_QUESTION, "m")
+        assert gate._wake_above == WAKE_ABOVE

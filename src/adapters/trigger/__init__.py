@@ -7,12 +7,13 @@ behalf on their own triggers; the orchestrator bridges their events into
 agent turns (kernel/proactive.py).
 """
 from .gitlabwatch import GITLAB_WATCH_PROMPT_PREAMBLE, GitLabMRWatcher
-from .mailwatch import MailWatcher
+from .mailwatch import MAIL_WATCH_GATE_QUESTION, MailWatcher
 from .retention import RetentionJob, RetentionPolicy
 from .webhook import WebhookServer, WebhookTrigger, build_trigger_prompt
 
 __all__ = [
     "GITLAB_WATCH_PROMPT_PREAMBLE",
+    "MAIL_WATCH_GATE_QUESTION",
     "GitLabMRWatcher",
     "MailWatcher",
     "RetentionJob",

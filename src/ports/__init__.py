@@ -8,6 +8,7 @@ shared contracts from here and never from a sibling's internals.
     messaging.py — Attachment (platform ↔ agent DTO)
     tools.py     — ToolProvider/Faculty/Connector, ToolSpec, @tool
     llm.py       — Agent ABC, Summarizer, UsageLimitError, PersonaLike
+    decisions.py — Decider + Likelihood (a judgment, with no prose around it)
     protocols.py — structural capability protocols (AttachmentIngestor, …)
     context.py   — ToolContext (explicit per-invocation scope for handlers)
     conversation.py — ConversationRef (platform-agnostic chat identity)
@@ -19,6 +20,7 @@ shared contracts from here and never from a sibling's internals.
 """
 from .context import ToolContext
 from .conversation import ConversationRef, chat_key
+from .decisions import Decider, Likelihood, Question
 from .documents import DocumentStore
 from .llm import (
     Agent,
@@ -100,11 +102,13 @@ __all__ = [
     "ContextInjector",
     "ConversationMirror",
     "ConversationRef",
+    "Decider",
     "DocumentStore",
     "EmitTrigger",
     "EnabledService",
     "FactCandidate",
     "Faculty",
+    "Likelihood",
     "MemoryCoreEntry",
     "MemoryEntry",
     "MemoryStore",
@@ -115,6 +119,7 @@ __all__ = [
     "PersonaIdentity",
     "PersonaLike",
     "PreviewRefusedError",
+    "Question",
     "Reconciliation",
     "Scored",
     "ServiceCatalog",
