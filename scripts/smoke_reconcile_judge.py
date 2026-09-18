@@ -14,7 +14,10 @@ Prints the verdict, both confidences, and what the gate does with them.
 import asyncio
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -24,8 +27,10 @@ from domain.reconcile import (  # noqa: E402
     _NO_TARGET,
     _VERDICT_QUESTION,
     DESTRUCTIVE_CONFIDENCE,
+    _render_state,
+    _target_question,
 )
-from ports import ChoiceQuestion  # noqa: E402
+from ports import FactCandidate  # noqa: E402
 
 # (stored facts, candidate, the verdict a human would give)
 FIXTURES = [
@@ -61,23 +66,12 @@ def _load_key() -> str:
     return ""
 
 
-def _state(stored: list[str], candidate: str) -> str:
-    lines = ["STORED FACTS:"]
-    lines += [f"[f{i}] (2026-03-01) {f}" for i, f in enumerate(stored, start=1)]
-    lines += ["", f"CANDIDATE FACT: {candidate}"]
-    return "\n".join(lines)
-
-
-def _target_question(stored: list[str]) -> ChoiceQuestion:
-    options = {f"f{i}": f[:120] for i, f in enumerate(stored, start=1)}
-    options[_NO_TARGET] = "no single stored fact is the one being replaced or removed"
-    return ChoiceQuestion(
-        instructions=(
-            "If the candidate replaces or invalidates exactly one of the "
-            "stored facts, which one? Answer 'none' if it does not."
-        ),
-        options=options,
-    )
+def _fake_entries(stored: list[str]) -> list[Any]:
+    """Stand-ins for MemoryEntry, carrying only what the renderer reads."""
+    return [
+        SimpleNamespace(content=text, created_at=datetime(2026, 3, 1, tzinfo=UTC))
+        for text in stored
+    ]
 
 
 async def main() -> int:
@@ -90,9 +84,10 @@ async def main() -> int:
     print(f"destructive verdicts need confidence >= {DESTRUCTIVE_CONFIDENCE}\n")
     wrong = demoted = 0
     for stored, candidate, expected in FIXTURES:
+        entries = _fake_entries(stored)
         answers = await decider.selections(
-            _state(stored, candidate),
-            {"verdict": _VERDICT_QUESTION, "target": _target_question(stored)},
+            _render_state(entries, FactCandidate(scope="user", content=candidate)),
+            {"verdict": _VERDICT_QUESTION, "target": _target_question(entries)},
         )
         if not answers:
             print(f"  NO ANSWER for {candidate!r}")
