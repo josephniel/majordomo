@@ -150,7 +150,7 @@ class TestRecordRecovery:
         )
 
         await orch._recover_missed_record(
-            CHAT, "Done — I've recorded ₱500 for lunch.", agent,
+            CHAT, await orch._claimed_kinds("Done — I've recorded ₱500 for lunch."), agent,
         )
 
         assert agent.prompts == [], "a denied write must NOT be retried"
@@ -165,7 +165,8 @@ class TestRecordRecovery:
             retry_tools=("mcp__budget__record_transaction",),
         )
 
-        await orch._recover_missed_record(CHAT, "I've recorded ₱500 for lunch.", agent)
+        claimed = await orch._claimed_kinds("I've recorded ₱500 for lunch.")
+        await orch._recover_missed_record(CHAT, claimed, agent)
 
         assert len(agent.prompts) == 1
         assert "did not call any tool that writes a record" in agent.prompts[0]
@@ -179,7 +180,8 @@ class TestRecordRecovery:
             retry_failed=("record_transaction",),
         )
 
-        await orch._recover_missed_record(CHAT, "I've recorded ₱500.", agent)
+        claimed = await orch._claimed_kinds("I've recorded ₱500.")
+        await orch._recover_missed_record(CHAT, claimed, agent)
 
         assert len(agent.prompts) == 1
         assert platform.sent != []
@@ -191,7 +193,8 @@ class TestRecordRecovery:
         orch, platform = _orch(tmp_path)
         agent = ScriptedAgent(first_tools=("mcp__budget__record_transaction",))
 
-        await orch._recover_missed_record(CHAT, "I've recorded ₱500 for lunch.", agent)
+        claimed = await orch._claimed_kinds("I've recorded ₱500 for lunch.")
+        await orch._recover_missed_record(CHAT, claimed, agent)
 
         assert agent.prompts == []
         assert platform.sent == []
@@ -200,7 +203,8 @@ class TestRecordRecovery:
         orch, platform = _orch(tmp_path)
         agent = ScriptedAgent(retry_reply="<silent>")
 
-        await orch._recover_missed_record(CHAT, "I've added it to the list.", agent)
+        claimed = await orch._claimed_kinds("I've added it to the list.")
+        await orch._recover_missed_record(CHAT, claimed, agent)
 
         assert len(agent.prompts) == 1
         assert platform.sent == []
@@ -217,7 +221,8 @@ class TestRecordRecovery:
         )
         agent = ScriptedAgent()
 
-        await orch._recover_missed_record(CHAT, "I've recorded ₱500.", agent)
+        claimed = await orch._claimed_kinds("I've recorded ₱500.")
+        await orch._recover_missed_record(CHAT, claimed, agent)
 
         assert agent.prompts == []
         assert platform.sent == []
@@ -236,7 +241,8 @@ class TestRecordClaimRegex:
     ])
     async def test_fires_on_a_completion_claim(self, tmp_path, reply):
         orch, _ = _orch(tmp_path)
-        assert orch._detect_missed_record(reply, ScriptedAgent()) is ClaimBacking.ABSENT
+        claimed = await orch._claimed_kinds(reply)
+        assert orch._detect_missed_record(claimed, ScriptedAgent()) is ClaimBacking.ABSENT
 
     @pytest.mark.parametrize("reply", [
         "Want me to record that?",
@@ -250,7 +256,8 @@ class TestRecordClaimRegex:
     ])
     async def test_stays_quiet_on_non_claims(self, tmp_path, reply):
         orch, _ = _orch(tmp_path)
-        assert orch._detect_missed_record(reply, ScriptedAgent()) is ClaimBacking.SATISFIED
+        claimed = await orch._claimed_kinds(reply)
+        assert orch._detect_missed_record(claimed, ScriptedAgent()) is ClaimBacking.SATISFIED
 
 
 class TestSendLayerIsNowOutcomeAware:
@@ -265,7 +272,8 @@ class TestSendLayerIsNowOutcomeAware:
             first_failed=("mcp__gmail__send_email",),
         )
 
-        await orch._recover_missed_send(CHAT, "I've sent that email.", agent)
+        claimed = await orch._claimed_kinds("I've sent that email.")
+        await orch._recover_missed_send(CHAT, claimed, agent)
 
         assert agent.prompts == [], "a denied send must NOT be retried"
         assert len(platform.sent) == 1
@@ -341,3 +349,89 @@ class TestOutcomeReachesTheTrace:
         assert agent.last_turn_failed_tools == ("mcp__budget__record_transaction",)
         assert isinstance(agent, ToolOutcomeReporting)
         assert _classify_claim(agent, ("record_transaction",)) is ClaimBacking.FAILED
+
+
+# ---- the judge, end to end -------------------------------------------
+
+
+class _JudgeDecider:
+    """Says RECORD_WRITTEN is claimed, whatever the words were."""
+
+    def __init__(self, probability=0.95):
+        self.probability = probability
+        self.calls = []
+
+    async def likelihoods(self, state, questions):
+        from ports import Likelihood
+        self.calls.append(list(questions))
+        return {
+            k: Likelihood(probability=self.probability if k == "record_written" else 0.01)
+            for k in questions
+        }
+
+
+def _orch_with_judge(tmp_path, decider):
+    from domain.claim_check import ClaimJudge
+    from kernel.core import OptionalSubsystems
+    platform = FakePlatform()
+    return ConversationOrchestrator(
+        platform=platform,
+        agent_factory=lambda **k: None,
+        session_store=SessionStore(tmp_path / "s.json"),
+        config=object(),
+        connectors_list=[FakeBudgetProvider()],
+        persona_id="t",
+        optional=OptionalSubsystems(claim_judge=ClaimJudge(decider)),
+    ), platform
+
+
+class TestAPhrasingNoPatternAnticipated:
+    """The hole the judge was added to close.
+
+    Every regex here was written after somebody noticed a specific wording
+    get through. This is the next one nobody has noticed yet.
+    """
+
+    UNSEEN = "Your ₱500 lunch is now sitting in the books."
+
+    async def test_the_patterns_alone_miss_it(self, tmp_path):
+        orch, _ = _orch(tmp_path)
+        assert await orch._claimed_kinds(self.UNSEEN) == frozenset()
+
+    async def test_the_judge_catches_it(self, tmp_path):
+        orch, _ = _orch_with_judge(tmp_path, _JudgeDecider())
+        assert "record_written" in await orch._claimed_kinds(self.UNSEEN)
+
+    async def test_and_it_reaches_the_corrective_turn(self, tmp_path):
+        """End to end: an unrecorded expense reported as filed now gets the
+        same recovery a recognised phrasing would have."""
+        orch, _ = _orch_with_judge(tmp_path, _JudgeDecider())
+        agent = ScriptedAgent(retry_reply="<silent>")
+        await orch._recover_missed_record(
+            CHAT, await orch._claimed_kinds(self.UNSEEN), agent,
+        )
+        assert agent.prompts, "the corrective turn never ran"
+        assert "integrity check" in agent.prompts[0]
+
+    async def test_a_reply_claiming_nothing_stays_quiet(self, tmp_path):
+        orch, platform = _orch_with_judge(tmp_path, _JudgeDecider(probability=0.02))
+        agent = ScriptedAgent()
+        await orch._recover_missed_record(
+            CHAT, await orch._claimed_kinds("You spent ₱500 on lunch yesterday."), agent,
+        )
+        assert agent.prompts == []
+        assert platform.sent == []
+
+
+class TestOnlyLiveKindsAreAsked:
+    async def test_a_kind_no_provider_can_satisfy_is_never_asked(self, tmp_path):
+        """A persona with no scheduler cannot hallucinate a reminder into
+        existence — there is nothing to recover, so the question is waste."""
+        decider = _JudgeDecider()
+        orch, _ = _orch_with_judge(tmp_path, decider)
+        await orch._claimed_kinds("anything at all")
+        asked = decider.calls[0]
+        assert "record_written" in asked
+        assert "message_sent" in asked
+        assert "schedule_set" not in asked, "FakeBudgetProvider declares no schedule tools"
+        assert "memory_save" not in asked, "no reflection engine on this orchestrator"

@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     )
     from adapters.tools import ServiceRegistry, WriteApprovalGate
     from domain import AddressingGate, ReflectionEngine
+    from domain.claim_check import ClaimJudge
     from ports import ToolProviderView
 
     from .sessions import SessionStore
@@ -113,6 +114,11 @@ class OptionalSubsystems:
     # _pending_approval_notice. The orchestrator never approves anything.
     approval_gate: WriteApprovalGate | None = None
 
+    # Reads a reply for claims the patterns in recovery.py did not
+    # anticipate. Absent means the patterns alone decide, which is what every
+    # layer did before it existed — it can only ever ADD a claim.
+    claim_judge: ClaimJudge | None = None
+
     # Decides whether a message in a SHARED ROOM is for this bot at all.
     # Absent on a persona with no such room, and consulted only where
     # ChatPlatform.is_shared_room says the question is live — a DM never
@@ -152,6 +158,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._comms_log = optional.comms_log
         self._conversation_history = optional.conversation_history
         self._reflection = optional.reflection
+        self._claim_judge = optional.claim_judge
         self._status_reporter = optional.status_reporter
         self._trigger_sources: list[TriggerSource] = list(optional.trigger_sources)
         self._bg_agent_factory = optional.background_agent_factory
@@ -501,15 +508,21 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             # counting sends counted almost nothing.
             await self._note_outbound(chat_id, reply)
 
+            # Read the reply for claims ONCE, after it has already been
+            # sent. Everything below is a check on a message the user has
+            # seen, which is why a judging model can be in this path at all:
+            # its latency delays the next turn, never this reply.
+            claimed = await self._claimed_kinds(reply)
+
             if self._reflection is not None:
                 self._reflection.note_activity(chat_id)
-                self._detect_missed_save(chat_id, reply, agent)
+                self._detect_missed_save(chat_id, claimed, agent)
 
             # Layers 3b/3c/3d — still inside the chat lock, so the corrective
             # turn can't interleave with the user's next message.
-            await self._recover_missed_schedule(chat_id, reply, agent)
-            await self._recover_missed_send(chat_id, reply, agent)
-            await self._recover_missed_record(chat_id, reply, agent)
+            await self._recover_missed_schedule(chat_id, claimed, agent)
+            await self._recover_missed_send(chat_id, claimed, agent)
+            await self._recover_missed_record(chat_id, claimed, agent)
 
     async def _admits_turn(self, msg: InboundMessage) -> bool:
         """Whether this message gets to start a turn at all.

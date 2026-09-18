@@ -13,7 +13,13 @@ correction.
     Layer 3c  message sent  -> corrective turn, else correct the user
     Layer 3d  record written-> corrective turn, else correct the user
 
-Every layer asks the same question, via `_classify_claim`: did a tool that
+Two questions, kept apart. "Does the reply CLAIM this?" is
+`_claimed_kinds` — patterns, plus optionally a judging model that catches the
+phrasings no pattern anticipated (domain/claim_check.py). "Did a tool BACK
+it?" is `_classify_claim` below, which is evidence rather than judgment. The
+layers combine them; neither knows how the other decides.
+
+Every layer asks the same evidence question, via `_classify_claim`: did a tool that
 can satisfy this claim actually SUCCEED? Not "was one called" — a write the
 operator denied is a tool call that changed nothing, and treating invocation
 as proof is what let "Done — I've recorded ₱500" stand on a denied write.
@@ -33,6 +39,12 @@ import re
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from domain.claim_check import (
+    MEMORY_SAVE,
+    MESSAGE_SENT,
+    RECORD_WRITTEN,
+    SCHEDULE_SET,
+)
 from ports import ConversationRef, ToolOutcomeReporting, ToolTraceReporting
 
 from .formatting import chunk_for_platform
@@ -41,6 +53,7 @@ if TYPE_CHECKING:
     from adapters.chat import ChatPlatform
     from adapters.model import Agent
     from domain import ReflectionEngine
+    from domain.claim_check import ClaimJudge
     from ports import Attachment, ToolUseCallback
 
 log = logging.getLogger(__name__)
@@ -190,6 +203,17 @@ _RECORD_NOT_EXECUTED_TEXT = (
 )
 
 
+# The patterns, keyed by the claim kind they detect. One table so that
+# "which kinds is this persona even asking about" is answerable in one place
+# rather than by reading four layers.
+_CLAIM_PATTERNS = {
+    MEMORY_SAVE: _CLAIMS_MEMORY_SAVE,
+    SCHEDULE_SET: _CLAIMS_SCHEDULE_SET,
+    MESSAGE_SENT: _CLAIMS_SENT,
+    RECORD_WRITTEN: _CLAIMS_RECORDED,
+}
+
+
 class ClaimBacking(Enum):
     """How well a turn's tool calls back a success claim in its reply.
 
@@ -270,6 +294,7 @@ class RecoveryMixin:
     if TYPE_CHECKING:
         _platform: ChatPlatform
         _reflection: ReflectionEngine | None
+        _claim_judge: ClaimJudge | None
         _schedule_claim_tools: tuple[str, ...]
         _send_claim_tools: tuple[str, ...]
         _record_claim_tools: tuple[str, ...]
@@ -288,9 +313,39 @@ class RecoveryMixin:
             typing: bool = ...,
         ) -> str: ...
 
+    # ---- which claims this reply makes ----
+
+    async def _claimed_kinds(self, reply: str) -> frozenset[str]:
+        """Every claim kind this reply makes, patterns first.
+
+        Asked once per reply and shared by all four layers: the judge reads the reply as one state
+        and answers every kind against it, so splitting this per layer would pay for the reply four
+        times over for the same answers.
+
+        Only LIVE kinds are asked about. A persona with no sending tool cannot hallucinate a send
+        into existence — there is nothing to recover and nothing to correct — so that question is
+        not worth putting to a judge, or to a regex.
+        """
+        text = reply or ""
+        live = [
+            kind for kind, enabled in (
+                (MEMORY_SAVE, self._reflection is not None),
+                (SCHEDULE_SET, bool(self._schedule_claim_tools)),
+                (MESSAGE_SENT, bool(self._send_claim_tools)),
+                (RECORD_WRITTEN, bool(self._record_claim_tools)),
+            ) if enabled
+        ]
+        hits = frozenset(k for k in live if _CLAIM_PATTERNS[k].search(text))
+        judge = self._claim_judge
+        if judge is None:
+            return hits
+        return await judge.detect(text, live, hits)
+
     # ---- Layer 3: hallucinated memory save ----
 
-    def _detect_missed_save(self, chat_id: ConversationRef, reply: str, agent: Agent) -> None:
+    def _detect_missed_save(
+        self, chat_id: ConversationRef, claimed: frozenset[str], agent: Agent,
+    ) -> None:
         """Turn a hallucinated memory save into a self-healing extraction.
 
         If the model's reply CLAIMS it saved something but it never actually
@@ -303,7 +358,7 @@ class RecoveryMixin:
             return
         if not isinstance(agent, ToolTraceReporting) or agent.last_turn_tool_calls > 0:
             return
-        if not _CLAIMS_MEMORY_SAVE.search(reply or ""):
+        if MEMORY_SAVE not in claimed:
             return
         log.info(
             "chat %s: reply claims a save but no tool was called; "
@@ -315,7 +370,7 @@ class RecoveryMixin:
 
     # ---- Layer 3c: hallucinated send ----
 
-    def _detect_missed_send(self, reply: str, agent: Agent) -> ClaimBacking:
+    def _detect_missed_send(self, claimed: frozenset[str], agent: Agent) -> ClaimBacking:
         """Classify a reply claiming an email/message was sent.
 
         Mirrors _detect_missed_schedule. SATISFIED also covers "there was no
@@ -324,12 +379,12 @@ class RecoveryMixin:
         """
         if not self._send_claim_tools:
             return ClaimBacking.SATISFIED  # no enabled provider can send anyway
-        if not _CLAIMS_SENT.search(reply or ""):
+        if MESSAGE_SENT not in claimed:
             return ClaimBacking.SATISFIED
         return _classify_claim(agent, self._send_claim_tools)
 
     async def _recover_missed_send(
-        self, chat_id: ConversationRef, reply: str, agent: Agent,
+        self, chat_id: ConversationRef, claimed: frozenset[str], agent: Agent,
     ) -> None:
         """One-shot recovery for a hallucinated send.
 
@@ -337,7 +392,7 @@ class RecoveryMixin:
         was sent is a silent, compounding failure, and the model's own reply must not be relayed
         because it tends to repeat the false claim.
         """
-        backing = self._detect_missed_send(reply, agent)
+        backing = self._detect_missed_send(claimed, agent)
         if backing is ClaimBacking.SATISFIED:
             return
         if backing is ClaimBacking.FAILED:
@@ -384,7 +439,7 @@ class RecoveryMixin:
 
     # ---- Layer 3b: hallucinated schedule ----
 
-    def _detect_missed_schedule(self, reply: str, agent: Agent) -> ClaimBacking:
+    def _detect_missed_schedule(self, claimed: frozenset[str], agent: Agent) -> ClaimBacking:
         """Classify a reply claiming a reminder was created.
 
         Agents without a tool trace classify SATISFIED — we can't tell claim
@@ -393,12 +448,12 @@ class RecoveryMixin:
         """
         if not self._schedule_claim_tools:
             return ClaimBacking.SATISFIED  # no provider can satisfy the claim anyway
-        if not _CLAIMS_SCHEDULE_SET.search(reply or ""):
+        if SCHEDULE_SET not in claimed:
             return ClaimBacking.SATISFIED
         return _classify_claim(agent, self._schedule_claim_tools)
 
     async def _recover_missed_schedule(
-        self, chat_id: ConversationRef, reply: str, agent: Agent,
+        self, chat_id: ConversationRef, claimed: frozenset[str], agent: Agent,
     ) -> None:
         """One-shot recovery for a hallucinated schedule.
 
@@ -417,7 +472,7 @@ class RecoveryMixin:
         faculty can genuinely set a reminder, and that guard silently
         suppressed the recovery for it.
         """
-        backing = self._detect_missed_schedule(reply, agent)
+        backing = self._detect_missed_schedule(claimed, agent)
         if backing is ClaimBacking.SATISFIED:
             return
         if backing is ClaimBacking.FAILED:
@@ -466,7 +521,7 @@ class RecoveryMixin:
 
     # ---- Layer 3d: hallucinated record ----
 
-    def _detect_missed_record(self, reply: str, agent: Agent) -> ClaimBacking:
+    def _detect_missed_record(self, claimed: frozenset[str], agent: Agent) -> ClaimBacking:
         """Classify a reply claiming something was written to a system of record.
 
         Same shape as the send and schedule layers. The FAILED case is the one
@@ -475,12 +530,12 @@ class RecoveryMixin:
         """
         if not self._record_claim_tools:
             return ClaimBacking.SATISFIED  # no provider here writes records
-        if not _CLAIMS_RECORDED.search(reply or ""):
+        if RECORD_WRITTEN not in claimed:
             return ClaimBacking.SATISFIED
         return _classify_claim(agent, self._record_claim_tools)
 
     async def _recover_missed_record(
-        self, chat_id: ConversationRef, reply: str, agent: Agent,
+        self, chat_id: ConversationRef, claimed: frozenset[str], agent: Agent,
     ) -> None:
         """One-shot recovery for a hallucinated record write.
 
@@ -488,7 +543,7 @@ class RecoveryMixin:
         unsent email: the user walks away believing a durable record exists,
         and only discovers otherwise when they go looking for it.
         """
-        backing = self._detect_missed_record(reply, agent)
+        backing = self._detect_missed_record(claimed, agent)
         if backing is ClaimBacking.SATISFIED:
             return
         if backing is ClaimBacking.FAILED:
