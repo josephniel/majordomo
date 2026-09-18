@@ -31,6 +31,7 @@ from .reconcile import Reconciler, candidate_from_extraction
 
 if TYPE_CHECKING:
     from adapters.model.history import ConversationHistory
+    from ports import Decider
 
     from .memory import LongTermMemory
     from .skill_mining import SkillMiner
@@ -64,6 +65,7 @@ class ReflectionEngine:
         identity: PersonaIdentity | None = None,
         idle_seconds: float = DEFAULT_IDLE_SECONDS,
         skill_miner: SkillMiner | None = None,
+        decider: Decider | None = None,
     ) -> None:
         self._history = history
         self._memory = memory
@@ -78,7 +80,7 @@ class ReflectionEngine:
         # Extraction is a MERGE against existing memory, not an append: a
         # changed fact must supersede the old one rather than sit beside it
         # contradicting it. See domain/reconcile.py.
-        self._reconciler = Reconciler(memory, summarizer, self._identity)
+        self._reconciler = Reconciler(memory, summarizer, self._identity, decider)
         # chat_id -> pending idle timer
         self._timers: dict[ConversationRef, asyncio.Task[None]] = {}
         self._run_locks: dict[ConversationRef, asyncio.Lock] = {}

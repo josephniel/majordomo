@@ -324,6 +324,44 @@ Cost control: a candidate with no relevant neighbours is ADDed with **no
 model call at all**, which is the majority path. An empty neighbourhood
 cannot contain a contradiction.
 
+### The verdict is a Choice, and the destructive ones are gated
+
+Reconciliation asks one question per candidate — noop / add / update / delete
+— and used to ask it as prose returning STRICT JSON, with a defensive parser
+because background models decorate. Measured over 09-01..09-18: 333
+candidates, 183 of them (55%) came back `noop`, i.e. the majority of those
+model calls existed to say "nothing new here".
+
+It is now a four-option Choice, with a second Choice over the neighbourhood
+(`f1`…`fn`, plus `none`) naming which stored fact a destructive verdict is
+about. Both ride one call — the vendor answers every question against one
+state in parallel — and the labels mean a UUID never has to survive a round
+trip through a model, which is a whole class of parse failure removed.
+
+**The reason this is worth doing is safety, not cost.** `update` and `delete`
+destroy the currently-visible value. The prose prompt asks for restraint —
+*"If in doubt, 'add'"* — but that is an instruction the model may or may not
+follow and nothing downstream can check. A probability makes it a gate:
+`DESTRUCTIVE_CONFIDENCE`, and BOTH halves must clear it, because being sure
+the value changed is worthless if the wrong row is picked to overwrite.
+Anything short is demoted to ADD, which leaves a contradiction — visible, and
+repairable by the next reconciliation — rather than an overwrite, which is
+not.
+
+The threshold is placed from measurements (`scripts/smoke_reconcile_judge.py`,
+8 fixtures, 8/8 verdicts correct). Clear destructive cases score 0.76, 0.83,
+0.99; "the user moved to Cebu" — this module's own motivating example — scores
+0.76, so the first cut at 0.75 sat one point of noise from demoting the case
+the feature exists for. It is 0.65. The murky cases are nowhere near: asked
+about "the user is in Cebu this week" against "the user lives in Manila" the
+model answers ADD, not a weak UPDATE. It declines the destructive verdict
+rather than hedging, so the gate is a backstop for a confident mistake rather
+than the primary defence.
+
+No judge, or a judge that cannot answer, falls through to the prose path —
+**not** to ADD. A reconciler that treated an unreachable vendor as a verdict
+would append a contradiction every time it hiccuped.
+
 ### Bi-temporal validity
 
 `created_at` is when a row was WRITTEN; `valid_from`/`valid_to` are when the
