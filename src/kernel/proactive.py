@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from ports import TriggerContext
 
 if TYPE_CHECKING:
-    from ports import TriggerEvent, TriggerSource
+    from ports import ConversationRef, TriggerEvent, TriggerSource
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +42,10 @@ class ProactiveMixin:
         _trigger_sources: list[TriggerSource]
 
         async def _run_trigger(self, event: TriggerEvent) -> bool: ...
+
+        async def _announce_trigger(
+            self, chat_id: ConversationRef, text: str, source: str
+        ) -> bool: ...
 
     async def _start_trigger_sources(self) -> None:
         """Start every configured source.
@@ -63,7 +67,11 @@ class ProactiveMixin:
 
         add_cron = None
         for source in ordered:
-            ctx = TriggerContext(emit=self._run_trigger, add_cron=add_cron)
+            ctx = TriggerContext(
+                emit=self._run_trigger,
+                add_cron=add_cron,
+                announce=self._announce_trigger,
+            )
             try:
                 await source.start(ctx)
             except Exception:

@@ -575,6 +575,49 @@ The remaining two watches fail the same test for a different reason:
 than a skipped announcement. Measured, the economics agreed: mail was ~91%
 silent over four months, gitlab ~11% over 102 fires.
 
+### Code first, then the judge, then the model
+
+The gate above saves a turn by answering one question. The same three layers,
+applied to work rather than to announcements, can finish it:
+
+    code   everything decidable from data already in hand — who paid, how
+           much, in what currency, whether the ledger already holds it, which
+           of the tracker's four write shapes this is
+    judge  the closed-set ambiguities, with a confidence the caller can
+           threshold — which account, which leaf tag, which person
+    model   what neither can do: prose, inference, research, and anything the
+           judge was not sure enough about
+
+Two paths run this way. `adapters/trigger/splitwisemirror.py` mirrors a
+Splitwise expense into the budget ledger, and `domain/ledger_fastpath.py`
+records a plain "paid 1108 for dinner using Maya CC" typed in chat. Both fail
+open UPWARD: a shape the rules do not know, a judgment under its floor, an
+unreadable ledger or an absent key all hand the work to the model, which is
+exactly what happened before either existed.
+
+**The safety argument is the option set, not the judge.** Every choice comes
+from a list the ledger itself supplied — real accounts, LEAF tags that accept
+the direction being written, people who already exist — so the answers that
+would be expensive to get wrong cannot be expressed. `budget.py` has to refuse
+a GROUP tag and explain the subtags to a model that picked one; a question
+whose options are only leaves cannot pick one. And `none` is always an option,
+because a judge forced to choose always chooses.
+
+**Evidence beats prompting.** The first smoke run against real expenses
+answered `none` to nearly every account question, correctly: "Nokal Cocktails"
+says nothing about which card paid. What fixed it was not rewording the
+question but handing over what the ledger already knows — how it has been
+paying lately, and what paid for the most similar entries. The second run
+recorded 6 of 11, and all six matched rows a human had already filed by hand.
+
+**Saying something with no turn.** A path that finishes its own work has a
+sentence to say and no model to write it, so `TriggerContext` carries a third
+capability beside `emit` and `add_cron`: `announce`, which sends text and
+mirrors it into history without building an agent. `WatchSource` announces
+whatever the watcher drained from `take_reports()` and emits a prompt only for
+what is left, so one poll can report, prompt, both, or neither. The watermark
+waits for both.
+
 ## The control room: who answers, and who pays for deciding
 
 A control room is one Telegram group holding the operator and every persona.

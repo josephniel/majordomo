@@ -15,6 +15,9 @@ Reports, per persona:
   reconcile        verdicts, and any destructive one the confidence gate demoted
   compaction       how much of each window survived verbatim
   gitlab actors    MRs not announced because the only activity was the operator's
+  mirror           Splitwise expenses recorded with no turn at all
+  fast path        chat messages recorded with no turn at all
+  too close        the account/tag/person choices that were left to the model
 
 Read-only, and no network: it parses logs/*.err.log and nothing else.
 """
@@ -49,6 +52,19 @@ PATTERNS = {
     ),
     "gitlab — his own activity, not announced": re.compile(
         r"gitlab_watch: (?P<subject>\d+) MR\(s\) carried only"
+    ),
+    "mirror — expense recorded without a turn": re.compile(
+        r"mirror: recorded expense \S+ without a turn \((?P<subject>\w+)\)"
+    ),
+    "fast path — message recorded without a turn": re.compile(
+        r"fastpath: recorded (?P<subject>[\d.]+) on "
+    ),
+    "too close to call, left to the model": re.compile(
+        r"(?:mirror|fastpath): (?P<subject>\w+) unsure "
+        r"\(best \S+, confidence (?P<value>[\d.]+)"
+    ),
+    "nothing fit, left to the model": re.compile(
+        r"(?:mirror|fastpath): (?P<subject>\w+) unsure \(answered none\)"
     ),
 }
 

@@ -42,3 +42,32 @@ def local_date(raw: Any, tz: str = DEFAULT_TIMEZONE) -> str:
     except (ZoneInfoNotFoundError, ValueError):
         zone = UTC
     return stamp.astimezone(zone).date().isoformat()
+
+
+def utc_iso(raw: Any, tz: str = DEFAULT_TIMEZONE) -> str:
+    """Return a vendor timestamp as a true-UTC ISO string, or "" if unusable.
+
+    The tracker stores `occurred_at` as `DateTime(timezone=True)` and the
+    frontend renders it with `new Date(iso).toLocaleString()`, so a naive
+    string lands in the wrong hour -- the 8-hour mis-dating that had to be
+    fixed on three write paths. A vendor timestamp that already carries an
+    offset is trusted; a naive one is read in `tz` (where the person spending
+    the money lives) rather than silently in UTC.
+
+    Empty rather than "now" on failure: the caller decides whether a missing
+    date is worth a write, and a wrong date is harder to notice than a missing
+    one.
+    """
+    text = str(raw or "")
+    if not text:
+        return ""
+    try:
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if stamp.tzinfo is None:
+        try:
+            stamp = stamp.replace(tzinfo=ZoneInfo(tz))
+        except (ZoneInfoNotFoundError, ValueError):
+            stamp = stamp.replace(tzinfo=UTC)
+    return stamp.astimezone(UTC).isoformat()

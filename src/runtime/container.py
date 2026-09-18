@@ -85,9 +85,13 @@ if TYPE_CHECKING:
     from adapters.trigger.retention import RetentionJob
     from adapters.trigger.webhook import WebhookServer
     from domain.claim_check import ClaimJudge
+    from domain.ledger_fastpath import LedgerFastPath
     from domain.triggers import HeartbeatSource, WatchSource
     from domain.watch_gate import WatchGate
-    from ports import Decider, Question, ToolSpec
+    from ports import Decider, Question, ToolContext, ToolSpec
+
+    # One tool's handler, as the agent sees it (approval gate included).
+    ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
 
 _F = TypeVar("_F")
 
@@ -320,6 +324,48 @@ class PersonaRuntime:
             name=name,
             wake_above=float(cfg.get("gate_wake_above") or WAKE_ABOVE),
         )
+
+    @cached_property
+    def ledger_fastpath(self) -> LedgerFastPath | None:
+        """Records a plain spend message in code, or None when it is switched off.
+
+        Four things have to be true, and every one of them is a real
+        configuration rather than a degraded one: the persona asked for it,
+        there is a judge to ask, there is a ledger to write to, and the
+        connector actually exposes `record_transaction`. Absent, every ledger
+        message takes the turn it takes today.
+
+        The handler comes from `gated_services`, not from the raw connector:
+        the write goes through the SAME approval gate the model's writes do,
+        so a chat-initiated record still asks for its tap. The turn is what
+        this saves, not the tap.
+        """
+        cfg = self.persona.ledger_fastpath
+        if not cfg or not bool(cfg.get("enabled")):
+            return None
+        decider = self.decider
+        if decider is None or not self.persona.is_connector_enabled("budget"):
+            return None
+        record = self._gated_handler("record_transaction")
+        if record is None:
+            log.warning(
+                "persona %r: ledger_fastpath is on but the budget connector exposes no "
+                "record_transaction; disabled", self.persona.id,
+            )
+            return None
+        from domain.ledger_fastpath import LedgerFastPath
+        return LedgerFastPath(
+            self.provider("budget"), record, decider, self.settings.schedule_timezone
+        )
+
+    def _gated_handler(self, tool: str) -> ToolHandler | None:
+        """One tool's handler, as the agent would get it — approval gate included."""
+        for view in self.gated_services:
+            for specs in view.builtin_servers().values():
+                for spec in specs:
+                    if spec.name == tool:
+                        return spec.handler
+        return None
 
     @cached_property
     def claim_judge(self) -> ClaimJudge | None:
@@ -1267,6 +1313,12 @@ class PersonaRuntime:
                 # skip a turn entirely when nothing is new. Guaranteed present:
                 # the guard above disables this watch without it.
                 budget_connector=self.provider("budget"),
+                # Opt-IN, unlike the mail gate — and the asymmetry is the
+                # point. A gate that guesses wrong costs an unsaid sentence;
+                # this WRITES to the ledger, so it stays off until the
+                # operator has read scripts/smoke_mirror_judge.py and turned
+                # it on for this persona.
+                decider=self.decider if bool(cfg.get("autonomous")) else None,
             ),
             preamble=SPLITWISE_WATCH_PROMPT_PREAMBLE,
         )
@@ -1562,6 +1614,7 @@ class PersonaRuntime:
                 conversation_history=self.conversation_history,
                 reflection=self.reflection_engine,
                 status_reporter=self.status_reporter,
+                ledger_fastpath=self.ledger_fastpath,
                 trigger_sources=self.trigger_sources(schedule_conn),
                 background_agent_factory=self._background_agent_factory,
                 approval_gate=self.approval_gate,

@@ -126,6 +126,13 @@ class WatchSource:
     be worth saying, and the model currently discovers that by being asked in
     full. See domain/watch_gate.py. Without one the source behaves exactly as
     it always has.
+
+    A watcher MAY also do some of the work itself and hand back sentences
+    rather than instructions. If it implements `take_reports() -> list[str]`,
+    whatever it drained is announced directly (no agent, no prompt) and only
+    what it could NOT finish becomes a turn. A poll can therefore report,
+    prompt, both, or neither. Watchers without the method are unaffected —
+    which is all of them but the Splitwise mirror.
     """
 
     def __init__(
@@ -144,9 +151,11 @@ class WatchSource:
         self._preamble = preamble
         self._gate = gate
         self._emit: Any = None
+        self._announce: Any = None
 
     async def start(self, ctx: TriggerContext) -> None:
         self._emit = ctx.emit
+        self._announce = ctx.announce
         if ctx.add_cron is None:
             log.warning("%s: no cron registrar available; disabled", self.name)
             return
@@ -165,21 +174,71 @@ class WatchSource:
         gated = ", gated" if self._gate is not None else ""
         return f"{self.name.replace('_', ' ')} ({self.cron}{gated})"
 
+    def _drain_reports(self) -> list[str]:
+        """Sentences the watcher wrote itself, if it writes any.
+
+        Duck-typed on purpose: `watcher` has never been a port — it is "has
+        check() and commit()" stated in a comment — and promoting it to one
+        for an optional third method would mean editing four watchers that do
+        not have it.
+        """
+        take = getattr(self._watcher, "take_reports", None)
+        if take is None:
+            return []
+        try:
+            return list(take())
+        except Exception:
+            log.exception("%s: could not read what the poll did on its own", self.name)
+            return []
+
     async def _fire(self) -> None:
         try:
             block = await self._watcher.check()
         except Exception:
             log.exception("%s poll failed", self.name)
             return
+
+        # Delivered FIRST, and its success is a precondition for the
+        # watermark: these lines describe writes that already happened, so a
+        # poll that commits without them leaves the user with a ledger entry
+        # nobody told them about and no way to notice.
+        reports = self._drain_reports()
+        reported = True
+        if reports:
+            if self._announce is None:
+                # No announce capability: better said by the model than not at
+                # all, so the report rides along as context for the turn —
+                # labelled, because the preamble it is about to be pasted
+                # under says "record exactly what is listed", and these are
+                # already recorded.
+                block = "\n".join([
+                    "ALREADY DONE — state these and record nothing for them:",
+                    *reports,
+                    block or "",
+                ]).strip()
+            else:
+                reported = await self._announce(
+                    self._conversation, "\n".join(reports), self.name
+                )
+                if not reported:
+                    log.warning(
+                        "%s: could not deliver what the poll recorded; "
+                        "will re-report next poll", self.name,
+                    )
+
         if not block:
+            if reports and reported:
+                self._watcher.commit()
             return
         if self._gate is not None and not await self._gate.worth_waking(block):
             # Commit, don't retry. "Nothing here worth saying" is a HANDLED
             # outcome — the same one the turn itself reaches when it replies
             # <silent> — and leaving the watermark unadvanced would re-judge
             # the same mail every poll forever, turning a saved turn into an
-            # unbounded number of judgments.
-            self._watcher.commit()
+            # unbounded number of judgments. Unless the report never landed:
+            # that one is unhandled, and the watermark is what would bury it.
+            if reported:
+                self._watcher.commit()
             return
         delivered = await self._emit(TriggerEvent(
             source=self.name,
@@ -191,7 +250,7 @@ class WatchSource:
             # paying the full tool-schema cost per fire buys nothing.
             agent=TriggerAgent.DEDICATED,
         ))
-        if delivered:
+        if delivered and reported:
             self._watcher.commit()
         else:
             log.warning("%s: turn failed; will re-report next poll", self.name)

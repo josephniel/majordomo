@@ -87,6 +87,7 @@ from .tools import (
 )
 from .triggers import (
     AddCron,
+    Announce,
     EmitTrigger,
     TriggerAgent,
     TriggerContext,
@@ -100,6 +101,7 @@ __all__ = [
     "VALID_SCOPES",
     "AddCron",
     "Agent",
+    "Announce",
     "ApprovalPreview",
     "Attachment",
     "AttachmentIngestor",

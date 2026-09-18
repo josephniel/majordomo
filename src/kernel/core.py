@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from adapters.tools import ServiceRegistry, WriteApprovalGate
     from domain import AddressingGate, ReflectionEngine
     from domain.claim_check import ClaimJudge
+    from domain.ledger_fastpath import LedgerFastPath
     from ports import ToolProviderView
 
     from .sessions import SessionStore
@@ -125,6 +126,11 @@ class OptionalSubsystems:
     # asks it.
     addressing_gate: AddressingGate | None = None
 
+    # Records a plain "paid 1108 for dinner using Maya CC" in code plus one
+    # typed judgment, with no turn. Absent means every message takes a turn,
+    # which is what every message did before it existed.
+    ledger_fastpath: LedgerFastPath | None = None
+
 
 class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
     """Platform-agnostic chat orchestrator.
@@ -164,6 +170,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._bg_agent_factory = optional.background_agent_factory
         self._approval_gate = optional.approval_gate
         self._addressing_gate = optional.addressing_gate
+        self._ledger_fastpath = optional.ledger_fastpath
         self._relay: CommsRelay | None = (
             CommsRelay(optional.comms_log, persona_id, self._on_peer_message)
             if optional.comms_log is not None else None
@@ -416,16 +423,21 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             if entry is not None and entry[0] is task:
                 del self._pending_turns[chat_id]
 
-    async def _handle_message(self, msg: InboundMessage) -> None:
-        chat_id = msg.chat_id
-        text = msg.text
+    async def _before_the_turn(self, msg: InboundMessage) -> str | None:
+        """Everything that happens before a turn can start, or None to stop.
 
+        Three ways a message ends here — it was a cancel, it was not admitted
+        (rate limit, or not addressed to us in a shared room), or this chat is
+        parked on an approval. Gathered into one place so the turn itself
+        reads as the one thing it is.
+        """
+        chat_id, text = msg.chat_id, msg.text
         if is_cancel_intent(text):
             await self._cmd_cancel(chat_id, reply_to=msg.message_id)
-            return
+            return None
 
         if not await self._admits_turn(msg):
-            return
+            return None
 
         # Auto-ingest supported attachments into the document library and
         # tell the model inline; the raw attachment still flows to the
@@ -442,6 +454,13 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         notice = self._pending_approval_notice(chat_id)
         if notice is not None:
             await self._platform.send_text(chat_id, notice, reply_to=msg.message_id)
+            return None
+        return text
+
+    async def _handle_message(self, msg: InboundMessage) -> None:
+        chat_id = msg.chat_id
+        text = await self._before_the_turn(msg)
+        if text is None:
             return
 
         # Serialize turns per chat. If a previous turn is in flight, this
@@ -449,6 +468,14 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         # in conversation history.
         async with self._get_chat_lock(chat_id):
             await self._reload_if_config_changed()
+
+            # Before the agent is even built: some messages are a ledger
+            # entry and nothing else, and the turn they would cost is the
+            # whole latency the user feels. Declining is the common case and
+            # costs nothing.
+            if await self._recorded_without_a_turn(chat_id, text, msg):
+                return
+
             self._refresh_agent_if_stale(chat_id)
             agent = self._get_agent(chat_id)
 
@@ -547,6 +574,46 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
             return False
         return await self._is_addressed_to_us(msg)
 
+    async def _recorded_without_a_turn(
+        self, chat_id: ConversationRef, text: str, msg: InboundMessage
+    ) -> bool:
+        """Let the ledger fast path answer this message, if it can.
+
+        False for almost everything, and that is the design: the fast path
+        recognises one sentence and declines the rest, so a False here means
+        the ordinary turn runs exactly as it always has.
+
+        Both sides of the exchange are mirrored into history. A message the
+        user can see and the bot cannot remember is worse than a slow one —
+        the next turn would have no idea the expense was recorded.
+        """
+        fast = self._ledger_fastpath
+        if fast is None:
+            return False
+        reply = await fast.handle(chat_id, text)
+        if reply is None:
+            return False
+
+        history = self._conversation_history
+        if history is not None:
+            for role, content in (("user", text), ("assistant", reply)):
+                try:
+                    await history.append(
+                        persona_id=self._persona_id,
+                        chat_id=chat_id,
+                        role=role,
+                        content=content,
+                        metadata={"turnless": True},
+                    )
+                except Exception:
+                    log.exception("could not mirror a turnless exchange for %s", chat_id)
+
+        await self._platform.send_text(chat_id, reply, reply_to=msg.message_id)
+        await self._note_outbound(chat_id, reply)
+        if self._reflection is not None:
+            self._reflection.note_activity(chat_id)
+        return True
+
     async def _note_outbound(self, chat_id: ConversationRef, reply: str) -> None:
         """Tell the platform what we just said, best-effort.
 
@@ -643,6 +710,62 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         return await ingest_attachments(self._connectors, chat_id, text, msg)
 
     # ---- trigger fire ----
+
+    async def _announce_trigger(
+        self, chat_id: ConversationRef, text: str, source: str
+    ) -> bool:
+        """Say something a trigger worked out for itself, with no turn at all.
+
+        The counterpart to `_run_trigger`, for the case where there is nothing
+        left to think about: the source has already done the work and has the
+        sentence describing it. Running that through an agent would pay a full
+        turn to have a model retype text the runtime already holds.
+
+        Everything a delivered turn does for the record still happens here —
+        the line is mirrored into chat_history so the next turn knows it was
+        said, and the platform is told what went out — because a message the
+        user can see and the bot cannot remember is worse than no message.
+
+        Deliberately NOT logged to turn_log: that table answers "what is my
+        model quota going to", and a row with no vendor would inflate the turn
+        count with turns that never happened. The INFO line below is the
+        record, and `./manage judges` reads it.
+
+        Returns whether the text reached the user, on the same contract as
+        `_run_trigger`: the caller holds its watermark until it sees True.
+        """
+        body = text.strip()
+        if not body:
+            return True
+        log.info("trigger %r: reported without a turn (%d chars)", source, len(body))
+
+        # Same per-chat serialization as a turn: a report landing in the
+        # middle of one would interleave with the reply being streamed.
+        async with self._get_chat_lock(chat_id):
+            history = self._conversation_history
+            if history is not None:
+                try:
+                    await history.append(
+                        persona_id=self._persona_id,
+                        chat_id=chat_id,
+                        role="assistant",
+                        content=body,
+                        metadata={"source": source, "turnless": True},
+                    )
+                except Exception:
+                    # Mirroring is best-effort, delivery is not: a history
+                    # that rejects the row must not swallow the report.
+                    log.exception("could not mirror a turnless report for %s", chat_id)
+
+            for chunk in chunk_for_platform(body, self._platform.max_message_length):
+                try:
+                    await self._platform.send_text(chat_id, chunk)
+                except Exception:
+                    log.exception("could not deliver a turnless report to chat %s", chat_id)
+                    return False
+
+            await self._note_outbound(chat_id, body)
+            return True
 
     async def _run_trigger(self, event: TriggerEvent) -> bool:
         """Take one unprompted turn on behalf of a trigger source.
