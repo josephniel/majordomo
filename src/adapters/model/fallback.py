@@ -45,12 +45,12 @@ from .base import (
     Agent,
     Attachment,
     PartialReplyCallback,
-    Summarizer,
     ToolOutcomeCallback,
     ToolUseCallback,
     UsageLimitError,
     VendorTimeoutError,
 )
+from .compaction import CompactionPolicy, select_verbatim
 from .health import VendorHealthBoard
 from .history import TurnRecord
 
@@ -211,7 +211,7 @@ class CascadingAgent(Agent):
         history: ConversationMirror,
         persona_id: str,
         chat_id: ConversationRef,
-        summarizer: Summarizer,
+        compaction: CompactionPolicy,
         health_board: VendorHealthBoard | None = None,
         memory_recaller: MemoryRecaller | None = None,
         timezone_name: str | None = None,
@@ -222,7 +222,7 @@ class CascadingAgent(Agent):
         self._history = history
         self._persona_id = persona_id
         self._chat_id = chat_id
-        self._summarizer = summarizer
+        self._compaction = compaction
         self._board = health_board or VendorHealthBoard()
         self._memory_recaller = memory_recaller
         self._timezone_name = timezone_name
@@ -1002,7 +1002,19 @@ class CascadingAgent(Agent):
                     "history for chat %s is %d chars; compacting %d rows through id=%d",
                     self._chat_id, chars, len(to_summarize), cutoff_id,
                 )
-                summary = await self._summarize(to_summarize)
+                # Which of these rows a paragraph would ruin. Empty without
+                # a judge, and then everything below behaves as it always
+                # has. See adapters/model/compaction.py.
+                keep_ids = await select_verbatim(to_summarize, self._compaction.decider)
+                folded_rows = [r for r in to_summarize if int(r["id"]) not in keep_ids]
+                if not folded_rows:
+                    # The judge wanted the whole window. It cannot, by
+                    # budget, but a window smaller than the budget can still
+                    # come back whole — and folding nothing while archiving
+                    # nothing would leave the mirror over threshold forever.
+                    log.info("compaction: nothing left to fold after keeps; skipping")
+                    return
+                summary = await self._summarize(folded_rows)
                 if not summary:
                     self._compact_backoff_until = (
                         time.time() + COMPACTION_FAILURE_BACKOFF_SECONDS
@@ -1013,7 +1025,8 @@ class CascadingAgent(Agent):
                     )
                     return
                 folded = await self._history.compact(
-                    self._persona_id, self._chat_id, summary, cutoff_id=cutoff_id,
+                    self._persona_id, self._chat_id, summary,
+                    cutoff_id=cutoff_id, keep_ids=keep_ids,
                 )
                 log.info("compacted %d turns into a single summary row", folded)
                 # Server-side sessions (Claude) don't shrink with the mirror —
@@ -1062,7 +1075,7 @@ class CascadingAgent(Agent):
         prompt = f"{instruction}\n\n---\n{transcript}\n---\n\n{instruction}"
         try:
             async with asyncio.timeout(SUMMARIZE_TIMEOUT_SECONDS):
-                summary = await self._summarizer.summarize(prompt)
+                summary = await self._compaction.summarizer.summarize(prompt)
         except TimeoutError:
             # Empty string -> the caller's existing failure backoff. Without
             # this bound a wedged summarizer holds _compact_lock for the life

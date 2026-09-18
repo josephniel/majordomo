@@ -1289,6 +1289,56 @@ APScheduler dispatches a sync callable to a thread executor and discards the
 coroutine it returns, so a sync wrapper reports success on every fire while
 never running — which had both watches silently dead for two days.
 
+## Compaction keeps what a paragraph would ruin
+
+Compaction folds everything older than the last ten rows into ONE narrative
+of at most ~250 tokens. The instruction tries to defend against what that
+loses — *"Preserve concrete facts (names, dates, requests, decisions)"* — but
+a paragraph that size cannot hold the twenty-four rows it replaced, and what
+it drops is not random. Prose survives summarization; an MR number, a ticket
+id, a peso amount, an account number, a file path do not. Those are exactly
+what a later turn needs EXACTLY, and exactly what nobody notices is missing
+until the assistant gets one wrong.
+
+`adapters/model/compaction.py` asks a judge one question per row — does this
+carry something a later turn would need exactly? — and keeps those rows in
+the mirror unchanged. Only the rest go to the summarizer, so a kept row and
+the summary cannot contradict each other. The consumer already renders
+summary rows ahead of raw turns (`chat_completions.py`), so a kept row simply
+slots back in by id and the narrative stays in causal order.
+
+**A budget, not a threshold.** Kept rows stay ACTIVE, so the next compaction
+sees them again. Under a "score above X" rule a window the judge liked could
+be kept forever: the mirror would never fall under the threshold, every turn
+would trigger a compaction, and each would pay a judge call and a summarizer
+call to fold almost nothing. Instead the kept set is filled
+highest-score-first up to `KEEP_CHAR_BUDGET` (a quarter of the threshold that
+triggers compaction), so every compaction reclaims space by construction. The
+pathological loop is unrepresentable rather than tuned away.
+
+**Two things are folded without asking, and neither is a judgment.** A
+`<silent>` reply has no content by definition. A machine-written prompt
+(`[mail watch — automated…]`, `[heartbeat — automated check-in…]`) is text
+this codebase generated from a constant, so preserving it exactly preserves
+nothing not already in the source — and it is long, so it crowds out rows
+that matter. This is not the pattern-matching the claim detectors moved away
+from: that guessed at what a model meant by its own words, this recognises a
+string the runtime itself emitted.
+
+Both exclusions were measured, not assumed. Run over a real archived window
+(`scripts/smoke_compaction_judge.py`), the first cut kept four `<silent>`
+replies — in isolation the sentinel reads as terse and precise rather than as
+the absence of content — and three watch preambles, which together took most
+of the budget from the ledger rows around them. A separate attempt to fix the
+preambles by DESCRIBING them in the question's `no_means` made things sharply
+worse: it inverted the result, folding the ₱1,897.73 dinner and keeping the
+templates. Provenance belongs in code; only the judgment belongs in the
+question.
+
+With both in place, that same window keeps 11 of 24 rows in 1,941 of 5,000
+chars: every amount, the GCash account number, and both sides of each ledger
+exchange survive verbatim, while every sentinel and every template folds.
+
 ## Document RAG
 
 adapters/store/docs.py: documents + document_chunks (pgvector 384 + trigram),

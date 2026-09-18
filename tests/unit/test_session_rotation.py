@@ -5,6 +5,7 @@ tokens every turn. After a compaction folds the mirror, the session is
 reset and reseeded once from the mirror (summary + kept tail).
 """
 
+from adapters.model.compaction import CompactionPolicy
 from adapters.model.fallback import DIGEST_CHAR_LIMIT, CascadingAgent
 from adapters.model.history import EphemeralConversationHistory
 from tests.conftest import FakeAgent, FakeSummarizer
@@ -28,7 +29,7 @@ def make_cascade(chain):
         history=EphemeralConversationHistory(),
         persona_id="p",
         chat_id=1,
-        summarizer=FakeSummarizer(),
+        compaction=CompactionPolicy(summarizer=FakeSummarizer()),
     )
 
 

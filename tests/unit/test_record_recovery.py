@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import pytest
 
+from adapters.model.compaction import CompactionPolicy
 from kernel.core import ConversationOrchestrator
 from kernel.recovery import ClaimBacking, _classify_claim
 from kernel.sessions import SessionStore
@@ -340,7 +341,7 @@ class TestOutcomeReachesTheTrace:
             history=NullMirror(),
             persona_id="t",
             chat_id=ConversationRef("telegram", "5"),
-            summarizer=fake_summarizer,
+            compaction=CompactionPolicy(summarizer=fake_summarizer),
         )
         reply = await agent.send("record 500 for lunch")
 

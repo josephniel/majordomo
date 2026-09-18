@@ -31,6 +31,7 @@ from adapters.model import (
     AnthropicAgent,
     CascadingAgent,
     ChatCompletionsSummarizer,
+    CompactionPolicy,
     ContextBuilder,
     ConversationHistory,
     ExternalMCPManager,
@@ -949,7 +950,11 @@ class PersonaRuntime:
             history=hist,
             persona_id=self.persona.id,
             chat_id=chat_id,
-            summarizer=self.summarizer,
+            # Compaction is two decisions: what must survive a fold
+            # exactly, and what the rest becomes.
+            compaction=CompactionPolicy(
+                summarizer=self.summarizer, decider=self.decider,
+            ),
             health_board=self.health_board,
             memory_recaller=memory_recaller,
             # Same clock the scheduler runs on, so "in 20 minutes" and the
