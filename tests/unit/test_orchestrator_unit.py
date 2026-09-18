@@ -154,19 +154,22 @@ class TestHallucinationDetector:
 
     async def test_claim_without_tool_call_triggers_reflection(self, tmp_path):
         orch, refl = self._orch_with_reflection(tmp_path)
-        orch._detect_missed_save(5, "Got it, I've saved that!", self.AgentWithToolCalls(0))
+        claimed = await orch._claimed_kinds("Got it, I've saved that!")
+        orch._detect_missed_save(5, claimed, self.AgentWithToolCalls(0))
         await asyncio.sleep(0.01)
         assert refl.runs == [5]
 
     async def test_claim_with_tool_call_does_not_trigger(self, tmp_path):
         orch, refl = self._orch_with_reflection(tmp_path)
-        orch._detect_missed_save(5, "Got it, I've saved that!", self.AgentWithToolCalls(1))
+        claimed = await orch._claimed_kinds("Got it, I've saved that!")
+        orch._detect_missed_save(5, claimed, self.AgentWithToolCalls(1))
         await asyncio.sleep(0.01)
         assert refl.runs == []
 
     async def test_no_claim_does_not_trigger(self, tmp_path):
         orch, refl = self._orch_with_reflection(tmp_path)
-        orch._detect_missed_save(5, "Here are your 3 unread emails.", self.AgentWithToolCalls(0))
+        claimed = await orch._claimed_kinds("Here are your 3 unread emails.")
+        orch._detect_missed_save(5, claimed, self.AgentWithToolCalls(0))
         await asyncio.sleep(0.01)
         assert refl.runs == []
 
@@ -227,7 +230,8 @@ class TestScheduleHallucinationRecovery:
             retry_reply="Done — reminder set for 6pm.",
             retry_tools=("mcp__schedule__schedule_once",),
         )
-        await orch._recover_missed_schedule(5, "I'll remind you at 6pm!", agent)
+        claimed = await orch._claimed_kinds("I'll remind you at 6pm!")
+        await orch._recover_missed_schedule(5, claimed, agent)
         assert len(agent.prompts) == 1, "one corrective turn sent"
         assert "did not call any scheduling tool" in agent.prompts[0]
         assert platform.sent == ["Done — reminder set for 6pm."]
@@ -235,14 +239,16 @@ class TestScheduleHallucinationRecovery:
     async def test_silent_retry_treated_as_false_positive(self, tmp_path):
         orch, platform = self._orch(tmp_path)
         agent = self.ScriptedAgent(retry_reply="<silent>", retry_tools=())
-        await orch._recover_missed_schedule(5, "I'll remind you of nothing really", agent)
+        claimed = await orch._claimed_kinds("I'll remind you of nothing really")
+        await orch._recover_missed_schedule(5, claimed, agent)
         assert len(agent.prompts) == 1
         assert platform.sent == []
 
     async def test_failed_retry_corrects_the_user(self, tmp_path):
         orch, platform = self._orch(tmp_path)
         agent = self.ScriptedAgent(retry_reply="Reminder set!", retry_tools=())
-        await orch._recover_missed_schedule(5, "I've set a reminder for 6pm.", agent)
+        claimed = await orch._claimed_kinds("I've set a reminder for 6pm.")
+        await orch._recover_missed_schedule(5, claimed, agent)
         assert len(platform.sent) == 1
         assert "wasn't actually created" in platform.sent[0]
 
@@ -254,21 +260,24 @@ class TestScheduleHallucinationRecovery:
                 raise RuntimeError("all vendors down")
 
         agent = ExplodingAgent()
-        await orch._recover_missed_schedule(5, "I'll remind you at 6pm!", agent)
+        claimed = await orch._claimed_kinds("I'll remind you at 6pm!")
+        await orch._recover_missed_schedule(5, claimed, agent)
         assert len(platform.sent) == 1
         assert "wasn't actually created" in platform.sent[0]
 
     async def test_no_trigger_when_tool_was_called(self, tmp_path):
         orch, platform = self._orch(tmp_path)
         agent = self.ScriptedAgent(first_tools=("mcp__schedule__schedule_once",))
-        await orch._recover_missed_schedule(5, "I'll remind you at 6pm!", agent)
+        claimed = await orch._claimed_kinds("I'll remind you at 6pm!")
+        await orch._recover_missed_schedule(5, claimed, agent)
         assert agent.prompts == []
         assert platform.sent == []
 
     async def test_no_trigger_without_claim(self, tmp_path):
         orch, platform = self._orch(tmp_path)
         agent = self.ScriptedAgent(first_tools=())
-        await orch._recover_missed_schedule(5, "You have 3 unread emails.", agent)
+        claimed = await orch._claimed_kinds("You have 3 unread emails.")
+        await orch._recover_missed_schedule(5, claimed, agent)
         assert agent.prompts == []
         assert platform.sent == []
 
@@ -283,7 +292,8 @@ class TestScheduleHallucinationRecovery:
             persona_id="t",
         )
         agent = self.ScriptedAgent()
-        await orch._recover_missed_schedule(5, "I'll remind you at 6pm!", agent)
+        claimed = await orch._claimed_kinds("I'll remind you at 6pm!")
+        await orch._recover_missed_schedule(5, claimed, agent)
         assert agent.prompts == []
         assert platform.sent == []
 
@@ -296,5 +306,6 @@ class TestScheduleHallucinationRecovery:
             async def send(self, text, **kwargs):
                 raise AssertionError("must not be called")
 
-        await orch._recover_missed_schedule(5, "I'll remind you at 6pm!", BareAgent())
+        claimed = await orch._claimed_kinds("I'll remind you at 6pm!")
+        await orch._recover_missed_schedule(5, claimed, BareAgent())
         assert platform.sent == []

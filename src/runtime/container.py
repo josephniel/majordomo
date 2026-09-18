@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     from adapters.comms.status_report import StatusReporter
     from adapters.trigger.retention import RetentionJob
     from adapters.trigger.webhook import WebhookServer
+    from domain.claim_check import ClaimJudge
     from domain.triggers import HeartbeatSource, WatchSource
     from domain.watch_gate import WatchGate
     from ports import Decider, Question, ToolSpec
@@ -318,6 +319,20 @@ class PersonaRuntime:
             name=name,
             wake_above=float(cfg.get("gate_wake_above") or WAKE_ABOVE),
         )
+
+    @cached_property
+    def claim_judge(self) -> ClaimJudge | None:
+        """Reads replies for the action claims the recovery patterns miss.
+
+        None without a decider, and that is a real configuration rather than
+        a broken one: the four recovery layers keep their patterns and behave
+        exactly as they did before this existed.
+        """
+        decider = self.decider
+        if decider is None:
+            return None
+        from domain.claim_check import ClaimJudge
+        return ClaimJudge(decider)
 
     @cached_property
     def status_reporter(self) -> StatusReporter | None:
@@ -1543,6 +1558,7 @@ class PersonaRuntime:
                 background_agent_factory=self._background_agent_factory,
                 approval_gate=self.approval_gate,
                 addressing_gate=self.addressing_gate,
+                claim_judge=self.claim_judge,
             ),
         )
 

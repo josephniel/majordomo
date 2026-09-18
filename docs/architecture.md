@@ -842,6 +842,54 @@ in other languages slip through (accepted residual for now). Detection
 matches tool *names* by substring because vendors report different forms
 (`mcp__schedule__schedule_once` vs `schedule_once`).
 
+### The claim half is a judgment, not a pattern
+
+Each layer answers two questions: does the reply CLAIM the action, and did a
+tool BACK it. The second is evidence — a trace lookup, exact and cheap. The
+first was twenty-two regexes, and it is not a string-matching problem.
+
+They are asked to separate a completion from an offer, a question, or a
+report about something that already existed — "I've sent it" from "want me to
+send it?" from "the email was sent yesterday". English has no finite list of
+ways to say the first that excludes the others, so the patterns grew negative
+lookbehinds, one per false positive somebody noticed
+(`(?<!have a )(?<!has a )reminder (?:is )?(?:set|created|scheduled) for`).
+Every unanticipated phrasing is a miss until a branch is added, and the misses
+are the expensive direction.
+
+`domain/claim_check.py` reads the reply once and answers one Noul per claim
+kind in a single call, for the kinds this persona can actually satisfy — a
+bot with no sending tool cannot hallucinate a send into existence. It runs
+AFTER the reply has been sent (`kernel/core.py`), so its latency reaches the
+next turn, never this one.
+
+**Recall only, and that is the safety argument.** A claim is detected when a
+pattern fires OR the judge says so; the judge may never take one away. Adding
+recall can only turn a missed hallucination into a corrective turn, and an
+unnecessary corrective turn is already handled — every recovery prompt ends
+"if your last reply did not actually claim this, reply exactly `<silent>`".
+Letting the judge SUPPRESS would be a different bet: it could turn a real
+hallucination back into silence, which is the failure this module exists to
+prevent. There is also no evidence for it — nothing in four months of logs
+shows a detector firing wrongly.
+
+Measured live (`scripts/smoke_claim_judge.py`, 15 fixtures): the judge caught
+all five phrasings no pattern matches — "That's away to her now", "Your ₱500
+lunch is now sitting in the books", "Consider it filed" — and stayed quiet on
+every offer, question and report. The four kinds are semantically adjacent
+("saved", "recorded", "noted" all mean roughly "wrote it down"), so each
+question's `no_means` has to name the other three explicitly; without that the
+judge attached two or three kinds to every completion. That one change took
+the fixtures from 7/15 to 13/15.
+
+Two known disagreements, both cheap: `_CLAIMS_RECORDED` fires on "I've saved
+that" (a pre-existing pattern false positive the judge is not permitted to
+undo), and the judge reads "Consider it filed" as a memory save as well as a
+record — an extra `memory_save` costs one deduplicated reflection run.
+
+Every judge-only catch logs at INFO with its probability. That count is the
+only evidence that would ever justify retiring the patterns.
+
 ### A tool must not withhold what calling it requires
 
 Several days of "the model is bad at this" turned out to be tool design. The
