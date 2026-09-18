@@ -404,6 +404,9 @@ class PersonaRuntime:
             persona_id=self.persona.id,
             identity=self.persona.identity,
             skill_miner=self.skill_miner,
+            # Reconciliation is a judgment per candidate; the judge
+            # answers it directly and gates the destructive verdicts.
+            decider=self.decider,
         )
 
     @cached_property

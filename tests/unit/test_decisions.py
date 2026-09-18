@@ -11,7 +11,7 @@ import httpx2
 import pytest
 
 from adapters.model.typesafe import DEFAULT_MODEL, TypeSafeDecider
-from ports import Likelihood, Question
+from ports import ChoiceQuestion, Likelihood, Question
 
 QUESTION = Question(
     instructions="Does any of this need attention right now?",
@@ -172,3 +172,74 @@ class TestTheCallIsBounded:
         d = _decider(failing, budget_seconds=2.0)
         assert await d.likelihoods("state", {"q": QUESTION}) == {}
         assert len(attempts) == 2, "one attempt, one retry"
+
+
+CHOICE = ChoiceQuestion(
+    instructions="What should happen to the stored facts?",
+    options={"noop": "already known", "add": "genuinely new", "update": "", "delete": ""},
+)
+
+
+def _choice_responder(answers, *, record=None):
+    def handler(request):
+        if record is not None:
+            record.append(json.loads(request.content))
+        return httpx2.Response(200, json={
+            "model": "jev-1.13.0",
+            "usage": {"input_tokens": 12, "output_tokens": 0},
+            "answers": answers,
+        })
+    return handler
+
+
+def _choice_answer(choice, confidence=0.8, probabilities=None):
+    return {
+        "type": "choice", "choice": choice, "confidence": confidence,
+        "probabilities": probabilities or {choice: confidence},
+    }
+
+
+class TestSelections:
+    async def test_a_choice_comes_back_with_its_spread(self):
+        """The confidence is REPORTED, not derived. With four options the
+        shape of the distribution cannot be recovered from the winner alone:
+        0.4 against three 0.2s and 0.4 against a 0.39 are the same winner and
+        very different answers."""
+        d = _decider(_choice_responder({"v": _choice_answer(
+            "noop", 0.62, {"noop": 0.5, "add": 0.3, "update": 0.15, "delete": 0.05},
+        )}))
+        answers = await d.selections("state", {"v": CHOICE})
+        assert answers["v"].choice == "noop"
+        assert answers["v"].confidence == pytest.approx(0.62)
+        assert answers["v"].probabilities["add"] == pytest.approx(0.3)
+
+    async def test_the_options_ride_as_criteria(self):
+        calls = []
+        d = _decider(_choice_responder({"v": _choice_answer("add")}, record=calls))
+        await d.selections("state", {"v": CHOICE})
+        asked = calls[0]["questions"]["v"]
+        assert asked["type"] == "choice"
+        assert asked["criteria"]["noop"] == "already known"
+        assert asked["criteria"]["update"] is None, "an undescribed option sends null"
+
+    async def test_an_answer_outside_the_options_discards_the_response(self):
+        """Cannot happen per the vendor's schema guarantee, and checked
+        anyway: every caller switches on this string, and one that is not an
+        option falls through to whatever the caller's else-branch happens to
+        be."""
+        d = _decider(_choice_responder({"v": _choice_answer("merge")}))
+        assert await d.selections("state", {"v": CHOICE}) == {}
+
+    async def test_a_missing_answer_discards_the_whole_response(self):
+        d = _decider(_choice_responder({"other": _choice_answer("add")}))
+        assert await d.selections("state", {"v": CHOICE}) == {}
+
+    async def test_a_server_error_answers_nothing(self):
+        d = _decider(_responder({}, status=500))
+        assert await d.selections("state", {"v": CHOICE}) == {}
+
+    async def test_no_api_key_calls_nothing(self):
+        calls = []
+        d = TypeSafeDecider("", transport=_transport(_choice_responder({}, record=calls)))
+        assert await d.selections("state", {"v": CHOICE}) == {}
+        assert calls == []

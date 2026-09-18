@@ -31,12 +31,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from ports import Decider, Likelihood
+from ports import Decider, Likelihood, Selection
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
-    from ports import Question
+    from ports import ChoiceQuestion, Question
 
 log = logging.getLogger(__name__)
 
@@ -90,18 +90,47 @@ class TypeSafeDecider(Decider):
     async def likelihoods(
         self, state: str, questions: Mapping[str, Question],
     ) -> Mapping[str, Likelihood]:
-        if not self._api_key or not questions:
+        response = await self._ask(
+            state, questions, lambda q: ("noul", _noul_kwargs(q)),
+        )
+        if response is None:
             return {}
+        answers = response.nouls
+        out: dict[str, Likelihood] = {}
+        for key in questions:
+            answer = answers.get(key)
+            if answer is None:
+                log.warning("typesafe: no answer for %r; discarding the whole response", key)
+                return {}
+            out[key] = Likelihood(probability=float(answer.noul))
+        return out
+
+    async def _ask(
+        self,
+        state: str,
+        questions: Mapping[str, Any],
+        build: Callable[[Any], tuple[str, dict[str, Any]]],
+    ) -> Any:
+        """One System One round trip, or None.
+
+        Shared by both question shapes because everything that can go wrong is shared: the key, the
+        deferred import, the bounded retry, and the rule that no failure ever reaches the caller as
+        an exception. `build` turns one of OUR questions into the SDK's class name and kwargs, which
+        is the only part that differs.
+        """
+        if not self._api_key or not questions:
+            return None
         try:
-            from typesafe_sdk import AsyncTypeSafeClient, Noul, RetryPolicy
+            import typesafe_sdk
+            from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy
         except ImportError:
             log.warning("typesafe: typesafe-sdk is not installed; decisions disabled")
-            return {}
+            return None
 
-        asked = {
-            key: Noul(instructions=q.instructions, criteria=_criteria(q))
-            for key, q in questions.items()
-        }
+        asked = {}
+        for key, question in questions.items():
+            kind, kwargs = build(question)
+            asked[key] = getattr(typesafe_sdk, kind.capitalize())(**kwargs)
         try:
             async with AsyncTypeSafeClient(
                 api_key=self._api_key,
@@ -120,29 +149,65 @@ class TypeSafeDecider(Decider):
             # best-effort path, and a stack trace every time the network
             # hiccups would train the operator to skim the log.
             log.warning("typesafe: call failed; caller falls back", exc_info=True)
-            return {}
+            return None
+        log.debug(
+            "typesafe: %d question(s) answered by %s (%d input tokens)",
+            len(questions), response.model, response.usage.input_tokens,
+        )
+        return response
 
-        answers = response.nouls
-        out: dict[str, Likelihood] = {}
-        for key in questions:
+    async def selections(
+        self, state: str, questions: Mapping[str, ChoiceQuestion],
+    ) -> Mapping[str, Selection]:
+        response = await self._ask(
+            state, questions, lambda q: ("choice", _choice_kwargs(q)),
+        )
+        if response is None:
+            return {}
+        answers = response.choices
+        out: dict[str, Selection] = {}
+        for key, question in questions.items():
             answer = answers.get(key)
             if answer is None:
                 log.warning("typesafe: no answer for %r; discarding the whole response", key)
                 return {}
-            out[key] = Likelihood(probability=float(answer.noul))
-        log.debug(
-            "typesafe: %d question(s) answered by %s (%d input tokens)",
-            len(out), response.model, response.usage.input_tokens,
-        )
+            if answer.choice not in question.options:
+                # Cannot happen per the vendor's schema guarantee, and checked
+                # anyway: every caller switches on this string, and one that
+                # is not an option would fall through to whatever the caller's
+                # else-branch happens to be.
+                log.warning(
+                    "typesafe: %r answered %r, which is not one of its options",
+                    key, answer.choice,
+                )
+                return {}
+            out[key] = Selection(
+                choice=answer.choice,
+                confidence=float(answer.confidence),
+                probabilities={k: float(v) for k, v in answer.probabilities.items()},
+            )
         return out
 
 
-def _criteria(question: Question) -> Any:
-    """Render the two outcome descriptions the way the SDK wants them.
+def _choice_kwargs(question: ChoiceQuestion) -> dict[str, Any]:
+    """Build a Choice's arguments; an option with no description sends None."""
+    return {
+        "instructions": question.instructions,
+        "criteria": {label: (text or None) for label, text in question.options.items()},
+    }
 
-    None when neither was given — the SDK treats an all-empty criteria dict as a definition, and
-    "yes means nothing in particular" is worse than saying nothing.
+
+def _noul_kwargs(question: Question) -> dict[str, Any]:
+    """Build a Noul's arguments.
+
+    `criteria` is omitted entirely when neither outcome was described: the SDK treats an all-empty
+    criteria dict as a definition, and "yes means nothing in particular" is worse than saying
+    nothing.
     """
-    if not question.yes_means and not question.no_means:
-        return None
-    return {"true": question.yes_means or None, "false": question.no_means or None}
+    kwargs: dict[str, Any] = {"instructions": question.instructions}
+    if question.yes_means or question.no_means:
+        kwargs["criteria"] = {
+            "true": question.yes_means or None,
+            "false": question.no_means or None,
+        }
+    return kwargs

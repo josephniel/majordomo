@@ -295,3 +295,151 @@ class TestExtractionValidation:
         )
         assert c.valid_to is not None
         assert c.valid_to.tzinfo is not None
+
+
+# ---- the judged path -------------------------------------------------
+
+
+class ScriptedJudge:
+    """A Decider that answers the verdict and target questions as scripted."""
+
+    def __init__(self, verdict=None, confidence=0.9, target=None, target_confidence=0.9,
+                 answers_nothing=False):
+        self.verdict = verdict
+        self.confidence = confidence
+        self.target = target
+        self.target_confidence = target_confidence
+        self.answers_nothing = answers_nothing
+        self.states = []
+
+    async def likelihoods(self, state, questions):  # pragma: no cover - unused here
+        return {}
+
+    async def selections(self, state, questions):
+        from ports import Selection
+        self.states.append(state)
+        if self.answers_nothing:
+            return {}
+        return {
+            "verdict": Selection(
+                choice=self.verdict, confidence=self.confidence,
+                probabilities={self.verdict: self.confidence},
+            ),
+            "target": Selection(
+                choice=self.target or "none", confidence=self.target_confidence,
+                probabilities={self.target or "none": self.target_confidence},
+            ),
+        }
+
+
+class TestTheJudgeDecidesDirectly:
+    async def test_a_restatement_is_a_noop_without_a_prose_call(self, mem):
+        await mem.save_fact(FactCandidate("user", "the user prefers dark mode"))
+        model = Scripted()
+        decision = await Reconciler(
+            mem, model, decider=ScriptedJudge("noop"),
+        ).ingest(candidate("the user likes dark mode"))
+        assert decision.verdict is MemoryVerdict.NOOP
+        assert model.prompts == [], "the prose model must not have been asked"
+
+    async def test_a_confident_update_supersedes_the_named_fact(self, mem):
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
+        judge = ScriptedJudge("update", confidence=0.93, target="f1", target_confidence=0.91)
+        await Reconciler(mem, Scripted(), decider=judge).ingest(
+            candidate("the user moved to Cebu last month"),
+        )
+        await mem.drain()
+        live = [e.content for e in await mem.list_active()]
+        assert "the user moved to Cebu last month" in live
+        assert "the user lives in Manila" not in live
+
+    async def test_the_state_carries_the_stored_facts_and_the_candidate(self, mem):
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
+        judge = ScriptedJudge("noop")
+        await Reconciler(mem, Scripted(), decider=judge).ingest(candidate("still in Manila"))
+        state = judge.states[0]
+        assert "[f1]" in state
+        assert "the user lives in Manila" in state
+        assert "CANDIDATE FACT: still in Manila" in state
+
+
+class TestDestructiveVerdictsMustBeSure:
+    """The reason this rewrite is worth doing.
+
+    The prose prompt asks for the same restraint — "If in doubt, 'add'" — but
+    that is an instruction the model may or may not follow and nothing
+    downstream can check. Here it is a gate.
+    """
+
+    async def test_an_unsure_update_is_demoted_to_add(self, mem):
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
+        judge = ScriptedJudge("update", confidence=0.6, target="f1", target_confidence=0.99)
+        decision = await Reconciler(mem, Scripted(), decider=judge).ingest(
+            candidate("the user moved to Cebu last month"),
+        )
+        await mem.drain()
+        assert decision.verdict is MemoryVerdict.ADD
+        live = [e.content for e in await mem.list_active()]
+        assert "the user lives in Manila" in live, "the old value must survive"
+        assert "the user moved to Cebu last month" in live, "a contradiction, not an overwrite"
+
+    async def test_an_unsure_target_is_demoted_even_when_the_verdict_is_sure(self, mem):
+        """Being certain the value changed is worthless if the wrong row is
+        picked to overwrite."""
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
+        judge = ScriptedJudge("update", confidence=0.99, target="f1", target_confidence=0.55)
+        decision = await Reconciler(mem, Scripted(), decider=judge).ingest(
+            candidate("the user moved to Cebu"),
+        )
+        assert decision.verdict is MemoryVerdict.ADD
+
+    async def test_a_verdict_naming_no_target_is_demoted(self, mem):
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
+        judge = ScriptedJudge("delete", confidence=0.99, target="none", target_confidence=0.99)
+        decision = await Reconciler(mem, Scripted(), decider=judge).ingest(
+            candidate("something unrelated happened"),
+        )
+        assert decision.verdict is MemoryVerdict.ADD
+
+    @pytest.mark.parametrize("verdict", ["noop", "add"])
+    async def test_a_non_destructive_verdict_needs_no_such_confidence(self, mem, verdict):
+        """The gate is on the verdicts that DESTROY. An unsure noop leaves a
+        fact unsaved, which the next reflection can still catch."""
+        await mem.save_fact(FactCandidate("user", "the user lives in Manila"))
+        judge = ScriptedJudge(verdict, confidence=0.41, target="none", target_confidence=0.1)
+        decision = await Reconciler(mem, Scripted(), decider=judge).ingest(
+            candidate("the user enjoys running"),
+        )
+        assert decision.verdict is MemoryVerdict(verdict)
+
+
+class TestWithoutAJudgeNothingChanges:
+    async def test_an_unanswering_judge_falls_through_to_prose(self, mem):
+        """NOT to ADD. A reconciler that treated an unreachable judge as a
+        verdict would append a contradiction every time the vendor hiccuped."""
+        await mem.save_fact(FactCandidate("user", "the user prefers dark mode"))
+        model = Scripted(verdict_json("noop", reason="already known"))
+        decision = await Reconciler(
+            mem, model, decider=ScriptedJudge(answers_nothing=True),
+        ).ingest(candidate("the user likes dark mode"))
+        assert decision.verdict is MemoryVerdict.NOOP
+        assert model.prompts, "the prose model must have been asked"
+
+    async def test_no_judge_uses_prose(self, mem):
+        await mem.save_fact(FactCandidate("user", "the user prefers dark mode"))
+        model = Scripted(verdict_json("noop"))
+        decision = await Reconciler(mem, model).ingest(candidate("the user likes dark mode"))
+        assert decision.verdict is MemoryVerdict.NOOP
+        assert model.prompts
+
+    async def test_an_empty_neighbourhood_asks_nobody(self, mem):
+        """The majority path, and it still costs nothing: an empty
+        neighbourhood cannot hold a contradiction."""
+        judge = ScriptedJudge("noop")
+        model = Scripted()
+        decision = await Reconciler(mem, model, decider=judge).ingest(
+            candidate("a completely novel fact about badgers"),
+        )
+        assert decision.verdict is MemoryVerdict.ADD
+        assert judge.states == []
+        assert model.prompts == []

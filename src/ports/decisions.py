@@ -73,10 +73,41 @@ class Likelihood:
 
         Derived, not reported: a yes/no judgment has no confidence separate
         from its probability — 0.5 IS maximal uncertainty and 0.02 is a
-        confident no. Multi-option judgments are the ones that need a
-        confidence of their own, and this port does not have those yet.
+        confident no. `Selection` is the one that carries a confidence of its
+        own, because a spread across four options cannot be recovered from
+        the winner's probability alone.
         """
         return abs(self.probability - 0.5) * 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceQuestion:
+    """Pick exactly one of a fixed set of options.
+
+    `options` maps each label to what it means, or to "" when the label
+    speaks for itself. The descriptions are the same lever `Question`'s
+    yes/no halves are: options that sound alike ("update" and "delete" both
+    destroy a value) are told apart by what is written next to them, not by
+    the model guessing what the caller meant.
+    """
+
+    instructions: str
+    options: Mapping[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class Selection:
+    """One choice, with how the probability was spread across the rest.
+
+    `confidence` is reported rather than derived. With two outcomes the shape
+    of the distribution follows from one number; with four it does not — 0.4
+    against three 0.2s and 0.4 against a 0.39 are the same winner and very
+    different answers, and only the second is worth a second opinion.
+    """
+
+    choice: str
+    confidence: float
+    probabilities: Mapping[str, float]
 
 
 class Decider(ABC):
@@ -98,4 +129,16 @@ class Decider(ABC):
         answer gets a KeyError on a path whose whole point was to be optional, so an incomplete
         response is treated as no response. `{}` means unconfigured, unreachable, too slow, out of
         quota, or malformed. See the module docstring.
+        """
+
+    @abstractmethod
+    async def selections(
+        self, state: str, questions: Mapping[str, ChoiceQuestion],
+    ) -> Mapping[str, Selection]:
+        """Pick one option per question, against the state.
+
+        Same contract as `likelihoods` in every respect that matters: one state read once, all
+        questions answered against it, `{}` rather than a raise or a partial answer. Separate from
+        it only because the two return different shapes, and a caller that wanted a union back
+        would have to narrow the type of every answer it reads.
         """
