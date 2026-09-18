@@ -7,6 +7,7 @@ the cacheable prefix, and a clock in there would invalidate it every turn.
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from adapters.model.compaction import CompactionPolicy
 from adapters.model.fallback import CascadingAgent
 from tests.conftest import FakeAgent, FakeSummarizer
 
@@ -19,7 +20,7 @@ def _local_now() -> datetime:
 def make(tz=None):
     return CascadingAgent(
         chain=[("a", FakeAgent("a"))], history=None, persona_id="p", chat_id=1,
-        summarizer=FakeSummarizer(), timezone_name=tz,
+        compaction=CompactionPolicy(summarizer=FakeSummarizer()), timezone_name=tz,
     )
 
 

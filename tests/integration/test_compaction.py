@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from adapters.model.compaction import CompactionPolicy
 from adapters.model.fallback import (
     HISTORY_COMPACTION_CHAR_THRESHOLD,
     CascadingAgent,
@@ -19,7 +20,7 @@ def make_cascade(history, persona_id, summarizer):
     return CascadingAgent(
         chain=[("claude", FakeAgent("claude"))], history=history,
         persona_id=persona_id, chat_id=CHAT_ID,
-        summarizer=summarizer, health_board=VendorHealthBoard(),
+        compaction=CompactionPolicy(summarizer=summarizer), health_board=VendorHealthBoard(),
     )
 
 

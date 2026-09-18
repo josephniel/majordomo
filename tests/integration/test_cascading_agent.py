@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from adapters.model.base import UsageLimitError
+from adapters.model.compaction import CompactionPolicy
 from adapters.model.fallback import CascadingAgent
 from adapters.model.health import VendorHealthBoard
 from tests.conftest import CHAT_ID, FakeAgent, FakeSummarizer
@@ -15,7 +16,8 @@ pytestmark = pytest.mark.integration
 def make_cascade(history, persona_id, chain, board=None, recaller=None):
     return CascadingAgent(
         chain=chain, history=history, persona_id=persona_id, chat_id=CHAT_ID,
-        summarizer=FakeSummarizer(), health_board=board or VendorHealthBoard(),
+        compaction=CompactionPolicy(summarizer=FakeSummarizer()),
+        health_board=board or VendorHealthBoard(),
         memory_recaller=recaller,
     )
 

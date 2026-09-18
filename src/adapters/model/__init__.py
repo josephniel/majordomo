@@ -39,6 +39,7 @@ from .chat_completions import (
     OpenAIAgent,
     VendorEndpoint,
 )
+from .compaction import CompactionPolicy
 from .external_mcp import ExternalMCPManager
 from .fallback import CascadingAgent
 from .health import VendorHealthBoard
@@ -52,6 +53,7 @@ __all__ = [
     "Attachment",
     "CascadingAgent",
     "ChatCompletionsSummarizer",
+    "CompactionPolicy",
     "ContextBuilder",
     "ConversationHistory",
     "DeepSeekAgent",

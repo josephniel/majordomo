@@ -14,6 +14,7 @@ Four defenses, all keyed off "short reply answering an open question":
   Fix 4   the vendor that asked is preferred when it's still available
 """
 
+from adapters.model.compaction import CompactionPolicy
 from adapters.model.fallback import CascadingAgent
 from adapters.model.history import EphemeralConversationHistory
 from tests.conftest import FakeAgent, FakeSummarizer
@@ -37,7 +38,7 @@ def make_cascade(chain, recaller=None):
         history=EphemeralConversationHistory(),
         persona_id="p",
         chat_id=1,
-        summarizer=FakeSummarizer(),
+        compaction=CompactionPolicy(summarizer=FakeSummarizer()),
         memory_recaller=recaller,
     )
 

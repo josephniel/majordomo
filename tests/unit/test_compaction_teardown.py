@@ -12,6 +12,7 @@ import asyncio
 
 import pytest
 
+from adapters.model.compaction import CompactionPolicy
 from adapters.model.fallback import (
     BG_TASK_STOP_GRACE_SECONDS,
     COMPACTION_FAILURE_BACKOFF_SECONDS,
@@ -53,9 +54,11 @@ class FoldingHistory(EphemeralConversationHistory):
     append one summary row.
     """
 
-    async def compact(self, persona_id, chat_id, summary_text, cutoff_id):
+    async def compact(self, persona_id, chat_id, summary_text, cutoff_id, keep_ids=()):
+        keep = {int(i) for i in keep_ids}
         rows = [
-            r for r in self._match(persona_id, chat_id) if r["id"] <= cutoff_id
+            r for r in self._match(persona_id, chat_id)
+            if r["id"] <= cutoff_id and r["id"] not in keep
         ]
         for r in rows:
             r["archived"] = True
@@ -74,7 +77,7 @@ def make_cascade(summarizer):
         history=FoldingHistory(),
         persona_id="p",
         chat_id=1,
-        summarizer=summarizer,
+        compaction=CompactionPolicy(summarizer=summarizer),
     )
 
 
@@ -191,3 +194,95 @@ class TestSummarizeTimeout:
         assert COMPACTION_FAILURE_BACKOFF_SECONDS > 0
         # And the bookkeeping grace must not be what bounds a summarize.
         assert SUMMARIZE_TIMEOUT_SECONDS > BG_TASK_STOP_GRACE_SECONDS
+
+
+# ---- keeping rows verbatim -------------------------------------------
+
+
+class CapturingSummarizer(FakeSummarizer):
+    """Records exactly which rows it was asked to fold."""
+
+    def __init__(self):
+        super().__init__(response="fake summary")
+        self.prompts = []
+
+    async def summarize(self, prompt: str, *, deep: bool = False) -> str:
+        self.prompts.append(prompt)
+        return await super().summarize(prompt, deep=deep)
+
+
+class PickyJudge:
+    """Keeps any row whose content contains `needle`."""
+
+    def __init__(self, needle="TS-202741"):
+        self.needle = needle
+
+    async def likelihoods(self, state, questions):
+        from ports import Likelihood
+        entries = dict(
+            line.split(": ", 1) for line in state.split("\n") if ": " in line
+        )
+        out = {}
+        for key in questions:
+            body = entries.get(f"[{key}] user", "")
+            out[key] = Likelihood(probability=0.99 if self.needle in body else 0.01)
+        return out
+
+    async def selections(self, state, questions):  # pragma: no cover - unused
+        return {}
+
+
+def _judged_cascade(summarizer, judge):
+    return CascadingAgent(
+        chain=[("claude", FakeAgent("claude"))],
+        history=FoldingHistory(),
+        persona_id="p",
+        chat_id=1,
+        compaction=CompactionPolicy(summarizer=summarizer, decider=judge),
+    )
+
+
+class TestAJudgedCompaction:
+    """A ticket number survives exactly; the chatter around it becomes prose."""
+
+    async def _filled(self, cascade):
+        for i in range(20):
+            content = (
+                "please review TS-202741 before friday"
+                if i == 3
+                else f"thanks, understood {i} " + "x" * 1400
+            )
+            await cascade._history.append(
+                persona_id="p", chat_id=1, role="user", content=content,
+            )
+
+    async def test_the_kept_row_is_not_folded_and_not_summarized(self):
+        summarizer = CapturingSummarizer()
+        cascade = _judged_cascade(summarizer, PickyJudge())
+        await self._filled(cascade)
+        await cascade._maybe_compact()
+
+        rows = await cascade._history.recent("p", 1, limit=500)
+        contents = [r["content"] for r in rows]
+        assert any("TS-202741" in c for c in contents), "the exact row must survive"
+        assert any(r["role"] == "summary" for r in rows), "the rest still folds"
+        assert "TS-202741" not in summarizer.prompts[0], (
+            "a kept row must not also be in the summary, or the two can disagree"
+        )
+
+    async def test_the_mirror_still_shrinks(self):
+        cascade = _judged_cascade(CapturingSummarizer(), PickyJudge())
+        await self._filled(cascade)
+        before = await active_rows(cascade)
+        await cascade._maybe_compact()
+        assert await active_rows(cascade) < before
+
+    async def test_without_a_judge_the_whole_window_folds(self):
+        summarizer = CapturingSummarizer()
+        cascade = make_cascade(summarizer)
+        await self._filled(cascade)
+        await cascade._maybe_compact()
+        rows = await cascade._history.recent("p", 1, limit=500)
+        kept = [r for r in rows if r["role"] != "summary"]
+        assert all("TS-202741" not in r["content"] for r in kept[:-10] or [])
+        assert "TS-202741" in summarizer.prompts[0], "it went into the paragraph instead"

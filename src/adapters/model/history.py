@@ -31,11 +31,14 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
 from ports import ConversationRef, chat_key
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
 
 _CHAT_ID_MIGRATION_SQL = Path(__file__).resolve().parents[1] / "store" / "chat_id_migration.sql"
 
@@ -463,17 +466,25 @@ class ConversationHistory:
         chat_id: ConversationRef,
         summary_text: str,
         cutoff_id: int,
+        keep_ids: Collection[int] = (),
     ) -> int:
-        """Fold all active rows with id <= cutoff_id into one `summary` row.
+        """Fold active rows with id <= cutoff_id into one `summary` row, except `keep_ids`.
 
         The caller passes the EXACT cutoff of the rows it summarized —
         compaction never touches rows the summarizer didn't see (that was
         bug B1: an internally computed keep-last cutoff silently discarded
         rows outside the summarizer's read window).
 
+        `keep_ids` are rows a judge picked to survive unchanged, and they are
+        NOT in the summary either (see adapters/model/compaction.py), so the
+        contract is: archive what the summarizer saw, minus what the judge
+        kept. Empty — the default, and what happens with no judge — folds the
+        whole window exactly as before.
+
         Folded rows are archived, not deleted — the raw record stays
         available to `search()`. Returns the count of rows folded in.
         """
+        keep = [int(i) for i in keep_ids]
         async with self._acquire() as conn, conn.transaction():
             result = await conn.execute(
                 """
@@ -481,10 +492,12 @@ class ConversationHistory:
                     SET archived = TRUE
                     WHERE persona_id = $1 AND chat_id = $2
                       AND NOT archived AND id <= $3
+                      AND NOT (id = ANY($4::bigint[]))
                     """,
                 persona_id,
                 chat_key(chat_id),
                 cutoff_id,
+                keep,
             )
             folded = int(result.split()[-1] or 0)
             if folded == 0:
