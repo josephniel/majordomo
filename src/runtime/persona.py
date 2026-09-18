@@ -86,6 +86,11 @@ class Persona:
     # Outbound: ledger splits queued for Splitwise. Opt-in and absent by
     # default — this one WRITES to a service other people can see.
     splitwise_push: dict[str, Any] | None = None
+    # Record a plain "paid 1108 for dinner using Maya CC" message in code +
+    # one System One call, with no agent turn: {enabled: true}. Absent means
+    # every ledger message takes a turn, which is what it always did. Needs a
+    # TYPESAFE_API_KEY and the budget connector. See domain/ledger_fastpath.py.
+    ledger_fastpath: dict[str, Any] | None = None
     # Action items out of Gemini's meeting notes: {every_minutes: 5,
     # notes_grace_minutes: 45, calendar_id: "primary", chat_id: <optional>}.
     # Needs google_calendar AND google_drive connectors and the tasks faculty.
@@ -181,6 +186,9 @@ class Persona:
             ),
             splitwise_push=(
                 dict(cfg["splitwise_push"]) if cfg.get("splitwise_push") else None
+            ),
+            ledger_fastpath=(
+                dict(cfg["ledger_fastpath"]) if cfg.get("ledger_fastpath") else None
             ),
             meeting_watch=(
                 dict(cfg["meeting_watch"]) if cfg.get("meeting_watch") else None

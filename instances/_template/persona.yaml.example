@@ -106,6 +106,17 @@ system_prompt: |
 # record_transaction (writes still ride the approval gate).
 # splitwise_watch:
 #   every_minutes: 10
+#   # Record what the poll can decide on its own (account/tag/person are
+#   # judged by the System One model; everything else is read off the API),
+#   # and only wake the LLM for what it could not. Needs a TYPESAFE_API_KEY.
+#   # autonomous: true
+
+# Record a bare "paid 180 for coffee gcash" with no agent turn: the amount is
+# read in code, the account and category are judged against the ledger, and the
+# write goes through the usual approval tap. Everything less plain takes a
+# turn. Needs a TYPESAFE_API_KEY and the budget connector.
+# ledger_fastpath:
+#   enabled: true
 
 # Meeting notes -> task board (needs google_calendar AND google_drive
 # connectors, plus the tasks faculty with WRITE access for background fires —

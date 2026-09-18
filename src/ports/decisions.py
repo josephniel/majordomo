@@ -109,6 +109,19 @@ class Selection:
     confidence: float
     probabilities: Mapping[str, float]
 
+    def clears(self, floor: float) -> bool:
+        """Whether this choice is sure enough to act on without asking anyone.
+
+        A method rather than a helper function because the threshold is the
+        CALLER's policy and the comparison is the only part that is shared:
+        every site that acts on a Selection re-derives `confidence >= floor`,
+        and three of them getting the operator right is worth less than one of
+        them getting it wrong is expensive. What each site does with `False`
+        stays its own business -- reconcile demotes to a non-destructive
+        verdict, the Splitwise mirror hands the expense to the model.
+        """
+        return self.confidence >= floor
+
 
 class Decider(ABC):
     """Vendor-neutral contract for a model that judges instead of writing.

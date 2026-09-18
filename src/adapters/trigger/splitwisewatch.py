@@ -44,13 +44,15 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from ports import Decider
+
 from adapters.timefmt import DEFAULT_TIMEZONE, local_date
 
 from ._state import WatchState
+from .splitwisemirror import LEDGER_SOURCE, ExpenseMirror, MirrorResult
 
 log = logging.getLogger(__name__)
 
-LEDGER_SOURCE = "splitwise"
 # Ledger rows only started carrying their Splitwise id on this date. Anything
 # older is mirrored but unlinked, so a lookup answers "not recorded" for an
 # expense that IS recorded — the one case where the resolve below can still be
@@ -151,10 +153,15 @@ class SplitwiseWatcher:
         state_file: Path,
         default_timezone: str | None = None,
         budget_connector: Any | None = None,  # same surface; None = resolve nothing
+        decider: Decider | None = None,  # None = every expense is the model's
     ) -> None:
         self._splitwise = splitwise_connector
         self._budget = budget_connector
+        self._decider = decider
         self._tz = default_timezone or DEFAULT_TIMEZONE
+        # What this poll recorded on its own, waiting to be said. Drained by
+        # the WatchSource, which announces it without taking a turn.
+        self._reports: list[str] = []
         # Two-phase state, exactly like MailWatcher: check() stages and the
         # caller commit()s only after the turn was DELIVERED — a vendor outage at
         # fire time re-reports the same expenses next poll. See _state.py.
@@ -165,11 +172,15 @@ class SplitwiseWatcher:
     async def check(self) -> str | None:
         """Poll every Splitwise profile.
 
-        Returns a context block describing NEW/EDITED expenses (caller must commit() after
-        delivering), or None when there's nothing new. Never raises — a broken profile logs and is
-        skipped; the others still report.
+        Returns a context block describing the expenses the MODEL still has to record (caller must
+        commit() after delivering), or None when nothing is left for it. Never raises — a broken
+        profile logs and is skipped; the others still report.
+
+        Anything this poll recorded by itself is not in that block: it is in `take_reports()`,
+        because it is news rather than work.
         """
         now = datetime.now(UTC)
+        self._reports = []
         lines: list[str] = []
         staged: dict[str, dict[str, Any]] = {}
         for name, client in self._splitwise.build_clients().items():
@@ -181,9 +192,22 @@ class SplitwiseWatcher:
                 log.exception("splitwise_watch: profile %s poll failed", name)
         self._state.stage(staged)
         if not lines:
-            self.commit()  # nothing to deliver — advance the watermark now
+            if not self._reports:
+                self.commit()  # nothing to deliver at all — advance now
+            # With reports pending the watermark waits for them to land: the
+            # rows are written either way, but a commit here would bury the
+            # only sentence telling the user they exist.
             return None
         return "\n".join(lines)
+
+    def take_reports(self) -> list[str]:
+        """Drain what this poll recorded without a turn.
+
+        Drains rather than reads: the caller announces these, and a second
+        call must not repeat a line that was already said.
+        """
+        reports, self._reports = self._reports, []
+        return reports
 
     def commit(self) -> None:
         """Apply the state staged by the last check().
@@ -254,6 +278,7 @@ class SplitwiseWatcher:
         if budget is None:
             return [_format_expense(e, my_id, self._tz) for e in fresh], []
 
+        mirror = await self._mirror(budget)
         lines: list[str] = []
         notes: list[str] = []
         for e in fresh:
@@ -282,39 +307,114 @@ class SplitwiseWatcher:
                 continue
 
             if entry:
-                prior = seen.get(eid)
-                if prior is None or prior == str(e.get("updated_at") or ""):
-                    continue  # already recorded and unchanged — nothing to do
-                # An edit: the ledger cannot amend a split in place, so the old
-                # rows go and the model writes the new shape.
-                if not await self._retire(budget, entry):
-                    lines.append(
-                        f"{line}  (EDITED upstream; could not retire the old "
-                        f"rows — fix by hand)"
-                    )
-                    continue
-                hint = ""
-                if entry.get("account_id"):
-                    hint = (
-                        f" previously account {entry['account_id']}"
-                        f" tag {entry.get('tag_id')};"
-                    )
-                lines.append(
-                    f"{line}  (re-record — stale rows retired;{hint}"
-                    f" record with source={LEDGER_SOURCE} external_id={eid})"
-                )
+                asked = await self._already_there(budget, mirror, e, my_id, eid, line, entry, seen)
+                if asked:
+                    lines.append(asked)
                 continue
 
-            note = ""
-            if str(e.get("date") or "")[:10] < STAMPING_SINCE:
-                note = (
-                    "  NOTE: predates ledger stamping — check recent_transactions"
-                    " before recording this one"
-                )
-            lines.append(
-                f"{line}  (record with source={LEDGER_SOURCE} external_id={eid}){note}"
-            )
+            asked = await self._not_there(mirror, e, my_id, eid, line)
+            if asked:
+                lines.append(asked)
         return lines, notes
+
+    async def _already_there(
+        self,
+        budget: Any,
+        mirror: ExpenseMirror | None,
+        e: dict[str, Any],
+        my_id: int | None,
+        eid: str,
+        line: str,
+        entry: dict[str, Any],
+        seen: dict[str, str],
+    ) -> str:
+        """Handle an expense the ledger already holds. "" means nothing to say.
+
+        Unchanged since we mirrored it is the common case and is silent. An
+        EDIT is the interesting one: the ledger cannot amend a split in place,
+        so the old rows are retired and the new shape written from scratch.
+        """
+        prior = seen.get(eid)
+        if prior is None or prior == str(e.get("updated_at") or ""):
+            return ""  # already recorded and unchanged — nothing to do
+        if not await self._retire(budget, entry):
+            return f"{line}  (EDITED upstream; could not retire the old rows — fix by hand)"
+
+        # The account and tag it was already filed under come back with it: an
+        # edit moved the shares, not the category.
+        rewritten = await self._mirrored(mirror, e, my_id, eid, prior=entry)
+        if rewritten.recorded:
+            self._reports.append(rewritten.report)
+            return ""
+        hint = ""
+        if entry.get("account_id"):
+            hint = f" previously account {entry['account_id']} tag {entry.get('tag_id')};"
+        return (
+            f"{line}  (re-record — stale rows retired;{hint}"
+            f" record with source={LEDGER_SOURCE} external_id={eid})"
+            f"{rewritten.note}"
+        )
+
+    async def _not_there(
+        self,
+        mirror: ExpenseMirror | None,
+        e: dict[str, Any],
+        my_id: int | None,
+        eid: str,
+        line: str,
+    ) -> str:
+        """Handle an expense the ledger does not hold. "" means it is recorded now."""
+        if str(e.get("date") or "")[:10] < STAMPING_SINCE:
+            # Older than the stamp, so "not recorded" is not a fact — an
+            # unlinked copy may be sitting in the ledger. Nothing is mirrored
+            # blind here; the model goes and looks.
+            return (
+                f"{line}  (record with source={LEDGER_SOURCE} external_id={eid})"
+                "  NOTE: predates ledger stamping — check recent_transactions"
+                " before recording this one"
+            )
+        written = await self._mirrored(mirror, e, my_id, eid)
+        if written.recorded:
+            self._reports.append(written.report)
+            return ""
+        return (
+            f"{line}  (record with source={LEDGER_SOURCE} external_id={eid})"
+            f"{written.note}"
+        )
+
+    async def _mirror(self, budget: Any) -> ExpenseMirror | None:
+        """Build the mirror for this poll, or None when there is nothing to mirror with.
+
+        Built per poll rather than per watcher: it holds a snapshot of the
+        accounts, tags and people every question is asked against, and one
+        taken at startup would be answering with last week's categories.
+        """
+        if self._decider is None:
+            return None
+        mirror = ExpenseMirror(budget, self._decider, self._tz)
+        return mirror if await mirror.load() else None
+
+    async def _mirrored(
+        self,
+        mirror: ExpenseMirror | None,
+        expense: dict[str, Any],
+        my_id: int | None,
+        eid: str,
+        prior: dict[str, Any] | None = None,
+    ) -> MirrorResult:
+        """Try to record this expense here. Never raises.
+
+        An empty result is the ordinary answer, not a fault: it means this
+        expense is the model's, exactly as every expense was before the
+        mirror existed.
+        """
+        if mirror is None:
+            return MirrorResult()
+        try:
+            return await mirror.mirror(expense, my_id, eid, prior=prior)
+        except Exception:
+            log.exception("splitwise_watch: mirror failed on expense %s", eid)
+            return MirrorResult()
 
     async def _check_profile(
         self, name: str, client: Any, now: datetime,

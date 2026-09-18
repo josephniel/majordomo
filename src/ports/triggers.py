@@ -121,18 +121,37 @@ EmitTrigger = Callable[[TriggerEvent], Awaitable[bool]]
 # discarded unawaited, which reports success forever while never running.
 AddCron = Callable[[str, str, Callable[[], Awaitable[None]]], None]
 
+# Says something in a conversation WITHOUT taking a turn: (conversation, text,
+# source) -> delivered?
+#
+# The third capability, and deliberately named rather than smuggled through
+# `emit` with a pre-written prompt. A source reaches for this when the work is
+# already done and no model was involved in doing it — the Splitwise mirror
+# resolves an expense in code, picks its account and tag with a judging model,
+# writes the ledger row, and then has a sentence to say about it. Routing that
+# sentence through an agent turn would pay a full turn to retype text the
+# runtime already has, which is the whole thing that path exists to avoid.
+#
+# Optional, like `add_cron`: a context without one means this runtime can only
+# speak through the model, and a source that finds it absent must fall back to
+# emitting a prompt.
+# (ConversationRef is quoted: this alias is evaluated at import time, and
+# the import above is deferred for the same layering reason it always was.)
+Announce = Callable[["ConversationRef", str, str], Awaitable[bool]]
+
 
 @dataclass(frozen=True)
 class TriggerContext:
     """What the orchestrator lends a source at startup.
 
-    Exactly two capabilities: wake the agent, and ask to be called on a
-    schedule. A source that needs more than this is doing something the
-    orchestrator should know about explicitly.
+    Three capabilities: wake the agent, ask to be called on a schedule, and
+    say something the model did not write. A source that needs more than this
+    is doing something the orchestrator should know about explicitly.
     """
 
     emit: EmitTrigger
     add_cron: AddCron | None = None
+    announce: Announce | None = None
 
 
 @runtime_checkable
