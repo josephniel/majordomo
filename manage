@@ -68,6 +68,7 @@ manage — majordomo stack
                                      KeepAlive respawns and the two bots then
                                      fight over Telegram getUpdates)
     agent-status                     list every installed majordomo agent
+    judges [--since D] [--full]      what the Jev judges decided, from the logs
 
   Log rotation (launchd writes the bot logs, so the app cannot rotate them):
     logrotate-install                install the monthly rotation agent
@@ -512,6 +513,7 @@ main() {
         documents)          cmd_documents "$@" ;;
         prune)              cmd_simple_cli prune "$@" ;;
         cli)                cmd_cli "$@" ;;
+        judges)             require_venv; exec "$VENV_PY" scripts/judge_report.py "$@" ;;
         test)               require_venv; exec "$VENV_PY" -m pytest tests "$@" ;;
         eval)               require_venv; exec "$VENV_PY" -m evals "$@" ;;
         eval-recall)        require_venv; exec "$VENV_PY" -m evals.recall "$@" ;;
