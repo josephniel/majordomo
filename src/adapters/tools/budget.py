@@ -622,10 +622,16 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
         "REPAYMENTS ARE NOT THIS TOOL. If someone is paying back a balance they "
         "already owe on the People ledger, use settle_person — it finds the open "
         "balance and books both sides. Recording it here leaves them still owing.\n\n"
+        "COUNTERPARTY IS A PERSON, NEVER A MERCHANT. It is looked up on the "
+        "People roster and a name that is not already an active person there is "
+        "refused — which fails the WHOLE write, not just that field. A shop, app "
+        "or biller ('Steam', 'Petron') belongs in description. If it really is a "
+        "person and they are unknown, ask the user and call create_person; never "
+        "retry with a different spelling.\n\n"
         "Args: account_id and tag_id (from list_accounts / list_tags), amount "
         "(positive number), type ('debit' or 'credit', required), description, "
-        "counterparty (who was paid / who paid, optional), occurred_at (ISO "
-        "datetime, optional — defaults to now).",
+        "counterparty (an existing PERSON, optional — used for the owes-someone "
+        "case above), occurred_at (ISO datetime, optional — defaults to now).",
         {
             "type": "object",
             "properties": {
@@ -650,7 +656,12 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
                 "description": {"type": "string", "description": "What this was for."},
                 "counterparty": {
                     "type": "string",
-                    "description": "Merchant or person on the other side.",
+                    "description": (
+                        "An EXISTING active person on the People roster, e.g. "
+                        "'Paul U'. Never a merchant — an unknown name is "
+                        "refused and the write fails. Shops, apps and billers "
+                        "go in description instead."
+                    ),
                     "maxLength": 120,
                 },
                 "occurred_at": {
@@ -705,6 +716,15 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
             }
             if args.get("description"):
                 payload["description"] = str(args["description"])
+            # Passed through unvalidated on purpose: the roster lives in the
+            # tracker, not here, so the tracker is the only thing that can say
+            # whether a name is an active person. What this side owes is an
+            # honest description, and for a long time it did not have one —
+            # the schema said "merchant or person" while the API had moved to
+            # require_by_name, and a merchant counterparty took the whole write
+            # down with it. Five times between 09-11 and 09-19 (Autosweep,
+            # Petron, Lazada PH, OpenAI, Steam) that cost an approval tap, a
+            # refusal nothing logged, and a second turn to retry without it.
             if args.get("counterparty"):
                 payload["counterparty"] = str(args["counterparty"])[:120]
             payload.update(_origin_args(args))
@@ -1381,7 +1401,8 @@ def _amend_tools(client: BudgetClient) -> list[ToolSpec]:
         "you do it.\n\n"
         "Args: transaction_id (from recent_transactions), account_id (optional "
         "but helpful — the account the row is on), then any of occurred_at, "
-        "amount, description, counterparty, tag_id, type.",
+        "amount, description, counterparty (an existing PERSON, never a "
+        "merchant — see record_transaction), tag_id, type.",
         {
             "type": "object",
             "properties": {
@@ -1405,7 +1426,11 @@ def _amend_tools(client: BudgetClient) -> list[ToolSpec]:
                 "description": {"type": "string", "description": "Corrected description."},
                 "counterparty": {
                     "type": "string",
-                    "description": "Corrected merchant or person.",
+                    "description": (
+                        "Corrected person — an EXISTING active person on the "
+                        "People roster. Never a merchant: an unknown name is "
+                        "refused and the amend fails."
+                    ),
                     "maxLength": 120,
                 },
                 "tag_id": {"type": "integer", "description": "Corrected leaf tag."},
