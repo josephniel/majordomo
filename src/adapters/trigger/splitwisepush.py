@@ -26,8 +26,11 @@ cannot be atomic across two services, so the order is: create, then stamp. A
 crash in between leaves the queue entry standing and the expense created, and
 the next pass would create it a second time — so before creating anything a
 pass asks Splitwise whether an expense matching this entry already exists, and
-adopts it instead. Everything else (an unresolvable name, a rejected create)
-leaves the entry queued and says so; nothing is dropped silently.
+adopts it instead. Everything else (an unresolvable name, a rejected create,
+a charge that is already in the ledger under its Splitwise id) leaves the
+entry queued and says so — once per delivered report, not once per pass, since
+the entry will still be there, blocked for the same reason, fifteen minutes
+later. Nothing is dropped silently; nothing is nagged about either.
 """
 from __future__ import annotations
 
@@ -53,6 +56,7 @@ CENT = 0.005
 LEDGER_SOURCE = "splitwise"
 SCAN_PAGE_SIZE = 200
 MAX_PER_PASS = 10
+HTTP_CONFLICT = 409
 
 SPLITWISE_PUSH_PROMPT_PREAMBLE = """\
 [splitwise push — automated, not a user message] Splits recorded in the budget \
@@ -157,11 +161,26 @@ class SplitwisePusher:
         # the group the two of you actually use is not wrong so much as
         # invisible, and only the user knows which group that is.
         self._group_ids = {k.lower(): int(v) for k, v in (group_ids or {}).items()}
+        # What was said about each STILL-QUEUED entry the last time a report
+        # was delivered, by queue key. A blocked split stays on the queue until
+        # a person edits the ledger, and the pass that found it blocked finds
+        # it blocked again fifteen minutes later; without this, one duplicate
+        # woke the model 45 times in a night to repeat a sentence it had
+        # already sent. The ledger is still the only durable state: losing
+        # this on restart costs one repeated line, not a lost one.
+        self._reported: dict[str, str] = {}
+        self._staged: dict[str, str] = {}
 
     # ---- polling ----
 
     async def check(self) -> str | None:
-        """Push what is queued. Returns a report, or None when nothing was."""
+        """Push what is queued. Returns a report, or None when nothing was.
+
+        A line about an entry that is still queued is reported once: it comes
+        back only when what there is to say about it changes, or after a
+        restart. Pushes always report — the entry leaves the queue, so there
+        is no second pass to repeat them on.
+        """
         budget = self._first(self._budget)
         client = self._first(self._splitwise)
         if budget is None or client is None:
@@ -174,6 +193,7 @@ class SplitwisePusher:
             log.exception("splitwise_push: could not read the ledger queue")
             return None
         if not queued:
+            self._staged = {}
             return None
 
         try:
@@ -183,20 +203,30 @@ class SplitwisePusher:
             log.exception("splitwise_push: could not read Splitwise friends")
             return None
 
-        lines: list[str] = [
-            await self._push_one(entry, budget, client, friends, me)
-            for entry in queued[:MAX_PER_PASS]
-        ]
+        lines: list[str] = []
+        still_queued: dict[str, str] = {}
+        for entry in queued[:MAX_PER_PASS]:
+            line, settled = await self._push_one(entry, budget, client, friends, me)
+            if settled:
+                lines.append(line)
+                continue
+            still_queued[entry.key] = line
+            if self._reported.get(entry.key) != line:
+                lines.append(line)
         if len(queued) > MAX_PER_PASS:
             lines.append(f"- … {len(queued) - MAX_PER_PASS} more still queued")
+        self._staged = still_queued
         return "\n".join(lines) if lines else None
 
     def commit(self) -> None:
-        """Do nothing — there is no staged state to apply.
+        """Remember what the delivered report said about the entries still queued.
 
-        The ledger stamp IS the state, and it is written as each entry
-        succeeds. Present so this can stand in for a WatchSource.
+        The ledger stamp is the state for everything that was pushed; this is
+        only the memory of what has already been SAID about what was not, and
+        it advances only once the report landed — a turn that failed to
+        deliver gets the same lines again next pass, as a WatchSource expects.
         """
+        self._reported = dict(self._staged)
 
     # ---- steps ----
 
@@ -327,62 +357,129 @@ class SplitwisePusher:
         client: Any,
         friends: dict[str, int],
         me: int | None,
-    ) -> str:
+    ) -> tuple[str, bool]:
+        """Push one entry. Returns the report line and whether it left the queue."""
         label = entry.description or "(no description)"
         when = local_date(entry.occurred_at, self._tz) if entry.occurred_at else "?"
 
+        def blocked(why: str) -> tuple[str, bool]:
+            return f"- NOT pushed — {label} ({when}): {why}", False
+
         resolved, why_not = self._resolve_shares(entry, friends, me)
         if why_not:
-            return f"- NOT pushed — {label} ({when}): {why_not}"
+            return blocked(why_not)
 
         expense_id = await self._already_there(client, entry)
         adopted = expense_id is not None
-        if expense_id is None:
-            users = [{"user_id": me, "paid_share": f"{entry.total:.2f}",
-                      "owed_share": f"{entry.my_share:.2f}"}]
-            users += [
-                {"user_id": uid, "paid_share": "0.00", "owed_share": f"{amount:.2f}"}
-                for uid, amount in resolved.items()
-            ]
-            form: dict[str, Any] = {
-                "cost": f"{entry.total:.2f}",
-                "description": label,
-                "currency_code": "PHP",
-            }
-            if entry.occurred_at:
-                form["date"] = entry.occurred_at
-            gid = self._group_for(entry.shares)
-            if gid is not None:
-                form["group_id"] = gid
-            payload = to_form(form)
-            payload.update(flatten_users_to_form(users))
-            try:
-                created = await client.create_expense(payload)
-            except Exception as e:
-                log.exception("splitwise_push: create failed for %s", entry.key)
-                return f"- NOT pushed — {label} ({when}): Splitwise refused it ({e})"
-            # Splitwise answers 200 with an `errors` object rather than a
-            # status code, so a create that "succeeded" can have created
-            # nothing at all.
-            rejected = splitwise_errors(created)
-            if rejected:
-                return f"- NOT pushed — {label} ({when}): Splitwise rejected it ({rejected})"
-            made = (created.get("expenses") or [{}])[0]
-            expense_id = str(made.get("id") or "")
-            if not expense_id:
-                return f"- NOT pushed — {label} ({when}): Splitwise returned no expense id"
+        if expense_id is not None:
+            # Matched on date and cost, which is also what the SAME charge
+            # recorded twice looks like — once mirrored in from Splitwise, once
+            # typed in from a card statement. Adopting that expense would be
+            # stamping the second entry with an id the first already owns, and
+            # the tracker refuses that forever, not until the next pass.
+            taken = await self._claimed_by(budget, expense_id)
+            if taken is not None and set(taken) != set(entry.transfer_ids):
+                return blocked(_duplicate_of(expense_id))
+        else:
+            expense_id, why_not = await self._create(entry, client, resolved, me, label)
+            if why_not or not expense_id:
+                return blocked(why_not or "Splitwise returned no expense id")
 
         try:
             await budget.link_external(LEDGER_SOURCE, expense_id, entry.transfer_ids)
-        except Exception:
+        except Exception as e:
+            if _http_status(e) == HTTP_CONFLICT:
+                # The claim check above missed (or could not run) and the
+                # tracker caught it: this id belongs to other transfers. Not a
+                # retry — the same answer every fifteen minutes until a person
+                # removes one of the two entries.
+                log.warning(
+                    "splitwise_push: expense %s already linked elsewhere; %s is a duplicate",
+                    expense_id, entry.key,
+                )
+                return blocked(_duplicate_of(expense_id))
             # The expense exists; the ledger just does not know its id yet. Say
             # so rather than implying success — the next pass adopts it.
             log.exception("splitwise_push: could not link %s to expense %s", entry.key, expense_id)
             return (
-                f"- pushed {label} ({when}) as Splitwise expense {expense_id}, but the "
-                f"ledger link FAILED — it will be retried"
+                (
+                    f"- pushed {label} ({when}) as Splitwise expense {expense_id}, but the "
+                    f"ledger link FAILED — it will be retried"
+                ),
+                False,
             )
 
         verb = "adopted" if adopted else "pushed"
         owed = ", ".join(f"{n} {a:.2f}" for n, a in entry.shares.items())
-        return f"- {verb} {label} ({when}) — total {entry.total:.2f}, owed: {owed}"
+        return f"- {verb} {label} ({when}) — total {entry.total:.2f}, owed: {owed}", True
+
+    async def _create(
+        self,
+        entry: QueuedSplit,
+        client: Any,
+        resolved: dict[int, float],
+        me: int | None,
+        label: str,
+    ) -> tuple[str | None, str | None]:
+        """Create the expense upstream. Returns (expense id, why it could not)."""
+        users = [{"user_id": me, "paid_share": f"{entry.total:.2f}",
+                  "owed_share": f"{entry.my_share:.2f}"}]
+        users += [
+            {"user_id": uid, "paid_share": "0.00", "owed_share": f"{amount:.2f}"}
+            for uid, amount in resolved.items()
+        ]
+        form: dict[str, Any] = {
+            "cost": f"{entry.total:.2f}",
+            "description": label,
+            "currency_code": "PHP",
+        }
+        if entry.occurred_at:
+            form["date"] = entry.occurred_at
+        gid = self._group_for(entry.shares)
+        if gid is not None:
+            form["group_id"] = gid
+        payload = to_form(form)
+        payload.update(flatten_users_to_form(users))
+        try:
+            created = await client.create_expense(payload)
+        except Exception as e:
+            log.exception("splitwise_push: create failed for %s", entry.key)
+            return None, f"Splitwise refused it ({e})"
+        # Splitwise answers 200 with an `errors` object rather than a status
+        # code, so a create that "succeeded" can have created nothing at all.
+        rejected = splitwise_errors(created)
+        if rejected:
+            return None, f"Splitwise rejected it ({rejected})"
+        made = (created.get("expenses") or [{}])[0]
+        return str(made.get("id") or "") or None, None
+
+    @staticmethod
+    async def _claimed_by(budget: Any, expense_id: str) -> list[int] | None:
+        """Which ledger transfers already carry this expense id, or None if unknown.
+
+        Unknown covers both "none" and "could not ask": either way the link
+        below is attempted, and the tracker's own 409 is the second line of
+        defence.
+        """
+        try:
+            found = await budget.find_external(LEDGER_SOURCE, expense_id)
+        except Exception:
+            log.exception("splitwise_push: could not check who owns expense %s", expense_id)
+            return None
+        if not found:
+            return None
+        return [int(t) for t in (found.get("transfer_ids") or [])]
+
+
+def _duplicate_of(expense_id: str) -> str:
+    return (
+        f"it duplicates a ledger entry already linked to Splitwise expense "
+        f"{expense_id} — delete one of the two"
+    )
+
+
+def _http_status(error: BaseException) -> int | None:
+    """Read the HTTP status off an httpx error, without importing httpx here."""
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    return int(status) if isinstance(status, int) else None
