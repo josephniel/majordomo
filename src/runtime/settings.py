@@ -114,6 +114,7 @@ class RuntimeSettings:
     # ---- schedules / proactivity ----
     schedule_timezone: str | None = None
     webhook_token: str = ""
+    gateway_token: str = ""
     # Heartbeats are background work — keep them on cheap Haiku, decoupled
     # from the chat chain (same reasoning as COMPACTION_MODEL).
     heartbeat_model: str = "claude-haiku-4-5"

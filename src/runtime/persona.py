@@ -76,6 +76,9 @@ class Persona:
     # Inbound webhook triggers: {port: 18790, triggers: {name: {prompt: ...}}}.
     # Requires WEBHOOK_TOKEN in the instance .env. See adapters/trigger/webhook.py.
     webhooks: dict[str, Any] | None = None
+    # Developer gateway: {port: 18791}. Requires GATEWAY_TOKEN in the instance
+    # .env. See adapters/trigger/gateway.py.
+    gateway: dict[str, Any] | None = None
     # Push-style mail alerts: {every_minutes: 3, chat_id: <optional>}.
     # Needs the gmail connector enabled. See adapters/trigger/mailwatch.py.
     mail_watch: dict[str, Any] | None = None
@@ -180,6 +183,7 @@ class Persona:
             write_approval=bool(cfg.get("write_approval", True)),
             heartbeat=dict(cfg["heartbeat"]) if cfg.get("heartbeat") else None,
             webhooks=dict(cfg["webhooks"]) if cfg.get("webhooks") else None,
+            gateway=dict(cfg["gateway"]) if cfg.get("gateway") else None,
             mail_watch=dict(cfg["mail_watch"]) if cfg.get("mail_watch") else None,
             splitwise_watch=(
                 dict(cfg["splitwise_watch"]) if cfg.get("splitwise_watch") else None

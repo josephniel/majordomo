@@ -82,6 +82,7 @@ if TYPE_CHECKING:
 
     from adapters.chat.transcription import CascadingTranscriber
     from adapters.comms.status_report import StatusReporter
+    from adapters.trigger.gateway import GatewayServer
     from adapters.trigger.retention import RetentionJob
     from adapters.trigger.webhook import WebhookServer
     from domain.claim_check import ClaimJudge
@@ -1543,6 +1544,45 @@ class PersonaRuntime:
             port=int(cfg.get("port") or DEFAULT_PORT),
         )
 
+    @cached_property
+    def gateway_server(self) -> GatewayServer | None:
+        """The developer gateway (adapters/trigger/gateway.py).
+
+        None unless persona.yaml configures `gateway:` AND GATEWAY_TOKEN is
+        set, and there is an operator DM to send cards to. Cards go through the
+        platform's approval UI directly — never through the write gate, so no
+        background auto-approve or batch manifest can ever answer for the
+        operator.
+        """
+        cfg = self.persona.gateway
+        if not cfg:
+            return None
+        from adapters.trigger.gateway import DEFAULT_PORT, GatewayServer
+
+        token = self.settings.gateway_token
+        if not token:
+            log.warning(
+                "persona %r: gateway configured but GATEWAY_TOKEN is unset; "
+                "gateway disabled",
+                self.persona.id,
+            )
+            return None
+        operator_chat = self._default_operator_chat_id()
+        if operator_chat is None:
+            log.warning("persona %r: gateway has no operator DM; disabled", self.persona.id)
+            return None
+        platform = self.platform
+
+        async def _approve(chat: ConversationRef, text: str, deny_after: float) -> bool:
+            return await platform.request_approval(chat, text, deny_after=deny_after)
+
+        return GatewayServer(
+            token=token,
+            approve=_approve,
+            operator_chat=operator_chat,
+            port=int(cfg.get("port") or DEFAULT_PORT),
+        )
+
     # ---- chat ----
 
     def create_conversation(self) -> ConversationOrchestrator:
@@ -1634,7 +1674,12 @@ class PersonaRuntime:
         The schedule source leads because it owns the APScheduler instance
         the cron-driven sources register against.
         """
-        from domain.triggers import RetentionSource, ScheduleSource, WebhookSource
+        from domain.triggers import (
+            GatewaySource,
+            RetentionSource,
+            ScheduleSource,
+            WebhookSource,
+        )
 
         sources: list[Any] = []
         if schedule_conn is not None:
@@ -1654,6 +1699,8 @@ class PersonaRuntime:
         )
         if self.webhook_server is not None:
             sources.append(WebhookSource(self.webhook_server))
+        if self.gateway_server is not None:
+            sources.append(GatewaySource(self.gateway_server))
         if self.retention_job is not None:
             sources.append(RetentionSource(self.retention_job))
         return sources
