@@ -689,6 +689,7 @@ class CascadingAgent(Agent):
         reply and the next user message. Returns None if the last real turn was
         the user's own, a summary, or an assistant statement with no question.
         """
+        r: dict[str, Any]
         for r in reversed(rows):
             if r.get("role") == "system":
                 continue

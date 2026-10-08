@@ -1197,6 +1197,44 @@ class TestAmendPendingPayment:
         assert "amend_transaction" in result.text
         assert "body" not in seen  # nothing was written
 
+    async def test_a_date_taken_by_a_sibling_occurrence_explains_the_way_out(self):
+        # The tracker answers 409 when a recurring occurrence is moved onto a
+        # date the same rule already has. The model must learn that the date is
+        # taken, by which row, and what to do next, not just "API error 409".
+        def handler(request):
+            if request.url.path == "/scheduled-transactions/pending":
+                return httpx.Response(200, json={"due": [self.ROW], "upcoming": []})
+            if request.method == "PUT":
+                return httpx.Response(409, json={"detail": (
+                    "This schedule already has an occurrence on 2026-10-01 "
+                    "(#560, fulfilled)"
+                )})
+            return httpx.Response(200, json=[])
+
+        result = await _connector_tools(handler)["amend_pending_payment"].handler(
+            {"id": 490, "due_date": "2026-10-01"}, CTX,
+        )
+        assert result.is_error
+        assert "NOT changed" in result.text
+        assert "#560, fulfilled" in result.text
+        assert "already recorded" in result.text
+        assert "approve_pending_payment" in result.text
+
+    async def test_other_failures_keep_the_generic_api_error(self):
+        def handler(request):
+            if request.url.path == "/scheduled-transactions/pending":
+                return httpx.Response(200, json={"due": [self.ROW], "upcoming": []})
+            if request.method == "PUT":
+                return httpx.Response(400, json={"detail": "Invalid tag_id"})
+            return httpx.Response(200, json=[])
+
+        result = await _connector_tools(handler)["amend_pending_payment"].handler(
+            {"id": 490, "tag_id": 999}, CTX,
+        )
+        assert result.is_error
+        assert "400" in result.text
+        assert "Invalid tag_id" in result.text
+
     async def test_an_unknown_id_is_refused(self):
         seen = {}
         result = await _connector_tools(self._handler(seen, row={"id": 1}))[
