@@ -82,6 +82,8 @@ class CommandsMixin:
             await self._cmd_help(cmd.chat_id, reply_to=cmd.message_id)
         elif cmd.command == "jobs":
             await self._cmd_jobs(cmd.chat_id, cmd.args, reply_to=cmd.message_id)
+        elif cmd.command == "gateway":
+            await self._cmd_gateway(cmd.chat_id, cmd.args, reply_to=cmd.message_id)
         else:
             log.warning("unknown command: %s", cmd.command)
 
@@ -92,6 +94,7 @@ class CommandsMixin:
             "/reset — start the conversation over (history archived, not lost)\n"
             "/cancel — stop the in-flight reply (or just say \"cancel\")\n"
             "/jobs — review model-authored jobs (approve/revoke/resume <name>)\n"
+            "/gateway — developer gateway requests (received/cancel <id>)\n"
             "/help — this message\n\n"
             "Just talk for everything else: reminders and schedules, email and "
             "calendar, tasks and expenses, remembering facts, searching files "
@@ -163,6 +166,32 @@ class CommandsMixin:
                 )
             except Exception:
                 log.debug("could not mirror /jobs action into history", exc_info=True)
+
+    async def _cmd_gateway(
+        self, chat_id: ConversationRef, args: str, *, reply_to: int | None = None
+    ) -> None:
+        """Operator side of the developer gateway: list, received, cancel.
+
+        Reached duck-typed through the trigger source that runs the gateway,
+        the same way /jobs reaches the jobs faculty. Nothing here touches the
+        conversation: gateway requests never become turns.
+        """
+        source = next(
+            (s for s in self._trigger_sources if getattr(s, "name", "") == "gateway"), None
+        )
+        command = getattr(source, "operator_command", None)
+        if not callable(command):
+            await self._platform.send_text(
+                chat_id, "The developer gateway is not enabled for this persona.",
+                reply_to=reply_to,
+            )
+            return
+        try:
+            text = str(command(args))
+        except Exception:
+            log.exception("/gateway %r failed", args)
+            text = "That failed — the log has the traceback."
+        await self._platform.send_text(chat_id, text, reply_to=reply_to)
 
     async def _cmd_start(self, chat_id: ConversationRef, *, reply_to: int | None = None) -> None:
         enabled = [i.name for i in self._config.load_enabled()]

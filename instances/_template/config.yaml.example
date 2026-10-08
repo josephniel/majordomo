@@ -187,9 +187,3 @@ triggers:
     # Persona-scoped because each webhook server is one persona's.
     # env fallback: WEBHOOK_TOKEN
     # token: ${WEBHOOK_TOKEN}
-
-  # ----------------------------------------------------------------
-  gateway:
-    # Bearer for the developer gateway; no token, no server.
-    # env fallback: GATEWAY_TOKEN
-    # token: ${GATEWAY_TOKEN}

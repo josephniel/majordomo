@@ -309,7 +309,8 @@ class GatewaySource:
     Gateway requests are decided by the operator's tap and carried out by
     fixed recipes; none of them becomes an agent turn. It sits among the
     trigger sources only because this is where the runtime starts and stops
-    the things that listen on the bot's loop.
+    the things that listen on the bot's loop. `/gateway` reaches the server
+    through `operator_command`.
     """
 
     name = "gateway"
@@ -320,15 +321,18 @@ class GatewaySource:
     async def start(self, ctx: TriggerContext) -> None:
         del ctx  # nothing to emit, announce or schedule
         try:
-            self._server.start(asyncio.get_running_loop())
+            await self._server.start()
         except Exception:
             log.exception("gateway server failed to start")
 
     async def stop(self) -> None:
         try:
-            self._server.stop()
+            await self._server.stop()
         except Exception:
             log.exception("gateway server stop failed")
+
+    def operator_command(self, args: str) -> str:
+        return str(self._server.operator_command(args))
 
     def describe(self) -> str | None:
         try:

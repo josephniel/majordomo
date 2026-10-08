@@ -4,6 +4,7 @@ python-dotenv>=1.0.0
 PyYAML>=6.0
 apscheduler>=3.10
 httpx>=0.27
+mcp>=2,<3               # developer gateway MCP server (also pulled in by claude-agent-sdk)
 # Phase 1 memory layer: Postgres-backed second brain
 asyncpg>=0.29
 # Phase 2 fallback agents: OpenAI + DeepSeek (DeepSeek uses an OpenAI-compatible endpoint).

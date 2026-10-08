@@ -378,9 +378,6 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("webhook_token", "triggers.webhooks.token", "WEBHOOK_TOKEN",
             as_str, "", Scope.PERSONA, secret=True,
             doc="Persona-scoped because each webhook server is one persona's."),
-    Setting("gateway_token", "triggers.gateway.token", "GATEWAY_TOKEN",
-            as_str, "", Scope.PERSONA, secret=True,
-            doc="Bearer for the developer gateway; no token, no server."),
 )
 
 SETTINGS_BY_FIELD: dict[str, Setting] = {s.field: s for s in SETTINGS}

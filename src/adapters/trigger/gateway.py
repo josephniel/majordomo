@@ -1,287 +1,457 @@
 """Developer gateway — operator-gated requests that never reach the model.
 
-Developers' own tools ask this persona to do privileged-but-deterministic
-work (seal a secret, verify a cluster cert). Every request costs ONE
-operator tap in Telegram; after the tap a fixed recipe runs. No agent turn
-is involved anywhere on this path, which is the point: the only judgment is
-the operator's.
+Developers' own tools (over MCP, see gateway_mcp.py) ask this persona to do
+privileged-but-deterministic work, such as sealing a secret. Every request
+costs ONE operator tap in Telegram, and after the tap a fixed recipe runs.
+No agent turn is involved anywhere on this path, which is the point: the
+only judgment is the operator's.
 
-Phase 0 (this module today) is the probe that proves the plumbing: a
-request from outside any conversation puts an Approve/Deny card in the
-operator's DM, and the caller polls for the outcome. There are no recipes
-yet — an approved probe does nothing but report "approved".
+A request moves through:
 
-Config (persona.yaml):
+    awaiting_value ──/gateway received──▶ queued ──▶ awaiting_approval
+                                            ▲              │ tap
+                                            │      approve │ deny / no tap
+                                            │              ▼
+                                            │      running ──▶ done | failed
+                                            └── (restart re-queues)   denied | expired
 
-    gateway:
-      port: 18791            # loopback only; exposure is the tunnel's job
+`awaiting_value` exists because the value a developer wants sealed may not
+be on this host yet. The developer emails it to the operator, never through
+this channel, and the operator says when it has been saved.
 
-Auth: `Authorization: Bearer $GATEWAY_TOKEN` (env, required — the server
-refuses to start without one).
+The approval card goes through the platform's approval UI directly, never
+through the write gate, so no background auto-approve or batch manifest can
+ever answer for the operator. Cards are shown one at a time; everything else
+waits in `queued`.
 
-    POST /v0/approval-probe   {"requester": "jane.doe", "note": "...",
-                               "deny_after": 60}
-        → 202 {"request_id": "..."}
-    GET  /v0/requests/<id>
-        → 200 {"status": "pending|approved|denied|error", ...}
-
-Async by design: the POST returns at once and the tap may take minutes, so
-an MCP client must never be left holding a socket open on the operator's
-attention. One request may be pending at a time — the operator's phone is
-the scarce resource, not the server.
-
-Stdlib http.server on a daemon thread, like the webhook trigger; the
-approval coroutine is scheduled onto the bot loop with
-run_coroutine_threadsafe.
+What is stored, audited and returned is names, lengths, fingerprints and
+ciphertext. A recipe reads the plaintext in-process when it needs it and
+drops it.
 """
 from __future__ import annotations
 
 import asyncio
-import hmac
+import contextlib
+import hashlib
 import json
 import logging
-import re
 import secrets
-import threading
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import TYPE_CHECKING, Any
-
-from .webhook import _QuietHTTPServer
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from ports import ConversationRef
 
 log = logging.getLogger(__name__)
 
-DEFAULT_PORT = 18791
-MAX_BODY_BYTES = 4 * 1024
-MAX_NOTE_CHARS = 200
-MIN_DENY_AFTER = 10.0
-MAX_DENY_AFTER = 300.0
-# Finished requests are kept this long for polling, then forgotten.
-RESULT_TTL_SECONDS = 3600.0
+DEFAULT_CARD_SECONDS = 600.0
+AWAITING_VALUE_TTL_SECONDS = 7 * 24 * 3600.0
+# Terminal requests stay readable this long, then are dropped from the store.
+TERMINAL_TTL_SECONDS = 30 * 24 * 3600.0
+MAX_OPEN_PER_REQUESTER = 3
+MAX_OPEN_TOTAL = 20
 
-# A requester is a name the operator recognises on the card, not free text:
-# letters, digits and . _ @ - only, so it can't fake card lines.
-_REQUESTER_RE = re.compile(r"^[A-Za-z0-9._@-]{1,64}$")
+OPEN_STATES = frozenset({"awaiting_value", "queued", "awaiting_approval", "running"})
+TERMINAL_STATES = frozenset({"done", "failed", "denied", "expired", "cancelled"})
 
 # approve(chat, text, deny_after=seconds) -> bool. TelegramPlatform.request_approval.
 Approver = Callable[..., Awaitable[bool]]
+# notify(chat, text). The platform's send_text.
+Notifier = Callable[..., Awaitable[Any]]
+
+
+class GatewayRefusalError(Exception):
+    """A request the gateway will not take; the message goes back to the caller."""
+
+
+@dataclass(frozen=True)
+class Located:
+    """Where an action's input was found. Never holds the value itself.
+
+    `fingerprint` is whatever the action uses to notice that its input changed
+    between the card and the run (for a secret: its length).
+    """
+
+    source: str
+    fingerprint: str
+    card_lines: tuple[str, ...] = ()
+    # The operator's location override, when the input isn't where the
+    # action looks by default; run() must read from the same place.
+    source_ref: str | None = None
+
+
+class GatewayAction(Protocol):
+    name: str
+    description: str
+    params_doc: dict[str, str]
+
+    def validate(self, params: dict[str, Any]) -> dict[str, str]:
+        """Return normalised params, or raise GatewayRefusalError."""
+        ...
+
+    def locate(self, params: dict[str, str], source_ref: str | None) -> Located | None:
+        """Find the input. None means it is not on this host yet."""
+        ...
+
+    def missing_value_hint(self, params: dict[str, str]) -> str:
+        """Tell the developer what to email, when locate() found nothing."""
+        ...
+
+    async def run(self, params: dict[str, str], located: Located) -> dict[str, Any]:
+        """Carry the request out. Raise GatewayRefusalError to fail it."""
+        ...
 
 
 @dataclass
 class GatewayRequest:
     request_id: str
     requester: str
-    note: str
+    action: str
+    params: dict[str, str]
+    state: str = "queued"
     created: float = field(default_factory=time.time)
-    status: str = "pending"  # pending | approved | denied | error
-    finished: float | None = None
+    updated: float = field(default_factory=time.time)
+    source_ref: str | None = None
+    message: str = ""
+    result: dict[str, Any] | None = None
 
     def view(self) -> dict[str, Any]:
+        """Render what the requester sees."""
         out: dict[str, Any] = {
             "request_id": self.request_id,
-            "status": self.status,
-            "requester": self.requester,
-            "age_seconds": round(time.time() - self.created, 1),
+            "action": self.action,
+            "params": dict(self.params),
+            "state": self.state,
+            "age_seconds": round(time.time() - self.created),
         }
-        if self.finished is not None:
-            out["decided_after_seconds"] = round(self.finished - self.created, 1)
+        if self.message:
+            out["message"] = self.message
+        if self.result is not None:
+            out["result"] = self.result
         return out
 
 
-def build_probe_card(req: GatewayRequest, deny_after: float) -> str:
-    """Render the Telegram card. Plain text — the platform sends no parse_mode."""
-    lines = [
-        "🔐 Gateway request (phase 0 probe)",
-        f"From: {req.requester}",
-        f"Request: {req.request_id}",
-    ]
-    if req.note:
-        lines.append(f"Note: {req.note}")
-    lines.append(
-        f"Approving runs nothing yet — this only tests the card. "
-        f"Auto-denies in {int(deny_after)}s."
-    )
-    return "\n".join(lines)
-
-
-class _BadRequestError(ValueError):
-    """A request body the gateway refuses; the message goes back as the 400."""
-
-
-def _parse_probe(raw: bytes) -> tuple[str, str, float]:
-    """Validate a probe body into (requester, note, deny_after)."""
-    try:
-        body = json.loads(raw)
-    except ValueError:
-        raise _BadRequestError("body is not JSON") from None
-    if not isinstance(body, dict):
-        raise _BadRequestError("body must be a JSON object")
-    requester = str(body.get("requester") or "")
-    if not _REQUESTER_RE.match(requester):
-        raise _BadRequestError("requester must match [A-Za-z0-9._@-]{1,64}")
-    note = " ".join(str(body.get("note") or "").split())[:MAX_NOTE_CHARS]
-    try:
-        deny_after = float(body.get("deny_after") or MAX_DENY_AFTER)
-    except (TypeError, ValueError):
-        raise _BadRequestError("deny_after must be a number") from None
-    return requester, note, min(max(deny_after, MIN_DENY_AFTER), MAX_DENY_AFTER)
-
-
-class GatewayServer:
+class GatewayService:
     def __init__(
         self,
-        token: str,
+        actions: dict[str, GatewayAction],
         approve: Approver,
+        notify: Notifier,
         operator_chat: ConversationRef,
-        host: str = "127.0.0.1",
-        port: int = DEFAULT_PORT,
+        state_file: Path,
+        audit_file: Path,
+        card_seconds: float = DEFAULT_CARD_SECONDS,
     ) -> None:
-        if not token:
-            raise ValueError("gateway server needs a non-empty token")
-        self._token = token
+        self._actions = dict(actions)
         self._approve = approve
+        self._notify = notify
         self._operator_chat = operator_chat
-        self._host = host
-        self._port = port
-        self._httpd: ThreadingHTTPServer | None = None
-        self._thread: threading.Thread | None = None
+        self._state_file = state_file
+        self._audit_file = audit_file
+        self._card_seconds = card_seconds
         self._requests: dict[str, GatewayRequest] = {}
-        # Handlers run on separate threads; the pending check-then-insert
-        # must be atomic or two POSTs both get a card.
-        self._lock = threading.Lock()
+        self._wake = asyncio.Event()
+        self._worker: asyncio.Task[None] | None = None
+        self._load()
 
-    @property
-    def port(self) -> int:
-        """Actual bound port (differs from the requested one when 0)."""
-        if self._httpd is None:
-            return self._port
-        return self._httpd.server_address[1]
+    # ---- lifecycle ----
 
-    def get(self, request_id: str) -> GatewayRequest | None:
-        with self._lock:
-            self._expire_locked()
-            return self._requests.get(request_id)
-
-    def _expire_locked(self) -> None:
-        cutoff = time.time() - RESULT_TTL_SECONDS
-        for rid in [
-            rid for rid, r in self._requests.items()
-            if r.finished is not None and r.finished < cutoff
-        ]:
-            del self._requests[rid]
-
-    def _submit(self, requester: str, note: str) -> GatewayRequest | None:
-        """Register a request, or None when one is already pending."""
-        with self._lock:
-            self._expire_locked()
-            if any(r.status == "pending" for r in self._requests.values()):
-                return None
-            req = GatewayRequest(
-                request_id=secrets.token_urlsafe(9),
-                requester=requester,
-                note=note,
+    def start(self) -> None:
+        if self._worker is None:
+            self._worker = asyncio.get_running_loop().create_task(
+                self._work(), name="gateway-worker"
             )
-            self._requests[req.request_id] = req
-            return req
+            self._wake.set()
 
-    async def _decide(self, req: GatewayRequest, deny_after: float) -> None:
+    async def stop(self) -> None:
+        if self._worker is not None:
+            self._worker.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._worker
+            self._worker = None
+
+    # ---- developer-facing ----
+
+    def list_actions(self) -> list[dict[str, Any]]:
+        return [
+            {"name": a.name, "description": a.description, "params": dict(a.params_doc)}
+            for a in self._actions.values()
+        ]
+
+    async def submit(
+        self, requester: str, action_name: str, params: dict[str, Any]
+    ) -> GatewayRequest:
+        action = self._actions.get(action_name)
+        if action is None:
+            raise GatewayRefusalError(f"unknown action {action_name!r}")
+        clean = action.validate(params)
+        self._expire()
+        open_reqs = [r for r in self._requests.values() if r.state in OPEN_STATES]
+        if sum(r.requester == requester for r in open_reqs) >= MAX_OPEN_PER_REQUESTER:
+            raise GatewayRefusalError(
+                f"you already have {MAX_OPEN_PER_REQUESTER} open requests; "
+                "wait for one to finish"
+            )
+        if len(open_reqs) >= MAX_OPEN_TOTAL:
+            raise GatewayRefusalError("the gateway queue is full; try again later")
+        req = GatewayRequest(
+            request_id="REQ-" + secrets.token_hex(3).upper(),
+            requester=requester,
+            action=action.name,
+            params=clean,
+        )
+        if action.locate(clean, None) is None:
+            req.state = "awaiting_value"
+            req.message = (
+                f"{action.missing_value_hint(clean)} Email it to the operator "
+                f"with the subject '[gateway {req.request_id}]'. Never paste it "
+                "into a chat or a tool call. The request waits up to 7 days."
+            )
+        else:
+            req.message = "Waiting for the operator's approval."
+        self._requests[req.request_id] = req
+        self._save()
+        self._audit(req, "submitted", {"state": req.state})
+        if req.state == "awaiting_value":
+            await self._tell_operator(
+                f"📨 {requester} asked for {self._describe(req)}, but the value "
+                f"isn't on this host yet. They'll email it with the subject "
+                f"'[gateway {req.request_id}]'. Once it's saved, send "
+                f"/gateway received {req.request_id}"
+            )
+        else:
+            self._wake.set()
+        return req
+
+    def status(self, requester: str, request_id: str) -> GatewayRequest | None:
+        """Return a request, only if it belongs to this requester."""
+        self._expire()
+        req = self._requests.get(request_id.strip().upper())
+        if req is None or req.requester != requester:
+            return None
+        return req
+
+    def mine(self, requester: str) -> list[GatewayRequest]:
+        self._expire()
+        return sorted(
+            (r for r in self._requests.values() if r.requester == requester),
+            key=lambda r: r.created, reverse=True,
+        )[:20]
+
+    # ---- operator-facing (/gateway) ----
+
+    def operator_command(self, args: str) -> str:
+        parts = args.split()
+        verb = parts[0].lower() if parts else "list"
+        if verb == "list":
+            return self._overview()
+        if verb in ("received", "cancel") and len(parts) >= 2:  # noqa: PLR2004
+            rid = parts[1].upper()
+            if verb == "cancel":
+                return self._cancel(rid)
+            return self._received(rid, parts[2] if len(parts) > 2 else None)  # noqa: PLR2004
+        return (
+            "Usage: /gateway [list] | /gateway received <id> [<env>/<provider>/<file>:"
+            "<dotted.path>] | /gateway cancel <id>"
+        )
+
+    def _overview(self) -> str:
+        self._expire()
+        open_reqs = sorted(
+            (r for r in self._requests.values() if r.state in OPEN_STATES),
+            key=lambda r: r.created,
+        )
+        if not open_reqs:
+            return "No open gateway requests."
+        lines = ["Open gateway requests:"]
+        lines += [
+            f"• {r.request_id} {r.state} — {r.requester}: {self._describe(r)}"
+            for r in open_reqs
+        ]
+        return "\n".join(lines)
+
+    def _received(self, rid: str, source_ref: str | None) -> str:
+        req = self._requests.get(rid)
+        if req is None or req.state != "awaiting_value":
+            return f"{rid} isn't waiting for a value."
+        action = self._actions[req.action]
+        try:
+            located = action.locate(req.params, source_ref)
+        except GatewayRefusalError as e:
+            return f"{rid}: {e}"
+        if located is None:
+            return (
+                f"{rid}: still can't find it. {action.missing_value_hint(req.params)} "
+                "If you saved it somewhere INDEX.md doesn't list, add the location: "
+                f"/gateway received {rid} <env>/<provider>/<file>:<dotted.path>"
+            )
+        req.source_ref = source_ref
+        self._move(req, "queued", "Value received; waiting for the operator's approval.")
+        self._audit(req, "value_received", {"source": located.source})
+        self._wake.set()
+        return f"{rid}: found it at {located.source}. The approval card is next."
+
+    def _cancel(self, rid: str) -> str:
+        req = self._requests.get(rid)
+        if req is None or req.state not in ("awaiting_value", "queued"):
+            return f"{rid} can't be cancelled now (only waiting or queued requests can)."
+        self._move(req, "cancelled", "Cancelled by the operator.")
+        self._audit(req, "cancelled", {})
+        return f"{rid} cancelled."
+
+    # ---- the worker: one card at a time ----
+
+    async def _work(self) -> None:
+        while True:
+            await self._wake.wait()
+            self._wake.clear()
+            while (req := self._next_queued()) is not None:
+                try:
+                    await self._process(req)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("gateway: %s crashed", req.request_id)
+                    self._move(req, "failed", "Internal error; the operator has the log.")
+                    self._audit(req, "failed", {"error": "internal"})
+
+    def _next_queued(self) -> GatewayRequest | None:
+        queued = [r for r in self._requests.values() if r.state == "queued"]
+        return min(queued, key=lambda r: r.created) if queued else None
+
+    async def _process(self, req: GatewayRequest) -> None:
+        action = self._actions[req.action]
+        located = action.locate(req.params, req.source_ref)
+        if located is None:
+            self._move(req, "awaiting_value", action.missing_value_hint(req.params))
+            return
+        self._move(req, "awaiting_approval", "The approval card is with the operator.")
+        started = time.monotonic()
         try:
             approved = await self._approve(
-                self._operator_chat,
-                build_probe_card(req, deny_after),
-                deny_after=deny_after,
+                self._operator_chat, self._card(req, located),
+                deny_after=self._card_seconds,
             )
-            status = "approved" if approved else "denied"
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            log.exception("gateway: approval for %s failed", req.request_id)
-            status = "error"
-        with self._lock:
-            req.status = status
-            req.finished = time.time()
-        log.info("gateway: request %s from %s → %s", req.request_id, req.requester, status)
-
-    # ---- request handling (called from handler threads) ----
-
-    def handle_get(self, path: str) -> tuple[int, dict[str, Any]]:
-        prefix = "/v0/requests/"
-        if not path.startswith(prefix):
-            return 404, {"error": "unknown path"}
-        req = self.get(path[len(prefix):].strip("/"))
-        if req is None:
-            return 404, {"error": "unknown or expired request"}
-        return 200, req.view()
-
-    def handle_post(
-        self, path: str, raw: bytes, loop: asyncio.AbstractEventLoop
-    ) -> tuple[int, dict[str, Any]]:
-        if path.rstrip("/") != "/v0/approval-probe":
-            return 404, {"error": "unknown path"}
+            log.exception("gateway: card for %s could not be shown", req.request_id)
+            approved = False
+        if not approved:
+            timed_out = time.monotonic() - started >= self._card_seconds - 1
+            state = "expired" if timed_out else "denied"
+            self._move(req, state, (
+                "The operator didn't answer in time; submit again when they're around."
+                if timed_out else "The operator denied this request."
+            ))
+            self._audit(req, state, {})
+            return
+        self._audit(req, "approved", {"source": located.source})
+        self._move(req, "running", "Approved; running.")
         try:
-            requester, note, deny_after = _parse_probe(raw)
-        except _BadRequestError as e:
-            return 400, {"error": str(e)}
-        req = self._submit(requester, note)
-        if req is None:
-            return 429, {"error": "another request is awaiting the operator"}
-        asyncio.run_coroutine_threadsafe(self._decide(req, deny_after), loop)
-        return 202, {"request_id": req.request_id, "status": "pending"}
+            result = await action.run(req.params, located)
+        except GatewayRefusalError as e:
+            self._move(req, "failed", str(e))
+            self._audit(req, "failed", {"error": str(e)})
+            return
+        req.result = result
+        self._move(req, "done", "Done.")
+        self._audit(req, "done", _audit_safe(result))
 
-    def start(self, loop: asyncio.AbstractEventLoop) -> None:
-        outer = self
+    def _card(self, req: GatewayRequest, located: Located) -> str:
+        return "\n".join([
+            f"🔐 Gateway: {req.action}",
+            f"From: {req.requester}",
+            f"Request: {req.request_id}",
+            *located.card_lines,
+            f"Auto-denies in {int(self._card_seconds // 60)} min.",
+        ])
 
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, fmt: str, *args: Any) -> None:
-                log.debug("gateway http: %s", fmt % args)
+    async def _tell_operator(self, text: str) -> None:
+        try:
+            await self._notify(self._operator_chat, text)
+        except Exception:
+            log.exception("gateway: could not notify the operator")
 
-            def _reply(self, code: int, body: dict[str, Any]) -> None:
-                data = json.dumps(body).encode()
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+    @staticmethod
+    def _describe(req: GatewayRequest) -> str:
+        args = ", ".join(f"{k}={v}" for k, v in req.params.items() if v)
+        return f"{req.action}({args})"
 
-            def _authorized(self) -> bool:
-                auth = self.headers.get("Authorization") or ""
-                if hmac.compare_digest(auth, f"Bearer {outer._token}"):
-                    return True
-                self._reply(401, {"error": "bad token"})
-                return False
+    # ---- state ----
 
-            def do_GET(self) -> None:
-                if self._authorized():
-                    self._reply(*outer.handle_get(self.path))
+    def _move(self, req: GatewayRequest, state: str, message: str) -> None:
+        req.state = state
+        req.message = message
+        req.updated = time.time()
+        self._save()
 
-            def do_POST(self) -> None:
-                if not self._authorized():
-                    return
-                try:
-                    length = int(self.headers.get("Content-Length") or 0)
-                except ValueError:
-                    length = 0
-                if length <= 0 or length > MAX_BODY_BYTES:
-                    self._reply(400, {"error": f"JSON body of 1..{MAX_BODY_BYTES} bytes required"})
-                    return
-                self._reply(*outer.handle_post(self.path, self.rfile.read(length), loop))
+    def _expire(self) -> None:
+        now = time.time()
+        changed = False
+        for req in list(self._requests.values()):
+            if req.state == "awaiting_value" and now - req.created > AWAITING_VALUE_TTL_SECONDS:
+                req.state, req.message, req.updated = "expired", "No value arrived in 7 days.", now
+                self._audit(req, "expired", {"reason": "no value"})
+                changed = True
+            elif req.state in TERMINAL_STATES and now - req.updated > TERMINAL_TTL_SECONDS:
+                del self._requests[req.request_id]
+                changed = True
+        if changed:
+            self._save()
 
-        httpd = _QuietHTTPServer((self._host, self._port), Handler)
-        self._httpd = httpd
-        self._thread = threading.Thread(
-            target=lambda: httpd.serve_forever(poll_interval=0.1),
-            name="gateway-server",
-            daemon=True,
-        )
-        self._thread.start()
-        log.info("gateway listening on %s:%d", self._host, self.port)
+    def _load(self) -> None:
+        try:
+            raw = json.loads(self._state_file.read_text())
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            log.exception("gateway: unreadable state file; starting empty")
+            return
+        for item in raw.get("requests", []):
+            req = GatewayRequest(**item)
+            # A card can't survive a restart, and a run interrupted midway
+            # may or may not have happened: re-ask for the first, and report
+            # the second rather than repeat it.
+            if req.state == "awaiting_approval":
+                req.state = "queued"
+            elif req.state == "running":
+                req.state, req.message = "failed", "Interrupted by a restart; submit again."
+            self._requests[req.request_id] = req
 
-    def stop(self) -> None:
-        if self._httpd is not None:
-            self._httpd.shutdown()
-            self._httpd.server_close()
-            self._httpd = None
-        self._thread = None
+    def _save(self) -> None:
+        self._state_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._state_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(
+            {"requests": [asdict(r) for r in self._requests.values()]}, indent=1
+        ))
+        tmp.replace(self._state_file)
+
+    def _audit(self, req: GatewayRequest, event: str, detail: dict[str, Any]) -> None:
+        line = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "request_id": req.request_id,
+            "requester": req.requester,
+            "action": req.action,
+            "params": req.params,
+            "event": event,
+            **({"detail": detail} if detail else {}),
+        }
+        try:
+            self._audit_file.parent.mkdir(parents=True, exist_ok=True)
+            with self._audit_file.open("a") as f:
+                f.write(json.dumps(line) + "\n")
+        except OSError:
+            log.exception("gateway: audit write failed")
+
+
+def _audit_safe(result: dict[str, Any]) -> dict[str, Any]:
+    """Drop the ciphertext from an audit line, keeping its hash."""
+    out = {k: v for k, v in result.items() if k != "ciphertext"}
+    if "ciphertext" in result:
+        out["ciphertext_sha256"] = hashlib.sha256(str(result["ciphertext"]).encode()).hexdigest()
+    return out

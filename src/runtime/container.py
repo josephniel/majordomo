@@ -82,7 +82,7 @@ if TYPE_CHECKING:
 
     from adapters.chat.transcription import CascadingTranscriber
     from adapters.comms.status_report import StatusReporter
-    from adapters.trigger.gateway import GatewayServer
+    from adapters.trigger.gateway_mcp import GatewayServer
     from adapters.trigger.retention import RetentionJob
     from adapters.trigger.webhook import WebhookServer
     from domain.claim_check import ClaimJudge
@@ -1546,42 +1546,75 @@ class PersonaRuntime:
 
     @cached_property
     def gateway_server(self) -> GatewayServer | None:
-        """The developer gateway (adapters/trigger/gateway.py).
+        """The developer gateway (adapters/trigger/gateway*.py).
 
-        None unless persona.yaml configures `gateway:` AND GATEWAY_TOKEN is
-        set, and there is an operator DM to send cards to. Cards go through the
-        platform's approval UI directly — never through the write gate, so no
-        background auto-approve or batch manifest can ever answer for the
-        operator.
+        None unless persona.yaml configures `gateway:` and there is an
+        operator DM to send cards to. Cards go through the platform's approval
+        UI directly — never through the write gate, so no background
+        auto-approve or batch manifest can ever answer for the operator.
         """
         cfg = self.persona.gateway
         if not cfg:
             return None
-        from adapters.trigger.gateway import DEFAULT_PORT, GatewayServer
+        from adapters.trigger.gateway import DEFAULT_CARD_SECONDS, GatewayService
+        from adapters.trigger.gateway_mcp import (
+            DEFAULT_PORT,
+            DeveloperRegistry,
+            GatewayServer,
+        )
 
-        token = self.settings.gateway_token
-        if not token:
-            log.warning(
-                "persona %r: gateway configured but GATEWAY_TOKEN is unset; "
-                "gateway disabled",
-                self.persona.id,
-            )
-            return None
         operator_chat = self._default_operator_chat_id()
         if operator_chat is None:
             log.warning("persona %r: gateway has no operator DM; disabled", self.persona.id)
+            return None
+        actions = self._gateway_actions(cfg)
+        if not actions:
+            log.warning("persona %r: gateway has no actions configured; disabled",
+                        self.persona.id)
             return None
         platform = self.platform
 
         async def _approve(chat: ConversationRef, text: str, deny_after: float) -> bool:
             return await platform.request_approval(chat, text, deny_after=deny_after)
 
-        return GatewayServer(
-            token=token,
+        async def _notify(chat: ConversationRef, text: str) -> None:
+            await platform.send_text(chat, text)
+
+        card_minutes = cfg.get("card_minutes")
+        service = GatewayService(
+            actions=actions,
             approve=_approve,
+            notify=_notify,
             operator_chat=operator_chat,
-            port=int(cfg.get("port") or DEFAULT_PORT),
+            state_file=self.persona.data_dir / "gateway_requests.json",
+            audit_file=self.persona.data_dir / "gateway_audit.jsonl",
+            card_seconds=float(card_minutes) * 60 if card_minutes else DEFAULT_CARD_SECONDS,
         )
+        return GatewayServer(
+            service=service,
+            registry=DeveloperRegistry(self.persona.dir / "gateway" / "developers.json"),
+            port=int(cfg.get("port") or DEFAULT_PORT),
+            allowed_hosts=[str(h) for h in cfg.get("allowed_hosts") or []],
+        )
+
+    def _gateway_actions(self, cfg: Mapping[str, Any]) -> dict[str, Any]:
+        from pathlib import Path
+
+        from adapters.trigger.gateway_seal import SealSecretAction
+
+        actions: dict[str, Any] = {}
+        seal = cfg.get("seal")
+        if seal:
+            root = Path(str(seal["secrets_root"])).expanduser()
+            core_config = seal.get("core_config")
+            action = SealSecretAction(
+                secrets_root=root,
+                certs={str(env): Path(str(p)) for env, p in (seal.get("certs") or {}).items()},
+                core_config=Path(str(core_config)).expanduser() if core_config else None,
+                kubeseal=str(seal.get("kubeseal") or "kubeseal"),
+            )
+            actions[action.name] = action
+        return actions
 
     # ---- chat ----
 
