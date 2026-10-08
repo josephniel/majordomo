@@ -959,6 +959,31 @@ def _pending_tools(client: BudgetClient) -> list[ToolSpec]:
     return [list_pending_payments_tool, approve_pending_payment_tool]
 
 
+def _date_clash(sid: int, e: httpx.HTTPStatusError) -> str:
+    """Explain a 409 from moving a recurring occurrence onto a sibling's date.
+
+    The tracker allows one occurrence per recurring rule per date. The model
+    reached for this on 2026-10-08, moving November's gym fee onto 1 October,
+    where October's was already fulfilled, and the bare API error gave it
+    nothing to act on. What the clash usually means is that the payment being
+    described is already in the ledger, so that is the first thing to check.
+    """
+    try:
+        detail = str(e.response.json().get("detail") or e.response.text)
+    except (ValueError, AttributeError):
+        detail = e.response.text
+    return (
+        f"error: scheduled payment {sid} was NOT changed. {detail}. A recurring "
+        "schedule holds one occurrence per date. Before retrying:\n"
+        "- If that occurrence is posted or fulfilled, the payment for that "
+        "date is already recorded. The user is probably describing that one, "
+        "so tell them rather than recording it twice.\n"
+        f"- If the user paid {sid} early, approve_pending_payment it WITHOUT "
+        "changing due_date. An early approval posts dated today.\n"
+        "- Otherwise ask the user which date they meant."
+    )
+
+
 def _amend_pending_tools(client: BudgetClient) -> list[ToolSpec]:
     """Fix a scheduled payment's date, account or amount before it posts.
 
@@ -1042,7 +1067,12 @@ def _amend_pending_tools(client: BudgetClient) -> list[ToolSpec]:
         description = args.get("description") or current.get("description")
         if description:
             payload["description"] = str(description)
-        row = await client.update_pending_payment(sid, payload)
+        try:
+            row = await client.update_pending_payment(sid, payload)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code != httpx.codes.CONFLICT:
+                raise
+            return ToolResult.error(_date_clash(sid, e))
         return ToolResult.ok(
             f"amended scheduled payment {sid}: "
             f"{row.get('description') or 'scheduled payment'} "
