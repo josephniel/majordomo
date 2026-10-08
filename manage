@@ -120,6 +120,8 @@ manage — majordomo stack
 
   Misc:
     canary [persona]                 test each LLM vendor actually calls tools
+    gateway-token add|revoke <persona> <name> | list <persona>
+                                     developer gateway tokens (add prints once)
     cli [persona] -- <args...>       raw passthrough to python cli.py
     test [pytest-args...]            run the test suite (unit + integration)
     eval [--vendor groq,gemini]      replay tool-calling evals against live vendors
@@ -515,6 +517,7 @@ main() {
         cli)                cmd_cli "$@" ;;
         judges)             require_venv; exec "$VENV_PY" scripts/judge_report.py "$@" ;;
         test)               require_venv; exec "$VENV_PY" -m pytest tests "$@" ;;
+        gateway-token)      require_venv; exec "$VENV_PY" scripts/gateway_token.py "$@" ;;
         eval)               require_venv; exec "$VENV_PY" -m evals "$@" ;;
         eval-recall)        require_venv; exec "$VENV_PY" -m evals.recall "$@" ;;
         *)

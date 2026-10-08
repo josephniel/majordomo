@@ -286,16 +286,19 @@ class ChatPlatform(ABC):
         )
         return False
 
-    async def request_approval(self, chat_id: ConversationRef, text: str) -> bool:
+    async def request_approval(
+        self, chat_id: ConversationRef, text: str, deny_after: float = 300.0
+    ) -> bool:
         """Ask the operator to approve a pending write action.
 
-        Blocks until they answer (or a platform-defined timeout). Returns
-        whether it was approved.
+        Blocks until they answer or `deny_after` seconds pass (expiry
+        denies). Returns whether it was approved.
 
         Default: DENY. A platform without an approval UI must not silently
         wave writes through — implement this, or set `write_approval: false`
         in persona.yaml to opt that persona out of gating entirely.
         """
+        del deny_after  # nothing to expire: there is no prompt
         log.warning(
             "platform %s has no approval UI; denying for %s: %.80s",
             self.name, chat_id, text,

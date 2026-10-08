@@ -303,6 +303,44 @@ class WebhookSource:
         ))
 
 
+class GatewaySource:
+    """The developer gateway's lifecycle — a source that never emits.
+
+    Gateway requests are decided by the operator's tap and carried out by
+    fixed recipes; none of them becomes an agent turn. It sits among the
+    trigger sources only because this is where the runtime starts and stops
+    the things that listen on the bot's loop. `/gateway` reaches the server
+    through `operator_command`.
+    """
+
+    name = "gateway"
+
+    def __init__(self, server: Any) -> None:
+        self._server = server
+
+    async def start(self, ctx: TriggerContext) -> None:
+        del ctx  # nothing to emit, announce or schedule
+        try:
+            await self._server.start()
+        except Exception:
+            log.exception("gateway server failed to start")
+
+    async def stop(self) -> None:
+        try:
+            await self._server.stop()
+        except Exception:
+            log.exception("gateway server stop failed")
+
+    def operator_command(self, args: str) -> str:
+        return str(self._server.operator_command(args))
+
+    def describe(self) -> str | None:
+        try:
+            return f"gateway :{self._server.port}"
+        except Exception:
+            return "gateway (unavailable)"
+
+
 class ScheduleSource:
     """The user's own reminders, recurring tasks and one-shots.
 
@@ -402,7 +440,8 @@ class RetentionSource:
 
 
 ALL_SOURCE_TYPES: tuple[type, ...] = (
-    HeartbeatSource, WatchSource, WebhookSource, ScheduleSource, RetentionSource,
+    HeartbeatSource, WatchSource, WebhookSource, GatewaySource, ScheduleSource,
+    RetentionSource,
 )
 
 # Checked at import, not in a test, because the failure this catches is

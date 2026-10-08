@@ -522,6 +522,9 @@ class TelegramPlatform(ChatPlatform):
         self._app.add_handler(CommandHandler("help", self._create_command_handler("help")))
         self._app.add_handler(CommandHandler("jobs", self._create_command_handler("jobs")))
         self._app.add_handler(
+            CommandHandler("gateway", self._create_command_handler("gateway"))
+        )
+        self._app.add_handler(
             CallbackQueryHandler(self._on_approval_callback, pattern=r"^apr\|")
         )
         # Accept text, photos, and documents. Voice/video/sticker get a polite
@@ -567,6 +570,7 @@ class TelegramPlatform(ChatPlatform):
                 BotCommand("cancel", "stop the in-flight reply"),
                 BotCommand("help", "what I can do"),
                 BotCommand("jobs", "list/approve model-authored jobs"),
+                BotCommand("gateway", "developer gateway requests"),
             ])
         except Exception:
             log.exception("could not set command menu")
