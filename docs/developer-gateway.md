@@ -54,7 +54,7 @@ the operator uses `/gateway received <request_id>`; an approval is still require
 
 The response is an observation, not a continuous watch. `observed_at` is the
 fetch time; `reconciled_at` is Argo's reconciliation time. Reconciliation older
-than five minutes is treated as unknown. The Git revision is not used as a
+than `max_reconcile_age_seconds` (returned with each result) is treated as unknown. The Git revision is not used as a
 substitute for an observed container image. `matches_expected` is only boolean
 when the complete deployment is healthy, otherwise it is null.
 
@@ -88,6 +88,7 @@ gateway:
         tool_prefix: argocd-staging-
         tool_separator: "-"
         headers_command: [/usr/local/bin/argo-mcp-headers, staging]
+        max_reconcile_age_seconds: 1200
     targets:
       - service: crm-example-api
         env: staging
@@ -102,6 +103,15 @@ in-process from the approved store and keep them out of logs. Never run it
 interactively. It is not configurable through MCP. Its upstream identity should
 have only the Argo reads needed here; expired credentials return unknown.
 Do not rely on a human's expiring login as the long-term service identity.
+
+`max_reconcile_age_seconds` defaults to 300 and accepts 60–1800. Set it from the
+Argo instance's observed reconciliation ages, not only its configured
+`timeout.reconciliation`. Measured 2026-10-22 over 30 applications each: staging
+(`10m` plus `2m` jitter configured) had median 6.9, p90 16.5 and max 16.9
+minutes, so use 1200; production (Argo default) had median 1.6 and max 4.3
+minutes, so use 420. A limit below the real interval makes most reads unknown;
+a much larger one lets an old Git comparison look current. Pod images and
+health come from Argo's live resource tree either way.
 
 Verify the upstream MCP's actual tool names before setting `tool_prefix`.
 Clients may normalize tool names for display. The three configured calls must

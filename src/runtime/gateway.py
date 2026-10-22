@@ -5,7 +5,11 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from adapters.trigger.gateway_argocd import ArgoMCPReader, ArgoTarget
-from adapters.trigger.gateway_deployments import DeploymentBinding, DeploymentStatusService
+from adapters.trigger.gateway_deployments import (
+    MAX_AGE_SECONDS,
+    DeploymentBinding,
+    DeploymentStatusService,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -16,6 +20,7 @@ def deployment_status(config: Mapping[str, Any]) -> DeploymentStatusService | No
     if not cfg:
         return None
     readers = {}
+    max_ages = {}
     for env, upstream in cfg["environments"].items():
         command = upstream.get("headers_command")
         prefix = upstream.get("tool_prefix", "")
@@ -27,6 +32,7 @@ def deployment_status(config: Mapping[str, Any]) -> DeploymentStatusService | No
             url=upstream["url"], headers_command=tuple(command), tool_prefix=prefix,
             tool_separator=upstream.get("tool_separator", "_"),
         )
+        max_ages[env] = upstream.get("max_reconcile_age_seconds", MAX_AGE_SECONDS)
     bindings = []
     for item in cfg["targets"]:
         target = ArgoTarget(
@@ -34,5 +40,5 @@ def deployment_status(config: Mapping[str, Any]) -> DeploymentStatusService | No
             namespace=item.get("application_namespace", "argocd"),
             workload_kind=item.get("workload_kind", "Deployment"),
         )
-        bindings.append(DeploymentBinding(target, readers[target.env]))
+        bindings.append(DeploymentBinding(target, readers[target.env], max_ages[target.env]))
     return DeploymentStatusService(bindings)

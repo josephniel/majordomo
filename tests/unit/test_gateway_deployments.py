@@ -83,6 +83,39 @@ def test_stale_or_future_reconciliation_cannot_claim_live(age):
     assert summarize(TARGET, data, NOW)["state"] == "unknown"
 
 
+def test_environment_limit_covers_a_slower_argo_reconciliation_interval():
+    data = snapshot()
+    data.application["status"]["reconciledAt"] = (NOW - timedelta(minutes=11)).isoformat()
+    assert summarize(TARGET, data, NOW)["state"] == "unknown"
+    result = summarize(TARGET, data, NOW, max_age=900)
+    assert result["state"] == "healthy"
+    assert result["max_reconcile_age_seconds"] == 900
+    data.application["status"]["reconciledAt"] = (NOW - timedelta(seconds=901)).isoformat()
+    stale = summarize(TARGET, data, NOW, max_age=900)
+    assert stale["state"] == "unknown"
+    assert stale["blockers"] == ["Argo reconciliation is missing or older than 900 seconds."]
+
+
+@pytest.mark.parametrize("max_age", [59, 1801, True, "900", 900.0])
+def test_freshness_limit_must_stay_within_bounds(max_age):
+    with pytest.raises(ValueError, match="invalid deployment target"):
+        DeploymentStatusService([DeploymentBinding(TARGET, Reader(), max_age)])
+
+
+def test_configured_limit_applies_to_that_environment_only():
+    upstream = {"url": "https://mcp.example.com/mcp", "headers_command": ["/bin/helper"]}
+    cfg = {"deployments": {
+        "environments": {"staging": {**upstream, "max_reconcile_age_seconds": 900},
+                         "production": upstream},
+        "targets": [{"service": "crm-gateway-api", "env": env, "application": "crm-gateway-api"}
+                    for env in ("staging", "production")],
+    }}
+    service = deployment_status(cfg)
+    assert service is not None
+    assert {env: b.max_age_seconds for (env, _), b in service._bindings.items()} == {
+        "staging": 900, "production": 300}
+
+
 @pytest.mark.parametrize("timestamp", [None, "invalid", "2026-10-16T04:00:00"])
 def test_missing_or_naive_timestamps_are_unknown(timestamp):
     data = snapshot()

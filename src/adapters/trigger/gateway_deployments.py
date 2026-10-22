@@ -23,6 +23,10 @@ _IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9./_:@-]{0,511}")
 _HEALTH = {"Healthy", "Progressing", "Degraded", "Suspended", "Missing", "Unknown"}
 _KINDS = {"Deployment", "StatefulSet", "DaemonSet"}
 MAX_AGE_SECONDS = 300
+# Argo's reconciliation interval is a per-instance setting (staging runs 10m
+# plus 2m jitter), so the operator may widen the limit per environment, within
+# bounds that keep "fresh" meaningful.
+MAX_AGE_BOUNDS = (60, 1800)
 MAX_CLOCK_SKEW_SECONDS = 60
 
 
@@ -34,6 +38,7 @@ class ArgoReader(Protocol):
 class DeploymentBinding:
     target: ArgoTarget
     reader: ArgoReader
+    max_age_seconds: int = MAX_AGE_SECONDS
 
 
 class DeploymentStatusService:
@@ -44,7 +49,10 @@ class DeploymentStatusService:
             target = binding.target
             if (not all(_NAME.fullmatch(s) for s in (
                     target.service, target.env, target.application, target.namespace))
-                    or target.workload_kind not in _KINDS):
+                    or target.workload_kind not in _KINDS
+                    or isinstance(binding.max_age_seconds, bool)
+                    or not isinstance(binding.max_age_seconds, int)
+                    or not MAX_AGE_BOUNDS[0] <= binding.max_age_seconds <= MAX_AGE_BOUNDS[1]):
                 raise ValueError("invalid deployment target")
             key = (target.env, target.service)
             if key in self._bindings:
@@ -70,7 +78,8 @@ class DeploymentStatusService:
         try:
             async with asyncio.timeout(35), self._limit:
                 snapshot = await binding.reader.fetch(binding.target)
-            result = summarize(binding.target, snapshot, datetime.now(UTC))
+            result = summarize(binding.target, snapshot, datetime.now(UTC),
+                               binding.max_age_seconds)
         except Exception:
             # Exception text can contain manifests, SQL-like config values or
             # auth headers. An upstream failure is not deployment evidence.
@@ -197,16 +206,18 @@ def _pods(tree: dict[str, Any], workloads: list[dict[str, Any]]) -> list[dict[st
     return pods
 
 
-def _freshness(value: Any, now: datetime) -> tuple[str | None, bool]:
+def _freshness(value: Any, now: datetime, max_age: int) -> tuple[str | None, bool]:
     try:
         reconciled = datetime.fromisoformat(value.replace("Z", "+00:00"))
         age = (now - reconciled).total_seconds()
     except (AttributeError, TypeError, ValueError):
         return None, False
-    return reconciled.isoformat(), -MAX_CLOCK_SKEW_SECONDS <= age <= MAX_AGE_SECONDS
+    return reconciled.isoformat(), -MAX_CLOCK_SKEW_SECONDS <= age <= max_age
 
 
-def summarize(target: ArgoTarget, snapshot: ArgoSnapshot, now: datetime) -> dict[str, Any]:
+def summarize(
+    target: ArgoTarget, snapshot: ArgoSnapshot, now: datetime, max_age: int = MAX_AGE_SECONDS,
+) -> dict[str, Any]:
     app, tree, managed = snapshot.application, snapshot.tree, snapshot.managed
     meta = _dict(app.get("metadata"))
     if meta.get("name") != target.application or meta.get("namespace") != target.namespace:
@@ -216,17 +227,20 @@ def summarize(target: ArgoTarget, snapshot: ArgoSnapshot, now: datetime) -> dict
     sync_state = sync.get("status")
     sync_state = sync_state if sync_state in {"Synced", "OutOfSync", "Unknown"} else "Unknown"
     health = _health(_dict(status.get("health")).get("status"))
-    reconciled, fresh = _freshness(status.get("reconciledAt"), now)
+    reconciled, fresh = _freshness(status.get("reconciledAt"), now, max_age)
     workloads = [_workload(row, target.workload_kind) for row in _list(managed.get("items"))
                  if isinstance(row, dict) and row.get("kind") == target.workload_kind]
     pods = _pods(tree, workloads)
     desired = sorted({image for w in workloads for image in w["desired_images"]})
     running = sorted({image for p in pods if p["phase"] == "Running" for image in p["images"]})
     state, blockers = _state(fresh, sync_state, health, workloads, pods, desired, running)
+    if not fresh:
+        blockers = [f"Argo reconciliation is missing or older than {max_age} seconds."]
     revision = sync.get("revision")
     return {
         "service": target.service, "env": target.env, "application": target.application,
         "observed_at": now.isoformat(), "reconciled_at": reconciled, "fresh": fresh,
+        "max_reconcile_age_seconds": max_age,
         "state": state, "sync": sync_state, "health": health,
         "revision": revision if isinstance(revision, str) and re.fullmatch(r"[a-f0-9]{40,64}",
                                                                           revision) else None,
@@ -240,7 +254,7 @@ def _state(
     pods: list[dict[str, Any]], desired: list[str], running: list[str],
 ) -> tuple[str, list[str]]:
     if not fresh:
-        return "unknown", ["Argo reconciliation is missing or older than five minutes."]
+        return "unknown", ["Argo reconciliation is missing or stale."]
     if health in {"Degraded", "Missing", "Suspended"}:
         return "unhealthy", [f"Argo health is {health}."]
     if sync == "OutOfSync":
