@@ -23,8 +23,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import hmac
+import json
 import logging
 import re
+import secrets
 import ssl
 import subprocess
 from dataclasses import dataclass, field
@@ -71,6 +74,7 @@ class SealSecretAction:
     core_config: Path | None = None
     kubeseal: str = "kubeseal"
     git: str = "git"
+    _fingerprint_key: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
     name: str = "seal_secret"
     description: str = (
         "Seal a secret the operator holds into a SealedSecret value for a "
@@ -107,6 +111,12 @@ class SealSecretAction:
     # ---- locating ----
 
     def locate(self, params: dict[str, str], source_ref: str | None) -> Located | None:
+        prepared = self._prepare(params, source_ref)
+        return prepared[0] if prepared else None
+
+    def _prepare(
+        self, params: dict[str, str], source_ref: str | None,
+    ) -> tuple[Located, str, SealTarget, Path] | None:
         found = self._find(params, source_ref)
         if found is None:
             return None
@@ -130,12 +140,21 @@ class SealSecretAction:
         ]
         if target.core_config_path is None:
             lines.append("core-config has no secrets.yaml for this service/env yet")
-        return Located(
+        # A keyed commitment detects even same-length rotations without
+        # exposing a brute-forceable hash of a low-entropy secret. It exists
+        # only while the approval card is pending, never in state/audit files.
+        commitment = json.dumps([
+            source, value, target.namespace, target.secret_name,
+            target.core_config_path, cert_fingerprint(cert),
+        ]).encode()
+        fingerprint = hmac.new(self._fingerprint_key, commitment, hashlib.sha256).hexdigest()
+        located = Located(
             source=source,
-            fingerprint=f"{len(value.encode())}|{target.namespace}/{target.secret_name}",
+            fingerprint=f"{len(value.encode())}|{fingerprint}",
             card_lines=tuple(lines),
             source_ref=source_ref,
         )
+        return located, value, target, cert
 
     def missing_value_hint(self, params: dict[str, str]) -> str:
         holder = params["source_service"] or params["service"]
@@ -155,13 +174,13 @@ class SealSecretAction:
         provider = self._index_provider(env, key, holder)
         if provider is None:
             return None
-        provider_dir = self._env_dir(env) / provider
-        data = self._load_yaml(provider_dir / "secrets.yaml")
+        provider_dir = self._confined(self._env_dir(env) / provider, self._env_dir(env))
+        data = self._load_yaml(self._confined(provider_dir / "secrets.yaml", self._env_dir(env)))
         value = _walk(data, ["services", holder, "secret", key])
         if value is None:
             return None
         where = f"{env}/{provider}/secrets:services.{holder}.secret.{key}"
-        return where, self._deref(provider_dir, value)
+        return where, self._deref(provider_dir, value, self._env_dir(env))
 
     def _find_by_ref(self, env: str, ref: str) -> tuple[str, str] | None:
         m = _REF_RE.match(ref.strip())
@@ -179,7 +198,8 @@ class SealSecretAction:
         value = _walk(self._load_yaml(path), m["path"].split("."))
         if value is None:
             return None
-        return f"{env}/{m['provider']}/{stem}:{m['path']}", self._deref(provider_dir, value)
+        return (f"{env}/{m['provider']}/{stem}:{m['path']}",
+                self._deref(provider_dir, value, self._env_dir(env)))
 
     def _index_provider(self, env: str, key: str, holder: str) -> str | None:
         try:
@@ -197,11 +217,14 @@ class SealSecretAction:
                 return m[2].strip()
         return None
 
-    def _deref(self, provider_dir: Path, value: object) -> str:
+    def _deref(self, provider_dir: Path, value: object, env_dir: Path) -> str:
         text = str(value)
         if text.startswith("@file:"):
-            path = self._confined(provider_dir / text[len("@file:"):].strip(), self.secrets_root)
-            return path.read_text()
+            path = self._confined(provider_dir / text[len("@file:"):].strip(), env_dir)
+            try:
+                return path.read_text()
+            except (OSError, UnicodeError):
+                raise GatewayRefusalError("could not read the referenced secret file") from None
         return text
 
     def _env_dir(self, env: str) -> Path:
@@ -220,7 +243,7 @@ class SealSecretAction:
             return yaml.safe_load(path.read_text())
         except FileNotFoundError:
             return None
-        except (OSError, yaml.YAMLError):
+        except (OSError, UnicodeError, yaml.YAMLError):
             # Never log the exception text: a YAML error quotes the line.
             log.error("gateway seal: could not parse %s", path.name)
             return None
@@ -281,16 +304,13 @@ class SealSecretAction:
     async def run(self, params: dict[str, str], located: Located) -> dict[str, Any]:
         # Re-read rather than trust anything kept from the card: the value
         # never lived past locate(). The fingerprint proves it's the one shown.
-        again = self.locate(params, located.source_ref)
-        if again is None or again.fingerprint != located.fingerprint:
+        prepared = self._prepare(params, located.source_ref)
+        if (prepared is None
+                or not hmac.compare_digest(prepared[0].fingerprint, located.fingerprint)):
             raise GatewayRefusalError(
                 "the value or target changed after the card was shown; submit again"
             )
-        found = self._find(params, located.source_ref)
-        assert found is not None  # noqa: S101 — locate just found it
-        _, value = found
-        target = self._target(params)
-        cert = self._cert(params["env"])
+        _, value, target, cert = prepared
         ciphertext = await self._seal(value, cert, target)
         del value
         return {
@@ -314,7 +334,7 @@ class SealSecretAction:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            out, err = await asyncio.wait_for(
+            out, _err = await asyncio.wait_for(
                 proc.communicate(value.encode()), timeout=KUBESEAL_TIMEOUT
             )
         except (TimeoutError, asyncio.CancelledError) as e:
@@ -326,8 +346,11 @@ class SealSecretAction:
                 raise
             raise GatewayRefusalError("kubeseal timed out") from None
         if proc.returncode != 0:
-            detail = err.decode(errors="replace").replace(value, "<redacted>")[:300]
-            raise GatewayRefusalError(f"kubeseal failed: {detail.strip()}")
+            # Even a substring or escaped rendering can disclose the input.
+            # Diagnostics from a process that read plaintext never leave it.
+            raise GatewayRefusalError(
+                f"kubeseal failed (exit {proc.returncode}); diagnostics withheld"
+            )
         ciphertext = out.decode().strip()
         if not ciphertext or value in ciphertext:
             raise GatewayRefusalError("kubeseal returned no usable ciphertext")

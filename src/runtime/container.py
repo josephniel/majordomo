@@ -1557,18 +1557,20 @@ class PersonaRuntime:
         if not cfg:
             return None
         from adapters.trigger.gateway import DEFAULT_CARD_SECONDS, GatewayService
+        from adapters.trigger.gateway_access import DeveloperRegistry
         from adapters.trigger.gateway_mcp import (
             DEFAULT_PORT,
-            DeveloperRegistry,
             GatewayServer,
         )
+        from runtime.gateway import deployment_status
 
         operator_chat = self._default_operator_chat_id()
         if operator_chat is None:
             log.warning("persona %r: gateway has no operator DM; disabled", self.persona.id)
             return None
         actions = self._gateway_actions(cfg)
-        if not actions:
+        deployments = deployment_status(cfg)
+        if not actions and deployments is None:
             log.warning("persona %r: gateway has no actions configured; disabled",
                         self.persona.id)
             return None
@@ -1581,6 +1583,7 @@ class PersonaRuntime:
             await platform.send_text(chat, text)
 
         card_minutes = cfg.get("card_minutes")
+        registry = DeveloperRegistry(self.persona.dir / "gateway" / "developers.json")
         service = GatewayService(
             actions=actions,
             approve=_approve,
@@ -1589,12 +1592,14 @@ class PersonaRuntime:
             state_file=self.persona.data_dir / "gateway_requests.json",
             audit_file=self.persona.data_dir / "gateway_audit.jsonl",
             card_seconds=float(card_minutes) * 60 if card_minutes else DEFAULT_CARD_SECONDS,
+            authorize=registry.allows,
         )
         return GatewayServer(
             service=service,
-            registry=DeveloperRegistry(self.persona.dir / "gateway" / "developers.json"),
+            registry=registry,
             port=int(cfg.get("port") or DEFAULT_PORT),
             allowed_hosts=[str(h) for h in cfg.get("allowed_hosts") or []],
+            deployments=deployments,
         )
 
     def _gateway_actions(self, cfg: Mapping[str, Any]) -> dict[str, Any]:

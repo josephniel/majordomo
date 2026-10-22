@@ -76,7 +76,7 @@ class Persona:
     # Inbound webhook triggers: {port: 18790, triggers: {name: {prompt: ...}}}.
     # Requires WEBHOOK_TOKEN in the instance .env. See adapters/trigger/webhook.py.
     webhooks: dict[str, Any] | None = None
-    # Developer gateway: {port, allowed_hosts, card_minutes, seal: {...}}.
+    # Developer gateway: {port, allowed_hosts, card_minutes, seal, deployments}.
     # Developer tokens live in <instance>/gateway/developers.json. See
     # adapters/trigger/gateway.py and gateway_mcp.py.
     gateway: dict[str, Any] | None = None

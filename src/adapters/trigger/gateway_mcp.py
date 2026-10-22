@@ -8,9 +8,9 @@ session.
 
 Identity is a per-developer bearer token. `developers.json` maps the
 token's SHA-256 to a name; tokens are minted on the host
-(`./manage gateway-token add <name>`), printed once, and never stored in
-the clear. The file is re-read when it changes, so adding or revoking a
-developer needs no restart.
+(`./manage gateway-token add <persona> <name>`), saved to a private credential
+file, and stored only as hashes in the registry. Every check re-reads the
+registry, so changing grants or revoking a developer needs no restart.
 
 The SDK's own auth needs an OAuth issuer this deployment doesn't have, so
 the check is a small ASGI layer in front of the app, setting a contextvar
@@ -21,24 +21,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
-import hashlib
-import hmac
-import json
 import logging
-import secrets
-import time
 from collections.abc import Awaitable, Callable, Iterator, MutableMapping
 from typing import TYPE_CHECKING, Any
 
 from .gateway import GatewayRefusalError, GatewayService
+from .gateway_access import hash_token
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from .gateway_access import DeveloperRegistry
+    from .gateway_deployments import DeploymentStatusService
 
 log = logging.getLogger(__name__)
 
 DEFAULT_PORT = 18791
-_requester: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+_requester: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
     "gateway_requester", default=None
 )
 
@@ -49,98 +46,17 @@ Send = Callable[[Message], Awaitable[None]]
 ASGIApp = Callable[[Scope, Receive, Send], Awaitable[None]]
 
 INSTRUCTIONS = """\
-BillEase dev_assistant gateway. Every request is approved by Joseph with one
-tap before it runs, so submitting returns at once and the result arrives
-later: poll request_status with the request_id.
+BillEase dev_assistant gateway. Start with list_actions for your permitted
+services and environments. Deployment status is read-only and returns at once.
+Secret sealing needs Joseph's approval: submit once with an idempotency_key,
+then poll request_status every 15 seconds with the returned request_id. Reuse
+the same idempotency_key when retrying a submission after a connection failure.
+Pending approval is not a failure and must not cause another submission.
 
 Never put a secret VALUE in any argument. Name keys only. If the gateway says
 it doesn't have a value yet, email the value to Joseph with the subject it
 gives you, then keep polling.
 """
-
-
-def hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
-
-
-def mint_token() -> str:
-    return "mdg_" + secrets.token_urlsafe(32)
-
-
-class DeveloperRegistry:
-    """sha256(token) -> developer name, from developers.json."""
-
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._mtime: float | None = None
-        self._by_hash: dict[str, str] = {}
-
-    def who(self, token: str) -> str | None:
-        self._refresh()
-        digest = hash_token(token)
-        for known, name in self._by_hash.items():
-            if hmac.compare_digest(known, digest):
-                return name
-        return None
-
-    def _refresh(self) -> None:
-        try:
-            mtime = self._path.stat().st_mtime
-        except FileNotFoundError:
-            self._by_hash, self._mtime = {}, None
-            return
-        if mtime == self._mtime:
-            return
-        try:
-            data = json.loads(self._path.read_text())
-        except (OSError, ValueError):
-            log.exception("gateway: developers.json unreadable; refusing everyone")
-            self._by_hash, self._mtime = {}, mtime
-            return
-        self._by_hash = {
-            str(h): str(d.get("name"))
-            for h, d in (data.get("tokens") or {}).items()
-            if isinstance(d, dict) and d.get("name") and not d.get("revoked")
-        }
-        self._mtime = mtime
-
-
-def add_developer(path: Path, name: str) -> str:
-    """Mint a token for `name`, store its hash, return the token (shown once)."""
-    data = _read(path)
-    token = mint_token()
-    data.setdefault("tokens", {})[hash_token(token)] = {
-        "name": name, "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    }
-    _write(path, data)
-    return token
-
-
-def revoke_developer(path: Path, name: str) -> int:
-    data = _read(path)
-    n = 0
-    for entry in (data.get("tokens") or {}).values():
-        if entry.get("name") == name and not entry.get("revoked"):
-            entry["revoked"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-            n += 1
-    _write(path, data)
-    return n
-
-
-def _read(path: Path) -> dict[str, Any]:
-    try:
-        data = json.loads(path.read_text())
-    except FileNotFoundError:
-        return {"tokens": {}}
-    return data if isinstance(data, dict) else {"tokens": {}}
-
-
-def _write(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=1))
-    tmp.chmod(0o600)
-    tmp.replace(path)
 
 
 def bearer_gate(app: ASGIApp, registry: DeveloperRegistry) -> ASGIApp:
@@ -152,7 +68,8 @@ def bearer_gate(app: ASGIApp, registry: DeveloperRegistry) -> ASGIApp:
             return
         headers = dict(scope.get("headers") or [])
         auth = headers.get(b"authorization", b"").decode("latin-1")
-        name = registry.who(auth[len("Bearer "):]) if auth.startswith("Bearer ") else None
+        credential = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
+        name = registry.who(credential) if credential else None
         if name is None:
             body = b'{"error": "unknown developer token"}'
             await send({
@@ -162,7 +79,7 @@ def bearer_gate(app: ASGIApp, registry: DeveloperRegistry) -> ASGIApp:
             })
             await send({"type": "http.response.body", "body": body})
             return
-        token = _requester.set(name)
+        token = _requester.set((name, hash_token(credential)))
         try:
             await app(scope, receive, send)
         finally:
@@ -171,30 +88,71 @@ def bearer_gate(app: ASGIApp, registry: DeveloperRegistry) -> ASGIApp:
     return gated
 
 
-def build_mcp_app(
-    service: GatewayService,
-    registry: DeveloperRegistry,
-    allowed_hosts: list[str] | None = None,
-) -> ASGIApp:
-    from mcp.server.mcpserver import MCPServer
-    from mcp.server.transport_security import TransportSecuritySettings
+class GatewayTools:
+    def __init__(
+        self, service: GatewayService, registry: DeveloperRegistry,
+        deployments: DeploymentStatusService | None,
+    ) -> None:
+        self._service = service
+        self._registry = registry
+        self._deployments = deployments
 
-    server: MCPServer[Any] = MCPServer(name="dev-assistant-gateway", instructions=INSTRUCTIONS)
-
-    def me() -> str:
-        name = _requester.get()
-        if name is None:  # the gate guarantees otherwise; fail closed anyway
+    def identity(self) -> tuple[str, str]:
+        identity = _requester.get()
+        if identity is None:  # the gate guarantees otherwise; fail closed anyway
             raise RuntimeError("no authenticated developer")
-        return name
+        if self._registry.version(identity[0]) != identity[1]:
+            raise GatewayRefusalError("developer credential was revoked or rotated")
+        return identity
 
-    @server.tool()
-    async def list_actions() -> list[dict[str, Any]]:
-        """List what the gateway can do and each action's parameters."""
-        return service.list_actions()
+    def me(self) -> str:
+        return self.identity()[0]
 
-    @server.tool()
+    async def list_actions(self) -> dict[str, Any]:
+        """List configured actions and your exact permitted service/environment pairs."""
+        grants = self._registry.grants(self.me())
+        actions = []
+        for action in self._service.list_actions():
+            targets = [{"env": g["env"], "service": g["service"]} for g in grants
+                       if g["action"] == action["name"]]
+            if targets:
+                actions.append({**action, "approval_required": True, "targets": targets})
+        if self._deployments is not None:
+            targets = [{"env": g["env"], "service": g["service"]} for g in grants
+                       if g["action"] == "deployment_status" and self._deployments.configured(g)]
+            if targets:
+                actions.append({"name": "deployment_status", "tool": "get_deployment_status",
+                                "approval_required": False, "targets": targets})
+        return {"actions": actions}
+
+    async def get_deployment_status(
+        self, env: str, service_name: str, expected_image: str = "",
+    ) -> dict[str, Any]:
+        """Read Argo deployment evidence for an allowed service/environment.
+
+        Returns desired and observed running images, replica readiness, health
+        and observation timestamps. Optional expected_image is a complete
+        container image reference. Unknown/stale evidence never means deployed.
+        No sync, restart, pipeline, shell or log operation is performed.
+        """
+        if self._deployments is None:
+            return {"refused": "deployment status is not configured"}
+        try:
+            params = self._deployments.validate(env, service_name, expected_image)
+            if not self._registry.allows(self.me(), "deployment_status", params):
+                raise GatewayRefusalError("not permitted for this action, service and environment")
+            result = await self._deployments.read(params, expected_image)
+            # Revocation during a slow upstream read also prevents disclosure.
+            if not self._registry.allows(self.me(), "deployment_status", params):
+                raise GatewayRefusalError("access changed while reading deployment status")
+            self._service.audit_read(self.me(), params, str(result["state"]))
+            return result
+        except GatewayRefusalError as e:
+            return {"refused": str(e)}
+
     async def seal_secret(
-        env: str, service_name: str, key: str, source_service: str = ""
+        self, env: str, service_name: str, key: str, source_service: str = "",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Ask to seal a secret Joseph holds into a SealedSecret value.
 
@@ -207,29 +165,46 @@ def build_mcp_app(
         request_status for the ciphertext. NEVER pass the secret's value.
         """
         try:
-            req = await service.submit(me(), "seal_secret", {
+            req = await self._service.submit(self.me(), "seal_secret", {
                 "env": env, "service": service_name, "key": key,
                 "source_service": source_service,
-            })
+            }, idempotency_key=idempotency_key, credential_version=self.identity()[1])
         except GatewayRefusalError as e:
             return {"refused": str(e)}
         return req.view()
 
-    @server.tool()
-    async def request_status(request_id: str) -> dict[str, Any]:
+    async def request_status(self, request_id: str) -> dict[str, Any]:
         """Check one of your requests. Done requests carry the result."""
-        req = service.status(me(), request_id)
+        req = self._service.status(self.me(), request_id)
         if req is None:
             return {"error": f"no request {request_id} of yours"}
         return req.view()
 
-    @server.tool()
-    async def my_requests() -> list[dict[str, Any]]:
+    async def my_requests(self) -> list[dict[str, Any]]:
         """List your recent requests, newest first (results omitted)."""
         return [
             {k: v for k, v in r.view().items() if k != "result"}
-            for r in service.mine(me())
+            for r in self._service.mine(self.me())
         ]
+
+
+def build_mcp_app(
+    service: GatewayService,
+    registry: DeveloperRegistry,
+    allowed_hosts: list[str] | None = None,
+    deployments: DeploymentStatusService | None = None,
+) -> ASGIApp:
+    from mcp.server.mcpserver import MCPServer
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    server: MCPServer[Any] = MCPServer(name="dev-assistant-gateway", instructions=INSTRUCTIONS)
+    service.authorize = registry.allows
+    service.identity_version = registry.version
+
+    handlers = GatewayTools(service, registry, deployments)
+    for handler in (handlers.list_actions, handlers.get_deployment_status, handlers.seal_secret,
+                    handlers.request_status, handlers.my_requests):
+        server.tool()(handler)
 
     hosts = ["127.0.0.1:*", "localhost:*", *(allowed_hosts or [])]
     inner = server.streamable_http_app(
@@ -271,12 +246,14 @@ class GatewayServer:
         host: str = "127.0.0.1",
         port: int = DEFAULT_PORT,
         allowed_hosts: list[str] | None = None,
+        deployments: DeploymentStatusService | None = None,
     ) -> None:
         self.service = service
         self._registry = registry
         self._host = host
         self._port = port
         self._allowed_hosts = allowed_hosts or []
+        self._deployments = deployments
         self._uvicorn: Any = None
         self._task: asyncio.Task[None] | None = None
 
@@ -292,8 +269,8 @@ class GatewayServer:
         import uvicorn
 
         _GuestServer = _guest_server_class()  # noqa: N806
+        app = build_mcp_app(self.service, self._registry, self._allowed_hosts, self._deployments)
         self.service.start()
-        app = build_mcp_app(self.service, self._registry, self._allowed_hosts)
         config = uvicorn.Config(
             app, host=self._host, port=self._port, lifespan="on",
             access_log=False, log_config=None, log_level="warning",
