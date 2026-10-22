@@ -39,3 +39,14 @@ def test_add_requires_explicit_grants_and_a_private_destination(instance):
     with pytest.raises(SystemExit, match="2"):
         main(["add", "dev", "jane"])
     assert not (instance / "gateway/developers.json").exists()
+
+
+def test_failed_add_leaves_no_credential_file_behind(instance, tmp_path):
+    registry = instance / "gateway/developers.json"
+    registry.parent.mkdir()
+    registry.write_text("[]")
+    credential = tmp_path / "private-headers.json"
+    with pytest.raises(ValueError, match="invalid developer registry"):
+        main(["add", "dev", "jane", "--grant", "seal_secret:staging:crm-x-api",
+              "--token-file", str(credential)])
+    assert not credential.exists()

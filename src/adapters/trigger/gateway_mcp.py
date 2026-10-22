@@ -51,7 +51,9 @@ services and environments. Deployment status is read-only and returns at once.
 Secret sealing needs Joseph's approval: submit once with an idempotency_key,
 then poll request_status every 15 seconds with the returned request_id. Reuse
 the same idempotency_key when retrying a submission after a connection failure.
-Pending approval is not a failure and must not cause another submission.
+Pending approval is not a failure and must not cause another submission. After
+a request ends failed, denied or expired, submitting again (with the same key or
+a new one) starts a new request that needs a new approval.
 
 Never put a secret VALUE in any argument. Name keys only. If the gateway says
 it doesn't have a value yet, email the value to Joseph with the subject it
@@ -137,6 +139,7 @@ class GatewayTools:
         """
         if self._deployments is None:
             return {"refused": "deployment status is not configured"}
+        params: dict[str, str] = {}
         try:
             params = self._deployments.validate(env, service_name, expected_image)
             if not self._registry.allows(self.me(), "deployment_status", params):
@@ -148,6 +151,8 @@ class GatewayTools:
             self._service.audit_read(self.me(), params, str(result["state"]))
             return result
         except GatewayRefusalError as e:
+            # Only validated names are audited; invalid raw input is not stored.
+            self._service.audit_refusal(self.me(), "deployment_status", params, str(e))
             return {"refused": str(e)}
 
     async def seal_secret(

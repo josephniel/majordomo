@@ -42,9 +42,14 @@ def main(argv: list[str]) -> int:
         parse_grant(grant)
     # Never truncate an existing credential or follow a pre-existing symlink.
     fd = os.open(args.token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as output:
-        token = add_developer(path, args.name, args.grant)
-        output.write(json.dumps({"Authorization": f"Bearer {token}"}) + "\n")
+    try:
+        with os.fdopen(fd, "w") as output:
+            token = add_developer(path, args.name, args.grant)
+            output.write(json.dumps({"Authorization": f"Bearer {token}"}) + "\n")
+    except BaseException:
+        # Leave no empty or partial credential file that would block a re-run.
+        Path(args.token_file).unlink(missing_ok=True)
+        raise
     print(f"Rotated gateway access for {args.name}; credentials saved to the private token file.")
     return 0
 

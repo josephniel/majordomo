@@ -149,6 +149,33 @@ def test_scaled_to_zero_does_not_claim_running():
     assert summarize(TARGET, data, NOW)["state"] == "scaled_down"
 
 
+def test_scaled_to_zero_sibling_does_not_block_the_running_workload():
+    data = snapshot()
+    worker = json.loads(data.managed["items"][0]["targetState"])
+    worker["metadata"]["name"] = "crm-gateway-api-worker"
+    worker["spec"]["template"]["spec"]["containers"][0]["image"] = IMAGE + "-worker"
+    live = copy.deepcopy(worker)
+    live["metadata"]["generation"] = 3
+    live["spec"]["replicas"] = 0
+    live["status"] = {"replicas": 0, "readyReplicas": 0, "updatedReplicas": 0,
+                      "observedGeneration": 3}
+    data.managed["items"].append({"name": "crm-gateway-api-worker", "kind": "Deployment",
+                                  "namespace": "staging", "liveState": json.dumps(live),
+                                  "targetState": json.dumps(worker)})
+    result = summarize(TARGET, data, NOW)
+    assert result["state"] == "healthy"
+    assert result["running_images"] == [IMAGE]
+
+
+async def test_upstream_failure_keeps_the_documented_response_shape():
+    service = DeploymentStatusService([DeploymentBinding(TARGET, Reader(ValueError(CANARY)))])
+    result = await service.read({"env": TARGET.env, "service": TARGET.service}, IMAGE)
+    assert result["state"] == "unknown"
+    assert result["fresh"] is False
+    assert result["matches_expected"] is None
+    assert result["max_reconcile_age_seconds"] == 300
+
+
 @pytest.mark.parametrize(("sync", "health", "expected"), [
     ("OutOfSync", "Healthy", "pending_sync"), ("Synced", "Degraded", "unhealthy"),
     ("Synced", "Progressing", "rolling_out"), ("Unknown", "Healthy", "unknown"),

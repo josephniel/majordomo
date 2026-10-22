@@ -25,6 +25,8 @@ general connector-proxy tool. Those workflows are separate future changes.
    retry with the same key and identical arguments: the existing request is
    returned, including after a bot restart. A key cannot be reused for a
    different operation. The deduplication window is the 30-day request retention.
+   Once a request has ended `failed`, `denied` or `expired`, submitting again
+   (with the same key or a new one) starts a new request and a new approval.
 5. Persist the returned `request_id` in the agent's task context and poll
    `request_status` every 15 seconds. `my_requests` recovers recent request IDs
    after losing a local session. Waiting for approval is not a submission error.
@@ -191,5 +193,10 @@ token revocation and recovery after a restart before expanding the pilot.
 
 Disabling the persona's `gateway` block and restarting the bot removes the
 listener. Revoking the pilot identities stops their access without a restart.
+Before reverting the code to a build older than this pilot, move
+`data/gateway_requests.json` aside: older builds cannot read the fields this
+version stores and would fail to start. Requests still open when this version
+is first activated are denied as "access changed" because they predate
+credential versions; that is intentional, and developers resubmit them.
 Bot activation, credential issuance and ingress changes are separate rollout
 actions; a passing local test suite does not mean developers are connected.

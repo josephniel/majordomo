@@ -224,6 +224,56 @@ class TestLifecycle:
         other = await again.submit("joe", "fake", {"thing": "x"}, "stable-key")
         assert other.request_id != first.request_id
 
+    async def test_same_key_after_a_failed_request_starts_a_new_one(self, tmp_path):
+        svc = make_service(tmp_path, FakeAction(present=False), Operator())
+        first = await svc.submit("jane", "fake", {"thing": "x"}, "stable-key")
+        first.state = "failed"
+        retry = await svc.submit("jane", "fake", {"thing": "x"}, "stable-key")
+        assert retry.request_id != first.request_id
+        assert retry.state == "awaiting_value"
+        again = await svc.submit("jane", "fake", {"thing": "x"}, "stable-key")
+        assert again.request_id == retry.request_id
+
+    async def test_state_from_another_build_never_stops_startup(self, tmp_path):
+        svc = make_service(tmp_path, FakeAction(present=False), Operator())
+        req = await svc.submit("jane", "fake", {"thing": "x"})
+        state = tmp_path / "data" / "gateway_requests.json"
+        raw = json.loads(state.read_text())
+        raw["requests"][0]["field_from_a_newer_build"] = 1
+        raw["requests"].append({"request_id": "REQ-BROKEN"})
+        state.write_text(json.dumps(raw))
+        again = make_service(tmp_path, FakeAction(present=False), Operator())
+        assert again.status("jane", req.request_id) is not None
+        assert "REQ-BROKEN" not in again._requests
+
+    async def test_refusals_are_audited_without_raw_arguments(self, tmp_path):
+        svc = make_service(tmp_path, FakeAction(), Operator())
+        svc.authorize = lambda _name, _action, _params: False
+        with pytest.raises(GatewayRefusalError, match="not permitted"):
+            await svc.submit("jane", "fake", {"thing": "x"})
+        with pytest.raises(GatewayRefusalError, match="thing required"):
+            await svc.submit("jane", "fake", {"thing": "", "value": CANARY})
+        audit = (tmp_path / "data" / "gateway_audit.jsonl").read_text()
+        lines = [json.loads(line) for line in audit.splitlines()]
+        assert [line["event"] for line in lines] == ["refused", "refused"]
+        assert CANARY not in audit
+
+    async def test_refusal_while_locating_in_the_worker_is_reported(self, tmp_path):
+        action = FakeAction()
+        svc = make_service(tmp_path, action, Operator())
+        svc.start()
+        try:
+            def refuse(_params, _ref):
+                raise GatewayRefusalError("could not read the referenced secret file")
+            req = await svc.submit("jane", "fake", {"thing": "x"})
+            action.locate = refuse
+            svc._wake.set()
+            await until(lambda: req.state == "failed")
+        finally:
+            await svc.stop()
+        assert req.message == "could not read the referenced secret file"
+        assert action.runs == 0
+
     async def test_unauthorized_request_does_not_even_locate_a_secret(self, tmp_path):
         action = FakeAction()
         svc = make_service(tmp_path, action, Operator())
@@ -561,6 +611,16 @@ class TestMCP:
         })
         assert "not permitted" in out["refused"]
         assert op.cards == []
+
+    async def test_refused_status_read_is_audited(self, server, tmp_path):
+        srv, _, tokens, _ = server
+        await mcp_call(srv.port, tokens["joe"], "get_deployment_status", {
+            "env": "staging", "service_name": "crm-gateway-api",
+        })
+        lines = [json.loads(line) for line in
+                 (tmp_path / "data" / "gateway_audit.jsonl").read_text().splitlines()]
+        assert any(line["event"] == "refused" and line["requester"] == "joe"
+                   for line in lines)
 
     async def test_canary_never_leaves(self, server, tmp_path, caplog):
         caplog.set_level(logging.DEBUG)

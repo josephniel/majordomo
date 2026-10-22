@@ -83,8 +83,13 @@ class DeploymentStatusService:
         except Exception:
             # Exception text can contain manifests, SQL-like config values or
             # auth headers. An upstream failure is not deployment evidence.
-            return {**params, "state": "unknown", "observed_at": datetime.now(UTC).isoformat(),
-                    "blockers": ["Argo evidence unavailable; retry later or contact the operator."]}
+            result = {
+                **params, "state": "unknown", "fresh": False,
+                "observed_at": datetime.now(UTC).isoformat(),
+                "max_reconcile_age_seconds": binding.max_age_seconds,
+                "desired_images": [], "running_images": [],
+                "blockers": ["Argo evidence unavailable; retry later or contact the operator."],
+            }
         if expected_image:
             result["expected_image"] = expected_image
             result["matches_expected"] = (
@@ -261,18 +266,21 @@ def _state(
         return "pending_sync", ["Argo has not applied the desired configuration."]
     if sync != "Synced" or health == "Unknown" or not workloads or not desired:
         return "unknown", ["Insufficient evidence to confirm the deployment."]
-    return _readiness(health, workloads, pods, desired, running)
+    return _readiness(health, workloads, pods, running)
 
 
 def _readiness(
     health: str, workloads: list[dict[str, Any]], pods: list[dict[str, Any]],
-    desired: list[str], running: list[str],
+    running: list[str],
 ) -> tuple[str, list[str]]:
     if not all(w["ready"] for w in workloads) or health != "Healthy":
         return "rolling_out", ["Workload replicas have not all reached the desired generation."]
     if all(w["desired_replicas"] == 0 for w in workloads):
         return "scaled_down", ["All configured workloads have zero desired replicas."]
-    if (desired != running or not _pods_complete(workloads, pods)
+    # A scaled-to-zero sibling's image is intended but never runs.
+    active = sorted({image for w in workloads if w["desired_replicas"]
+                     for image in w["desired_images"]})
+    if (active != running or not _pods_complete(workloads, pods)
             or any(p["health"] != "Healthy" or p["phase"] != "Running" for p in pods)):
         return "rolling_out", ["Observed pods do not yet confirm the complete desired deployment."]
     return "healthy", []
