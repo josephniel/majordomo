@@ -108,8 +108,9 @@ class BudgetClient:
         self,
         account_id: int | None = None,
         page_size: int = 10,
+        page: int = 1,
     ) -> dict[str, Any]:
-        params: dict[str, Any] = {"page": 1, "page_size": page_size}
+        params: dict[str, Any] = {"page": page, "page_size": page_size}
         if account_id is not None:
             params["account_ids"] = str(account_id)
         return json_object(await self._request("GET", "/transactions", params=params))
@@ -540,25 +541,42 @@ def _read_tools(client: BudgetClient) -> list[ToolSpec]:
 
     @tool(
         "recent_transactions",
-        "Most recent budget transactions, newest first. Args: account_id "
-        "(optional — omit for all accounts), limit (default 10, max 50).",
+        "Budget transactions, newest first. Args: account_id (optional — omit "
+        "for all accounts), limit (rows per page, default 10, max 50), "
+        "page (default 1). When more rows exist the result ends with a line "
+        "naming the next page — call again with it to read further back.",
         {
             "type": "object",
             "properties": {
                 "account_id": {"type": "integer", "description": "Filter to one account."},
-                "limit": {"type": "integer", "description": "Max rows (default 10, cap 50)."},
+                "limit": {
+                    "type": "integer",
+                    "description": "Rows per page (default 10, cap 50).",
+                },
+                "page": {
+                    "type": "integer",
+                    "description": "1-based page of `limit` rows (default 1).",
+                },
             },
         },
     )
     @_guarded
     async def recent_transactions_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         limit = max(1, min(int(args.get("limit") or 10), 50))
+        page = max(1, int(args.get("page") or 1))
         account_id = int(args["account_id"]) if args.get("account_id") else None
-        resp = await client.list_transactions(account_id=account_id, page_size=limit)
+        resp = await client.list_transactions(
+            account_id=account_id, page_size=limit, page=page,
+        )
         items = resp.get("items") or resp.get("transactions") or []
         if not items:
+            if page > 1:
+                return ToolResult.ok(f"(no transactions on page {page})")
             return ToolResult.ok("(no transactions)")
-        return ToolResult.ok("\n".join(_format_transaction(t) for t in items))
+        lines = [_format_transaction(t) for t in items]
+        if resp.get("has_next"):
+            lines.append(f"(more transactions — call again with page={page + 1})")
+        return ToolResult.ok("\n".join(lines))
 
     @tool(
         "account_balances",

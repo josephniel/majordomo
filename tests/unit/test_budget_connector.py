@@ -290,6 +290,72 @@ class TestTools:
         assert seen["params"]["page_size"] == "5"
         assert seen["params"]["account_ids"] == "2"
         assert "taxi" in result.text
+        assert "more transactions" not in result.text
+
+    @staticmethod
+    def _ledger_handler(total, calls):
+        """Serve ids 0..total-1 the way the tracker does: offset (page-1)*page_size."""
+        def handler(request):
+            page = int(request.url.params["page"])
+            size = int(request.url.params["page_size"])
+            calls.append((page, size))
+            start = (page - 1) * size
+            ids = range(start, min(start + size, total))
+            return httpx.Response(200, json={
+                "items": [{"id": i, "type": "debit", "amount": "1.00",
+                           "occurred_at": "2026-07-23T10:00:00+00:00",
+                           "description": f"row{i}"} for i in ids],
+                "page": page, "page_size": size,
+                "has_next": start + size < total,
+            })
+        return handler
+
+    @staticmethod
+    def _ids(text):
+        return [int(ln[3:ln.index("]")]) for ln in text.splitlines() if ln.startswith("- [")]
+
+    async def test_recent_transactions_first_page_names_the_next(self):
+        calls = []
+        tools = _connector_tools(self._ledger_handler(500, calls))
+        result = await tools["recent_transactions"].handler({"limit": 50}, CTX)
+        assert self._ids(result.text) == list(range(50))
+        assert calls == [(1, 50)]
+        assert result.text.endswith("call again with page=2)")
+
+    async def test_recent_transactions_second_page_continues_where_first_ended(self):
+        calls = []
+        tools = _connector_tools(self._ledger_handler(500, calls))
+        result = await tools["recent_transactions"].handler({"limit": 50, "page": 2}, CTX)
+        assert self._ids(result.text) == list(range(50, 100))
+        assert calls == [(2, 50)]
+        assert "page=3" in result.text
+
+    async def test_recent_transactions_last_page_says_no_more(self):
+        calls = []
+        tools = _connector_tools(self._ledger_handler(120, calls))
+        result = await tools["recent_transactions"].handler({"limit": 50, "page": 3}, CTX)
+        assert self._ids(result.text) == list(range(100, 120))
+        assert "more transactions" not in result.text
+
+    async def test_recent_transactions_exact_end_says_no_more(self):
+        calls = []
+        tools = _connector_tools(self._ledger_handler(100, calls))
+        result = await tools["recent_transactions"].handler({"limit": 50, "page": 2}, CTX)
+        assert self._ids(result.text) == list(range(50, 100))
+        assert "more transactions" not in result.text
+
+    async def test_recent_transactions_page_past_the_end(self):
+        calls = []
+        tools = _connector_tools(self._ledger_handler(100, calls))
+        result = await tools["recent_transactions"].handler({"limit": 50, "page": 5}, CTX)
+        assert result.text == "(no transactions on page 5)"
+
+    async def test_recent_transactions_caps_limit_at_50(self):
+        calls = []
+        tools = _connector_tools(self._ledger_handler(500, calls))
+        result = await tools["recent_transactions"].handler({"limit": 1000}, CTX)
+        assert len(self._ids(result.text)) == 50
+        assert calls == [(1, 50)]
 
 
 class TestContract:
