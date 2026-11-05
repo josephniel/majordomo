@@ -7,11 +7,13 @@ up. Splitwise rejected it, the tool passed the bare API error back, and the
 model reported a connection problem to the user instead of a bad id.
 """
 import json
+from urllib.parse import parse_qsl
 
 import httpx
 
 from adapters.tools.splitwise import (
     SplitwiseClient,
+    _expense_edit_tools,
     _format_group,
     _parse_shares,
     _resolve_user_id,
@@ -357,3 +359,96 @@ class TestCreateExpense:
         )
         assert result.is_error
         assert "not your friend" in result.text
+
+
+class TestUpdateExpenseShares:
+    """Correcting a split in place, since deleting one also removes its budget rows."""
+
+    SHARES = json.dumps([
+        {"user_id": "me", "paid_share": "1135.00", "owed_share": "465.00"},
+        {"user_id": PAUL, "paid_share": "0", "owed_share": "670.00"},
+    ])
+
+    @staticmethod
+    def _tool(expense=None):
+        current = expense if expense is not None else {"id": 5, "cost": "1340.0", "group_id": 99}
+        posted = []
+
+        def handler(request):
+            path = request.url.path
+            if path.endswith("/get_current_user"):
+                return httpx.Response(200, json={"user": {"id": ME}})
+            if path.endswith("/get_group/99"):
+                return httpx.Response(200, json={"group": {"members": [
+                    {"id": ME, "first_name": "Joseph"}, {"id": PAUL, "first_name": "Paul"},
+                ]}})
+            if "/get_expense/" in path:
+                return httpx.Response(200, json={"expense": current})
+            if "/update_expense/" in path:
+                posted.append(dict(parse_qsl(request.content.decode())))
+                return httpx.Response(200, json={"expenses": [{
+                    "id": 5, "description": "Army Navy", "cost": "1135.0",
+                    "currency_code": "PHP", "date": "2026-09-20T00:00:00Z", "users": [],
+                }]})
+            raise AssertionError(path)
+
+        tool = next(
+            t for t in _expense_edit_tools(_client_with(handler)) if t.name == "update_expense"
+        )
+        return tool, posted
+
+    async def test_total_and_shares_change_together(self):
+        tool, posted = self._tool()
+        result = await tool.handler(
+            {"expense_id": "5", "cost": "1135.00", "shares": self.SHARES}, CTX,
+        )
+        assert not result.is_error
+        assert posted[0]["cost"] == "1135.00"
+        assert posted[0]["users__0__user_id"] == str(ME)
+        assert posted[0]["users__0__owed_share"] == "465.00"
+        assert posted[0]["users__1__user_id"] == str(PAUL)
+        assert posted[0]["users__1__owed_share"] == "670.00"
+
+    async def test_shares_that_miss_the_new_total_are_refused_before_writing(self):
+        tool, posted = self._tool()
+        result = await tool.handler(
+            {"expense_id": "5", "cost": "1000.00", "shares": self.SHARES}, CTX,
+        )
+        assert result.is_error
+        assert posted == []
+
+    async def test_with_no_new_total_shares_must_fit_the_current_one(self):
+        tool, posted = self._tool({"id": 5, "cost": "1135.0", "group_id": 99})
+        result = await tool.handler({"expense_id": "5", "shares": self.SHARES}, CTX)
+        assert not result.is_error
+        assert "cost" not in posted[0]
+
+        tool, posted = self._tool()
+        result = await tool.handler({"expense_id": "5", "shares": self.SHARES}, CTX)
+        assert result.is_error
+        assert posted == []
+
+    async def test_someone_outside_the_group_is_refused(self):
+        tool, posted = self._tool()
+        shares = json.dumps([
+            {"user_id": "me", "paid_share": "100", "owed_share": "50"},
+            {"user_id": 123, "paid_share": "0", "owed_share": "50"},
+        ])
+        result = await tool.handler({"expense_id": "5", "cost": "100", "shares": shares}, CTX)
+        assert result.is_error
+        assert "123" in result.text
+        assert posted == []
+
+    async def test_a_deleted_expense_is_refused(self):
+        tool, posted = self._tool({"id": 5, "cost": "1.0", "deleted_at": "2026-11-05T00:00:00Z"})
+        result = await tool.handler(
+            {"expense_id": "5", "cost": "1135.00", "shares": self.SHARES}, CTX,
+        )
+        assert result.is_error
+        assert posted == []
+
+    async def test_a_plain_edit_still_reads_nothing_first(self):
+        tool, posted = self._tool({})
+        result = await tool.handler({"expense_id": "5", "description": "Army Navy"}, CTX)
+        assert not result.is_error
+        assert posted[0]["description"] == "Army Navy"

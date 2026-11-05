@@ -526,6 +526,48 @@ def _read_tools(client: SplitwiseClient, tz: str = DEFAULT_TIMEZONE) -> list[Too
     ]
 
 
+async def _shares_for_update(
+    client: SplitwiseClient, expense_id: str, cost: str, shares_json: str, me: int | None,
+) -> tuple[dict[str, Any] | None, str]:
+    """Validate new shares against an expense. Returns (form fields, why not).
+
+    Held to the same checks as a create, against the group the expense is already in.
+    """
+    current = (await client.get_expense(expense_id)).get("expense") or {}
+    if not current or current.get("deleted_at"):
+        return None, f"Expense {expense_id} does not exist or has been deleted."
+    total = cost or str(current.get("cost") or "")
+    shares, why = _parse_shares(shares_json, total, me)
+    if shares is None:
+        return None, why
+    group_id = str(current.get("group_id")) if current.get("group_id") else None
+    roster = await _known_users(client, group_id)
+    if roster is not None:
+        unknown = [u["user_id"] for u in shares if u["user_id"] not in roster]
+        if unknown:
+            return None, _unknown_share_error(unknown, roster, group_id, me)
+    return _flatten_users_to_form(shares), ""
+
+
+async def _update_form(
+    client: SplitwiseClient, expense_id: str, args: dict[str, Any], me: int | None,
+) -> tuple[dict[str, Any] | None, str, str]:
+    """Build an update from a tool call. Returns (form, what changed, why not)."""
+    updates = {k: args[k] for k in ("cost", "description", "date") if args.get(k)}
+    shares_json = (args.get("shares") or "").strip()
+    if not updates and not shares_json:
+        return None, "", "no fields supplied — nothing to update"
+    form = _to_form(updates)
+    if shares_json:
+        users, why = await _shares_for_update(
+            client, expense_id, str(updates.get("cost") or ""), shares_json, me,
+        )
+        if users is None:
+            return None, "", why
+        form.update(users)
+    return form, ", ".join([*updates, *(["shares"] if shares_json else [])]), ""
+
+
 def _expense_edit_tools(client: SplitwiseClient, tz: str = DEFAULT_TIMEZONE) -> list[ToolSpec]:
     """Edit and remove an expense that already exists."""
     @tool(
@@ -533,39 +575,37 @@ def _expense_edit_tools(client: SplitwiseClient, tz: str = DEFAULT_TIMEZONE) -> 
         "Update fields on an existing Splitwise expense. All fields except "
         "expense_id are optional — supply only what you want to change. "
         "Args: expense_id (required), cost (new total), description (new "
-        "description), date (ISO 8601). Changing the split breakdown or "
-        "who paid is not supported here — use the Splitwise app for that.",
-        {"expense_id": str, "cost": str, "description": str, "date": str},
+        "description), date (ISO 8601), shares (who paid and who owes: the same "
+        "JSON-string array as create_expense, summing to the total, which is `cost` "
+        "if given and the current total if not). Changing a split's total usually "
+        "means changing its shares too, so pass both. This is how to correct an "
+        "expense: do NOT delete and recreate it, since a delete also removes its "
+        "linked budget rows and a new expense has to be filed all over again.",
+        {"expense_id": str, "cost": str, "description": str, "date": str, "shares": str},
     )
     @_guarded
     async def update_expense_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         expense_id = (args.get("expense_id") or "").strip()
         if not expense_id:
             return ToolResult.error("expense_id is required")
-        updates: dict[str, Any] = {}
-        if args.get("cost"):
-            updates["cost"] = args["cost"]
-        if args.get("description"):
-            updates["description"] = args["description"]
-        if args.get("date"):
-            updates["date"] = args["date"]
-        if not updates:
-            return ToolResult.error("no fields supplied — nothing to update")
-        form = _to_form(updates)
         me = await client.current_user_id()
+        form, changed, why = await _update_form(client, expense_id, args, me)
+        if form is None:
+            return ToolResult.error(why)
         resp = await client.update_expense(expense_id, form)
         err = _splitwise_errors(resp)
         if err:
             return ToolResult.error(f"Splitwise rejected the update: {err}")
         updated = (resp.get("expenses") or [{}])[0]
-        changed = ", ".join(updates.keys())
         return ToolResult.ok(f"updated ({changed}):\n{_format_expense(updated, me, tz)}")
 
     @tool(
         "delete_expense",
         "Delete a Splitwise expense by ID. Splitwise marks it as deleted "
         "but keeps a record (it shows as [DELETED] in list_expenses if "
-        "you fetch it again). Args: expense_id.",
+        "you fetch it again). Its linked budget rows are removed too, at the next "
+        "watch poll. To correct an expense use update_expense instead. "
+        "Args: expense_id.",
         {"expense_id": str},
     )
     @_guarded
