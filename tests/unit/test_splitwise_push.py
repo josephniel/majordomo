@@ -59,8 +59,12 @@ class FakeBudget:
         self.claimed = claimed or {}
         self.lookups = []
 
-    async def list_transactions(self, page_size=200):
-        return {"items": list(self.rows)}
+    async def list_transactions(self, account_id=None, page_size=200, page=1):
+        start = (page - 1) * page_size
+        return {
+            "items": list(self.rows[start:start + page_size]),
+            "has_next": start + page_size < len(self.rows),
+        }
 
     async def find_external(self, source, external_id):
         self.lookups.append((source, external_id))
@@ -172,6 +176,34 @@ class TestPush:
         assert form["users__1__owed_share"] == "554.00"
         assert budget.linked == [("splitwise", "999", [100, 101])]
         assert "pushed Mister Kebab" in report
+
+    async def test_an_old_split_past_the_first_page_still_goes_out(self):
+        """It used to sit outside the newest 200 rows, queued forever, unreported."""
+        newer = [
+            _leg(id=1000 + i, transfer_id=1000 + i, source=None, external_id=None)
+            for i in range(450)
+        ]
+        budget = FakeBudget(newer + _queued_rows())
+        sw = FakeSplitwise()
+        report = await _pusher(budget, sw).check()
+        assert "pushed Mister Kebab" in report
+        assert budget.linked[0][2] == [100, 101]
+
+    async def test_the_adopt_check_looks_only_at_the_entrys_own_dates(self):
+        """Newest-first with a limit: an open-ended range hides a back-dated match."""
+        budget = FakeBudget(_queued_rows())
+        sw = FakeSplitwise()
+        seen = {}
+        original = sw.get_expenses
+
+        async def spy(**filters):
+            seen.update(filters)
+            return await original(**filters)
+
+        sw.get_expenses = spy
+        await _pusher(budget, sw).check()
+        assert seen["dated_after"] == "2026-09-16T00:00:00Z"
+        assert seen["dated_before"] == "2026-09-18T00:00:00Z"
 
     async def test_nothing_queued_is_silent(self):
         budget = FakeBudget([_leg(source=None, external_id=None)])

@@ -28,6 +28,11 @@ What the resolve decides:
                                     (the shares moved; the account and tag it
                                     used before are handed over as a starting
                                     point)
+  * in the ledger, never linked  -> linked here, no turn needed. An expense
+                                    created by hand for a row the ledger
+                                    already held looks brand new to a lookup,
+                                    and recording it was the duplicate of
+                                    5 November 2026.
   * not recorded                 -> the model records it, and is given the
                                     external_id to stamp so the next poll
                                     resolves it instead of re-reporting it
@@ -46,6 +51,7 @@ if TYPE_CHECKING:
 
     from ports import Decider
 
+from adapters.ledgersplit import match_expense, scan_ledger
 from adapters.timefmt import DEFAULT_TIMEZONE, local_date
 
 from ._state import WatchState
@@ -162,6 +168,8 @@ class SplitwiseWatcher:
         # What this poll recorded on its own, waiting to be said. Drained by
         # the WatchSource, which announces it without taking a turn.
         self._reports: list[str] = []
+        # This poll's snapshot of the ledger, read only if an expense needs it.
+        self._ledger_rows: list[dict[str, Any]] | None = None
         # Two-phase state, exactly like MailWatcher: check() stages and the
         # caller commit()s only after the turn was DELIVERED — a vendor outage at
         # fire time re-reports the same expenses next poll. See _state.py.
@@ -281,6 +289,7 @@ class SplitwiseWatcher:
         mirror = await self._mirror(budget)
         lines: list[str] = []
         notes: list[str] = []
+        self._ledger_rows = None
         for e in fresh:
             eid = str(e.get("id") or "")
             line = _format_expense(e, my_id, self._tz)
@@ -312,10 +321,60 @@ class SplitwiseWatcher:
                     lines.append(asked)
                 continue
 
+            adopted = await self._adopt(budget, e, my_id, eid, line)
+            if adopted is not None:
+                if adopted:
+                    lines.append(adopted)
+                continue
+
             asked = await self._not_there(mirror, e, my_id, eid, line)
             if asked:
                 lines.append(asked)
         return lines, notes
+
+    async def _adopt(
+        self, budget: Any, e: dict[str, Any], my_id: int | None, eid: str, line: str,
+    ) -> str | None:
+        """Link an expense to the unlinked ledger row it already is.
+
+        None means it is not in the ledger and the usual path carries on. "" means
+        it is linked now. Anything else is a line for the model, which must not
+        record it: either a person has to choose, or a write failed and may still
+        have landed.
+        """
+        if self._ledger_rows is None:
+            try:
+                self._ledger_rows = await scan_ledger(budget)
+            except Exception:
+                log.exception("splitwise_watch: could not read the ledger to adopt %s", eid)
+                self._ledger_rows = []
+        match = match_expense(e, my_id, self._ledger_rows, self._tz)
+        if match.ambiguous_ids:
+            return (
+                f"{line}  (do NOT record yet — ledger rows {match.ambiguous_ids} have the "
+                f"same person and amount on different dates. Ask the user whether it is "
+                f"one of those; if none is, record with source={LEDGER_SOURCE} "
+                f"external_id={eid})"
+            )
+        if not match.transfer_ids:
+            return None
+        try:
+            await budget.link_external(LEDGER_SOURCE, eid, match.transfer_ids)
+        except Exception:
+            log.exception("splitwise_watch: could not link expense %s", eid)
+            return (
+                f"{line}  (do NOT record — it matches ledger rows {match.row_ids}, but "
+                f"linking them failed. Tell the user.)"
+            )
+        for row in self._ledger_rows:
+            if row.get("transfer_id") in match.transfer_ids:
+                row["source"] = LEDGER_SOURCE
+                row["external_id"] = eid
+        self._reports.append(
+            f"- linked Splitwise expense {eid} to existing ledger rows {match.row_ids}; "
+            f"nothing new recorded"
+        )
+        return ""
 
     async def _already_there(
         self,

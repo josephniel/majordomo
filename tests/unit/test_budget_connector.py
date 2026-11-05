@@ -358,12 +358,103 @@ class TestTools:
         assert calls == [(1, 50)]
 
 
+class TestPushToSplitwise:
+    """A row already in the ledger reaches Splitwise through the queue, linked."""
+
+    ROWS: ClassVar[list[dict]] = [
+        {"id": 1, "transfer_id": 10, "account_type": "credit card", "type": "debit",
+         "amount": "465.00", "description": "Army Navy (split with Paul)",
+         "occurred_at": "2026-09-20T14:25:00Z", "counterparty": None},
+        {"id": 2, "transfer_id": 11, "account_type": "credit card", "type": "debit",
+         "amount": "670.00", "description": "Army Navy (split with Paul) (Paul U's share)",
+         "occurred_at": "2026-09-20T14:25:00Z", "counterparty": "Paul U"},
+        {"id": 3, "transfer_id": 11, "account_type": "people", "type": "credit",
+         "amount": "670.00", "description": "Army Navy (split with Paul) (Paul U's share)",
+         "occurred_at": "2026-09-20T14:25:00Z", "counterparty": "Paul U"},
+        {"id": 4, "transfer_id": 12, "account_type": "cash", "type": "debit",
+         "amount": "50.00", "description": "Solo lunch",
+         "occurred_at": "2026-09-20T14:25:00Z", "counterparty": None},
+    ]
+
+    @staticmethod
+    def _handler(rows, posted):
+        def handler(request):
+            if request.method == "POST":
+                posted.append(json.loads(request.content))
+                return httpx.Response(200, json={"transaction_ids": [1, 2, 3]})
+            return httpx.Response(200, json={"items": rows, "has_next": False})
+        return handler
+
+    async def test_queues_every_transfer_of_the_split(self):
+        posted = []
+        tools = _connector_tools(self._handler(self.ROWS, posted))
+        result = await tools["push_to_splitwise"].handler({"transaction_id": 3}, CTX)
+        assert not result.is_error
+        assert posted[0]["source"] == "splitwise-queue"
+        assert sorted(posted[0]["transfer_ids"]) == [10, 11]
+        assert "Army Navy (split with Paul)." in result.text
+
+    async def test_refuses_a_row_nobody_shares(self):
+        posted = []
+        tools = _connector_tools(self._handler(self.ROWS, posted))
+        result = await tools["push_to_splitwise"].handler({"transaction_id": 4}, CTX)
+        assert result.is_error
+        assert posted == []
+
+    async def test_refuses_a_row_already_linked(self):
+        posted = []
+        rows = [{**r, "source": "splitwise", "external_id": "77"} for r in self.ROWS]
+        tools = _connector_tools(self._handler(rows, posted))
+        result = await tools["push_to_splitwise"].handler({"transaction_id": 3}, CTX)
+        assert result.is_error
+        assert "splitwise:77" in result.text
+        assert posted == []
+
+    async def test_already_queued_is_not_queued_again(self):
+        posted = []
+        rows = [{**r, "source": "splitwise-queue", "external_id": "k"} for r in self.ROWS]
+        tools = _connector_tools(self._handler(rows, posted))
+        result = await tools["push_to_splitwise"].handler({"transaction_id": 3}, CTX)
+        assert "already queued" in result.text
+        assert posted == []
+
+    async def test_an_old_row_is_found_past_the_first_page(self):
+        posted = []
+
+        def handler(request):
+            if request.method == "POST":
+                posted.append(json.loads(request.content))
+                return httpx.Response(200, json={"transaction_ids": [1]})
+            if request.url.params["page"] == "1":
+                return httpx.Response(200, json={"items": [], "has_next": True})
+            return httpx.Response(200, json={"items": self.ROWS, "has_next": False})
+
+        tools = _connector_tools(handler)
+        result = await tools["push_to_splitwise"].handler({"transaction_id": 3}, CTX)
+        assert not result.is_error
+        assert len(posted) == 1
+
+    async def test_listing_shows_each_row_reference(self):
+        rows = [
+            {**self.ROWS[0], "source": "splitwise", "external_id": "77"},
+            {**self.ROWS[3], "id": 5, "source": "splitwise-queue", "external_id": "k"},
+            self.ROWS[3],
+        ]
+        tools = _connector_tools(self._handler(rows, []))
+        result = await tools["recent_transactions"].handler({"limit": 3}, CTX)
+        lines = result.text.splitlines()
+        assert "(ref splitwise:77)" in lines[0]
+        assert "(queued for Splitwise)" in lines[1]
+        assert "ref" not in lines[2]
+        assert "queued" not in lines[2]
+
+
 class TestContract:
     def test_write_tools_declared(self):
         assert frozenset(
             {"record_transaction", "record_split", "record_transfer", "settle_person",
              "delete_transaction", "amend_transaction", "amend_pending_payment",
-             "approve_pending_payment", "create_person"}
+             "approve_pending_payment", "create_person", "push_to_splitwise"}
         ) == BudgetConnector.WRITE_TOOLS
         # Reads must never be gated.
         assert "list_accounts" not in BudgetConnector.WRITE_TOOLS

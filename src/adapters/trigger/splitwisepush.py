@@ -36,11 +36,13 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+from adapters.ledgersplit import QUEUE_SOURCE, scan_ledger
 from adapters.splitwiseform import (
     flatten_users_to_form,
     splitwise_errors,
@@ -50,11 +52,9 @@ from adapters.timefmt import DEFAULT_TIMEZONE, local_date
 
 log = logging.getLogger(__name__)
 
-QUEUE_SOURCE = "splitwise-queue"
 # Splitwise rounds to cents; anything closer than half a cent is the same money.
 CENT = 0.005
 LEDGER_SOURCE = "splitwise"
-SCAN_PAGE_SIZE = 200
 MAX_PER_PASS = 10
 HTTP_CONFLICT = 409
 
@@ -240,9 +240,11 @@ class SplitwisePusher:
             return None
 
     async def _queued(self, budget: Any) -> list[QueuedSplit]:
-        page = await budget.list_transactions(page_size=SCAN_PAGE_SIZE)
+        # The whole ledger, not the newest page: the tracker has no filter on
+        # source, and a split dated a few weeks back sat outside that page, queued
+        # forever with nothing saying so. Local and cheap, every fifteen minutes.
         groups: dict[str, QueuedSplit] = {}
-        for row in page.get("items") or []:
+        for row in await scan_ledger(budget):
             if str(row.get("source") or "") != QUEUE_SOURCE:
                 continue
             key = str(row.get("external_id") or "")
@@ -316,7 +318,13 @@ class SplitwisePusher:
             return None
         day = entry.occurred_at[:10]
         try:
-            resp = await client.get_expenses(dated_after=f"{day}T00:00:00Z", limit=50)
+            # Bounded on both sides: Splitwise answers newest first, so "after" alone
+            # lets fifty newer expenses push a back-dated match off the page, and the
+            # pass would then create it a second time.
+            before = (date.fromisoformat(day) + timedelta(days=2)).isoformat()
+            resp = await client.get_expenses(
+                dated_after=f"{day}T00:00:00Z", dated_before=f"{before}T00:00:00Z", limit=50,
+            )
         except Exception:
             log.exception("splitwise_push: could not check for an existing expense")
             return None

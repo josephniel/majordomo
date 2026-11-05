@@ -24,6 +24,15 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
+from adapters.ledgersplit import (
+    QUEUE_SOURCE,
+    base_description,
+    is_people_leg,
+    is_unlinked,
+    scan_ledger,
+    split_legs,
+    transfer_ids,
+)
 from adapters.timefmt import DEFAULT_TIMEZONE
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
 
@@ -350,8 +359,18 @@ def _format_transaction(tx: dict[str, Any]) -> str:
     cp = f" @ {tx['counterparty']}" if tx.get("counterparty") else ""
     return (
         f"- [{tx.get('id', '?')}] {when} {tx.get('type', '?')} "
-        f"{tx.get('amount', '?')} — {desc}{cp}{f' [{tag}]' if tag else ''}"
+        f"{tx.get('amount', '?')} — {desc}{cp}{f' [{tag}]' if tag else ''}{_reference(tx)}"
     )
+
+
+def _reference(tx: dict[str, Any]) -> str:
+    """Where a row came from or went: the id another system knows it by."""
+    source = str(tx.get("source") or "")
+    if source == SPLITWISE_QUEUE_SOURCE:
+        return " (queued for Splitwise)"
+    if source and tx.get("external_id"):
+        return f" (ref {source}:{tx['external_id']})"
+    return ""
 
 
 def _index_tags(
@@ -407,7 +426,7 @@ def _tag_problem(tag_id: int, kind: str, index: dict[int, dict[str, Any]]) -> st
     return ""
 
 
-SPLITWISE_QUEUE_SOURCE = "splitwise-queue"
+SPLITWISE_QUEUE_SOURCE = QUEUE_SOURCE
 
 
 def _queue_args(args: dict[str, Any]) -> dict[str, Any]:
@@ -1373,6 +1392,62 @@ def _settle_tools(client: BudgetClient) -> list[ToolSpec]:
     return [settle_person_tool]
 
 
+def _push_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Send a row the ledger already holds to Splitwise."""
+    @tool(
+        "push_to_splitwise",
+        "Queue a split ALREADY in the ledger for Splitwise, by the id of any of "
+        "its rows. Use this, never create_expense, when an entry exists here but "
+        "not there: the expense is created within fifteen minutes and linked back "
+        "to these rows, so it cannot come back as a duplicate. Refuses a row "
+        "that is already linked or already queued.",
+        {
+            "type": "object",
+            "properties": {
+                "transaction_id": {
+                    "type": "integer",
+                    "description": "Any row of the split, from recent_transactions.",
+                },
+            },
+            "required": ["transaction_id"],
+        },
+    )
+    @_guarded
+    async def push_to_splitwise_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        tx_id = _as_transaction_id(args.get("transaction_id"))
+        if tx_id is None:
+            return ToolResult.error(
+                "transaction_id must be a number from recent_transactions, "
+                f"got {args.get('transaction_id')!r}"
+            )
+        rows = await scan_ledger(client)
+        row = next((r for r in rows if r.get("id") == tx_id), None)
+        if row is None:
+            return ToolResult.error(f"No transaction {tx_id} in the ledger.")
+        legs = split_legs(row, rows)
+        if not any(is_people_leg(leg) for leg in legs):
+            return ToolResult.error(
+                f"Transaction {tx_id} is not a split: nobody else has a share of it. "
+                "Nothing was queued."
+            )
+        taken = sorted({_reference(leg) for leg in legs if not is_unlinked(leg)})
+        if taken:
+            return ToolResult.error(
+                f"Transaction {tx_id} is already linked{taken[0]}. Nothing was queued."
+            )
+        if any(str(leg.get("source") or "") == SPLITWISE_QUEUE_SOURCE for leg in legs):
+            return ToolResult.ok(f"Transaction {tx_id} is already queued for Splitwise.")
+        await client.link_external(
+            SPLITWISE_QUEUE_SOURCE, uuid.uuid4().hex, transfer_ids(legs),
+        )
+        return ToolResult.ok(
+            f"Queued for Splitwise: {base_description(row.get('description'))}. It goes "
+            "out within fifteen minutes; do not create it by hand."
+        )
+
+    return [push_to_splitwise_tool]
+
+
 def _undo_tools(client: BudgetClient) -> list[ToolSpec]:
     """Remove a row that should not have been written."""
     @tool(
@@ -1577,6 +1652,7 @@ class BudgetConnector(Connector):
     WRITE_TOOLS = frozenset({
         "record_transaction", "record_split", "record_transfer", "settle_person",
         "delete_transaction", "amend_transaction", "amend_pending_payment",
+        "push_to_splitwise",
         # A person is a lasting entity in the ledger, not a side effect of a
         # transaction — see _people_tools.
         "create_person",
@@ -1606,6 +1682,7 @@ class BudgetConnector(Connector):
         "create_person",
         "delete_transaction",
         "amend_transaction",
+        "push_to_splitwise",
         "list_pending_payments",
         "approve_pending_payment",
         "amend_pending_payment",
@@ -1623,6 +1700,7 @@ class BudgetConnector(Connector):
         "create_person": "Adding the person",
         "delete_transaction": "Deleting the budget transaction",
         "amend_transaction": "Correcting the budget transaction",
+        "push_to_splitwise": "Queueing the split for Splitwise",
         "list_pending_payments": "Checking scheduled payments",
         "approve_pending_payment": "Settling the scheduled payment",
         "amend_pending_payment": "Adjusting the scheduled payment",
@@ -1650,6 +1728,11 @@ systems shared no key and the Splitwise watch could not tell your entry from a
 new one. An expense the watch REPORTED already exists in Splitwise — record it
 with the `source` and `external_id` the watch gave you, and leave
 share_to_splitwise off.
+
+An entry ALREADY in the ledger but missing from Splitwise -> push_to_splitwise
+with any of its row ids. A row marked "(queued for Splitwise)" is not missing:
+it is on its way, so leave it alone. A row marked "(ref splitwise:<id>)" is that
+Splitwise expense.
 
 RECURRING PAYMENTS ARE ALREADY IN THE LEDGER, WAITING. Bills, rent,
 subscriptions, installments, allowances and loan amortizations exist as
@@ -1754,6 +1837,7 @@ problem when the real answer is that you are using the wrong tool."""
         return [
             *_read_tools(client),
             *_write_tools(client),
+            *_push_tools(client),
             *_transfer_tools(client),
             *_pending_tools(client),
             *_split_tools(client),

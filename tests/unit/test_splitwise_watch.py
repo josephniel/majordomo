@@ -293,3 +293,133 @@ class TestStampingCutover:
         w = make_watcher(tmp_path, {"splitwise": FakeClient([fresh])}, budget=budget)
         block = await w.check()
         assert "predates ledger stamping" not in block
+
+
+class LedgerBudget(FakeBudgetClient):
+    """A budget client that also holds rows, for an expense it never linked."""
+
+    def __init__(self, rows, link_fails=False):
+        super().__init__()
+        self.rows = rows
+        self.linked = []
+        self.link_fails = link_fails
+
+    async def list_transactions(self, account_id=None, page_size=200, page=1):
+        return {"items": self.rows if page == 1 else [], "has_next": False}
+
+    async def link_external(self, source, external_id, transfer_ids):
+        if self.link_fails:
+            raise RuntimeError("budget down")
+        self.linked.append((source, external_id, sorted(transfer_ids)))
+        return {"transaction_ids": []}
+
+
+def _share_expense(eid=500, date="2026-09-20T00:00:00Z", amount="670.00", my_share="670.00"):
+    return {
+        "id": eid, "description": "Army Navy", "cost": "1340.00", "currency_code": "PHP",
+        "date": date, "updated_at": "2026-11-05T08:41:00Z", "deleted_at": None,
+        "payment": False,
+        "repayments": [{"from": 8, "to": 7, "amount": amount}],
+        "users": [
+            {"user": {"id": 7, "first_name": "Joseph", "last_name": "T"},
+             "paid_share": "1340.00", "owed_share": my_share},
+            {"user": {"id": 8, "first_name": "Paul", "last_name": "Uy"},
+             "paid_share": "0.00", "owed_share": amount},
+        ],
+    }
+
+
+def _split_rows(when="2026-09-20T14:25:00Z", base=0, amount="670.00"):
+    desc = f"Army Navy {base} (split with Paul)"
+    return [
+        {"id": base + 1, "transfer_id": base + 10, "account_type": "credit card",
+         "type": "debit", "amount": "465.00", "description": desc,
+         "occurred_at": when, "counterparty": None},
+        {"id": base + 2, "transfer_id": base + 11, "account_type": "credit card",
+         "type": "debit", "amount": amount, "description": f"{desc} (Paul U's share)",
+         "occurred_at": when, "counterparty": "Paul U"},
+        {"id": base + 3, "transfer_id": base + 11, "account_type": "people",
+         "type": "credit", "amount": amount, "description": f"{desc} (Paul U's share)",
+         "occurred_at": when, "counterparty": "Paul U"},
+    ]
+
+
+class TestAdoption:
+    """An expense created by hand for a row already here must not be recorded again."""
+
+    async def _resolve(self, tmp_path, budget, expense):
+        watcher = make_watcher(tmp_path, {}, budget=budget)
+        return watcher, await watcher._resolve([expense], 7, {})
+
+    async def test_links_the_row_instead_of_asking_for_a_record(self, tmp_path):
+        budget = LedgerBudget(_split_rows())
+        watcher, (lines, _notes) = await self._resolve(tmp_path, budget, _share_expense())
+        assert lines == []
+        assert budget.linked == [("splitwise", "500", [10, 11])]
+        assert "linked Splitwise expense 500" in watcher.take_reports()[0]
+
+    async def test_a_new_expense_is_not_mistaken_for_an_old_row(self, tmp_path):
+        budget = LedgerBudget(_split_rows(when="2026-09-01T14:25:00Z"))
+        _watcher, (lines, _notes) = await self._resolve(tmp_path, budget, _share_expense())
+        assert budget.linked == []
+        assert "external_id=500" in lines[0]
+
+    async def test_a_different_amount_is_not_this_expense(self, tmp_path):
+        budget = LedgerBudget(_split_rows(amount="671.00"))
+        _watcher, (lines, _notes) = await self._resolve(tmp_path, budget, _share_expense())
+        assert budget.linked == []
+        assert "external_id=500" in lines[0]
+
+    async def test_a_row_already_linked_is_not_taken_again(self, tmp_path):
+        rows = [{**r, "source": "splitwise", "external_id": "1"} for r in _split_rows()]
+        budget = LedgerBudget(rows)
+        _watcher, (lines, _notes) = await self._resolve(tmp_path, budget, _share_expense())
+        assert budget.linked == []
+        assert lines
+
+    async def test_candidates_on_different_dates_go_to_a_person(self, tmp_path):
+        rows = _split_rows() + _split_rows(when="2026-09-21T14:25:00Z", base=100)
+        budget = LedgerBudget(rows)
+        _watcher, (lines, _notes) = await self._resolve(tmp_path, budget, _share_expense())
+        assert budget.linked == []
+        assert "do NOT record yet" in lines[0]
+        assert "[3, 103]" in lines[0]
+
+    async def test_two_identical_charges_pair_off_one_each(self, tmp_path):
+        """Two real 380s at one restaurant: each expense takes a row, not the same one."""
+        rows = _split_rows() + _split_rows(base=100)
+        budget = LedgerBudget(rows)
+        watcher = make_watcher(tmp_path, {}, budget=budget)
+        lines, _notes = await watcher._resolve(
+            [_share_expense(eid=500), _share_expense(eid=501)], 7, {},
+        )
+        assert lines == []
+        assert [link[1] for link in budget.linked] == ["500", "501"]
+        assert budget.linked[0][2] != budget.linked[1][2]
+
+    async def test_only_the_people_this_expense_covers_are_claimed(self, tmp_path):
+        rows = [
+            *_split_rows(),
+            {"id": 8, "transfer_id": 40, "account_type": "people", "type": "credit",
+             "amount": "2100.00", "occurred_at": "2026-09-20T14:25:00Z",
+             "description": "Army Navy 0 (split with Paul) (Jose E's share)",
+             "counterparty": "Jose E"},
+        ]
+        budget = LedgerBudget(rows)
+        await self._resolve(tmp_path, budget, _share_expense(my_share="0.00"))
+        assert budget.linked == [("splitwise", "500", [11])]
+
+    async def test_a_failed_link_is_never_recorded_instead(self, tmp_path):
+        budget = LedgerBudget(_split_rows(), link_fails=True)
+        _watcher, (lines, _notes) = await self._resolve(tmp_path, budget, _share_expense())
+        assert "do NOT record" in lines[0]
+        assert "external_id" not in lines[0]
+
+    async def test_a_ledger_that_cannot_be_read_falls_back_to_the_usual_path(self, tmp_path):
+        class Broken(LedgerBudget):
+            async def list_transactions(self, account_id=None, page_size=200, page=1):
+                raise RuntimeError("budget down")
+
+        budget = Broken([])
+        _watcher, (lines, _notes) = await self._resolve(tmp_path, budget, _share_expense())
+        assert "external_id=500" in lines[0]
