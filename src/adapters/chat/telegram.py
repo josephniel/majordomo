@@ -190,6 +190,7 @@ class TelegramPlatform(ChatPlatform):
         self._app: Application[Any, Any, Any, Any, Any, Any] | None = None
         # nonce -> future resolved by the inline-keyboard callback.
         self._pending_approvals: dict[str, asyncio.Future[bool]] = {}
+        self._pending_choices: dict[str, asyncio.Future[int]] = {}
         # Telegram albums: one Update PER ITEM, all sharing a media_group_id
         # and no "that was the last one" signal. Buffered here and dispatched
         # as ONE message. See _handle_message_update.
@@ -493,6 +494,79 @@ class TelegramPlatform(ChatPlatform):
         fut.set_result(verdict == "y")
         await query.answer("Approved ✅" if verdict == "y" else "Denied ❌")
 
+    async def request_choice(
+        self, chat_id: ConversationRef, text: str, options: list[str], give_up_after: float = 300.0,
+    ) -> str | None:
+        """Inline buttons for one question; blocks until tapped or timeout.
+
+        Same concurrency story as request_approval: the callback handler does not
+        take the per-chat lock, so a tap reaches the tool call that is waiting for it.
+        Answering takes no model turn, which is the point: a statement review was a
+        turn per row.
+        """
+        native_id = _native(chat_id)
+        if self._app is None:
+            raise RuntimeError("TelegramPlatform.request_choice called before run()")
+        if self._is_control_room(native_id) and self._allowed_user_ids:
+            native_id = min(self._allowed_user_ids)
+        nonce = secrets.token_urlsafe(8)
+        fut: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+        self._pending_choices[nonce] = fut
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(option, callback_data=f"cho|{nonce}|{index}")
+                for index, option in list(enumerate(options))[start:start + 2]
+            ]
+            for start in range(0, len(options), 2)
+        ])
+        try:
+            msg = await self._app.bot.send_message(native_id, text, reply_markup=keyboard)
+        except Exception:
+            log.exception("could not deliver a choice prompt")
+            self._pending_choices.pop(nonce, None)
+            return None
+        answer: str | None = None
+        try:
+            answer = options[await asyncio.wait_for(fut, timeout=give_up_after)]
+            outcome = f"→ {answer}"
+        except TimeoutError:
+            outcome = "⏰ Timed out"
+        except asyncio.CancelledError:
+            outcome = "🚫 Cancelled"
+            raise
+        finally:
+            self._pending_choices.pop(nonce, None)
+            try:
+                await self._app.bot.edit_message_text(
+                    f"{text}\n\n{outcome}", chat_id=native_id, message_id=msg.message_id,
+                )
+            except Exception:
+                log.debug("could not edit choice message", exc_info=True)
+        return answer
+
+    async def _on_choice_callback(
+        self, update: Update, _context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        query = update.callback_query
+        if query is None or not query.data:
+            return
+        user = query.from_user
+        if user is None or user.id not in self._allowed_user_ids:
+            await query.answer("You're not allowed to answer this.", show_alert=True)
+            return
+        try:
+            _prefix, nonce, raw = query.data.split("|", 2)
+            index = int(raw)
+        except ValueError:
+            await query.answer()
+            return
+        fut = self._pending_choices.get(nonce)
+        if fut is None or fut.done():
+            await query.answer("This question has expired.")
+            return
+        fut.set_result(index)
+        await query.answer()
+
     def run(
         self,
         on_message: OnMessage,
@@ -526,6 +600,9 @@ class TelegramPlatform(ChatPlatform):
         )
         self._app.add_handler(
             CallbackQueryHandler(self._on_approval_callback, pattern=r"^apr\|")
+        )
+        self._app.add_handler(
+            CallbackQueryHandler(self._on_choice_callback, pattern=r"^cho\|")
         )
         # Accept text, photos, and documents. Voice/video/sticker get a polite
         # rejection inside the handler; this filter just captures everything

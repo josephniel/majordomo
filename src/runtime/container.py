@@ -1643,6 +1643,7 @@ class PersonaRuntime:
         # before any traffic flows (unbound gate = allow, for CLI contexts).
         if self.approval_gate is not None:
             self.approval_gate.bind(self.platform.request_approval)
+            self.approval_gate.bind_chooser(self.platform.request_choice)
             # Durable audit trail: every decision lands in approval_log.
             hist = self.conversation_history
             persona_id = self.persona.id

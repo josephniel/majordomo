@@ -968,8 +968,8 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         if pending is None:
             return None
         return (
-            f"⏳ I'm still waiting on your approval for **{pending.label}** — "
-            f"tap Approve or Deny on that message and I'll pick this up "
+            f"⏳ I'm still waiting on your answer for **{pending.label}** — "
+            f"tap a button on that message and I'll pick this up "
             f"straight after.\n\n"
             f"If you'd rather drop it, send /cancel."
         )

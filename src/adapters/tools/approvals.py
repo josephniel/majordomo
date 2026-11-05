@@ -51,6 +51,8 @@ _PREVIEW_CHARS = 500
 
 # confirmer(chat_id, prompt_text) -> approved?
 Confirmer = Callable[[ConversationRef, str], Awaitable[bool]]
+# chat, question, options, seconds to wait -> the option tapped, or None.
+Chooser = Callable[[ConversationRef, str, list[str], float], Awaitable[str | None]]
 
 _DESCRIPTION_SUFFIX = (
     " NOTE: calling this asks the user for interactive approval first; "
@@ -352,6 +354,7 @@ class WriteApprovalGate:
 
     def __init__(self, background_auto_approve: frozenset[str] | None = None) -> None:
         self._confirmer: Confirmer | None = None
+        self._chooser: Chooser | None = None
         self._auditor: Auditor | None = None
         # Writes that may run unattended during a trigger fire. Empty by
         # default: the gate's whole point is that a mutation costs a tap, and
@@ -377,6 +380,26 @@ class WriteApprovalGate:
         Called at composition time, before the platform serves any traffic.
         """
         self._confirmer = confirmer
+
+    def bind_chooser(self, chooser: Chooser) -> None:
+        """Attach the platform's tap-to-answer UI, for review_items."""
+        self._chooser = chooser
+
+    async def choose(
+        self, chat_id: ConversationRef, text: str, options: list[str], give_up_after: float,
+    ) -> str | None:
+        """Ask one question. None means nobody answered.
+
+        Published as pending like an approval, so a message typed meanwhile is told
+        what the turn is waiting on rather than sitting behind it in silence.
+        """
+        if self._chooser is None:
+            return None
+        self._pending[chat_id] = PendingApproval("approvals", "review_items", time.monotonic())
+        try:
+            return await self._chooser(chat_id, text, options, give_up_after)
+        finally:
+            self._pending.pop(chat_id, None)
 
     def bind_audit(self, auditor: Auditor) -> None:
         """Attach the durable decision recorder (approval_log).
@@ -724,6 +747,16 @@ class GatedToolProvider:
         return getattr(self._inner, item)
 
 
+# One row at a time, and each answered call gets written before the next: a long
+# list survives a turn that dies partway, losing at most this many answers.
+MAX_REVIEW_ITEMS = 10
+MIN_REVIEW_OPTIONS = 2
+MAX_REVIEW_OPTIONS = 6
+REVIEW_TIMEOUT_SECONDS = 300.0
+REVIEW_REST = "⏩ Rest as guessed"
+REVIEW_STOP = "⏹ Stop"
+
+
 class BatchApprovalProvider(ToolProvider):
     """The `propose_writes` tool: one approval for a whole set of writes.
 
@@ -755,13 +788,54 @@ any argument still asks for its own tap, and that is the point: they cannot be
 shown one thing and given another.
 
 Entries are single-use and the set expires after 15 minutes. If the user changes
-something, propose the corrected set again."""
+something, propose the corrected set again.
+
+review_items is how you go through a list with the user, such as a card statement:
+each row becomes one message with buttons, answered by a tap with no reply from you
+in between. Prefer it to asking row by row. Send at most ten rows a call, with your
+best guess for each from their past entries, then propose_writes the answers and
+call it again for the next ten."""
 
     def __init__(self, gate: WriteApprovalGate) -> None:
         self._gate = gate
 
     def system_prompt_section(self) -> str:
         return self.SYSTEM_PROMPT_SECTION
+
+    async def _review(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+        items = [i for i in args.get("items") or [] if isinstance(i, dict) and i.get("label")]
+        options = [str(o) for o in args.get("options") or [] if o]
+        if ctx.background or ctx.chat_id is None:
+            return ToolResult.error("review_items needs someone there to answer it.")
+        if not items or len(options) < MIN_REVIEW_OPTIONS:
+            return ToolResult.error("review_items needs items and at least two options.")
+        if len(items) > MAX_REVIEW_ITEMS or len(options) > MAX_REVIEW_OPTIONS:
+            return ToolResult.error(
+                f"At most {MAX_REVIEW_ITEMS} items and {MAX_REVIEW_OPTIONS} options a call. "
+                "Send the rest in the next call."
+            )
+        answers: list[str | None] = []
+        for position, item in enumerate(items):
+            guess = str(item.get("guess") or "")
+            remaining = items[position:]
+            can_take_guesses = all(str(i.get("guess") or "") in options for i in remaining)
+            text = f"{position + 1}/{len(items)}  {item['label']}"
+            if guess:
+                text += f"\nMy guess: {guess}"
+            buttons = [*options, *([REVIEW_REST] if can_take_guesses else []), REVIEW_STOP]
+            answer = await self._gate.choose(ctx.chat_id, text, buttons, REVIEW_TIMEOUT_SECONDS)
+            if answer is None or answer == REVIEW_STOP:
+                break
+            if answer == REVIEW_REST:
+                answers += [str(i.get("guess")) for i in remaining]
+                break
+            answers.append(answer)
+        lines = [
+            f"{i + 1}. {item['label']}: "
+            f"{answers[i] if i < len(answers) else '(not answered, do not record)'}"
+            for i, item in enumerate(items)
+        ]
+        return ToolResult.ok("\n".join(lines))
 
     def builtin_tools(self) -> list[ToolSpec]:
         async def propose_writes(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -838,5 +912,53 @@ something, propose the corrected set again."""
                     "required": ["items"],
                 },
                 handler=propose_writes,
-            )
+            ),
+            ToolSpec(
+                name="review_items",
+                description=(
+                    "Go through a list with the user by tapping, one message per row, with "
+                    "no model reply in between: a card statement, a backlog to classify. "
+                    "Their buttons are `options`, plus one to accept your remaining guesses "
+                    "and one to stop. Returns each row's answer; a row left unanswered must "
+                    f"not be recorded. At most {MAX_REVIEW_ITEMS} rows a call: record those "
+                    "with propose_writes, then send the next ones. Nothing is written by "
+                    "this tool."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "options": {
+                            "type": "array",
+                            "description": (
+                                "The answers to offer, short enough for a button, e.g. "
+                                "['Mine', 'Split with Paul', 'Skip']."
+                            ),
+                            "items": {"type": "string"},
+                        },
+                        "items": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {
+                                        "type": "string",
+                                        "description": "The row: 'Oct 17 Jollibee, 1,892.00'.",
+                                    },
+                                    "guess": {
+                                        "type": "string",
+                                        "description": (
+                                            "Your best answer, one of the options, from "
+                                            "how they filed this merchant before."
+                                        ),
+                                    },
+                                },
+                                "required": ["label"],
+                            },
+                        },
+                    },
+                    "required": ["options", "items"],
+                },
+                handler=self._review,
+            ),
         ]
