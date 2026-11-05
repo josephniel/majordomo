@@ -340,9 +340,15 @@ def _build_clickup(rt: RuntimeContext) -> ToolProvider:
 
 
 def _build_splitwise(rt: RuntimeContext) -> ToolProvider:
-    from adapters.tools import SplitwiseConnector
+    from adapters.tools import BudgetConnector, SplitwiseConnector
+    # For comparing the two. Only the clients are read from it, and it holds nothing
+    # but config, so a second instance costs nothing.
+    budget = (
+        BudgetConnector(config=rt.config) if rt.persona.is_connector_enabled("budget") else None
+    )
     return SplitwiseConnector(
         config=rt.config, default_timezone=rt.settings.schedule_timezone,
+        budget_connector=budget,
     )
 
 

@@ -251,6 +251,22 @@ class BudgetClient:
             body={"source": source, "external_id": external_id, "transfer_ids": transfer_ids},
         ))
 
+    async def add_reference(
+        self, ref_type: str, ref_id: str, transfer_ids: list[int]
+    ) -> dict[str, Any]:
+        """Say what these transfers are in another system. Safe to repeat."""
+        return json_object(await self._request(
+            "POST", "/transactions/references",
+            body={"ref_type": ref_type, "ref_id": ref_id, "transfer_ids": transfer_ids},
+        ))
+
+    async def find_reference(self, ref_type: str, ref_id: str) -> dict[str, Any] | None:
+        """Return the live entries carrying a reference, or None if none does."""
+        got = await self._request(
+            "GET", "/transactions/references", params={"ref_type": ref_type, "ref_id": ref_id},
+        )
+        return json_object_or_none(got) or None
+
 
 # ---- formatting helpers ----
 
@@ -366,11 +382,17 @@ def _format_transaction(tx: dict[str, Any]) -> str:
 def _reference(tx: dict[str, Any]) -> str:
     """Where a row came from or went: the id another system knows it by."""
     source = str(tx.get("source") or "")
+    refs = [
+        f"{r.get('ref_type')}:{r.get('ref_id')}" for r in tx.get("references") or []
+    ]
+    if source and tx.get("external_id") and source != SPLITWISE_QUEUE_SOURCE:
+        own = f"{source}:{tx['external_id']}"
+        if own not in refs:
+            refs.append(own)
+    text = f" (ref {', '.join(refs)})" if refs else ""
     if source == SPLITWISE_QUEUE_SOURCE:
-        return " (queued for Splitwise)"
-    if source and tx.get("external_id"):
-        return f" (ref {source}:{tx['external_id']})"
-    return ""
+        text += " (queued for Splitwise)"
+    return text
 
 
 def _index_tags(
@@ -1448,6 +1470,71 @@ def _push_tools(client: BudgetClient) -> list[ToolSpec]:
     return [push_to_splitwise_tool]
 
 
+def _reference_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Say what an entry is elsewhere, and find an entry by that."""
+    @tool(
+        "add_reference",
+        "Attach an id another system knows this entry by: a GCash or Maya reference "
+        "number, a bank statement line. Any number of them, of any type. Applies to the "
+        "whole split, from the id of any of its rows. Args: transaction_id, ref_type "
+        "(short, e.g. gcash, maya, bpi), ref_id. Splitwise links are added "
+        "automatically; do not add those here.",
+        {
+            "type": "object",
+            "properties": {
+                "transaction_id": {
+                    "type": "integer",
+                    "description": "Any row of the entry, from recent_transactions.",
+                },
+                "ref_type": {"type": "string", "description": "The kind of id, e.g. gcash."},
+                "ref_id": {"type": "string", "description": "The id itself."},
+            },
+            "required": ["transaction_id", "ref_type", "ref_id"],
+        },
+    )
+    @_guarded
+    async def add_reference_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        tx_id = _as_transaction_id(args.get("transaction_id"))
+        ref_type = str(args.get("ref_type") or "").strip()
+        ref_id = str(args.get("ref_id") or "").strip()
+        if tx_id is None or not ref_type or not ref_id:
+            return ToolResult.error("transaction_id, ref_type and ref_id are all required")
+        rows = await scan_ledger(client)
+        row = next((r for r in rows if r.get("id") == tx_id), None)
+        if row is None:
+            return ToolResult.error(f"No transaction {tx_id} in the ledger.")
+        await client.add_reference(ref_type, ref_id, transfer_ids(split_legs(row, rows)))
+        return ToolResult.ok(f"Added {ref_type}:{ref_id} to transaction {tx_id}.")
+
+    @tool(
+        "find_by_reference",
+        "Find the entries carrying a reference, e.g. to check whether a statement line "
+        "is already recorded before recording it. Args: ref_type, ref_id.",
+        {
+            "type": "object",
+            "properties": {
+                "ref_type": {"type": "string", "description": "The kind of id, e.g. gcash."},
+                "ref_id": {"type": "string", "description": "The id itself."},
+            },
+            "required": ["ref_type", "ref_id"],
+        },
+    )
+    @_guarded
+    async def find_by_reference_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        ref_type = str(args.get("ref_type") or "").strip()
+        ref_id = str(args.get("ref_id") or "").strip()
+        if not ref_type or not ref_id:
+            return ToolResult.error("ref_type and ref_id are both required")
+        found = await client.find_reference(ref_type, ref_id)
+        if not found:
+            return ToolResult.ok(f"Nothing carries {ref_type}:{ref_id}.")
+        return ToolResult.ok(
+            f"{ref_type}:{ref_id} is on rows {found.get('transaction_ids')}."
+        )
+
+    return [add_reference_tool, find_by_reference_tool]
+
+
 def _undo_tools(client: BudgetClient) -> list[ToolSpec]:
     """Remove a row that should not have been written."""
     @tool(
@@ -1653,6 +1740,7 @@ class BudgetConnector(Connector):
         "record_transaction", "record_split", "record_transfer", "settle_person",
         "delete_transaction", "amend_transaction", "amend_pending_payment",
         "push_to_splitwise",
+        "add_reference",
         # A person is a lasting entity in the ledger, not a side effect of a
         # transaction — see _people_tools.
         "create_person",
@@ -1674,6 +1762,7 @@ class BudgetConnector(Connector):
         "list_tags",
         "recent_transactions",
         "account_balances",
+        "find_by_reference",
         # write
         "record_transaction",
         "record_split",
@@ -1683,6 +1772,7 @@ class BudgetConnector(Connector):
         "delete_transaction",
         "amend_transaction",
         "push_to_splitwise",
+        "add_reference",
         "list_pending_payments",
         "approve_pending_payment",
         "amend_pending_payment",
@@ -1701,6 +1791,8 @@ class BudgetConnector(Connector):
         "delete_transaction": "Deleting the budget transaction",
         "amend_transaction": "Correcting the budget transaction",
         "push_to_splitwise": "Queueing the split for Splitwise",
+        "add_reference": "Adding the reference",
+        "find_by_reference": "Looking up the reference",
         "list_pending_payments": "Checking scheduled payments",
         "approve_pending_payment": "Settling the scheduled payment",
         "amend_pending_payment": "Adjusting the scheduled payment",
@@ -1733,6 +1825,10 @@ An entry ALREADY in the ledger but missing from Splitwise -> push_to_splitwise
 with any of its row ids. A row marked "(queued for Splitwise)" is not missing:
 it is on its way, so leave it alone. A row marked "(ref splitwise:<id>)" is that
 Splitwise expense.
+
+"Do they match", "why is it different", "are there duplicates" -> reconcile_person.
+Quote its figures. Do not list rows and compare them yourself, and do not say two
+systems agree unless it says MATCH. Never post an adjustment to make them agree.
 
 RECURRING PAYMENTS ARE ALREADY IN THE LEDGER, WAITING. Bills, rent,
 subscriptions, installments, allowances and loan amortizations exist as
@@ -1838,6 +1934,7 @@ problem when the real answer is that you are using the wrong tool."""
             *_read_tools(client),
             *_write_tools(client),
             *_push_tools(client),
+            *_reference_tools(client),
             *_transfer_tools(client),
             *_pending_tools(client),
             *_split_tools(client),

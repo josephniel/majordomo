@@ -449,12 +449,66 @@ class TestPushToSplitwise:
         assert "queued" not in lines[2]
 
 
+class TestReferences:
+    """An entry can say what it is elsewhere, as many as it needs."""
+
+    async def test_added_to_the_whole_split(self):
+        posted = []
+        tools = _connector_tools(TestPushToSplitwise._handler(TestPushToSplitwise.ROWS, posted))
+        result = await tools["add_reference"].handler(
+            {"transaction_id": 3, "ref_type": "maya", "ref_id": "M1"}, CTX,
+        )
+        assert not result.is_error
+        assert posted[0]["ref_type"] == "maya"
+        assert sorted(posted[0]["transfer_ids"]) == [10, 11]
+
+    async def test_half_a_reference_is_refused(self):
+        posted = []
+        tools = _connector_tools(TestPushToSplitwise._handler(TestPushToSplitwise.ROWS, posted))
+        result = await tools["add_reference"].handler(
+            {"transaction_id": 3, "ref_type": "maya"}, CTX,
+        )
+        assert result.is_error
+        assert posted == []
+
+    async def test_a_row_lists_all_its_references_and_splitwise_once(self):
+        row = {
+            **TestPushToSplitwise.ROWS[3], "source": "splitwise", "external_id": "77",
+            "references": [
+                {"ref_type": "splitwise", "ref_id": "77"},
+                {"ref_type": "gcash", "ref_id": "G1"},
+            ],
+        }
+        tools = _connector_tools(TestPushToSplitwise._handler([row], []))
+        result = await tools["recent_transactions"].handler({"limit": 1}, CTX)
+        assert "(ref splitwise:77, gcash:G1)" in result.text
+
+    async def test_found_by_reference(self):
+        def handler(request):
+            assert request.url.params["ref_type"] == "gcash"
+            return httpx.Response(200, json={"transaction_ids": [5, 6], "transfer_ids": [2]})
+
+        tools = _connector_tools(handler)
+        result = await tools["find_by_reference"].handler(
+            {"ref_type": "gcash", "ref_id": "G1"}, CTX,
+        )
+        assert "[5, 6]" in result.text
+
+    async def test_not_found_says_so(self):
+        tools = _connector_tools(lambda _request: httpx.Response(200, json=None))
+        result = await tools["find_by_reference"].handler(
+            {"ref_type": "gcash", "ref_id": "G1"}, CTX,
+        )
+        assert "Nothing carries gcash:G1" in result.text
+
+
 class TestContract:
     def test_write_tools_declared(self):
         assert frozenset(
             {"record_transaction", "record_split", "record_transfer", "settle_person",
              "delete_transaction", "amend_transaction", "amend_pending_payment",
-             "approve_pending_payment", "create_person", "push_to_splitwise"}
+             "approve_pending_payment", "create_person", "push_to_splitwise",
+             "add_reference"}
         ) == BudgetConnector.WRITE_TOOLS
         # Reads must never be gated.
         assert "list_accounts" not in BudgetConnector.WRITE_TOOLS

@@ -15,10 +15,12 @@ import getpass
 import json
 import logging
 import sys
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
+from adapters.ledgersplit import SPLITWISE_SOURCE, same_person, scan_ledger
 from adapters.splitwiseform import (
     flatten_users_to_form as _flatten_users_to_form,
 )
@@ -27,6 +29,12 @@ from adapters.splitwiseform import (
 )
 from adapters.splitwiseform import (
     to_form as _to_form,
+)
+from adapters.splitwisereconcile import (
+    Reconciliation,
+    format_report,
+    legs_for_expense,
+    reconcile,
 )
 from adapters.timefmt import DEFAULT_TIMEZONE, local_date
 from ports import Connector, ToolContext, ToolResult, ToolSpec, tool
@@ -41,6 +49,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 SPLITWISE_API = "https://secure.splitwise.com/api/v3.0"
+# Splitwise pages with limit and offset, and says nothing about whether more follow.
+EXPENSE_PAGE_SIZE = 200
+# A guard against an upstream that never runs out, not a real limit.
+MAX_EXPENSE_PAGES = 200
 
 
 class SplitwiseClient:
@@ -626,6 +638,144 @@ def _unknown_share_error(
     )
 
 
+async def _all_expenses(client: SplitwiseClient, friend_id: int) -> list[dict[str, Any]]:
+    """Every expense shared with one friend, all pages."""
+    expenses: list[dict[str, Any]] = []
+    for page in range(MAX_EXPENSE_PAGES):
+        resp = await client.get_expenses(
+            friend_id=friend_id, limit=EXPENSE_PAGE_SIZE, offset=page * EXPENSE_PAGE_SIZE,
+        )
+        batch = resp.get("expenses") or []
+        expenses.extend(batch)
+        if len(batch) < EXPENSE_PAGE_SIZE:
+            break
+    return expenses
+
+
+async def _friend_for(client: SplitwiseClient, person: str) -> dict[str, Any] | str:
+    """Return the one friend a ledger name means, or why there is not exactly one."""
+    resp = await client.get_friends()
+    friends = resp.get("friends") or []
+    hits = [
+        f for f in friends
+        if same_person(person, f.get("first_name"), f.get("last_name"))
+    ]
+    if len(hits) == 1:
+        return dict(hits[0])
+    if hits:
+        return f"{person!r} could be several Splitwise friends; name them more exactly."
+    return f"No Splitwise friend matches {person!r}."
+
+
+def _friend_balance(friend: dict[str, Any]) -> Decimal:
+    """Return what Splitwise says this friend owes in pesos. No entry means settled."""
+    for entry in friend.get("balance") or []:
+        if entry.get("currency_code") == "PHP":
+            return Decimal(str(entry.get("amount") or 0))
+    return Decimal(0)
+
+
+async def _compare(
+    client: SplitwiseClient, budget: Any, person: str, tz: str,
+) -> tuple[Reconciliation, list[dict[str, Any]], int] | str:
+    """Compare one person across both systems, or say why it cannot be done."""
+    friend = await _friend_for(client, person)
+    if isinstance(friend, str):
+        return friend
+    me = await client.current_user_id()
+    if me is None:
+        return "Could not read your own Splitwise id."
+    rows = await scan_ledger(budget)
+    expenses = await _all_expenses(client, int(friend["id"]))
+    report = reconcile(
+        person, rows, expenses, me, int(friend["id"]), tz, balance=_friend_balance(friend),
+    )
+    return report, rows, me
+
+
+async def _link_paired(
+    report: Reconciliation, rows: list[dict[str, Any]], me: int, budget: Any,
+) -> tuple[int, list[str]]:
+    """Stamp every row paired with an expense. Returns how many, and which failed."""
+    linked = 0
+    failed: list[str] = []
+    for entry, expense in report.unlinked:
+        eid = str(expense.expense.get("id"))
+        try:
+            await budget.link_external(
+                SPLITWISE_SOURCE, eid, legs_for_expense(entry.row, expense.expense, me, rows),
+            )
+        except Exception:
+            log.exception("link_splitwise_references: could not link expense %s", eid)
+            failed.append(eid)
+        else:
+            linked += 1
+    return linked, failed
+
+
+def _reconcile_tools(
+    client: SplitwiseClient, budget: Any, tz: str = DEFAULT_TIMEZONE,
+) -> list[ToolSpec]:
+    """Whether both systems agree about a person, decided by code."""
+    @tool(
+        "reconcile_person",
+        "Compare one person across the budget tracker and Splitwise, over their whole "
+        "history. This is the ONLY way to answer 'do they match', 'why is it different' "
+        "or 'are there duplicates'. Do not list rows and compare them yourself. Quote its "
+        "totals as they are; never say two systems match unless it says MATCH. "
+        "Args: person (their budget-app name, e.g. Paul U).",
+        {
+            "type": "object",
+            "properties": {
+                "person": {"type": "string", "description": "Their budget-app name."},
+            },
+            "required": ["person"],
+        },
+    )
+    @_guarded
+    async def reconcile_person_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        person = str(args.get("person") or "").strip()
+        if not person:
+            return ToolResult.error("person is required")
+        compared = await _compare(client, budget, person, tz)
+        if isinstance(compared, str):
+            return ToolResult.error(compared)
+        report, rows, _me = compared
+        return ToolResult.ok(format_report(report, rows, tz))
+
+    @tool(
+        "link_splitwise_references",
+        "Add the Splitwise reference to every budget row for this person that "
+        "reconcile_person paired with an expense but that has no reference yet. Changes "
+        "no amounts. Args: person (their budget-app name).",
+        {
+            "type": "object",
+            "properties": {
+                "person": {"type": "string", "description": "Their budget-app name."},
+            },
+            "required": ["person"],
+        },
+    )
+    @_guarded
+    async def link_splitwise_references_tool(
+        args: dict[str, Any], _ctx: ToolContext,
+    ) -> ToolResult:
+        person = str(args.get("person") or "").strip()
+        if not person:
+            return ToolResult.error("person is required")
+        compared = await _compare(client, budget, person, tz)
+        if isinstance(compared, str):
+            return ToolResult.error(compared)
+        report, rows, me = compared
+        linked, failed = await _link_paired(report, rows, me, budget)
+        text = f"Linked {linked} of {len(report.unlinked)} row(s) for {person}."
+        if failed:
+            text += f" Could not link expense(s) {', '.join(failed)}."
+        return ToolResult.ok(text)
+
+    return [reconcile_person_tool, link_splitwise_references_tool]
+
+
 def _write_tools(client: SplitwiseClient, tz: str = DEFAULT_TIMEZONE) -> list[ToolSpec]:
     """Create an expense — the one write with real validation behind it."""
     # ---- WRITE TOOLS ----
@@ -740,7 +890,9 @@ class SplitwiseConnector(Connector):
     TRIGGER_KEYWORDS = ("split", "splitwise", "expense", "owe", "owed",
                         "paid", "settle", "reimburse", "bill", "share",
                         "cost", "debt")
-    WRITE_TOOLS = frozenset({"create_expense", "update_expense", "delete_expense"})
+    WRITE_TOOLS = frozenset({
+        "create_expense", "update_expense", "delete_expense", "link_splitwise_references",
+    })
     # Only the CREATE satisfies an "I've recorded that" claim; update/delete
     # are a different claim shape (see RECORD_CLAIM_TOOLS).
     RECORD_CLAIM_TOOLS = frozenset({"create_expense"})
@@ -752,10 +904,12 @@ class SplitwiseConnector(Connector):
         "list_friends",
         "list_expenses",
         "get_expense",
+        "reconcile_person",
         # write
         "create_expense",
         "update_expense",
         "delete_expense",
+        "link_splitwise_references",
     ]
 
     STATUS: ClassVar[dict[str, str]] = {
@@ -767,15 +921,19 @@ class SplitwiseConnector(Connector):
         "create_expense": "Creating Splitwise expense",
         "update_expense": "Updating Splitwise expense",
         "delete_expense": "Deleting Splitwise expense",
+        "reconcile_person": "Comparing the budget and Splitwise",
+        "link_splitwise_references": "Linking rows to Splitwise",
     }
 
     def __init__(
         self,
         config: ServiceRegistry,
         default_timezone: str | None = None,
+        budget_connector: Any = None,  # build_clients() -> {name: client}
     ) -> None:
         self._config = config
         self._default_timezone = default_timezone or DEFAULT_TIMEZONE
+        self._budget_connector = budget_connector
 
     @property
     def credentials_dir(self) -> Path:
@@ -926,8 +1084,13 @@ class SplitwiseConnector(Connector):
 
     def _build_tools_for_profile(self, client: SplitwiseClient) -> list[Any]:
         tz = self._default_timezone
-        return [
+        tools = [
             *_read_tools(client, tz),
             *_write_tools(client, tz),
             *_expense_edit_tools(client, tz),
         ]
+        budgets = self._budget_connector.build_clients() if self._budget_connector else {}
+        budget = next(iter(budgets.values()), None)
+        if budget is not None:
+            tools += _reconcile_tools(client, budget, tz)
+        return tools
