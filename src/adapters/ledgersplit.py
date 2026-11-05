@@ -83,11 +83,24 @@ def transfer_ids(rows: list[dict[str, Any]]) -> list[int]:
 
 
 def same_person(ledger_name: Any, first: Any, last: Any) -> bool:
-    """Whether a ledger name is this Splitwise user: "Paul U" is "Paul Uy"."""
-    key = str(ledger_name or "").strip().lower()
-    given = str(first or "").strip().lower()
-    full = f"{given} {str(last or '').strip().lower()}".strip()
-    return bool(key) and (key in {given, full} or full.startswith(key))
+    """Whether a ledger name is this Splitwise user.
+
+    The ledger's names are typed by hand and shortened: "Paul U" is "Paul Uy" and
+    "Angelica T" is "Ma. Angelica Tuazon". Every word has to start a word of the
+    full name, in order. Callers refuse a name that fits two people.
+    """
+    words = str(ledger_name or "").lower().split()
+    full = f"{first or ''} {last or ''}".lower().split()
+    if not words:
+        return False
+    position = 0
+    for word in words:
+        while position < len(full) and not full[position].startswith(word):
+            position += 1
+        if position == len(full):
+            return False
+        position += 1
+    return True
 
 
 @dataclass(frozen=True)
@@ -122,7 +135,7 @@ def debts_on(expense: dict[str, Any], my_id: int | None) -> list[Debt]:
     ]
 
 
-def _my_share(expense: dict[str, Any], my_id: int | None) -> Decimal:
+def my_share(expense: dict[str, Any], my_id: int | None) -> Decimal:
     for u in expense.get("users") or []:
         if u.get("user", {}).get("id") == my_id:
             return Decimal(str(u.get("owed_share") or 0))
@@ -201,7 +214,7 @@ def match_expense(
         if len(rest) != len(others):
             continue
         covered = [row, *rest]
-        if _my_share(expense, my_id) > 0:
+        if my_share(expense, my_id) > 0:
             covered += [
                 leg for leg in legs
                 if not is_people_leg(leg) and not leg.get("counterparty") and is_unlinked(leg)
