@@ -305,6 +305,18 @@ class ChatPlatform(ABC):
         )
         return False
 
+    async def request_choice(
+        self, chat_id: ConversationRef, text: str, options: list[str], give_up_after: float = 300.0,
+    ) -> str | None:
+        """Ask the operator to pick one option, answered with a tap.
+
+        Blocks until they answer or `give_up_after` seconds pass. Returns the option, or
+        None when nobody answered or the platform has no such UI. Callers treat None
+        as "not answered", which is safe: nothing has been decided.
+        """
+        del chat_id, text, options, give_up_after
+        return None
+
     @abstractmethod
     def keep_typing(self, chat_id: ConversationRef) -> AbstractAsyncContextManager[None]:
         """While open, show a typing indicator in the chat."""
