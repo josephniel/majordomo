@@ -790,11 +790,15 @@ shown one thing and given another.
 Entries are single-use and the set expires after 15 minutes. If the user changes
 something, propose the corrected set again.
 
-review_items is how you go through a list with the user, such as a card statement:
-each row becomes one message with buttons, answered by a tap with no reply from you
-in between. Prefer it to asking row by row. Send at most ten rows a call, with your
-best guess for each from their past entries, then propose_writes the answers and
-call it again for the next ten."""
+review_items is for rows where the user has to CHOOSE, such as a card statement
+where each line may be theirs or shared: each row becomes one message with buttons,
+answered by a tap with no reply from you in between. Prefer it to asking row by row.
+Send at most ten rows a call, with your best guess for each from their past entries,
+then propose_writes the answers and call it again for the next ten.
+
+It is not a way to confirm a plan. When you already know what you will write, go
+straight to propose_writes: "Do it / Skip" buttons followed by an approval asks the
+same question twice."""
 
     def __init__(self, gate: WriteApprovalGate) -> None:
         self._gate = gate
@@ -916,8 +920,10 @@ call it again for the next ten."""
             ToolSpec(
                 name="review_items",
                 description=(
-                    "Go through a list with the user by tapping, one message per row, with "
-                    "no model reply in between: a card statement, a backlog to classify. "
+                    "Ask the user to CHOOSE for each row of a list, by tapping, one message "
+                    "per row with no model reply in between: a card statement, a backlog to "
+                    "classify. Not for confirming writes you have already decided on: use "
+                    "propose_writes alone for that, so nothing is asked twice. "
                     "Their buttons are `options`, plus one to accept your remaining guesses "
                     "and one to stop. Returns each row's answer; a row left unanswered must "
                     f"not be recorded. At most {MAX_REVIEW_ITEMS} rows a call: record those "

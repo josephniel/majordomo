@@ -182,3 +182,11 @@ async def test_only_the_operator_can_answer():
     update, query = _query("cho|n|0", 999)
     await p._on_choice_callback(update, None)
     assert query.answer.await_args.kwargs.get("show_alert") is True
+
+
+def test_it_says_not_to_confirm_a_plan_with_it():
+    """Do it / Skip, then an approval, asked the owner the same thing twice."""
+    provider = BatchApprovalProvider(WriteApprovalGate())
+    tool = next(t for t in provider.builtin_tools() if t.name == "review_items")
+    assert "propose_writes alone" in tool.description
+    assert "asks the\nsame question twice" in provider.system_prompt_section()
