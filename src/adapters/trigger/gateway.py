@@ -35,10 +35,11 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
@@ -57,11 +58,14 @@ MAX_OPEN_TOTAL = 20
 
 OPEN_STATES = frozenset({"awaiting_value", "queued", "awaiting_approval", "running"})
 TERMINAL_STATES = frozenset({"done", "failed", "denied", "expired", "cancelled"})
+# Retrying with the same idempotency key after one of these starts a new request.
+RETRYABLE_STATES = TERMINAL_STATES - {"done"}
 
 # approve(chat, text, deny_after=seconds) -> bool. TelegramPlatform.request_approval.
 Approver = Callable[..., Awaitable[bool]]
 # notify(chat, text). The platform's send_text.
 Notifier = Callable[..., Awaitable[Any]]
+Authorizer = Callable[[str, str, dict[str, str]], bool]
 
 
 class GatewayRefusalError(Exception):
@@ -73,7 +77,8 @@ class Located:
     """Where an action's input was found. Never holds the value itself.
 
     `fingerprint` is whatever the action uses to notice that its input changed
-    between the card and the run (for a secret: its length).
+    between the card and the run. Secret fingerprints are keyed, in-memory
+    commitments, never persisted or exposed to developers.
     """
 
     source: str
@@ -118,6 +123,8 @@ class GatewayRequest:
     source_ref: str | None = None
     message: str = ""
     result: dict[str, Any] | None = None
+    idempotency_hash: str = ""
+    credential_version: str = ""
 
     def view(self) -> dict[str, Any]:
         """Render what the requester sees."""
@@ -145,6 +152,7 @@ class GatewayService:
         state_file: Path,
         audit_file: Path,
         card_seconds: float = DEFAULT_CARD_SECONDS,
+        authorize: Authorizer | None = None,
     ) -> None:
         self._actions = dict(actions)
         self._approve = approve
@@ -153,6 +161,8 @@ class GatewayService:
         self._state_file = state_file
         self._audit_file = audit_file
         self._card_seconds = card_seconds
+        self.authorize = authorize or (lambda _name, _action, _params: False)
+        self.identity_version: Callable[[str], str | None] = lambda _name: ""
         self._requests: dict[str, GatewayRequest] = {}
         self._wake = asyncio.Event()
         self._worker: asyncio.Task[None] | None = None
@@ -183,13 +193,28 @@ class GatewayService:
         ]
 
     async def submit(
-        self, requester: str, action_name: str, params: dict[str, Any]
+        self, requester: str, action_name: str, params: dict[str, Any],
+        idempotency_key: str = "",
+        credential_version: str = "",
     ) -> GatewayRequest:
         action = self._actions.get(action_name)
         if action is None:
             raise GatewayRefusalError(f"unknown action {action_name!r}")
-        clean = action.validate(params)
+        try:
+            clean = action.validate(params)
+        except (GatewayRefusalError, ValueError):
+            # Raw arguments are never audited: a mistaken value could be a secret.
+            self.audit_refusal(requester, action_name, {}, "invalid arguments")
+            raise
+        if (not self.authorize(requester, action_name, clean)
+                or self.identity_version(requester) != credential_version):
+            self.audit_refusal(requester, action_name, clean, "not permitted")
+            raise GatewayRefusalError("not permitted for this action, service and environment")
         self._expire()
+        digest = self._idempotency_hash(idempotency_key)
+        existing = self._same_operation(requester, digest, action_name, clean)
+        if existing is not None:
+            return existing
         open_reqs = [r for r in self._requests.values() if r.state in OPEN_STATES]
         if sum(r.requester == requester for r in open_reqs) >= MAX_OPEN_PER_REQUESTER:
             raise GatewayRefusalError(
@@ -199,10 +224,12 @@ class GatewayService:
         if len(open_reqs) >= MAX_OPEN_TOTAL:
             raise GatewayRefusalError("the gateway queue is full; try again later")
         req = GatewayRequest(
-            request_id="REQ-" + secrets.token_hex(3).upper(),
+            request_id="REQ-" + secrets.token_hex(12).upper(),
             requester=requester,
             action=action.name,
             params=clean,
+            idempotency_hash=digest,
+            credential_version=credential_version,
         )
         if action.locate(clean, None) is None:
             req.state = "awaiting_value"
@@ -227,18 +254,28 @@ class GatewayService:
             self._wake.set()
         return req
 
+    @staticmethod
+    def _idempotency_hash(key: str) -> str:
+        if not key:
+            return ""
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", key):
+            raise GatewayRefusalError("idempotency_key must be 1-128 letters, digits or _.:-")
+        return hashlib.sha256(key.encode()).hexdigest()
+
     def status(self, requester: str, request_id: str) -> GatewayRequest | None:
         """Return a request, only if it belongs to this requester."""
         self._expire()
         req = self._requests.get(request_id.strip().upper())
-        if req is None or req.requester != requester:
+        if (req is None or req.requester != requester
+                or not self.authorize(requester, req.action, req.params)):
             return None
         return req
 
     def mine(self, requester: str) -> list[GatewayRequest]:
         self._expire()
         return sorted(
-            (r for r in self._requests.values() if r.requester == requester),
+            (r for r in self._requests.values() if r.requester == requester
+             and self.authorize(requester, r.action, r.params)),
             key=lambda r: r.created, reverse=True,
         )[:20]
 
@@ -324,8 +361,15 @@ class GatewayService:
         return min(queued, key=lambda r: r.created) if queued else None
 
     async def _process(self, req: GatewayRequest) -> None:
+        if not self._still_authorized(req):
+            return
         action = self._actions[req.action]
-        located = action.locate(req.params, req.source_ref)
+        try:
+            located = action.locate(req.params, req.source_ref)
+        except GatewayRefusalError as e:
+            self._move(req, "failed", str(e))
+            self._audit(req, "failed", {"error": str(e)})
+            return
         if located is None:
             self._move(req, "awaiting_value", action.missing_value_hint(req.params))
             return
@@ -351,6 +395,8 @@ class GatewayService:
             self._audit(req, state, {})
             return
         self._audit(req, "approved", {"source": located.source})
+        if not self._still_authorized(req):
+            return
         self._move(req, "running", "Approved; running.")
         try:
             result = await action.run(req.params, located)
@@ -361,6 +407,43 @@ class GatewayService:
         req.result = result
         self._move(req, "done", "Done.")
         self._audit(req, "done", _audit_safe(result))
+
+    def _still_authorized(self, req: GatewayRequest) -> bool:
+        if (self.authorize(req.requester, req.action, req.params)
+                and self.identity_version(req.requester) == req.credential_version):
+            return True
+        self._move(req, "denied", "Access was revoked or the grant changed; nothing was run.")
+        self._audit(req, "denied", {"reason": "access_changed"})
+        return False
+
+    def _same_operation(
+        self, requester: str, digest: str, action_name: str, clean: dict[str, str],
+    ) -> GatewayRequest | None:
+        """Return the live or done request this idempotency key already names."""
+        if not digest:
+            return None
+        for old in self._requests.values():
+            if (old.requester != requester or old.idempotency_hash != digest
+                    or old.state in RETRYABLE_STATES):
+                continue
+            if old.action != action_name or old.params != clean:
+                self.audit_refusal(requester, action_name, clean, "idempotency key reuse")
+                raise GatewayRefusalError("idempotency key already used for another request")
+            return old
+        return None
+
+    def audit_read(self, requester: str, params: dict[str, str], outcome: str) -> None:
+        req = GatewayRequest(request_id="READ-" + secrets.token_hex(12),
+                             requester=requester, action="deployment_status", params=params)
+        self._audit(req, outcome, {})
+
+    def audit_refusal(
+        self, requester: str, action: str, params: dict[str, str], reason: str,
+    ) -> None:
+        """Record a refused call. Pass only validated params, never raw input."""
+        req = GatewayRequest(request_id="REFUSED-" + secrets.token_hex(12),
+                             requester=requester, action=action, params=params)
+        self._audit(req, "refused", {"reason": reason})
 
     def _card(self, req: GatewayRequest, located: Located) -> str:
         return "\n".join([
@@ -412,8 +495,15 @@ class GatewayService:
         except (OSError, ValueError):
             log.exception("gateway: unreadable state file; starting empty")
             return
+        known = {f.name for f in fields(GatewayRequest)}
         for item in raw.get("requests", []):
-            req = GatewayRequest(**item)
+            try:
+                # Unknown keys (a newer or older build's fields) must not stop
+                # the bot from starting; a malformed row is dropped, not fatal.
+                req = GatewayRequest(**{k: v for k, v in item.items() if k in known})
+            except TypeError:
+                log.warning("gateway: skipping malformed request in state file")
+                continue
             # A card can't survive a restart, and a run interrupted midway
             # may or may not have happened: re-ask for the first, and report
             # the second rather than repeat it.
@@ -426,6 +516,8 @@ class GatewayService:
     def _save(self) -> None:
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._state_file.with_suffix(".tmp")
+        tmp.touch(mode=0o600, exist_ok=True)
+        tmp.chmod(0o600)
         tmp.write_text(json.dumps(
             {"requests": [asdict(r) for r in self._requests.values()]}, indent=1
         ))
@@ -443,6 +535,8 @@ class GatewayService:
         }
         try:
             self._audit_file.parent.mkdir(parents=True, exist_ok=True)
+            self._audit_file.touch(mode=0o600, exist_ok=True)
+            self._audit_file.chmod(0o600)
             with self._audit_file.open("a") as f:
                 f.write(json.dumps(line) + "\n")
         except OSError:

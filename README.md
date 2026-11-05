@@ -240,6 +240,7 @@ hole? [SECURITY.md](SECURITY.md).
 | | |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | how it is built and why — layout, configuration model, security, memory, the deliberate scope cuts |
+| [docs/developer-gateway.md](docs/developer-gateway.md) | scoped developer MCP access: deployment status, approved secret sealing, onboarding and pilot checks |
 | [docs/DEPLOYING.md](docs/DEPLOYING.md) | running it for real: supervisors, logs, schema changes, local-model tuning |
 | `./manage help` | connector auth, introspection, retention, the vendor canary, both eval harnesses |
 

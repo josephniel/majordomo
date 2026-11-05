@@ -121,7 +121,7 @@ manage — majordomo stack
   Misc:
     canary [persona]                 test each LLM vendor actually calls tools
     gateway-token add|revoke <persona> <name> | list <persona>
-                                     developer gateway tokens (add prints once)
+                                     scoped gateway access (add: --grant, --token-file)
     cli [persona] -- <args...>       raw passthrough to python cli.py
     test [pytest-args...]            run the test suite (unit + integration)
     eval [--vendor groq,gemini]      replay tool-calling evals against live vendors
