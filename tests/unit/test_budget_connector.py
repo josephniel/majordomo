@@ -358,6 +358,53 @@ class TestTools:
         assert calls == [(1, 50)]
 
 
+class TestShareOnPeople:
+    """A person's share written straight onto People leaves the paying account too high."""
+
+    @staticmethod
+    def _handler(posted):
+        def handler(request):
+            path = request.url.path
+            if path.endswith("/tags"):
+                return httpx.Response(200, json=TAG_TREE)
+            if path.endswith("/accounts"):
+                return httpx.Response(200, json=[
+                    {"id": 34, "name": "People", "type": "people"},
+                    {"id": 10, "name": "Maya", "type": "credit card"},
+                ])
+            posted.append(path)
+            return httpx.Response(200, json={
+                "id": 1, "type": "debit", "amount": "1.00", "description": "x",
+                "occurred_at": "2026-11-01T00:00:00Z",
+            })
+        return handler
+
+    async def _record(self, posted, **args):
+        tools = _connector_tools(self._handler(posted))
+        return await tools["record_transaction"].handler(
+            {"amount": 100, "tag_id": 35, "counterparty": "Jed F", **args}, CTX,
+        )
+
+    async def test_a_credit_on_people_is_refused(self):
+        posted = []
+        result = await self._record(posted, account_id=34, type="credit")
+        assert result.is_error
+        assert "record_split" in result.text
+        assert posted == []
+
+    async def test_someone_else_paying_is_still_a_debit_on_people(self):
+        posted = []
+        result = await self._record(posted, account_id=34, type="debit")
+        assert not result.is_error
+        assert len(posted) == 1
+
+    async def test_money_in_on_a_real_account_is_fine(self):
+        posted = []
+        result = await self._record(posted, account_id=10, type="credit")
+        assert not result.is_error
+        assert len(posted) == 1
+
+
 class TestPushToSplitwise:
     """A row already in the ledger reaches Splitwise through the queue, linked."""
 

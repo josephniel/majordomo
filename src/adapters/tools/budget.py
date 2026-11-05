@@ -655,6 +655,31 @@ def _read_tools(client: BudgetClient) -> list[ToolSpec]:
     ]
 
 
+async def _reject_share_on_people(client: BudgetClient, account_id: int) -> ToolResult | None:
+    """Refuse "they owe me" written straight onto the People account.
+
+    It looks right: the person's balance goes up. But no money left any account, so
+    whatever paid for it now reads too high. Re-splitting three bills this way on
+    2026-11-05 left Maya 2,079 and GCash 1,781 out, with every balance a person could
+    see still correct, so nothing looked wrong.
+    """
+    try:
+        accounts = await client.list_accounts()
+    except Exception:
+        # As with the tag check: a flaky GET should not cost a recorded expense.
+        log.warning("budget: could not read accounts to pre-check a credit", exc_info=True)
+        return None
+    account = next((a for a in accounts if a.get("id") == account_id), None)
+    if account is None or str(account.get("type") or "") != "people":
+        return None
+    return ToolResult.error(
+        "Nothing was recorded. A person's share cannot be a credit on the People "
+        "account, because no money would leave the account that paid. Use record_split "
+        "on the paying account; if the user has no share of it, total_amount is the sum "
+        "of the shares. A repayment is settle_person."
+    )
+
+
 def _write_tools(client: BudgetClient) -> list[ToolSpec]:
     """Record a solo transaction — the user paid alone, or owes someone."""
     @tool(
@@ -765,6 +790,8 @@ def _write_tools(client: BudgetClient) -> list[ToolSpec]:
                     "balance they owe you, use settle_person instead."
                 )
             bad = await _reject_bad_tag(client, tag_id, kind)
+            if bad is None and kind == "credit":
+                bad = await _reject_share_on_people(client, account_id)
             if bad is not None:
                 return bad
             payload: dict[str, Any] = {
@@ -1542,11 +1569,12 @@ def _undo_tools(client: BudgetClient) -> list[ToolSpec]:
         "Delete ONE budget transaction by its id (the number in [brackets] "
         "from recent_transactions). Use to undo a mistaken entry — most often "
         "a record_transaction written for the full amount when the purchase "
-        "was really a split, which record_split then duplicated. Deletes only "
-        "the single row given: a split booked several rows (your own share, "
-        "plus one per person), so removing a whole split means calling this "
-        "once per id. Confirm the id against recent_transactions first — this "
-        "cannot be undone.",
+        "was really a split, which record_split then duplicated. Deletes the row "
+        "and its other side: deleting a person's share also takes that amount off "
+        "the account that paid. A split booked several rows (your own share, plus "
+        "one per person), so removing a whole split means calling this once per "
+        "id. Confirm the id against recent_transactions first — this cannot be "
+        "undone.",
         {
             "type": "object",
             "properties": {
@@ -1851,6 +1879,11 @@ written into the description is not a date, it is a note nobody will read.
 BALANCES ARE READABLE. "how much is in my checking", "how much do I have
 left", "how much do I owe on the card" -> account_balances. list_accounts
 gives ids, not money. Never tell the user to go look in the app himself.
+
+TO CHANGE WHO OWES WHAT ON A SPLIT, record_split the new shares on the account that
+paid, then delete_transaction each old share. Deleting a share also takes it off the
+paying account, so the new split is what puts it back. Never write a person's share
+as a credit on the People account.
 
 TO CORRECT AN EXISTING ENTRY, USE amend_transaction — its time, amount,
 description, tag or counterparty. Pass only what changes; it keeps the rest.
