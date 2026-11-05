@@ -154,7 +154,9 @@ async def test_a_tap_returns_that_option_and_freezes_the_message():
 async def test_nobody_answering_returns_none():
     p, bot = _platform()
     bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
-    answer = await p.request_choice(ConversationRef("telegram", "42"), "Row", ["A"], give_up_after=0.01)
+    answer = await p.request_choice(
+        ConversationRef("telegram", "42"), "Row", ["A"], give_up_after=0.01,
+    )
     assert answer is None
     assert "Timed out" in bot.edit_message_text.await_args.args[0]
 
