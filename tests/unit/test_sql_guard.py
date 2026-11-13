@@ -70,13 +70,15 @@ def test_forbidden_verbs_are_refused_on_the_write_path(sql: str) -> None:
 
 
 def test_savepoint_is_refused_by_the_allow_list_not_the_deny_list() -> None:
-    """SAVEPOINT parses as an Alias, not a transaction node.
+    """SAVEPOINT must be refused, whichever way the parser reads it.
 
-    It is caught because the root is not a permitted type — which is the whole
-    argument for ordering the allow-list first.
+    Up to sqlglot 30.17 it parses as an Alias and is caught because the root is
+    not a permitted type, which is the argument for ordering the allow-list
+    first. From 30.31 it parses as a transaction statement and the deny-list
+    catches it instead. Either refusal is correct; letting it through is not.
     """
-    assert _code(classify_read("SAVEPOINT s")) == "not_a_read"
-    assert _code(classify_write("SAVEPOINT s", ALLOWED)) == "not_a_write"
+    assert _code(classify_read("SAVEPOINT s")) in {"not_a_read", "forbidden_statement"}
+    assert _code(classify_write("SAVEPOINT s", ALLOWED)) in {"not_a_write", "forbidden_statement"}
 
 
 @pytest.mark.parametrize(

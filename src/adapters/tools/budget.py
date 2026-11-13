@@ -19,6 +19,7 @@ import logging
 import sys
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -250,6 +251,10 @@ class BudgetClient:
             "POST", "/transactions/external",
             body={"source": source, "external_id": external_id, "transfer_ids": transfer_ids},
         ))
+
+    async def repayment_plan(self) -> dict[str, Any]:
+        """Return the saved repayment plan, worked out against today's debts."""
+        return json_object(await self._request("GET", "/plan/repayment"))
 
     async def add_reference(
         self, ref_type: str, ref_id: str, transfer_ids: list[int]
@@ -1497,6 +1502,103 @@ def _push_tools(client: BudgetClient) -> list[ToolSpec]:
     return [push_to_splitwise_tool]
 
 
+def _peso(value: Any) -> str:
+    return f"{Decimal(str(value or 0)):,.2f}"
+
+
+def _format_plan_month(plan: dict[str, Any], month: dict[str, Any], first: bool) -> list[str]:
+    """One month of the plan as lines to read out, debt by debt."""
+    lines = [f"Pay in {month.get('label')} ({_peso(month.get('available'))} to pay with):"]
+    checklist = {c.get("account_id"): c for c in plan.get("checklist") or []} if first else {}
+    for p in month.get("payments") or []:
+        amount = Decimal(str(p.get("paid") or 0)) + Decimal(str(p.get("fees") or 0))
+        if amount <= 0:
+            continue
+        line = f"- {p.get('name')}: {_peso(amount)}"
+        if p.get("closes"):
+            line += " (closes it)"
+        c = checklist.get(p.get("account_id"))
+        if c and c.get("scheduled"):
+            pay = [i for i in c["scheduled"] if i.get("kind") == "payment"]
+            line += "; approve scheduled " + ", ".join(
+                f"#{i.get('id')} {_peso(i.get('amount'))} due {i.get('due_date')}" for i in pay
+            )
+            interest = [i for i in c["scheduled"] if i.get("kind") == "interest"]
+            if interest:
+                line += " with its interest " + ", ".join(f"#{i.get('id')}" for i in interest)
+            if Decimal(str(c.get("beyond_schedule") or 0)) > 0:
+                line += f"; plus {_peso(c['beyond_schedule'])} extra"
+        elif first:
+            line += "; record the payment with record_transfer"
+        lines.append(line)
+    arriving = [*(month.get("collections") or []), *(month.get("windfalls") or [])]
+    if arriving:
+        lines.append("Arriving: " + ", ".join(
+            f"{_peso(a.get('amount'))} {a.get('label')}" for a in arriving))
+    return lines
+
+
+def _format_repayment(plan: dict[str, Any], month_key: str | None) -> str:
+    summary = plan.get("summary") or {}
+    inputs = plan.get("inputs") or {}
+    lines: list[str] = []
+    if summary.get("debt_free"):
+        lines.append(
+            f"Debt-free {summary.get('debt_free_on')} ({summary.get('months')} months, "
+            f"{_peso(summary.get('total_interest'))} interest)."
+        )
+    else:
+        lines.append("The plan does not clear the debt within its horizon.")
+    budget = inputs.get("budget_used")
+    source = "set by you" if inputs.get("monthly_budget") is not None else "your recent average"
+    lines.append(f"Monthly budget for debt on top of minimums: {_peso(budget)} ({source}).")
+    months = plan.get("months") or []
+    if not months:
+        return "\n".join(lines)
+    if month_key:
+        chosen = next((m for m in months if m.get("month") == month_key), None)
+        if chosen is None:
+            return "\n".join([*lines, f"The plan has no month {month_key}."])
+        lines += _format_plan_month(plan, chosen, chosen is months[0])
+    else:
+        lines += _format_plan_month(plan, months[0], True)
+    closings = [
+        f"{d.get('name')} {d.get('closes_on')}"
+        for d in plan.get("debts") or [] if d.get("closes_on")
+    ]
+    if closings:
+        lines.append("Closes: " + ", ".join(closings) + ".")
+    lines += [f"Note: {n}" for n in plan.get("notes") or []]
+    return "\n".join(lines)
+
+
+def _plan_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Say what to pay each debt, from the saved repayment plan."""
+    @tool(
+        "repayment_plan",
+        "What to pay each debt, from the user's saved repayment plan: the next month by "
+        "default, with which scheduled installments to approve and which card payments to "
+        "record, plus when each debt closes and the debt-free date. Use this for 'what do "
+        "I pay this month', 'when am I debt-free', 'when does X close'. Quote its amounts. "
+        "Args: month (optional, YYYY-MM) for a later month.",
+        {
+            "type": "object",
+            "properties": {
+                "month": {"type": "string", "description": "YYYY-MM, a month in the plan."},
+            },
+        },
+    )
+    @_guarded
+    async def repayment_plan_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        month = str(args.get("month") or "").strip() or None
+        plan = await client.repayment_plan()
+        if not plan.get("debts"):
+            return ToolResult.ok("No debt on record.")
+        return ToolResult.ok(_format_repayment(plan, month))
+
+    return [repayment_plan_tool]
+
+
 def _reference_tools(client: BudgetClient) -> list[ToolSpec]:
     """Say what an entry is elsewhere, and find an entry by that."""
     @tool(
@@ -1791,6 +1893,7 @@ class BudgetConnector(Connector):
         "recent_transactions",
         "account_balances",
         "find_by_reference",
+        "repayment_plan",
         # write
         "record_transaction",
         "record_split",
@@ -1821,6 +1924,7 @@ class BudgetConnector(Connector):
         "push_to_splitwise": "Queueing the split for Splitwise",
         "add_reference": "Adding the reference",
         "find_by_reference": "Looking up the reference",
+        "repayment_plan": "Reading the repayment plan",
         "list_pending_payments": "Checking scheduled payments",
         "approve_pending_payment": "Settling the scheduled payment",
         "amend_pending_payment": "Adjusting the scheduled payment",
@@ -1853,6 +1957,10 @@ An entry ALREADY in the ledger but missing from Splitwise -> push_to_splitwise
 with any of its row ids. A row marked "(queued for Splitwise)" is not missing:
 it is on its way, so leave it alone. A row marked "(ref splitwise:<id>)" is that
 Splitwise expense.
+
+"What do I pay this month", "when am I debt-free", "when does X close" ->
+repayment_plan. It names which scheduled installments to approve
+(approve_pending_payment) and which card payments to record (record_transfer).
 
 "Do they match", "why is it different", "are there duplicates" -> reconcile_person.
 Quote its figures. Do not list rows and compare them yourself, and do not say two
@@ -1968,6 +2076,7 @@ problem when the real answer is that you are using the wrong tool."""
             *_write_tools(client),
             *_push_tools(client),
             *_reference_tools(client),
+            *_plan_tools(client),
             *_transfer_tools(client),
             *_pending_tools(client),
             *_split_tools(client),

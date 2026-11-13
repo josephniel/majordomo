@@ -549,6 +549,79 @@ class TestReferences:
         assert "Nothing carries gcash:G1" in result.text
 
 
+class TestRepaymentPlan:
+    """'What do I pay this month' answered from the saved plan."""
+
+    PLAN: ClassVar[dict] = {
+        "currency": "PHP",
+        "summary": {"debt_free": True, "debt_free_on": "2028-04", "months": 17,
+                    "total_interest": "507891.93"},
+        "inputs": {"budget_used": "18123.65", "monthly_budget": None},
+        "debts": [
+            {"account_id": 13, "name": "SB Finance Loan", "closes_on": "Dec 2027"},
+            {"account_id": 10, "name": "Maya Credit Card", "closes_on": "Feb 2028"},
+        ],
+        "months": [
+            {"month": "2026-12", "label": "Dec 2026", "available": "161789.28",
+             "collections": [], "windfalls": [{"label": "13th month", "amount": "120000"}],
+             "payments": [
+                 {"account_id": 13, "name": "SB Finance Loan", "paid": "56345.87",
+                  "fees": "0", "left": "516950", "closes": False},
+                 {"account_id": 10, "name": "Maya Credit Card", "paid": "32892.84",
+                  "fees": "0", "left": "467112", "closes": False},
+             ]},
+            {"month": "2027-01", "label": "Jan 2027", "available": "161789.28",
+             "collections": [{"label": "Ann", "amount": "10000"}], "windfalls": [],
+             "payments": [
+                 {"account_id": 10, "name": "Maya Credit Card", "paid": "467112",
+                  "fees": "0", "left": "0", "closes": True},
+             ]},
+        ],
+        "checklist": [
+            {"account_id": 13, "name": "SB Finance Loan", "plan_amount": "56345.87",
+             "beyond_schedule": "18123.65",
+             "scheduled": [
+                 {"id": 621, "kind": "payment", "amount": "38222.22", "due_date": "2026-11-18"},
+                 {"id": 622, "kind": "interest", "amount": "19454.00", "due_date": "2026-11-18"},
+             ]},
+            {"account_id": 10, "name": "Maya Credit Card", "plan_amount": "32892.84",
+             "beyond_schedule": "0", "scheduled": []},
+        ],
+        "notes": ["Assumes no new card spending from today."],
+    }
+
+    def _tools(self):
+        return _connector_tools(lambda _request: httpx.Response(200, json=self.PLAN))
+
+    async def test_the_next_month_says_how_to_pay_each_debt(self):
+        result = await self._tools()["repayment_plan"].handler({}, CTX)
+        text = result.text
+        assert "Debt-free 2028-04 (17 months" in text
+        assert "Pay in Dec 2026 (161,789.28 to pay with):" in text
+        assert "SB Finance Loan: 56,345.87; approve scheduled #621 38,222.22 due 2026-11-18" in text
+        assert "with its interest #622" in text
+        assert "plus 18,123.65 extra" in text
+        assert "Maya Credit Card: 32,892.84; record the payment with record_transfer" in text
+        assert "Arriving: 120,000.00 13th month" in text
+        assert "Closes: SB Finance Loan Dec 2027, Maya Credit Card Feb 2028." in text
+        assert "(your recent average)" in text
+
+    async def test_a_later_month_on_request(self):
+        result = await self._tools()["repayment_plan"].handler({"month": "2027-01"}, CTX)
+        assert "Pay in Jan 2027" in result.text
+        assert "Maya Credit Card: 467,112.00 (closes it)" in result.text
+        assert "record_transfer" not in result.text      # only the next month is actionable
+
+    async def test_a_month_outside_the_plan_says_so(self):
+        result = await self._tools()["repayment_plan"].handler({"month": "2031-01"}, CTX)
+        assert "no month 2031-01" in result.text
+
+    async def test_no_debt(self):
+        tools = _connector_tools(lambda _r: httpx.Response(200, json={"debts": []}))
+        result = await tools["repayment_plan"].handler({}, CTX)
+        assert result.text == "No debt on record."
+
+
 class TestContract:
     def test_write_tools_declared(self):
         assert frozenset(
