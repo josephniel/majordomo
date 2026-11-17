@@ -1038,9 +1038,12 @@ def _pending_tools(client: BudgetClient) -> list[ToolSpec]:
         except KeyError as e:
             return ToolResult.error(f"error: missing required arg {e}")
         amount = args.get("amount")
-        row = await client.approve_pending_payment(
-            sid, float(amount) if amount is not None else None,
-        )
+        try:
+            row = await client.approve_pending_payment(
+                sid, float(amount) if amount is not None else None,
+            )
+        except httpx.HTTPStatusError as e:
+            return ToolResult.error(_approve_failed(sid, e))
         return ToolResult.ok(
             f"settled: {row.get('description') or 'scheduled payment'} "
             f"{row.get('amount','')} on {row.get('account_name','?')} "
@@ -1048,6 +1051,38 @@ def _pending_tools(client: BudgetClient) -> list[ToolSpec]:
         )
 
     return [list_pending_payments_tool, approve_pending_payment_tool]
+
+
+def _approve_failed(sid: int, e: httpx.HTTPStatusError) -> str:
+    """Say plainly that an approval did NOT happen, and what not to do about it.
+
+    On 2026-11-14 approving SB Finance amortization 621 failed with "from_account_id
+    and to_account_id must differ" (it had been amended onto the loan's own paying
+    account). The model later told the user it HAD approved it, and on 2026-11-17
+    "fixed" the balance with a hand-written expense: the loan never went down and
+    the installment stayed open, ready to be counted twice. A bare API error left
+    room for both.
+    """
+    base = format_http_error(_VENDOR, e)
+    text = (e.response.text or "").lower()
+    lines = [
+        f"error: scheduled payment {sid} was NOT approved. Nothing was posted. {base}",
+        "- Tell the user it failed and why. Never say it was approved.",
+        (
+            "- Do NOT record the payment with record_transaction or record_transfer to "
+            "work around this: the scheduled item stays open and the money is then "
+            "counted twice, and a loan paid that way never goes down."
+        ),
+    ]
+    if "must differ" in text:
+        lines.append(
+            "- 'must differ' means the item's account is the same account that pays "
+            "it. For a loan installment that happens when the item was moved off the "
+            "loan account onto the paying account (e.g. GCash). The item belongs on "
+            "the LOAN account; approving it moves the money from the loan's paying "
+            "account by itself. Ask the user before changing anything."
+        )
+    return "\n".join(lines)
 
 
 def _date_clash(sid: int, e: httpx.HTTPStatusError) -> str:
@@ -1072,6 +1107,33 @@ def _date_clash(sid: int, e: httpx.HTTPStatusError) -> str:
         f"- If the user paid {sid} early, approve_pending_payment it WITHOUT "
         "changing due_date. An early approval posts dated today.\n"
         "- Otherwise ask the user which date they meant."
+    )
+
+
+async def _loan_move_refusal(
+    client: BudgetClient, sid: int, current: dict[str, Any], new_account: int,
+) -> str | None:
+    """Refuse moving a loan installment off its loan account; None when the move is fine.
+
+    A loan installment is a CREDIT on the loan account, and the tracker posts it
+    as a transfer FROM the loan's paying account. "I paid the SB loan from GCash"
+    reads like amend-the-account-then-approve, but moving the item onto GCash
+    makes it a GCash-to-GCash transfer, which the tracker refuses ("must differ"),
+    so the installment can never be approved (SB Finance 621, 2026-11-14).
+    """
+    accounts = {a.get("id"): a for a in await client.list_accounts()}
+    here = accounts.get(current.get("account_id")) or {}
+    if here.get("type") != "loan":
+        return None
+    there = accounts.get(new_account) or {}
+    return (
+        f"error: scheduled payment {sid} was NOT changed. It is an installment of the "
+        f"loan '{here.get('name', '?')}' and must stay on that loan account. Approving "
+        "it already takes the money from the loan's paying account, so for 'I paid it "
+        f"from {there.get('name', 'that account')}' just call approve_pending_payment "
+        "on it as it stands. Moving it onto the paying account makes it impossible to "
+        "approve. If the user paid from an account the loan is not normally paid from, "
+        "tell them and ask; do not record the payment by hand."
     )
 
 
@@ -1144,8 +1206,13 @@ def _amend_pending_tools(client: BudgetClient) -> list[ToolSpec]:
                 "be edited. If it has posted, correct the ledger row with "
                 "amend_transaction instead."
             )
+        new_account = int(args["account_id"]) if args.get("account_id") else None
+        if new_account is not None and new_account != current.get("account_id"):
+            refusal = await _loan_move_refusal(client, sid, current, new_account)
+            if refusal:
+                return ToolResult.error(refusal)
         payload: dict[str, Any] = {
-            "account_id": int(args["account_id"]) if args.get("account_id")
+            "account_id": new_account if new_account is not None
             else current.get("account_id"),
             "counter_account_id": current.get("counter_account_id"),
             "type": current.get("type"),
@@ -1983,6 +2050,16 @@ If the user names a clearing DATE or a paying ACCOUNT that differs from the
 schedule, call amend_pending_payment FIRST and then approve. approve posts the
 row exactly as it stands, so it cannot honour either on its own — and a date
 written into the description is not a date, it is a note nobody will read.
+EXCEPT LOAN INSTALLMENTS (amortizations on a loan account): they stay on the loan
+account. Approving one already moves the money from the loan's paying account, so
+"I paid the SB loan from GCash" is approve_pending_payment as it stands — never
+amend its account to GCash; that makes it impossible to approve.
+
+IF AN APPROVAL FAILS, IT DID NOT HAPPEN. Tell the user it failed and why, in
+those words. Never say it was approved, and never record the payment by hand with
+record_transaction or record_transfer to make a balance match: the scheduled item
+stays open (so the money gets counted twice) and a loan paid that way never goes
+down. Ask the user what to do.
 
 BALANCES ARE READABLE. "how much is in my checking", "how much do I have
 left", "how much do I owe on the card" -> account_balances. list_accounts

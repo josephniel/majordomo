@@ -1573,3 +1573,83 @@ class TestAmendPendingPayment:
         ].handler({"id": 490}, CTX)
         assert result.is_error
         assert "list_pending_payments" in result.text
+
+    LOAN_ROW: ClassVar[dict] = {
+        "id": 621, "account_id": 13, "account_name": "SB Finance Loan",
+        "counter_account_id": None, "type": "credit", "amount": "38222.22",
+        "description": "Amortization due (15/36)", "due_date": "2026-11-18",
+        "tag_id": 47, "status": "scheduled",
+    }
+    ACCOUNTS: ClassVar[list] = [
+        {"id": 13, "name": "SB Finance Loan", "type": "loan"},
+        {"id": 3, "name": "GCash", "type": "debit card"},
+        {"id": 7, "name": "UnionBank Savings", "type": "savings account"},
+        {"id": 8, "name": "UnionBank 5243", "type": "checking account"},
+    ]
+
+    def _with_accounts(self, seen, row):
+        inner = self._handler(seen, row=row)
+
+        def handler(request):
+            if request.url.path == "/accounts":
+                return httpx.Response(200, json=self.ACCOUNTS)
+            return inner(request)
+
+        return handler
+
+    async def test_a_loan_installment_is_not_moved_onto_its_paying_account(self):
+        # SB Finance 621, 2026-11-14: "paid from GCash" was read as "move it to
+        # GCash", which made the installment impossible to approve.
+        seen = {}
+        result = await _connector_tools(self._with_accounts(seen, self.LOAN_ROW))[
+            "amend_pending_payment"
+        ].handler({"id": 621, "account_id": 3}, CTX)
+        assert result.is_error
+        assert "NOT changed" in result.text
+        assert "SB Finance Loan" in result.text
+        assert "approve_pending_payment" in result.text
+        assert "body" not in seen  # nothing was written
+
+    async def test_a_loan_installment_can_still_change_its_date(self):
+        seen = {}
+        result = await _connector_tools(self._with_accounts(seen, self.LOAN_ROW))[
+            "amend_pending_payment"
+        ].handler({"id": 621, "due_date": "2026-11-14"}, CTX)
+        assert not result.is_error
+        assert seen["body"]["account_id"] == 13
+
+    async def test_a_non_loan_item_still_moves_account(self):
+        seen = {}
+        result = await _connector_tools(self._with_accounts(seen, self.ROW))[
+            "amend_pending_payment"
+        ].handler({"id": 490, "account_id": 7}, CTX)
+        assert not result.is_error
+        assert seen["body"]["account_id"] == 7
+
+
+class TestApproveFailureIsNotSuccess:
+    """A refused approval must read as NOT done, with no hand-recorded workaround."""
+
+    async def test_a_refused_approval_says_it_did_not_happen(self):
+        def handler(request):
+            return httpx.Response(
+                400, json={"detail": "from_account_id and to_account_id must differ"})
+
+        result = await _connector_tools(handler)["approve_pending_payment"].handler(
+            {"id": 621}, CTX)
+        assert result.is_error
+        assert "NOT approved" in result.text
+        assert "Never say it was approved" in result.text
+        assert "record_transaction" in result.text
+        assert "LOAN account" in result.text
+
+    async def test_other_refusals_keep_the_api_detail(self):
+        def handler(request):
+            return httpx.Response(400, json={"detail": "Item is already posted"})
+
+        result = await _connector_tools(handler)["approve_pending_payment"].handler(
+            {"id": 5}, CTX)
+        assert result.is_error
+        assert "NOT approved" in result.text
+        assert "Item is already posted" in result.text
+        assert "LOAN account" not in result.text
