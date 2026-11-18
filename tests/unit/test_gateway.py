@@ -14,13 +14,11 @@ import pytest
 
 from adapters.trigger import gateway as gw_mod
 from adapters.trigger.gateway import GatewayRefusalError, GatewayService, Located
-from adapters.trigger.gateway_mcp import (
-    DeveloperRegistry,
-    GatewayServer,
-    add_developer,
-    revoke_developer,
-)
+from adapters.trigger.gateway_access import DeveloperRegistry, add_developer, revoke_developer
+from adapters.trigger.gateway_deployments import DeploymentBinding, DeploymentStatusService
+from adapters.trigger.gateway_mcp import GatewayServer
 from adapters.trigger.gateway_seal import SealSecretAction, cert_fingerprint
+from tests.unit.test_gateway_deployments import TARGET, Reader
 
 CANARY = "CANARY-9f1c2e7a-do-not-leak"
 OTHER = "SHORT-other"
@@ -85,6 +83,7 @@ def make_service(tmp_path, action, operator, card_seconds=5.0):
         state_file=tmp_path / "data" / "gateway_requests.json",
         audit_file=tmp_path / "data" / "gateway_audit.jsonl",
         card_seconds=card_seconds,
+        authorize=lambda _name, _action, _params: True,
     )
 
 
@@ -212,6 +211,76 @@ class TestLifecycle:
         req = await svc.submit("jane", "fake", {"thing": "x"})
         assert req.request_id in svc.operator_command("list")
         assert "Usage" in svc.operator_command("bogus")
+
+    async def test_idempotent_submission_survives_restart(self, tmp_path):
+        svc = make_service(tmp_path, FakeAction(present=False), Operator())
+        first = await svc.submit("jane", "fake", {"thing": "x"}, "stable-key")
+        again = make_service(tmp_path, FakeAction(present=False), Operator())
+        second = await again.submit("jane", "fake", {"thing": "x"}, "stable-key")
+        assert first.request_id == second.request_id
+        assert len(again.mine("jane")) == 1
+        with pytest.raises(GatewayRefusalError, match="another request"):
+            await again.submit("jane", "fake", {"thing": "changed"}, "stable-key")
+        other = await again.submit("joe", "fake", {"thing": "x"}, "stable-key")
+        assert other.request_id != first.request_id
+
+    async def test_same_key_after_a_failed_request_starts_a_new_one(self, tmp_path):
+        svc = make_service(tmp_path, FakeAction(present=False), Operator())
+        first = await svc.submit("jane", "fake", {"thing": "x"}, "stable-key")
+        first.state = "failed"
+        retry = await svc.submit("jane", "fake", {"thing": "x"}, "stable-key")
+        assert retry.request_id != first.request_id
+        assert retry.state == "awaiting_value"
+        again = await svc.submit("jane", "fake", {"thing": "x"}, "stable-key")
+        assert again.request_id == retry.request_id
+
+    async def test_state_from_another_build_never_stops_startup(self, tmp_path):
+        svc = make_service(tmp_path, FakeAction(present=False), Operator())
+        req = await svc.submit("jane", "fake", {"thing": "x"})
+        state = tmp_path / "data" / "gateway_requests.json"
+        raw = json.loads(state.read_text())
+        raw["requests"][0]["field_from_a_newer_build"] = 1
+        raw["requests"].append({"request_id": "REQ-BROKEN"})
+        state.write_text(json.dumps(raw))
+        again = make_service(tmp_path, FakeAction(present=False), Operator())
+        assert again.status("jane", req.request_id) is not None
+        assert "REQ-BROKEN" not in again._requests
+
+    async def test_refusals_are_audited_without_raw_arguments(self, tmp_path):
+        svc = make_service(tmp_path, FakeAction(), Operator())
+        svc.authorize = lambda _name, _action, _params: False
+        with pytest.raises(GatewayRefusalError, match="not permitted"):
+            await svc.submit("jane", "fake", {"thing": "x"})
+        with pytest.raises(GatewayRefusalError, match="thing required"):
+            await svc.submit("jane", "fake", {"thing": "", "value": CANARY})
+        audit = (tmp_path / "data" / "gateway_audit.jsonl").read_text()
+        lines = [json.loads(line) for line in audit.splitlines()]
+        assert [line["event"] for line in lines] == ["refused", "refused"]
+        assert CANARY not in audit
+
+    async def test_refusal_while_locating_in_the_worker_is_reported(self, tmp_path):
+        action = FakeAction()
+        svc = make_service(tmp_path, action, Operator())
+        svc.start()
+        try:
+            def refuse(_params, _ref):
+                raise GatewayRefusalError("could not read the referenced secret file")
+            req = await svc.submit("jane", "fake", {"thing": "x"})
+            action.locate = refuse
+            svc._wake.set()
+            await until(lambda: req.state == "failed")
+        finally:
+            await svc.stop()
+        assert req.message == "could not read the referenced secret file"
+        assert action.runs == 0
+
+    async def test_unauthorized_request_does_not_even_locate_a_secret(self, tmp_path):
+        action = FakeAction()
+        svc = make_service(tmp_path, action, Operator())
+        svc.authorize = lambda _name, _action, _params: False
+        with pytest.raises(GatewayRefusalError, match="not permitted"):
+            await svc.submit("jane", "fake", {"thing": "x"})
+        assert not svc._requests
 
 
 # ---------------------------------------------------------------- seal_secret
@@ -364,6 +433,31 @@ class TestSealSecret:
         with pytest.raises(GatewayRefusalError, match="changed after the card"):
             await seal.run(params, located)
 
+    async def test_same_length_secret_rotation_invalidates_approval(self, seal):
+        params = seal.validate(P)
+        located = seal.locate(params, None)
+        path = seal.secrets_root / "staging/aws/secrets.yaml"
+        path.write_text(path.read_text().replace(CANARY, CANARY[::-1]))
+        with pytest.raises(GatewayRefusalError, match="changed after the card"):
+            await seal.run(params, located)
+
+    async def test_certificate_change_invalidates_approval(self, seal):
+        params = seal.validate(P)
+        located = seal.locate(params, None)
+        path = seal.secrets_root / "staging/cluster.pem"
+        path.write_text("-----BEGIN CERTIFICATE-----\n"
+                        + base64.b64encode(b"different cert").decode()
+                        + "\n-----END CERTIFICATE-----\n")
+        with pytest.raises(GatewayRefusalError, match="changed after the card"):
+            await seal.run(params, located)
+
+    def test_file_reference_cannot_cross_environment(self, seal):
+        path = seal.secrets_root / "staging/aws/secrets.yaml"
+        path.write_text(path.read_text().replace("@file:files/ca.pem", "@file:../../production/x"))
+        params = seal.validate({"env": "staging", "service": "crm-y-api", "key": "TLS_CA"})
+        with pytest.raises(GatewayRefusalError, match="outside"):
+            seal.locate(params, None)
+
     async def test_kubeseal_failure_is_redacted(self, seal, tmp_path):
         bad = tmp_path / "bad-kubeseal"
         bad.write_text('#!/bin/sh\nin=$(cat)\necho "boom: $in" >&2\nexit 1\n')
@@ -373,7 +467,7 @@ class TestSealSecret:
         with pytest.raises(GatewayRefusalError) as e:
             await seal.run(params, seal.locate(params, None))
         assert CANARY not in str(e.value)
-        assert "<redacted>" in str(e.value)
+        assert "diagnostics withheld" in str(e.value)
 
 
 # ---------------------------------------------------------------- MCP + canary
@@ -400,8 +494,14 @@ async def server(tmp_path, seal):
     op = Operator()
     svc = make_service(tmp_path, seal, op)
     devs = tmp_path / "gateway" / "developers.json"
-    tokens = {"jane": add_developer(devs, "jane"), "joe": add_developer(devs, "joe")}
-    srv = GatewayServer(service=svc, registry=DeveloperRegistry(devs), port=0)
+    tokens = {
+        "jane": add_developer(devs, "jane", ["seal_secret:staging:crm-x-api",
+                                              "deployment_status:staging:crm-gateway-api"]),
+        "joe": add_developer(devs, "joe", ["seal_secret:staging:crm-x-api"]),
+    }
+    deployments = DeploymentStatusService([DeploymentBinding(TARGET, Reader())])
+    srv = GatewayServer(service=svc, registry=DeveloperRegistry(devs), port=0,
+                        deployments=deployments)
     await srv.start()
     try:
         yield srv, op, tokens, devs
@@ -448,6 +548,79 @@ class TestMCP:
         out = await mcp_call(srv.port, tokens["jane"], "seal_secret",
                              {"env": "prod", "service_name": "crm-x-api", "key": "AWS_KEY"})
         assert "env must be one of" in out["refused"]
+
+    async def test_source_and_destination_both_need_permission(self, server):
+        srv, op, tokens, _ = server
+        out = await mcp_call(srv.port, tokens["jane"], "seal_secret", {
+            "env": "staging", "service_name": "crm-x-api", "key": "TLS_CA",
+            "source_service": "crm-y-api",
+        })
+        assert "not permitted" in out["refused"]
+        assert op.cards == []
+
+    async def test_revocation_while_card_pending_prevents_execution(self, server):
+        srv, op, tokens, devs = server
+        op.delay = 0.3
+        out = await mcp_call(srv.port, tokens["jane"], "seal_secret", {
+            "env": "staging", "service_name": "crm-x-api", "key": "AWS_KEY",
+        })
+        await until(lambda: len(op.cards) == 1)
+        revoke_developer(devs, "jane")
+        req = srv.service._requests[out["request_id"]]
+        await until(lambda: req.state == "denied")
+        assert req.result is None
+
+    async def test_rotation_does_not_authorize_an_old_pending_request(self, server):
+        srv, op, tokens, devs = server
+        op.delay = 0.3
+        out = await mcp_call(srv.port, tokens["jane"], "seal_secret", {
+            "env": "staging", "service_name": "crm-x-api", "key": "AWS_KEY",
+        })
+        await until(lambda: len(op.cards) == 1)
+        add_developer(devs, "jane", ["seal_secret:staging:crm-x-api"])
+        req = srv.service._requests[out["request_id"]]
+        await until(lambda: req.state == "denied")
+        assert req.result is None
+
+    async def test_network_retry_does_not_create_another_card(self, server):
+        srv, op, tokens, _ = server
+        args = {"env": "staging", "service_name": "crm-x-api", "key": "AWS_KEY",
+                "idempotency_key": "one-request"}
+        first = await mcp_call(srv.port, tokens["jane"], "seal_secret", args)
+        second = await mcp_call(srv.port, tokens["jane"], "seal_secret", args)
+        assert first["request_id"] == second["request_id"]
+        assert len(op.cards) == 1
+
+    async def test_list_actions_only_reveals_own_grants(self, server):
+        srv, _, tokens, _ = server
+        out = await mcp_call(srv.port, tokens["jane"], "list_actions", {})
+        assert out["actions"][0]["targets"] == [{"env": "staging", "service": "crm-x-api"}]
+
+    async def test_deployment_status_is_available_without_an_approval(self, server):
+        srv, op, tokens, _ = server
+        out = await mcp_call(srv.port, tokens["jane"], "get_deployment_status", {
+            "env": "staging", "service_name": "crm-gateway-api",
+        })
+        assert out["state"] == "healthy"
+        assert op.cards == []
+
+    async def test_deployment_status_cannot_be_used_outside_grants(self, server):
+        srv, op, tokens, _ = server
+        out = await mcp_call(srv.port, tokens["joe"], "get_deployment_status", {
+            "env": "staging", "service_name": "crm-gateway-api",
+        })
+        assert "not permitted" in out["refused"]
+        assert op.cards == []
+
+    async def test_refused_status_read_is_audited(self, server, tmp_path):
+        srv, _, tokens, _ = server
+        await mcp_call(srv.port, tokens["joe"], "get_deployment_status", {
+            "env": "staging", "service_name": "crm-gateway-api",
+        })
+        lines = [json.loads(line) for line in
+                 (tmp_path / "data" / "gateway_audit.jsonl").read_text().splitlines()]
+        assert any(line["event"] == "refused" and line["requester"] == "joe"
+                   for line in lines)
 
     async def test_canary_never_leaves(self, server, tmp_path, caplog):
         caplog.set_level(logging.DEBUG)

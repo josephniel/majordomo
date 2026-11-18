@@ -1,54 +1,57 @@
-"""Mint, revoke and list developer gateway tokens for a persona.
-
-    ./manage gateway-token add <persona> <developer-name>
-    ./manage gateway-token revoke <persona> <developer-name>
-    ./manage gateway-token list <persona>
-
-`add` prints the token ONCE; only its SHA-256 is stored, in
-instances/<persona>/gateway/developers.json. Hand it to the developer over a
-private channel. The running bot picks changes up without a restart.
-"""
+"""Manage scoped developer access; token values go only to a new private file."""
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
-from adapters.trigger.gateway_mcp import add_developer, revoke_developer
-
-_NAME_RE = re.compile(r"^[A-Za-z0-9._@-]{1,64}$")
-USAGE = "usage: gateway_token.py add|revoke <persona> <name> | list <persona>"
+from adapters.trigger.gateway_access import add_developer, parse_grant, revoke_developer
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or argv[0] not in ("add", "revoke", "list"):  # noqa: PLR2004
-        print(USAGE, file=sys.stderr)
-        return 2
-    verb, persona = argv[0], argv[1]
-    instance = Path("instances") / persona
+    parser = argparse.ArgumentParser(description="Manage exact grants and private gateway tokens.")
+    parser.add_argument("verb", choices=["add", "revoke", "list"])
+    parser.add_argument("persona")
+    parser.add_argument("name", nargs="?")
+    parser.add_argument("--grant", action="append", default=[])
+    parser.add_argument("--token-file", type=Path)
+    args = parser.parse_args(argv)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", args.persona):
+        parser.error("invalid persona name")
+    instance = Path("instances") / args.persona
     if not (instance / "persona.yaml").is_file():
-        print(f"no such persona: {persona}", file=sys.stderr)
-        return 2
+        parser.error("no such persona")
     path = instance / "gateway" / "developers.json"
-    if verb == "list":
+    if args.verb == "list":
         data = json.loads(path.read_text()) if path.exists() else {"tokens": {}}
         for entry in data.get("tokens", {}).values():
-            state = f"revoked {entry['revoked']}" if entry.get("revoked") else "active"
-            print(f"{entry.get('name')}\tcreated {entry.get('created')}\t{state}")
+            state = "revoked" if entry.get("revoked") else "active"
+            print(f"{entry.get('name')}\t{state}\t{', '.join(entry.get('grants', []))}")
         return 0
-    if len(argv) != 3 or not _NAME_RE.match(argv[2]):  # noqa: PLR2004
-        print("developer name must match [A-Za-z0-9._@-]{1,64}", file=sys.stderr)
-        return 2
-    name = argv[2]
-    if verb == "add":
-        token = add_developer(path, name)
-        print(f"Gateway token for {name} (shown once, stored only as a hash):")
-        print(token)
+    if not args.name or not re.fullmatch(r"[A-Za-z0-9._@-]{1,64}", args.name):
+        parser.error("developer name must match [A-Za-z0-9._@-]{1,64}")
+    if args.verb == "revoke":
+        print(f"revoked {revoke_developer(path, args.name)} token(s) for {args.name}")
         return 0
-    n = revoke_developer(path, name)
-    print(f"revoked {n} token(s) for {name}")
-    return 0 if n else 1
+    if not args.grant or args.token_file is None:
+        parser.error("add requires --grant action:environment:service and --token-file")
+    for grant in args.grant:
+        parse_grant(grant)
+    # Never truncate an existing credential or follow a pre-existing symlink.
+    fd = os.open(args.token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as output:
+            token = add_developer(path, args.name, args.grant)
+            output.write(json.dumps({"Authorization": f"Bearer {token}"}) + "\n")
+    except BaseException:
+        # Leave no empty or partial credential file that would block a re-run.
+        Path(args.token_file).unlink(missing_ok=True)
+        raise
+    print(f"Rotated gateway access for {args.name}; credentials saved to the private token file.")
+    return 0
 
 
 if __name__ == "__main__":
