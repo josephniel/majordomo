@@ -51,6 +51,12 @@ def _time_of(setup: AhonSetup, args: dict[str, Any]) -> tuple[int, str]:
         return ident, rule_date
     rule_id = _int(args.get("rule_id"), "rule_id (or id from list_pending_payments)")
     when = str(args.get("date") or "").strip()
+    if not when and args.get("restore"):
+        # A bill's next time skips skipped ones, so it is never the one to bring back.
+        raise PlanRefusedError(
+            "say which time to bring back: its id from list_pending_payments, or its date "
+            "(the one the skip answered). Nothing was changed."
+        )
     if not when:
         rule = setup.schedule(rule_id)
         when = str((rule or {}).get("next_on") or "")

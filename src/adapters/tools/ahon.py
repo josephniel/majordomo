@@ -30,7 +30,6 @@ import getpass
 import json
 import logging
 import sys
-from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -46,7 +45,7 @@ from adapters.ahon import (
     new_client_id,
     peso,
 )
-from adapters.ahonmodel import format_record
+from adapters.ahonmodel import format_record, repayment_notes
 from adapters.timefmt import DEFAULT_TIMEZONE
 from ports import Connector, PreviewRefusedError, ToolContext, ToolResult, ToolSpec, tool
 
@@ -122,40 +121,12 @@ def _moves(saved: Saved, req: Request) -> str:
     return f"\nmoves: {'; '.join(shown)}" if shown else ""
 
 
-def _repaid_words(saved: Saved, req: Request, notice: dict[str, Any]) -> str:
-    """Say what a share to someone the user owed became: a repayment, and lent the rest."""
-    params = notice.get("params") or {}
-    pid = params.get("person_id") or params.get("debt_id")
-    person = req.setup.person(pid) or {}
-    name = str(person.get("name") or f"person {pid}")
-    raw_split = saved.transaction.get("split")
-    split = raw_split if isinstance(raw_split, dict) else {}
-    parts = [
-        p for p in split.get("parts") or []
-        if isinstance(p.get("person"), dict) and p["person"].get("id") == pid
-    ]
-    paid = sum((as_decimal(p.get("amount")) for p in parts if p.get("kind") != "lent"), Decimal(0))
-    lent = sum((as_decimal(p.get("amount")) for p in parts if p.get("kind") == "lent"), Decimal(0))
-    how = "a payment on their debt in the plan" if notice.get("code") == (
-        "recorded_as_debt_payment") else "paying back what the user owed them"
-    if not parts:
-        return f"Ahon booked {name}'s part as {how}"
-    if lent:
-        return (
-            f"{peso(paid)} of {name}'s share is {how}; the other {peso(lent)} is lent, so they "
-            f"now owe the user {peso(lent)}"
-        )
-    return f"{name}'s share of {peso(paid)} is {how}"
-
-
 def _notices(saved: Saved, req: Request) -> str:
-    words = []
-    for n in saved.notices:
-        code = str(n.get("code"))
-        if code in ("recorded_as_repaid", "recorded_as_debt_payment"):
-            words.append(_repaid_words(saved, req, n))
-        elif code in _NOTICE_WORDS:
-            words.append(_NOTICE_WORDS[code])
+    words = repayment_notes(saved.transaction, saved.notices, req.setup)
+    words += [
+        _NOTICE_WORDS[str(n.get("code"))] for n in saved.notices
+        if str(n.get("code")) in _NOTICE_WORDS
+    ]
     return f"\nnote: {'; '.join(words)}." if words else ""
 
 
@@ -542,8 +513,9 @@ def _change_tools(w: _Writer) -> list[ToolSpec]:
 _NOTHING_OWED = (
     "Nothing was added: Ahon cannot add a person who owes nothing yet (it is being "
     "changed). Ask the user to add {name} in the Ahon app (People, then Add), then make the "
-    "original entry again with the same spelling. If {name} already owes the user something, "
-    "or he owes them, create_person takes that amount (owes_you or you_owe)."
+    "original entry again with the same spelling. create_person takes an amount only for a "
+    "debt that ALREADY stood between them before this entry; never pass the share or loan you "
+    "are about to record, or it is counted twice."
 )
 
 
@@ -596,8 +568,9 @@ def _person_tool(client: AhonClient) -> ToolSpec:
         "create_person",
         "Add a NEW person to Ahon. Only when a write was refused because the name is unknown.\n\n"
         "ASK THE USER FIRST, in words: 'X isn't in your people list — add them?' Only real "
-        "people the user settles up with; never a shop, a service or a bank. Pass owes_you or "
-        "you_owe: what is ALREADY owed between them, outside what you are about to record. "
+        "people the user settles up with; never a shop, a service or a bank. owes_you or "
+        "you_owe is a debt that ALREADY stood between them before this entry; NEVER the share "
+        "or loan you are about to record (it would be counted twice). "
         "Ahon cannot yet add someone who owes nothing; then it answers how the user adds them "
         "in the app. After it succeeds, make the original entry again with the same name. "
         "There is no undo: a person added by mistake is removed in the Ahon app.",
@@ -658,8 +631,10 @@ Splitwise: record it with the external_id the watch gave you (splitwise:<id>),
 exactly, and leave share_to_splitwise off.
 
 PEOPLE ARE NOT CREATED BY NAMING THEM. An unknown name is refused: ask the user
-("Ana isn't in your people list — add her?"), call create_person once he says yes,
-then make the original entry again. Never retry with another spelling, and never
+("Ana isn't in your people list — add her?"). Once he says yes, create_person adds
+someone who already owed something before this entry (never pass the entry's own
+amount); for someone who owes nothing it says how he adds them in the app. Then make
+the original entry again. Never retry with another spelling, and never
 add a shop, a service or a bank as a person.
 
 BILLS AND INSTALLMENTS ARE ALREADY IN AHON, WAITING. When he says he paid a bill,

@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from adapters.ahon import AhonError, describe, money, new_client_id, splitwise_ref, when_fields
-from adapters.ahonmodel import AhonSetup, choice_ledger, read_setup
+from adapters.ahonmodel import AhonSetup, choice_ledger, read_setup, repayment_notes
 from adapters.ahonwrites import RECORD, SPLIT, GatedWrites, Refused
 from adapters.timefmt import DEFAULT_TIMEZONE
 
@@ -149,8 +149,12 @@ class AhonExpenseMirror(ExpenseMirror):
             ))
         return self._said(result, shape, detail)
 
-    @staticmethod
-    def _said(saved: Saved, shape: _Shape, detail: str) -> MirrorResult:
+    def _said(self, saved: Saved, shape: _Shape, detail: str) -> MirrorResult:
+        # What Ahon did can differ from the Splitwise share: a share to someone the
+        # user owed is a repayment, and only the rest is lent (Ahon's item 178).
+        notes = repayment_notes(saved.transaction, saved.notices, self._setup)
+        if notes:
+            detail += f" ({'; '.join(notes)})"
         if saved.replayed:
             return MirrorResult(
                 recorded=True,

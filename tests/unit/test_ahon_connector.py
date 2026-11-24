@@ -879,3 +879,41 @@ class TestCredentials:
         conn = AhonConnector(config=registry)
         assert conn.build_clients() == {}
         assert conn.system_prompt_section() == ""
+
+
+class TestFollowUps:
+    async def test_restore_without_a_time_is_refused_not_aimed_at_the_next_one(self):
+        fake = FakeAhon.sample()
+        out = await _call(fake, "amend_pending_payment", {"rule_id": 2, "restore": True})
+        assert out.is_error
+        assert "which time to bring back" in out.text
+        assert fake.writes(real_only=False) == []
+
+    async def test_the_person_refusal_forbids_passing_the_entrys_own_amount(self):
+        out = await _call(FakeAhon.sample(), "create_person", {"name": "Dana"})
+        assert "never pass the share or loan you are about to record" in out.text
+
+    async def test_the_documented_redo_of_a_split_records_anew_under_the_same_id(self):
+        """Remove the split, free the id on its first part, record it again: a 201."""
+        fake = FakeAhon.sample()  # the user owes Ben 500
+        split = {
+            "account_id": 1, "category_id": 9, "total_amount": 1500,
+            "external_id": "splitwise:900", "shares": [{"person": "Ben Cruz", "amount": 800}],
+        }
+        first = await _call(fake, "record_split", split)
+        holder = next(r for r in fake.records.values() if r.get("external_id") == "splitwise:900")
+        repaid = next(r for r in fake.records.values() if r["kind"] == "repaid")
+        refused = await _call(fake, "amend_transaction",
+                              {"transaction_id": repaid["id"], "amount": 450})
+        assert refused.is_error
+        assert first.text.startswith("recorded #")
+        await _call(fake, "delete_transaction", {"transaction_id": holder["id"]})
+        await _call(fake, "undo_change",
+                    {"transaction_id": holder["id"], "undo": {"external_id": None}})
+        redone = {**split, "total_amount": 1400, "shares": [{"person": "Ben Cruz", "amount": 450}]}
+        again = await _call(fake, "record_split", redone)
+        assert again.text.startswith("recorded #"), again.text
+        live = [r for r in fake.records.values()
+                if r.get("external_id") == "splitwise:900" and not r.get("removed")]
+        assert len(live) == 1
+        assert live[0]["id"] != holder["id"]

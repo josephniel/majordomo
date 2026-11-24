@@ -593,3 +593,27 @@ class TestASharePaidBackThenLent:
         assert form["cost"] == "900.00"
         owed = {v for k, v in form.items() if k.endswith("owed_share")}
         assert owed == {"600.00", "300.00"}
+
+
+class TestMirrorSaysWhatAhonDid:
+    async def _mirrored(self, ana_balance, ana_owed):
+        fake = FakeAhon.sample()
+        fake.people[0]["balance"] = ana_balance
+        mirror = AhonExpenseMirror(fake.client(), _Decider(SURE), writes=GatedWrites(None, 1))
+        assert await mirror.load()
+        cost = str(600 + int(float(ana_owed)))
+        expense = _expense(cost=cost, my_owed="600.0", ana_owed=ana_owed)
+        return await mirror.mirror(expense, ME, "500")
+
+    async def test_a_share_above_what_was_owed_is_reported_as_repaid_and_lent(self):
+        result = await self._mirrored("-100.00", "300.0")  # the user owed Ana 100
+        assert result.recorded
+        assert (
+            "100.00 of Ana Reyes's share is paying back what the user owed them; the other "
+            "200.00 is lent"
+        ) in result.report
+
+    async def test_a_share_at_or_below_what_was_owed_is_reported_as_a_repayment(self):
+        result = await self._mirrored("-500.00", "300.0")  # the user owed Ana 500
+        assert result.recorded
+        assert "Ana Reyes's share of 300.00 is paying back what the user owed them" in result.report

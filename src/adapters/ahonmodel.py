@@ -212,6 +212,51 @@ def category_name(cat: dict[str, Any] | None) -> str:
     return APP_CATEGORY_NAMES.get(str(cat.get("kind") or ""), str(cat.get("kind") or "?"))
 
 
+_REPAID = {
+    "recorded_as_repaid": "paying back what the user owed them",
+    "recorded_as_debt_payment": "a payment on their debt in the plan",
+}
+
+
+def repayment_notes(
+    transaction: dict[str, Any], notices: list[dict[str, Any]], setup: AhonSetup,
+) -> list[str]:
+    """Say what each share to someone the user owed became: a repayment, and lent the rest.
+
+    Ahon's item 178: from an account, such a share is a repayment of what was owed
+    and, above it, a loan of the rest, as parts of the same split. One notice per
+    such person; the parts say how much went each way.
+    """
+    raw_split = transaction.get("split")
+    split = raw_split if isinstance(raw_split, dict) else {}
+    out = []
+    for notice in notices:
+        how = _REPAID.get(str(notice.get("code")))
+        if how is None:
+            continue
+        params = notice.get("params") or {}
+        pid = params.get("person_id") or params.get("debt_id")
+        name = str((setup.person(pid) or {}).get("name") or f"person {pid}")
+        parts = [
+            p for p in split.get("parts") or []
+            if isinstance(p.get("person"), dict) and p["person"].get("id") == pid
+        ]
+        paid = sum((as_decimal(p.get("amount")) for p in parts if p.get("kind") != "lent"),
+                   Decimal(0))
+        lent = sum((as_decimal(p.get("amount")) for p in parts if p.get("kind") == "lent"),
+                   Decimal(0))
+        if not parts:
+            out.append(f"Ahon booked {name}'s part as {how}")
+        elif lent:
+            out.append(
+                f"{peso(paid)} of {name}'s share is {how}; the other {peso(lent)} is lent, so "
+                f"they now owe the user {peso(lent)}"
+            )
+        else:
+            out.append(f"{name}'s share of {peso(paid)} is {how}")
+    return out
+
+
 async def read_setup(client: AhonClient) -> AhonSetup:
     return AhonSetup(await client.setup())
 
