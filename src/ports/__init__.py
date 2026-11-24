@@ -17,6 +17,7 @@ shared contracts from here and never from a sibling's internals.
     persona.py   — PersonaIdentity (who background prompts work for)
     documents.py — DocumentStore (RAG corpus contract)
     tasks.py     — TaskStore + TrackedTask (the obligations board's contract)
+    pushqueue.py — PushQueue + QueuedPush (splits waiting for Splitwise, Ahon only)
 """
 from .context import ToolContext
 from .conversation import ConversationRef, chat_key
@@ -67,6 +68,7 @@ from .protocols import (
     ToolTraceReporting,
     VendorIntrospectable,
 )
+from .pushqueue import PushQueue, QueuedPush
 from .tasks import (
     DEFAULT_PRIORITY,
     TaskStatus,
@@ -128,7 +130,9 @@ __all__ = [
     "PersonaIdentity",
     "PersonaLike",
     "PreviewRefusedError",
+    "PushQueue",
     "Question",
+    "QueuedPush",
     "Reconciliation",
     "Scored",
     "Selection",
