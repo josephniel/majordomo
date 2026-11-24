@@ -576,6 +576,9 @@ BALANCES ARE READABLE -> account_balances. Never tell him to look in the app."""
 
 class AhonConnector(Connector):
     name = "budget"
+    # Which ledger this budget connector writes to. The Splitwise connector and the
+    # composition root read it to pick the matching reconcile tools and jobs.
+    LEDGER = "ahon"
     TRIGGER_KEYWORDS = (
         "budget", "expense", "spent", "spend", "paid", "bought", "purchase",
         "transaction", "gastos", "track", "ledger", "ahon",

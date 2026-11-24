@@ -239,6 +239,14 @@ SETTINGS: tuple[Setting, ...] = (
                 "('budget'), qualified tool ('budget__record_split') or bare "
                 "tool name. Empty = every write asks."),
 
+    # ---- which ledger the budget tools and the Splitwise jobs write to ----
+    Setting("budget_backend", "budget.backend", "BUDGET_BACKEND",
+            as_lower, "budget-tracker", Scope.PERSONA,
+            doc="Which ledger the budget connector and the Splitwise jobs use: "
+                "budget-tracker (the old budget app, the default) or ahon. "
+                "ahon needs AHON_API_KEY and AHON_BASE_URL in the budget "
+                "profile; see docs/ahon-cutover.md before changing it."),
+
     # ---- host facilities ----
     Setting("schedule_timezone", "schedule.timezone", "SCHEDULE_TIMEZONE",
             as_opt_str, None, Scope.HOST,
