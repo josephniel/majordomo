@@ -277,6 +277,42 @@ class TestWatch:
         assert "do NOT record yet" in text
         assert fake.writes() == []
 
+    async def test_an_edit_whose_id_release_is_refused_leaves_the_record_alone(self, tmp_path):
+        """The live allow-list removes unattended and asks before a link: nobody taps."""
+        fake = FakeAhon.sample()
+        fake.add(id=40, external_id="splitwise:500", account={"id": 1, "name": "GCash"})
+        gate, asked = _gate(approve=False, auto={"budget__delete_transaction"})
+        splitwise = FakeSplitwise([_expense()])
+        watcher = _watcher(tmp_path, fake, splitwise, _Decider(SURE), gate)
+        await watcher.check()
+        watcher.commit()
+        splitwise.expenses = [_expense(cost="1200.0", updated_at="2026-11-21T00:00:00Z")]
+        text = await watcher.check()
+        assert "left as it was" in text
+        assert not fake.records[40].get("removed")
+        assert fake.records[40]["external_id"] == "splitwise:500"
+        assert fake.writes() == []
+        assert len(asked) == 1
+
+    async def test_an_edit_whose_removal_fails_gets_its_id_back(self, tmp_path):
+        fake = FakeAhon.sample()
+        fake.add(id=40, external_id="splitwise:500")
+        gate, _asked = _gate(approve=True, auto={"budget__link_external_id"})
+
+        async def no_removal(_chat, _prompt):
+            return False
+
+        gate.bind(no_removal)
+        splitwise = FakeSplitwise([_expense()])
+        watcher = _watcher(tmp_path, fake, splitwise, None, gate)
+        await watcher.check()
+        watcher.commit()
+        splitwise.expenses = [_expense(cost="1200.0", updated_at="2026-11-21T00:00:00Z")]
+        text = await watcher.check()
+        assert "could not be removed and its id is back on it" in text
+        assert not fake.records[40].get("removed")
+        assert fake.records[40]["external_id"] == "splitwise:500"
+
     async def test_a_link_the_operator_denies_is_not_made(self, tmp_path):
         fake = FakeAhon.sample()
         fake.add(id=61, kind="lent", amount="300.00", occurred_on="2026-11-20",
@@ -346,6 +382,39 @@ class TestPush:
         assert "adopted" in text
         assert splitwise.created == []
         assert fake.records[70]["external_id"] == "splitwise:8000"
+
+    async def test_a_split_made_before_eight_in_the_morning_is_still_found_after_a_crash(self):
+        """Ahon answers the person's own offset; Splitwise dates in UTC. Matched in UTC."""
+        fake = FakeAhon.sample()
+        self._split(fake)
+        fake.records[70]["occurred_at"] = "2026-11-25T00:30:00+08:00"
+        fake.records[70]["occurred_on"] = "2026-11-25"
+        queue = MemoryPushQueue()
+        await queue.enqueue(70)
+        made = {"id": 8000, "date": "2026-11-24T16:30:00Z", "cost": "900.0"}
+
+        class Dated(FakeSplitwise):
+            async def get_expenses(self, **filters):
+                if "dated_after" in filters:
+                    after = filters["dated_after"][:10]
+                    return {"expenses": [made] if made["date"][:10] >= after else []}
+                return {"expenses": []}
+
+        splitwise = Dated()
+        text = await self._pusher(fake, splitwise, queue).check()
+        assert "adopted" in text
+        assert splitwise.created == []
+        assert fake.records[70]["external_id"] == "splitwise:8000"
+
+    async def test_the_expense_is_created_with_the_utc_moment(self):
+        fake = FakeAhon.sample()
+        self._split(fake)
+        fake.records[70]["occurred_at"] = "2026-11-25T00:30:00+08:00"
+        queue = MemoryPushQueue()
+        await queue.enqueue(70)
+        splitwise = FakeSplitwise()
+        await self._pusher(fake, splitwise, queue).check()
+        assert splitwise.created[0]["date"] == "2026-11-24T16:30:00+00:00"
 
     async def test_an_id_already_on_another_record_is_a_duplicate_not_a_retry_loop(self):
         fake = FakeAhon.sample()

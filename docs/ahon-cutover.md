@@ -101,9 +101,13 @@ Do these in order. Each is reversible until the restart in step 5.
    | watch links an existing record, frees an id; push links an expense | `budget__link_external_id` | **no** |
 
    Without the last one, linking asks in chat during a background poll and waits for a
-   tap (an edit upstream cannot be recorded again until its old record lets go of the id).
-   To let it run unattended, add it to `approvals.background_auto_approve`. That is the
-   owner's choice; every one of these writes is in `approval_log` either way.
+   tap. For an expense edited upstream the watch asks to let go of the old record's id
+   FIRST; if that is not approved, nothing is removed, the old record stays as it was and
+   the user is told (the edit is then not re-recorded by itself). For the push, the
+   Splitwise expense exists but stays unlinked, and the next pass (fifteen minutes later)
+   finds it by date and amount and asks again; it does not create it twice. To let these
+   run unattended, add `budget__link_external_id` to `approvals.background_auto_approve`.
+   That is the owner's choice; every one of these writes is in `approval_log` either way.
 5. **Restart** the assistant (`./manage agent-restart <persona>`).
 
 The push queue's table is created the first time a split is queued or the push runs; no

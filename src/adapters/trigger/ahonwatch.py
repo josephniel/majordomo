@@ -9,9 +9,11 @@ operator's approval path:
                holds the id (removed ones too) and every part of its split.
   deleted      the holder is removed (`delete_transaction`). Removing any part
                of a split removes all of it. Its id stays on it.
-  edited       the holder is removed AND lets go of its id (`link_external_id`
-               with null), so the expense can be recorded again under the same
-               id; then the mirror (or the model) records it as it now stands.
+  edited       the holder lets go of its id (`link_external_id` with null) and
+               THEN is removed, so the expense can be recorded again under the
+               same id; then the mirror (or the model) records it as it now
+               stands. Freeing first means a refused step leaves the ledger as
+               it was; a removal that fails puts the id back.
   id held by a removed record  (an upstream delete, undone): the id is let go
                of first, then the expense is treated as new.
   not linked but there  the person's history is searched for an unlinked record
@@ -229,12 +231,26 @@ class AhonSplitwiseWatcher(SplitwiseWatcher):
         if prior is None or prior == str(e.get("updated_at") or ""):
             return ""
         rid = int(holder.get("id") or 0)
-        if not await self._remove(ahon, holder, eid):
-            return f"{line}  (EDITED upstream; could not remove Ahon record #{rid} — fix by hand)"
+        # The id is let go of FIRST. Removing first would leave, on a refused or
+        # unanswered second step, a removed record still holding the id: nothing
+        # replaces it and the next poll has already moved past the edit.
         if not await self._release(ahon, holder, eid):
             return (
-                f"{line}  (EDITED upstream; Ahon record #{rid} is removed but still holds "
-                f"{splitwise_ref(eid)}, so it cannot be recorded again yet. Tell the user.)"
+                f"{line}  (EDITED upstream; Ahon record #{rid} was left as it was, because "
+                "letting go of its Splitwise id was not approved or failed. Tell the user.)"
+            )
+        if not await self._remove(ahon, holder, eid):
+            relinked = await self._put(
+                LINK, {"transaction_id": rid, "external_id": splitwise_ref(eid),
+                       "because": "its removal did not happen"},
+                ahon, rid, {"external_id": splitwise_ref(eid)},
+            )
+            state = "and its id is back on it" if relinked else (
+                f"and it NO LONGER holds {splitwise_ref(eid)}"
+            )
+            return (
+                f"{line}  (EDITED upstream; Ahon record #{rid} could not be removed {state}. "
+                "Tell the user; do not record it.)"
             )
         payer = holder.get("account") or holder.get("debt") or {}
         category = holder.get("category") or {}

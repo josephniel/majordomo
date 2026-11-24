@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from adapters.ahon import AhonError, describe, splitwise_expense_id, splitwise_ref
 from adapters.ahonwrites import LINK, GatedWrites, Refused
-from adapters.timefmt import local_date
+from adapters.timefmt import local_date, utc_iso
 
 from .splitwisepush import QueuedSplit, SplitwisePusher, _duplicate_of
 
@@ -64,7 +64,11 @@ class AhonQueuedSplit(QueuedSplit):
         self.total = round(float((split or {}).get("total") or rec.get("amount") or 0), 2)
         self.transfer_ids = [record_id]
         self.description = str(rec.get("title") or "") or None
-        self.occurred_at = str(rec.get("occurred_at") or rec.get("occurred_on") or "") or None
+        # True UTC, as the old ledger handed it over. Ahon answers the person's own
+        # offset, and the inherited crash recovery matches on Splitwise's UTC DAY: a
+        # split made before 08:00 in Manila would otherwise miss the expense a dead
+        # pass created, and be created a second time.
+        self.occurred_at = utc_iso(rec.get("occurred_at") or rec.get("occurred_on")) or None
 
 
 class AhonSplitwisePusher(SplitwisePusher):
