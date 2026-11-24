@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 TIMEOUT = 20.0
+PAGE = 50
 CLICKUP = "https://api.clickup.com/api/v2"
 # Standing release rule: no production deploys Friday through Sunday.
 DEPLOY_DAYS = {0, 1, 2, 3}
@@ -74,7 +75,7 @@ class Bulletin:
         async def mrs(params: dict[str, str]) -> list[dict[str, Any]]:
             r = await client.get(
                 f"{api}/merge_requests",
-                params={"state": "opened", "per_page": "50", **params},
+                params={"state": "opened", "per_page": str(PAGE), **params},
                 headers=h,
             )
             return list(r.raise_for_status().json())
@@ -91,13 +92,16 @@ class Bulletin:
             return f"{short} {draft}{m.get('title', '')}"
 
         mine_open = [m for m in mine if not m.get("draft")]
+
+        def count(rows: list[dict[str, Any]]) -> str:
+            return f"{len(rows)}+" if len(rows) >= PAGE else str(len(rows))
         return [
             {
-                "title": f"Reviews waiting on you ({len(review)})",
+                "title": f"Reviews waiting on you ({count(review)})",
                 "items": _cap([line(m) for m in review], self.max_items),
             },
             {
-                "title": f"Your open MRs ({len(mine)}, {len(mine) - len(mine_open)} draft)",
+                "title": f"Your open MRs ({count(mine)}, {len(mine) - len(mine_open)} draft)",
                 "items": _cap([line(m) for m in mine], self.max_items),
             },
         ]
