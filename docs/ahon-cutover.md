@@ -27,9 +27,11 @@ Two tools mean something narrower than before. `amend_pending_payment` changes o
 of a bill in Ahon (its amount this time, a skip, back to the usual; Ahon item 180); the
 day it was paid and the paying account now go with `approve_pending_payment` when it is
 paid. `create_person` adds someone who owes nothing with the name alone (Ahon item 181:
-Ahon writes the person and no record), or someone who already owes something either way;
-a person added that way cannot yet take a record dated before the day they were added
-(below).
+Ahon writes the person and no record), or someone who already owes something either way.
+Someone added owing nothing has no opening, so an entry with them keeps its own day even
+before the day they were added (Ahon item 182), back to the user's first day in Ahon.
+Someone added with an amount owed starts in Ahon that day (their opening), and nothing
+with them can be dated earlier.
 
 Because the connector keeps the name `budget`, these keep working unchanged:
 `connectors: budget: read_write` and `background_tools: budget: …` in persona.yaml, the
@@ -53,23 +55,7 @@ approval prompts' names (`budget/record_split`), `approval_log`, and
 4. **The old app's push queue is empty.** Anything still queued for Splitwise in the old
    app is pushed by the old backend only; after the switch it would never go out. The
    parity survey found none on 24 Nov 2026; check again the day before.
-5. **A new person cannot yet take an earlier date.** `create_person` adds someone who
-   owes nothing with the name alone (Ahon item 181, on Ahon's `main` since `7fbf31a`):
-   Ahon writes the person and no record, and opens them the day they are added. Ahon
-   refuses any record with them dated before that day (422 `date_before_opening`). Ahon's
-   item 182 is to lift this; it was not on Ahon's `main` (`7fbf31a`) when this was
-   written. Until it is, an entry dated before today that needs a new person (a Splitwise
-   expense from last week shared with a friend not yet in Ahon, or a backdated
-   `record_split` or someone-else-paid `record_transaction`) is refused in words before
-   anything is written: the person is not added, the entry is not moved to today, and no
-   opening amount is made up. A person added recently is refused the same way for an
-   entry dated before they were added (the tools' preview, and the Splitwise mirror's note
-   to the model). The words are in one place, `before_added` in `adapters/ahon.py`; each
-   branch that uses them is tagged `AHON-LIMIT-182`. When item 182 is on Ahon's `main`,
-   delete them (grep the tag), test the earlier-dated case against a scratch Ahon, and
-   delete this item. Until then such entries are told to the user, not recorded: the
-   owner decides whether the switch waits for item 182.
-6. **The printed paper's budget tools exist on Ahon too.** The other session's branch
+5. **The printed paper's budget tools exist on Ahon too.** The other session's branch
    `herald-connector` (pushed; `origin/herald-connector` at `2b6a959` when this was
    written, no pull request) adds to the OLD budget connector, all reading the old budget
    app: the read-only tools `scheduled_payments` (the payments made by hand, overdue
@@ -93,7 +79,7 @@ approval prompts' names (`budget/record_split`), `approval_log`, and
      to a key, and the owner's yes for it, before it can be built.
 
    Nothing of this was built on this branch.
-7. **The old app's waiting bills are matched to Ahon's.** Every item still waiting in the
+6. **The old app's waiting bills are matched to Ahon's.** Every item still waiting in the
    old app's scheduled list should be a bill or a debt payment time in Ahon (Bills). After
    the switch the assistant reads only Ahon's month (`list_pending_payments`), and the old
    app's waiting items are never approved again. A loan's month-by-month principal and
@@ -194,8 +180,8 @@ migration has to be run by hand. Nothing in Ahon needs migrating for the assista
 | Pay a bill time of a month that has closed | 409 `due_row_closed` | listed as late, not offered to pay; the user decides |
 | A LONE loan (not a share in a split) above what the owner owes that person | 422 `amount_above_balance` | refused before asking, with what Ahon takes: settle what is owed, then lend the rest |
 | Change the amount of a share's repayment part while its lent rest stands | 422 `kind_direction_mismatch` | refused before asking, in words: change the lent part, or remove the split, free its outside id and record it again |
-| A record with a person dated before the day they were added (someone added owing nothing starts that day) | 422 `date_before_opening`; Ahon item 182 is to lift it | refused in words before anything is written; the person is not added for it and no opening is made up (above, item 5) |
-| Read the debt plan (`GET /v1/plan`) | 403 `session_required` | no `debt_plan` on Ahon yet (above, item 6) |
+| A record dated before the start of what it names: an account or card opened later, a person added with an amount owed (their opening), or the user's first day in Ahon | 422 `date_before_opening`, naming that account, card or person | said in words, naming which; nothing written, the date not moved, no opening made up |
+| Read the debt plan (`GET /v1/plan`) | 403 `session_required` | no `debt_plan` on Ahon yet (above, item 5) |
 | A second outside id on a record (an e-wallet reference beside a Splitwise id) | one `external_id` per record | `add_reference` writes it into the note, which `q=` finds |
 | A person on an ordinary purchase | no such field | kept in the note ("with …") |
 | Undo adding a person | `undo: null` | said in the answer; removed in the app |
@@ -206,4 +192,4 @@ The live assistant runs `herald-connector`, which also edits `runtime/container.
 `runtime/providers.py` and `adapters/tools/approvals.py`. `git merge-tree` of this branch
 with `origin/herald-connector` (`2b6a959`) reported no conflicts when this page was
 written. That is the text only: the merged tree was not built or tested, and the tools
-it adds to the old connector have no Ahon twin yet (above, "Before the day", item 6).
+it adds to the old connector have no Ahon twin yet (above, "Before the day", item 5).

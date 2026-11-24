@@ -20,9 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from adapters.ahon import (
     as_decimal,
-    before_added,
     compose_external_id,
-    earlier_day,
     money,
     new_client_id,
     peso,
@@ -135,17 +133,9 @@ def _place(setup: AhonSetup, raw: Any, name: str) -> Place:
     return place
 
 
-def _person(setup: AhonSetup, raw: Any, *, earlier: str | None = None) -> dict[str, Any]:
-    """Find the person a record names; `earlier` is the record's day when before today."""
+def _person(setup: AhonSetup, raw: Any) -> dict[str, Any]:
     person = setup.person(raw)
     if person is None:
-        named = isinstance(raw, str) and not raw.strip().isdigit()
-        if earlier and named:  # AHON-LIMIT-182
-            raise PlanRefusedError(
-                f"{before_added(' '.join(raw.split()), on=earlier)} Known people: "
-                f"{setup.people_names()}; if it is one of them under another spelling, use "
-                "that exact spelling."
-            )
         raise PlanRefusedError(
             f"Nothing was recorded: {str(raw)!r} is not a person in Ahon. Known people: "
             f"{setup.people_names()}. Use the exact spelling. If it is someone new, ask the "
@@ -181,13 +171,12 @@ async def plan_record(client: AhonClient, args: dict[str, Any]) -> Request:
     setup = await read_setup(client)
     kind = _kind(args)
     body: dict[str, Any] = {"kind": kind, "amount": _amount(args.get("amount"))}
-    when = when_fields(args.get("occurred_at"), client.timezone)
     who = args.get("person") or args.get("counterparty") or args.get("person_id")
     raw_place = args.get("account_id")
     place = _place(setup, raw_place, "account_id") if raw_place not in (None, "") else None
     extra = ""
     if who and (place is None or place.kind == "person"):
-        person = _person(setup, who, earlier=earlier_day(when, client.timezone))
+        person = _person(setup, who)
         if kind != "spending":
             raise PlanRefusedError(
                 "Money from a person is a settle-up or a loan, not income: use settle_person "
@@ -210,7 +199,7 @@ async def plan_record(client: AhonClient, args: dict[str, Any]) -> Request:
             extra = f"with {_person(setup, who)['name']}"
     body.update(_category(setup, args, kind))
     body.update(_title_and_note(args, extra))
-    body.update(when)
+    body.update(when_fields(args.get("occurred_at"), client.timezone))
     body.update(_external(args))
     said = [f"kept '{extra}' in the note (Ahon names no person on a purchase)"] if extra else []
     return Request("POST", body, setup, said=said)
@@ -219,9 +208,7 @@ async def plan_record(client: AhonClient, args: dict[str, Any]) -> Request:
 # ---- record_split -------------------------------------------------------------
 
 
-def _shares(
-    setup: AhonSetup, raw: Any, earlier: str | None,
-) -> list[tuple[dict[str, Any], Decimal]]:
+def _shares(setup: AhonSetup, raw: Any) -> list[tuple[dict[str, Any], Decimal]]:
     if not isinstance(raw, list) or not raw:
         raise PlanRefusedError("shares is required: one {person, amount} per OTHER person")
     out: list[tuple[dict[str, Any], Decimal]] = []
@@ -229,7 +216,7 @@ def _shares(
     for item in raw:
         if not isinstance(item, dict):
             raise PlanRefusedError("each share is {person, amount}")
-        person = _person(setup, item.get("person") or item.get("person_id"), earlier=earlier)
+        person = _person(setup, item.get("person") or item.get("person_id"))
         if int(person["id"]) in seen:
             raise PlanRefusedError(
                 f"{person['name']} appears twice in shares; give each person one share"
@@ -264,8 +251,7 @@ async def plan_split(
         )
     payer = _payer(place)
     total = Decimal(_amount(args.get("total_amount", args.get("amount")), "total_amount"))
-    when = when_fields(args.get("occurred_at"), client.timezone)
-    shares = _shares(setup, args.get("shares"), earlier_day(when, client.timezone))
+    shares = _shares(setup, args.get("shares"))
     own = total - sum((s for _, s in shares), Decimal(0))
     if own < 0:
         raise PlanRefusedError(f"the shares add up to more than the total ({peso(total)})")
@@ -299,7 +285,7 @@ async def plan_split(
             **_title_and_note(args),
             "shares": [{"person_id": int(p["id"]), "amount": str(s)} for p, s in shares],
         }
-    body.update(when)
+    body.update(when_fields(args.get("occurred_at"), client.timezone))
     body.update(external)
     return Request("POST", body, setup, queue_split=wants_push)
 

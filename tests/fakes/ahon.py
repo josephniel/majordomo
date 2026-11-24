@@ -35,6 +35,9 @@ CREATE_FIELDS = {
     "one_off", "rule_id", "rule_date", "goal_id", "external_id", "shares", "client_id",
 }
 TODAY = "2026-11-24"
+# The user's first day in Ahon (the sample accounts' opening): a person with no
+# opening takes records back to it (Ahon item 182, `records_from`).
+FIRST_DAY = "2026-09-01"
 PERSON_SIGN = {"lent": 1, "repaid": 1, "debt_payment": 1, "paid_back": -1, "borrowed": -1}
 
 
@@ -219,8 +222,9 @@ class FakeAhon:
         """A key may add a person and nothing else (Ahon's items 179 and 181).
 
         No `balance` is someone who owes nothing: the person alone, no record,
-        opened today. A repeated `client_id` answers the person, before the name
-        check, as the real API did on a scratch server (25 Nov 2026).
+        opened today, and with no opening they carry `records_from` (item 182). A
+        repeated `client_id` answers the person, before the name check, as the real
+        API did on a scratch server (25 Nov 2026).
         """
         if body.get("kind") != "person":
             return _err(403, "session_required")
@@ -246,6 +250,8 @@ class FakeAhon:
             "balance": f"{bal:.2f}", "in_plan": False, "opened_on": TODAY,
             "direction": "owes_you" if bal > 0 else ("you_owe" if bal < 0 else "settled"),
         }
+        if "balance" not in body:
+            person["records_from"] = FIRST_DAY
         if not dry:
             self.people.append(person)
             self._people_by_client[str(body.get("client_id"))] = int(person["id"])
@@ -424,14 +430,22 @@ class FakeAhon:
         return None
 
     def _before_opening(self, body: dict[str, Any]) -> httpx.Response | None:
-        """No record with a person dated before they were opened (Ahon's date_before_opening)."""
+        """Nothing dated before a party's start (Ahon's date_before_opening, item 182).
+
+        The paying account or card first, then each person: one with an opening
+        starts on it (`opened_on`); one with none (`records_from`) on the user's
+        first day.
+        """
         on = str(body.get("occurred_on") or str(body.get("occurred_at") or "")[:10] or TODAY)
-        ids = [body.get("person_id")] + [s.get("person_id") for s in body.get("shares") or []]
+        ids = [body.get("account_id"), body.get("debt_id"), body.get("person_id")]
+        ids += [s.get("person_id") for s in body.get("shares") or []]
+        places = self.accounts + self.debts + self.people
         for pid in ids:
-            person = next((p for p in self.people if p["id"] == pid), None) if pid else None
-            if person is not None and on < str(person.get("opened_on") or ""):
+            place = next((p for p in places if p["id"] == pid), None) if pid else None
+            start = str((place or {}).get("records_from") or (place or {}).get("opened_on") or "")
+            if place is not None and on < start:
                 return _err(422, "date_before_opening", "occurred_on",
-                            opening_on=person["opened_on"], account_id=pid)
+                            opening_on=start, account_id=pid)
         return None
 
     def _replay(self, body: dict[str, Any]) -> dict[str, Any] | None:

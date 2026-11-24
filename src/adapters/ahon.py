@@ -38,7 +38,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from adapters.timefmt import DEFAULT_TIMEZONE, local_date
+from adapters.timefmt import DEFAULT_TIMEZONE
 
 log = logging.getLogger(__name__)
 
@@ -351,41 +351,6 @@ def describe(err: AhonError) -> str:
     return f"{words} [{tag}]"
 
 
-# ---- Ahon's limit on a person added owing nothing (AHON-LIMIT-182) ------------------
-#
-# Ahon opens a person added with nothing owed on the day they are added, and refuses
-# any record with them dated before that day (422 date_before_opening; its
-# docs/api/BOT-KEY.md, "Add a person"). Ahon's item 182 is to lift this. Once that is
-# on Ahon's main: delete this function and every branch tagged AHON-LIMIT-182 (grep
-# the tag; `earlier` in tools/ahon_plans.py is there only for it), and the note in
-# docs/ahon-cutover.md, "Before the day".
-
-
-def before_added(name: str, *, on: str | None = None, added_on: str | None = None) -> str:
-    """Say plainly why a record with this person cannot keep its earlier date yet.
-
-    `added_on` None: the person is not in Ahon yet (the record would need them
-    added first). Otherwise the day Ahon opened them, from its refusal.
-    """
-    dated = f"dated {on}" if on else "dated before that"
-    rule = (
-        "Ahon cannot yet take a record with a person dated before the day they were "
-        "added (a person added owing nothing starts in Ahon that day; Ahon answers "
-        "date_before_opening, and it is being changed to lift this)"
-    )
-    never = (
-        f"Tell the user plainly. Do not move the entry to another date, and do not give "
-        f"{name} an opening amount to get round it."
-    )
-    if added_on is None:
-        return (
-            f"Nothing was recorded, and {name} must NOT be added for this entry: {name} is "
-            f"not in Ahon, and the entry is {dated}, before today. {rule}, so adding "
-            f"{name} now would still not let this entry in. {never}"
-        )
-    return f"{rule}: {name} was added on {added_on}, and this entry is {dated}. {never}"
-
-
 # ---- formats --------------------------------------------------------------
 
 
@@ -470,21 +435,3 @@ def when_fields(raw: Any, tz: str = DEFAULT_TIMEZONE) -> dict[str, str]:
             zone = ZoneInfo(tz)
         stamp = stamp.replace(tzinfo=zone)
     return {"occurred_at": stamp.isoformat()}
-
-
-def earlier_day(fields: dict[str, Any], tz: str = DEFAULT_TIMEZONE) -> str | None:
-    """Return the day a record with these date fields falls on, when that is before today.
-
-    Both days are the person's (`tz`), as Ahon reads them. No date fields mean
-    today, so None.
-    """
-    if fields.get("occurred_on"):
-        day = str(fields["occurred_on"])
-    elif fields.get("occurred_at"):
-        day = local_date(fields["occurred_at"], tz)
-    else:
-        return None
-    zone: Any = UTC
-    with contextlib.suppress(ZoneInfoNotFoundError, ValueError):
-        zone = ZoneInfo(tz)
-    return day if day < datetime.now(zone).date().isoformat() else None

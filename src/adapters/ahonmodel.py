@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from adapters.ahon import as_decimal, peso, splitwise_expense_id
+from adapters.ahon import AhonError, as_decimal, describe, peso, splitwise_expense_id
 from adapters.ledgerchoice import Ledger
 
 if TYPE_CHECKING:
@@ -259,6 +259,43 @@ def repayment_notes(
 
 async def read_setup(client: AhonClient) -> AhonSetup:
     return AhonSetup(await client.setup())
+
+
+def describe_refusal(err: AhonError, setup: AhonSetup) -> str:
+    """Word a refusal; one of a date names what Ahon named: an account or card, or a person.
+
+    Ahon answers 422 `date_before_opening` with `params.account_id` the one whose
+    start the date falls before (the paying account or card, or the person), and
+    `params.opening_on` that start. A person who owes nothing has no opening
+    (setup gives them `records_from`, the user's first day in Ahon), so only that
+    first day bounds them; a person added with an amount owed starts on their
+    opening. Any other refusal is `describe`'s.
+    """
+    place = setup.place(err.params.get("account_id"))
+    if err.code != "date_before_opening" or place is None:
+        return describe(err)
+    day = str(err.params.get("opening_on") or "?")
+    if place.kind != "person":
+        named = (
+            f"Ahon named the {'account' if place.kind == 'money' else place.kind} "
+            f"{place.name}: it was opened in Ahon on {day}, and nothing on it can be dated "
+            "before that"
+        )
+    elif place.item.get("records_from"):
+        named = (
+            f"Ahon named the person {place.name}: nothing with them can be dated before "
+            f"{day}, the first day the user's records in Ahon start"
+        )
+    else:
+        named = (
+            f"Ahon named the person {place.name}: they were added with an amount already "
+            f"owed, which Ahon dates {day} (their opening), and nothing with them can be "
+            "dated before it"
+        )
+    return (
+        f"that date is too early. {named} [date_before_opening]. Tell the user; do not move "
+        "the entry to another date or make up an opening amount to get round it"
+    )
 
 
 # ---- records -----------------------------------------------------------------

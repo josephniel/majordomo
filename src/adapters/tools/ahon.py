@@ -41,14 +41,12 @@ from adapters.ahon import (
     AhonError,
     Saved,
     as_decimal,
-    before_added,
     describe,
-    earlier_day,
     money,
     new_client_id,
     peso,
 )
-from adapters.ahonmodel import format_record, repayment_notes
+from adapters.ahonmodel import describe_refusal, format_record, repayment_notes
 from adapters.timefmt import DEFAULT_TIMEZONE
 from ports import Connector, PreviewRefusedError, ToolContext, ToolResult, ToolSpec, tool
 
@@ -178,15 +176,10 @@ def render_preview(req: Request, saved: Saved) -> str:
     return f"{head}:\n{format_record(tx)}{said}{_moves(saved, req)}{_notices(saved, req)}"
 
 
-def _refusal(req: Request, err: AhonError, tz: str) -> str:
+def _refusal(req: Request, err: AhonError) -> str:
     """Word a refusal; a lone loan above what the user owes that person says what Ahon takes."""
-    if err.code == "date_before_opening":  # AHON-LIMIT-182
-        person = req.setup.person(err.params.get("account_id"))
-        if person is not None:
-            return before_added(
-                str(person.get("name")), on=earlier_day(req.body, tz),
-                added_on=str(err.params.get("opening_on") or "") or None,
-            )
+    if err.code == "date_before_opening":
+        return describe_refusal(err, req.setup)
     if err.code != "amount_above_balance" or req.body.get("kind") != "lent":
         return describe(err)
     person = req.setup.person(req.body.get("person_id")) or {}
@@ -235,9 +228,7 @@ class _Writer:
             except PlanRefusedError as r:
                 raise PreviewRefusedError(str(r)) from r
             except AhonError as e:
-                raise PreviewRefusedError(
-                    f"Ahon would refuse it: {_refusal(req, e, client.timezone)}",
-                ) from e
+                raise PreviewRefusedError(f"Ahon would refuse it: {_refusal(req, e)}") from e
             return render_preview(req, saved)
 
         async def handler(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
@@ -252,9 +243,7 @@ class _Writer:
             try:
                 saved = await send(client, req)
             except AhonError as e:
-                return ToolResult.error(
-                    f"Nothing was saved: {_refusal(req, e, client.timezone)}",
-                )
+                return ToolResult.error(f"Nothing was saved: {_refusal(req, e)}")
             except httpx.HTTPError as e:
                 return _unreachable(e)
             text = render_saved(name, req, saved)
@@ -593,7 +582,9 @@ def _person_tool(client: AhonClient) -> ToolSpec:
         "record; the entry you then record says what they owe. owes_you or you_owe is ONLY a "
         "debt that ALREADY stood between them before this entry; NEVER the share or loan you "
         "are about to record (it would be counted twice), and never a made-up amount. "
-        "After it succeeds, make the original entry again with the same name. "
+        "After it succeeds, make the original entry again with the same name, on its own day: "
+        "someone added owing nothing takes records dated before today too. Someone added WITH "
+        "an amount owed starts today in Ahon, so nothing with them can be dated earlier. "
         "There is no undo: a person added by mistake is removed in the Ahon app.",
         {
             "type": "object",
@@ -662,8 +653,9 @@ PEOPLE ARE NOT CREATED BY NAMING THEM. An unknown name is refused: ask the user
 ("Ana isn't in your people list — add her?"). Once he says yes, create_person with
 the name alone adds her owing nothing (Ahon writes no record). Pass owes_you or
 you_owe only for a debt that already stood before this entry, never the entry's own
-amount. Then make the original entry again. Never retry with another spelling, and
-never add a shop, a service or a bank as a person.
+amount. Then make the original entry again, on its own day (even one before today).
+Never retry with another spelling, and never add a shop, a service or a bank as a
+person.
 
 BILLS AND INSTALLMENTS ARE ALREADY IN AHON, WAITING. When he says he paid a bill,
 rent, a subscription or a loan installment, call list_pending_payments FIRST and

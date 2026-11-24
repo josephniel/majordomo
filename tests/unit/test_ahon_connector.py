@@ -974,85 +974,86 @@ _DANAS_SPLIT = {"account_id": 1, "category_id": 9, "total_amount": 900,
                 "external_id": "splitwise:777", "shares": [{"person": "Dana Lim", "amount": 300}]}
 
 
-class TestEarlierThanAdded:
-    """AHON-LIMIT-182: Ahon takes no record with a person dated before they were added.
+class TestEarlierDates:
+    """Ahon item 182: a person added owing nothing has no opening.
 
-    A person added owing nothing starts in Ahon the day they are added. Until Ahon
-    lifts that (its item 182), an entry dated earlier that needs a new person is
-    refused in words before anything is written, and never by an invented opening.
+    A record with them may be dated before the day they were added, back to the
+    user's first day in Ahon (`records_from`). Someone added with an amount owed
+    starts on that opening, and an account or card on its own; Ahon's refusal is
+    then said in words, naming which of them it was.
     """
 
-    async def test_a_split_dated_earlier_with_a_new_person_writes_nothing(self):
+    async def test_a_split_a_week_before_a_person_owing_nothing_was_added_is_taken(self):
         fake = FakeAhon.sample()
-        args = {**_DANAS_SPLIT, "occurred_at": "2026-11-20"}
-        out = await _call(fake, "record_split", args)
-        assert out.is_error
-        assert "Dana Lim must NOT be added for this entry" in out.text
-        assert "dated 2026-11-20" in out.text
-        assert "date_before_opening" in out.text
-        assert "opening amount" in out.text
-        with pytest.raises(PreviewRefusedError, match="must NOT be added"):
-            await _tools(fake)["record_split"].approval_preview(args, CTX)
-        assert fake.writes(real_only=False) == []
-
-    async def test_today_a_new_person_is_still_asked_about(self):
-        fake = FakeAhon.sample()
-        out = await _call(fake, "record_split", _DANAS_SPLIT)
-        assert out.is_error
-        assert "ask the user whether to add them (create_person" in out.text
-        assert "must NOT be added" not in out.text
-
-    async def test_someone_else_paid_earlier_with_a_new_person_writes_nothing(self):
-        fake = FakeAhon.sample()
-        out = await _call(fake, "record_transaction", {
-            "kind": "spending", "person": "Dana Lim", "amount": 300, "category_id": 9,
-            "occurred_at": "2026-11-20T19:30:00+08:00",
-        })
-        assert out.is_error
-        assert "Dana Lim must NOT be added for this entry" in out.text
-        assert fake.writes(real_only=False) == []
-
-    async def test_a_name_kept_only_in_a_purchases_note_is_not_this_limit(self):
-        out = await _call(FakeAhon.sample(), "record_transaction", {
-            "kind": "spending", "account_id": 1, "person": "Dana Lim", "amount": 300,
-            "occurred_at": "2026-11-20",
-        })
-        assert out.is_error
-        assert "must NOT be added" not in out.text
-        assert "is not a person in Ahon" in out.text
-
-    async def test_a_person_added_owing_nothing_takes_a_split_dated_today(self):
-        fake = FakeAhon.sample()
-        added = await _call(fake, "create_person", {"name": "Dana Lim"})
-        assert not added.is_error, added.text
-        out = await _call(fake, "record_split", _DANAS_SPLIT)
+        await _call(fake, "create_person", {"name": "Dana Lim"})
+        out = await _call(fake, "record_split", {**_DANAS_SPLIT, "occurred_at": "2026-11-17"})
         assert out.text.startswith("recorded #"), out.text
-        dana = next(p for p in fake.people if p["name"] == "Dana Lim")
         [body] = [b for _m, path, _q, b in fake.writes() if path == "/v1/transactions"]
+        assert body["occurred_on"] == "2026-11-17"
+        dana = next(p for p in fake.people if p["name"] == "Dana Lim")
         assert body["shares"] == [{"person_id": dana["id"], "amount": "300.00"}]
         assert dana["balance"] == "300.00"
 
-    async def test_a_person_added_today_refuses_an_earlier_record_in_words(self):
+    async def test_someone_else_paid_a_week_before_is_taken(self):
         fake = FakeAhon.sample()
         await _call(fake, "create_person", {"name": "Dana Lim"})
+        out = await _call(fake, "record_transaction", {
+            "kind": "spending", "person": "Dana Lim", "amount": 250, "category_id": 9,
+            "occurred_at": "2026-11-17T19:30:00+08:00",
+        })
+        assert out.text.startswith("recorded #"), out.text
+        [body] = [b for _m, path, _q, b in fake.writes() if path == "/v1/transactions"]
+        assert "account_id" not in body
+        assert body["occurred_at"].startswith("2026-11-17")
+
+    async def test_a_new_name_on_an_earlier_entry_is_only_asked_about(self):
+        fake = FakeAhon.sample()
+        out = await _call(fake, "record_split", {**_DANAS_SPLIT, "occurred_at": "2026-11-17"})
+        assert out.is_error
+        assert "ask the user whether to add them (create_person" in out.text
+        assert fake.writes(real_only=False) == []
+
+    async def test_a_person_added_with_an_amount_owed_refuses_an_earlier_date_in_words(self):
+        fake = FakeAhon.sample()
+        await _call(fake, "create_person", {"name": "Dana Lim", "you_owe": 250})
         records = dict(fake.records)
-        args = {**_DANAS_SPLIT, "occurred_at": "2026-11-20"}
+        args = {**_DANAS_SPLIT, "occurred_at": "2026-11-17"}
         with pytest.raises(PreviewRefusedError) as preview:
             await _tools(fake)["record_split"].approval_preview(args, CTX)
         out = await _call(fake, "record_split", args)
-        for text in (str(preview.value), out.text):
-            assert "Ahon cannot yet take a record with a person dated before the day they" in text
-            assert "Dana Lim was added on 2026-11-24, and this entry is dated 2026-11-20" in text
         assert out.is_error
+        for text in (str(preview.value), out.text):
+            assert (
+                "Ahon named the person Dana Lim: they were added with an amount already owed, "
+                "which Ahon dates 2026-11-24 (their opening)"
+            ) in text
+            assert "make up an opening amount" in text
         assert fake.records == records
 
-    async def test_a_person_known_before_is_named_and_an_account_keeps_ahons_words(self):
+    async def test_an_account_opened_later_is_named_as_the_account(self):
         fake = FakeAhon.sample()
-        fake.people[0]["opened_on"] = "2026-11-24"
+        fake.accounts[1]["opened_on"] = "2026-11-20"
+        await _call(fake, "create_person", {"name": "Dana Lim"})
+        out = await _call(fake, "record_split", {
+            **_DANAS_SPLIT, "account_id": 2, "occurred_at": "2026-11-17"})
+        assert out.is_error
+        assert "Ahon named the account Cash: it was opened in Ahon on 2026-11-20" in out.text
+
+    async def test_before_the_users_first_day_names_the_person_and_that_day(self):
+        fake = FakeAhon.sample()
+        await _call(fake, "create_person", {"name": "Dana Lim"})
         out = await _call(fake, "record_transaction", {
-            "kind": "spending", "person": "Ana Reyes", "amount": 50, "occurred_at": "2026-11-20",
+            "kind": "spending", "person": "Dana Lim", "amount": 250, "occurred_at": "2026-08-20",
         })
-        assert "Ana Reyes was added on 2026-11-24" in out.text
-        plain = describe(AhonError(422, "date_before_opening", "occurred_on",
-                                   {"opening_on": "2026-11-24", "account_id": 2}))
-        assert plain.startswith("that date is before the account was opened (2026-11-24)")
+        assert out.is_error
+        assert (
+            "Ahon named the person Dana Lim: nothing with them can be dated before 2026-09-01, "
+            "the first day the user's records in Ahon start"
+        ) in out.text
+
+    def test_the_tool_and_the_prompt_keep_the_entrys_own_day(self):
+        spec = _tools(FakeAhon.sample())["create_person"]
+        assert "takes records dated before today too" in spec.description
+        assert "starts today in Ahon" in spec.description
+        assert "on its own day (even one before today)" in " ".join(
+            SYSTEM_PROMPT_SECTION.split())
