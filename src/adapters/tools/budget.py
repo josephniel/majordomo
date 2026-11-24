@@ -997,7 +997,7 @@ def _schedule_tools(client: BudgetClient) -> list[ToolSpec]:
 
     @tool(
         "scheduled_payments",
-        "Read-only: the operator's ACTIONABLE scheduled payments in Ahon from overdue "
+        "Read-only: the operator's ACTIONABLE scheduled payments (budget tracker) from overdue "
         "through `days` ahead (default 14) — rent and allowances paid from a bank, loan "
         "amortizations, and transfers to a card or loan. Card-charged items (subscriptions, "
         "installments) are applied by the bank and left out unless all=true. JSON [{id, day, "

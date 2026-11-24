@@ -109,11 +109,11 @@ WORK_FEED = {
 }
 DEBT_PLAN = {
     "type": "object",
-    "description": "Ahon's repayment plan for the month: pass debt_plan's JSON as is",
+    "description": "The budget tracker's repayment plan for the month: pass debt_plan's JSON as is",
 }
 PAYMENTS = {
     "type": "array",
-    "description": "Ahon's scheduled payments: pass scheduled_payments' JSON as is",
+    "description": "The budget tracker's scheduled payments: pass scheduled_payments' JSON as is",
     "items": {"type": "object"},
 }
 CALENDAR = {
@@ -596,7 +596,7 @@ it prints a one-sheet paper on the home printer; it is how they plan the day.
   2. the personal calendars from the date through 14 days ahead, if
      connected: Google Calendar's list_events, and apple_calendar_events
      (already in the paper's shape);
-  3. scheduled_payments (Ahon, 14 days: only payments made by hand — card
+  3. scheduled_payments (budget tracker, 14 days: only payments made by hand — card
      charges are applied by the bank) and debt_plan, if the budget
      connector is on;
   4. herald_edition_data for the date;
