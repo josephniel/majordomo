@@ -30,11 +30,12 @@ import getpass
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
-from adapters.ahon import AhonClient, AhonError, Saved, describe, peso
+from adapters.ahon import AhonClient, AhonError, Saved, describe, money, new_client_id, peso
 from adapters.ahonmodel import format_record
 from adapters.timefmt import DEFAULT_TIMEZONE
 from ports import Connector, PreviewRefusedError, ToolContext, ToolResult, ToolSpec, tool
@@ -58,7 +59,6 @@ from .ahon_reads import read_tools
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-    from pathlib import Path
 
     from ports import PushQueue
 
@@ -478,26 +478,101 @@ def _change_tools(w: _Writer) -> list[ToolSpec]:
     return [remove, amend, undo, reference, pay]
 
 
-def _closed_tools() -> list[ToolSpec]:
-    """Build the two used tools a key cannot do yet: each answers plainly, never guesses."""
+# A person who owes nothing yet is added as Ahon's own sheet does it: an opening and
+# its paying back, of the same amount. The smallest amount leaves the least trace.
+_SETTLED = "0.01"
+
+
+def _person_body(args: dict[str, Any]) -> dict[str, Any]:
+    name = " ".join(str(args.get("name") or "").split())[:120]
+    if not name:
+        raise PlanRefusedError("a name is required")
+    owes_you, you_owe = args.get("owes_you"), args.get("you_owe")
+    if owes_you and you_owe:
+        raise PlanRefusedError("give owes_you or you_owe, not both")
+    try:
+        if owes_you:
+            return {"name": name, "direction": "owes_you", "balance": money(owes_you)}
+        if you_owe:
+            return {"name": name, "direction": "you_owe", "balance": money(you_owe)}
+    except ValueError as e:
+        raise PlanRefusedError(str(e)) from e
+    return {"name": name, "direction": "owes_you", "balance": _SETTLED, "paid_back": _SETTLED}
+
+
+def _person_said(body: dict[str, Any]) -> str:
+    if body.get("paid_back"):
+        return "owes nothing yet"
+    if body["direction"] == "owes_you":
+        return f"owes the user {peso(body['balance'])}"
+    return f"is owed {peso(body['balance'])} by the user"
+
+
+def _taken(e: AhonError, name: str) -> str:
+    if e.code == "name_taken":
+        return (
+            f"{name} is already a person in Ahon (#{e.params.get('person_id')}), so nothing was "
+            "added: use that person. A removed one is brought back in the Ahon app."
+        )
+    return describe(e)
+
+
+def _person_tool(client: AhonClient) -> ToolSpec:
+    """Add a person (Ahon's item 179): the one account a key may make."""
+
+    async def preview(args: dict[str, Any], _ctx: ToolContext) -> str:
+        try:
+            body = _person_body(args)
+            await client.create_person({**body, "client_id": new_client_id()}, dry_run=True)
+        except PlanRefusedError as r:
+            raise PreviewRefusedError(str(r)) from r
+        except AhonError as e:
+            raise PreviewRefusedError(_taken(e, str(args.get("name")))) from e
+        return f"Ahon would add the person {body['name']}, who {_person_said(body)}."
 
     @tool(
         "create_person",
-        "Add a person to Ahon. Not open to the assistant yet: it answers how the user adds "
-        "them himself.",
+        "Add a NEW person to Ahon. Only when a write was refused because the name is unknown.\n\n"
+        "ASK THE USER FIRST, in words: 'X isn't in your people list — add them?' Only real "
+        "people the user settles up with; never a shop, a service or a bank. Pass owes_you or "
+        "you_owe only for a debt that already exists outside what you are about to record; "
+        "otherwise they are added owing nothing and the next record (a split, a loan) says "
+        "what they owe. After it succeeds, make the original entry again with the same name. "
+        "There is no undo: a person added by mistake is removed in the Ahon app.",
         {
             "type": "object",
-            "properties": {"name": {"type": "string", "maxLength": 120}},
+            "properties": {
+                "name": {"type": "string", "maxLength": 120},
+                "owes_you": {**_AMOUNT, "description": "What they already owe the user."},
+                "you_owe": {**_AMOUNT, "description": "What the user already owes them."},
+            },
             "required": ["name"],
         },
+        approval_preview=preview,
     )
     async def create_person_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-        name = str(args.get("name") or "").strip() or "them"
-        return ToolResult.error(
-            f"Nothing was added: Ahon does not let the assistant add people yet (it waits on "
-            f"the owner's word). Ask the user to add {name} in Ahon (People, then Add), then "
-            "make the original entry again with the same spelling."
+        try:
+            body = _person_body(args)
+            _status, answer = await client.create_person(
+                {**body, "client_id": new_client_id()},
+            )
+        except PlanRefusedError as r:
+            return ToolResult.error(str(r))
+        except AhonError as e:
+            return ToolResult.error(f"Nothing was added: {_taken(e, str(args.get('name')))}")
+        except httpx.HTTPError as e:
+            return _unreachable(e)
+        person = answer.get("account") or {}
+        return ToolResult.ok(
+            f"added {person.get('name', body['name'])} (person #{person.get('id', '?')}), who "
+            f"{_person_said(body)} — now make the entry you were trying to record."
         )
+
+    return create_person_tool
+
+
+def _closed_tools() -> list[ToolSpec]:
+    """Build the used tool a key cannot do yet: it answers plainly, never guesses."""
 
     @tool(
         "amend_pending_payment",
@@ -523,7 +598,7 @@ def _closed_tools() -> list[ToolSpec]:
             "(Bills, the bill, this month)."
         )
 
-    return [create_person_tool, amend_pending_tool]
+    return [amend_pending_tool]
 
 
 SYSTEM_PROMPT_SECTION = """== Budget (Ahon) ==
@@ -550,8 +625,10 @@ Never also call create_expense. An expense a watch REPORTED already exists in
 Splitwise: record it with the external_id the watch gave you (splitwise:<id>),
 exactly, and leave share_to_splitwise off.
 
-PEOPLE ARE NOT CREATED BY NAMING THEM. An unknown name is refused: ask the user,
-never retry with another spelling, and never put a shop or a service in person.
+PEOPLE ARE NOT CREATED BY NAMING THEM. An unknown name is refused: ask the user
+("Ana isn't in your people list — add her?"), call create_person once he says yes,
+then make the original entry again. Never retry with another spelling, and never
+add a shop, a service or a bank as a person.
 
 BILLS AND INSTALLMENTS ARE ALREADY IN AHON, WAITING. When he says he paid a bill,
 rent, a subscription or a loan installment, call list_pending_payments FIRST and
@@ -587,8 +664,9 @@ class AhonConnector(Connector):
         "record_transaction", "record_split", "record_transfer", "settle_person",
         "delete_transaction", "amend_transaction", "undo_change", "add_reference",
         "approve_pending_payment",
-        # Answer plainly today, and stay gated so the day they write, they ask.
-        "create_person", "amend_pending_payment",
+        "create_person",
+        # Answers plainly today, and stays gated so the day it writes, it asks.
+        "amend_pending_payment",
     })
     RECORD_CLAIM_TOOLS = frozenset({
         "record_transaction", "record_split", "record_transfer", "settle_person",
@@ -676,6 +754,7 @@ class AhonConnector(Connector):
             *read_tools(client, self.push_queue),
             *_record_tools(writer, can_queue=self.push_queue is not None),
             *_change_tools(writer),
+            _person_tool(client),
             *_closed_tools(),
         ]
 
@@ -707,8 +786,8 @@ class AhonConnector(Connector):
         if not label:
             print("error: empty profile label", file=sys.stderr)
             sys.exit(1)
-        slug = self._config.slugify_profile(label)
-        existing = self._read_secrets(slug)
+        path = self._secrets_path(label, adding=adding)
+        existing = _read_json(path)
         url = (ns.url or existing.get(URL_ENV) or "").strip()
         if not url:
             print("error: pass --url (Ahon's API base URL)", file=sys.stderr)
@@ -719,30 +798,45 @@ class AhonConnector(Connector):
         if not key:
             print("error: empty key", file=sys.stderr)
             sys.exit(1)
-        secrets_file = self._write_secrets(slug, {**existing, KEY_ENV: key, URL_ENV: url})
+        _write_json(path, {**existing, KEY_ENV: key, URL_ENV: url})
         if adding:
+            slug = self._config.slugify_profile(label)
             self._config.set_profile("budget", label, {
                 "enabled": True,
                 "secrets_file": f"./credentials/budget/{slug}/secrets.json",
             })
-        print(f"wrote {KEY_ENV} and {URL_ENV} into {secrets_file} (other keys kept)")
+        print(f"wrote {KEY_ENV} and {URL_ENV} into {path} (other keys kept)")
 
-    def _read_secrets(self, slug: str) -> dict[str, str]:
-        path = self.credentials_dir / slug / "secrets.json"
-        if not path.exists():
-            return {}
+    def _secrets_path(self, label: str, *, adding: bool) -> Path:
+        """Return the profile's own secrets file: the one connectors.yaml names, if any."""
+        default = self.credentials_dir / self._config.slugify_profile(label) / "secrets.json"
+        if adding:
+            return default
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except ValueError:
-            return {}
-        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+            named = str(self._config.get_profile("budget", label).get("secrets_file") or "")
+        except KeyError:
+            print(f"error: budget / {label} not found; add it first", file=sys.stderr)
+            sys.exit(1)
+        if not named:
+            return default
+        if named.startswith(("./", "../")):
+            return (self._config.project_root / named).resolve()
+        return Path(named).expanduser()
 
-    def _write_secrets(self, slug: str, values: dict[str, str]) -> Path:
-        """Merge, never replace: the old app's key stays for going back."""
-        secrets_dir = self.credentials_dir / slug
-        secrets_dir.mkdir(parents=True, exist_ok=True)
-        path = secrets_dir / "secrets.json"
-        path.write_text(json.dumps(values), encoding="utf-8")
-        path.chmod(0o600)
-        return path
+
+def _read_json(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _write_json(path: Path, values: dict[str, str]) -> None:
+    """Merge, never replace: the old app's key stays for going back."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(values), encoding="utf-8")
+    path.chmod(0o600)
 

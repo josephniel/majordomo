@@ -212,6 +212,11 @@ class TestReads:
             "amount": "1500.00", "paid": "0.00", "status": "not_paid",
         }]
         out = (await _call(fake, "list_pending_payments", {})).text
+        assert "do not approve" in out
+        paid = await _call(fake, "approve_pending_payment", {"id": "bill:2:2026-10-28"})
+        assert paid.is_error
+        assert "closed" in paid.text
+        assert fake.writes(real_only=False) == []
         assert "id=bill:2:2026-10-28" in out
         assert "LATE from 2026-10" in out
 
@@ -628,13 +633,37 @@ class TestPayments:
         assert "already paid" in out.text
 
 
-class TestClosedTools:
-    async def test_create_person_says_how_the_user_adds_them(self):
+class TestPeople:
+    async def test_create_person_adds_someone_who_owes_nothing_yet(self):
         fake = FakeAhon.sample()
-        out = await _call(fake, "create_person", {"name": "Dana"})
+        out = await _call(fake, "create_person", {"name": "  Dana  Lim "})
+        assert not out.is_error
+        assert "added Dana Lim (person #" in out.text
+        [(_m, path, _q, body)] = fake.writes()
+        assert path == "/v1/accounts"
+        assert body["kind"] == "person"
+        assert body["name"] == "Dana Lim"
+        assert body["balance"] == body["paid_back"]
+        assert body["client_id"]
+        assert fake.people[-1]["direction"] == "settled"
+
+    async def test_create_person_with_a_debt_that_already_exists(self):
+        fake = FakeAhon.sample()
+        await _call(fake, "create_person", {"name": "Dana", "you_owe": 250})
+        body = fake.writes()[0][3]
+        assert (body["direction"], body["balance"]) == ("you_owe", "250.00")
+        assert "paid_back" not in body
+
+    async def test_a_name_already_taken_points_at_that_person(self):
+        fake = FakeAhon.sample()
+        out = await _call(fake, "create_person", {"name": "ana reyes"})
         assert out.is_error
-        assert "Dana" in out.text
-        assert fake.writes() == []
+        assert "#5" in out.text
+
+    async def test_the_preview_refuses_a_taken_name_before_asking(self):
+        spec = _tools(FakeAhon.sample())["create_person"]
+        with pytest.raises(PreviewRefusedError, match="already a person"):
+            await spec.approval_preview({"name": "Ben Cruz"}, CTX)
 
     async def test_amend_pending_payment_points_at_paying_with_the_changes(self):
         out = await _call(FakeAhon.sample(), "amend_pending_payment", {"id": "bill:2:2026-11-28"})
@@ -689,3 +718,37 @@ class TestConnector:
         assert names == set(conn.TOOL_NAMES)
         assert names >= conn.WRITE_TOOLS
         assert not names & {"push_to_splitwise", "find_by_reference", "repayment_plan"}
+
+
+class TestCredentials:
+    def _registry(self, tmp_path):
+        from adapters.tools.registry import ServiceRegistry
+
+        (tmp_path / "credentials" / "budget" / "main").mkdir(parents=True)
+        secrets = tmp_path / "credentials" / "budget" / "main" / "secrets.json"
+        secrets.write_text(json.dumps({"BUDGET_API_KEY": "old-sample"}), encoding="utf-8")
+        (tmp_path / "connectors.yaml").write_text(
+            "connectors:\n  budget:\n    profiles:\n      main:\n        enabled: true\n"
+            "        secrets_file: ./credentials/budget/main/secrets.json\n",
+            encoding="utf-8",
+        )
+        return ServiceRegistry(tmp_path / "connectors.yaml", tmp_path), secrets
+
+    def test_auth_merges_the_ahon_names_and_keeps_the_old_key(self, tmp_path, monkeypatch):
+        registry, secrets = self._registry(tmp_path)
+        monkeypatch.setattr("getpass.getpass", lambda _prompt: "btk_sample")
+        AhonConnector(config=registry).cmd_auth("main", ["--url", "http://127.0.0.1:9"])
+        assert json.loads(secrets.read_text()) == {
+            "BUDGET_API_KEY": "old-sample",
+            "AHON_API_KEY": "btk_sample",
+            "AHON_BASE_URL": "http://127.0.0.1:9",
+        }
+        assert secrets.stat().st_mode & 0o777 == 0o600
+        clients = AhonConnector(config=registry).build_clients()
+        assert list(clients) == ["budget_main"]
+
+    def test_a_profile_without_the_ahon_names_gets_no_client(self, tmp_path):
+        registry, _secrets = self._registry(tmp_path)
+        conn = AhonConnector(config=registry)
+        assert conn.build_clients() == {}
+        assert conn.system_prompt_section() == ""

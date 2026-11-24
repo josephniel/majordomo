@@ -162,8 +162,33 @@ class FakeAhon:
                 body or {}, params.get("dry_run") == "true"),
             ("PUT", "/v1/transactions/{id}"): lambda: self._update(
                 int(path.rsplit("/", 1)[1]), body or {}, params.get("dry_run") == "true"),
+            ("POST", "/v1/accounts"): lambda: self._add_person(
+                body or {}, params.get("dry_run") == "true"),
         }.get(route)
         return answer() if answer else _err(403, "session_required")
+
+    def _add_person(self, body: dict[str, Any], dry: bool) -> httpx.Response:
+        """A key may add a person and nothing else (Ahon's item 179)."""
+        if body.get("kind") != "person":
+            return _err(403, "session_required")
+        taken = next(
+            (p for p in self.people if p["name"].lower() == str(body.get("name")).lower()), None,
+        )
+        if taken is not None:
+            return _err(409, "name_taken", "name", person_id=taken["id"])
+        sign = 1 if body.get("direction") == "owes_you" else -1
+        owed = Decimal(body["balance"]) - Decimal(body.get("paid_back") or "0")
+        bal = sign * owed
+        person = {
+            "id": None if dry else self._new_id(), "kind": "person", "name": body["name"],
+            "balance": str(bal), "in_plan": False, "opened_on": TODAY,
+            "direction": "owes_you" if bal > 0 else ("you_owe" if bal < 0 else "settled"),
+        }
+        if not dry:
+            self.people.append(person)
+        return httpx.Response(200 if dry else 201, json={
+            "account": person, "changes": [], "notices": [], "undo": None,
+        })
 
     def _month(self, path: str) -> httpx.Response:
         month = self.months.get(path.rsplit("/", 1)[1])

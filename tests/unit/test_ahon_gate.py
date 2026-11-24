@@ -89,7 +89,7 @@ async def test_a_denied_write_never_reaches_ahon(name):
     assert fake.records == before
 
 
-@pytest.mark.parametrize("name", sorted(set(WRITES) - {"create_person", "amend_pending_payment"}))
+@pytest.mark.parametrize("name", sorted(set(WRITES) - {"amend_pending_payment"}))
 async def test_an_approved_write_reaches_ahon_once_after_showing_what_it_will_do(name):
     fake = _sample()
     prompts: list[str] = []
@@ -101,15 +101,14 @@ async def test_an_approved_write_reaches_ahon_once_after_showing_what_it_will_do
     assert "Ahon would" in prompts[0]
 
 
-async def test_the_closed_tools_still_ask_first():
-    """create_person and amend_pending_payment write nothing today, and stay gated."""
+async def test_the_closed_tool_still_asks_first():
+    """amend_pending_payment writes nothing today, and stays gated."""
     fake = _sample()
     prompts: list[str] = []
     tools = _gated(fake, approve=True, prompts=prompts)
-    for name in ("create_person", "amend_pending_payment"):
-        out = await tools[name].handler(WRITES[name], CTX)
-        assert out.is_error
-    assert len(prompts) == 2
+    out = await tools["amend_pending_payment"].handler(WRITES["amend_pending_payment"], CTX)
+    assert out.is_error
+    assert len(prompts) == 1
     assert fake.writes() == []
 
 

@@ -1306,6 +1306,26 @@ is load-bearing rather than decorative — see the watch below.
   unlike a missed reminder, nobody would ever notice mail that was never
   mentioned.
 - **Splitwise watch** — same shape, mirroring expenses into the budget ledger.
+
+### One budget connector, two ledgers
+
+`budget.backend` (persona config.yaml, default `budget-tracker`) picks which
+ledger the `budget` connector writes to: the old budget app (`tools/budget.py`)
+or Ahon (`tools/ahon.py`, with `adapters/ahon.py` as its client and
+`adapters/ahonmodel.py` reading its setup and records). Both register as
+`budget`, so persona policy, the approval gate's names and the background
+allow-list do not change with the ledger. The Splitwise watch, its mirror, the
+push, `reconcile_person` and the fast path follow the same switch
+(`trigger/ahonwatch.py`, `ahonmirror.py`, `ahonpush.py`,
+`tools/ahon_splitwise.py`); the default loads none of these modules.
+
+Two things differ in kind on Ahon. Every write the JOBS make (record, remove,
+link an outside id) goes through the approval gate under the connector's tool
+names (`adapters/ahonwrites.py`), where the old jobs wrote directly; the
+background allow-list decides which run unattended. And the push queue moves
+off the ledger (Ahon's `source` never changes) into the assistant's own
+Postgres (`store/pushqueue.py`, table `splitwise_push_queue`, created on first
+use). The cut-over is `docs/ahon-cutover.md`.
 - **Meeting watch** (`adapters/trigger/meetingwatch.py`): after a meeting ends,
   reads Gemini's notes doc out of Drive and files the user's action items onto
   the task board. Same two-phase watermark, plus one condition the other

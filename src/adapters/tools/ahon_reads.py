@@ -222,7 +222,11 @@ def _due_line(due: Due, setup: AhonSetup) -> str:
     row = due.row
     place = setup.place(row.get("account_id"))
     where = f" from {place.name}" if place else ""
-    late = f" LATE from {row['late_from']}" if row.get("late_from") else ""
+    late = (
+        f" LATE from {row['late_from']} (that month is closed: Ahon takes no payment tied to "
+        "it; tell the user, do not approve)"
+        if row.get("late_from") else ""
+    )
     left = row.get("left") if row.get("left") not in (None, "") else row.get("amount")
     return (
         f"- id={due.token} {row.get('name') or '?'} — {peso(left)} left of "

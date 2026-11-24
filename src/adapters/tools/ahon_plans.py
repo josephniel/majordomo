@@ -480,6 +480,15 @@ class Due:
         return due_token(self.kind, self.row)
 
 
+# Ahon refuses to tie a payment to a bill time of a month that has closed (409
+# `due_row_closed`), so a late bill from last month is shown, never offered to pay.
+_CLOSED_MONTH = (
+    "{name} was due in {month}, a month Ahon has closed: it takes no payment tied to that "
+    "bill time any more. Nothing was recorded. Tell the user; if he paid it, ask how he "
+    "wants it recorded — never record it a second way on your own."
+)
+
+
 def due_token(kind: str, row: dict[str, Any]) -> str:
     ident = row.get("rule_id") if kind == "bill" else row.get("debt_id")
     return f"{kind}:{ident}:{row.get('rule_date') or '-'}"
@@ -584,6 +593,10 @@ async def plan_pay(client: AhonClient, args: dict[str, Any]) -> Request:
     kind, ident, rule_date = _parse_token(args.get("id"))
     items = await due_items(client)
     due = next((d for d in items if d.token == f"{kind}:{ident}:{rule_date}"), None)
+    if due is not None and due.row.get("late_from"):
+        raise PlanRefusedError(
+            _CLOSED_MONTH.format(name=due.row.get("name"), month=due.row["late_from"])
+        )
     if due is None:
         raise PlanRefusedError(
             f"{args.get('id')} is not waiting to be paid (already paid, skipped, or not this "

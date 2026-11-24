@@ -197,6 +197,16 @@ class AhonClient:
         _raise_for(status, answer)
         return _envelope(status, answer)
 
+    async def create_person(
+        self, body: dict[str, Any], *, dry_run: bool = False,
+    ) -> tuple[int, dict[str, Any]]:
+        """POST a person, the one account a key may add. Returns (status, answer)."""
+        status, answer = await self._call(
+            "POST", "/v1/accounts", params=_dry(dry_run), body={**body, "kind": "person"},
+        )
+        _raise_for(status, answer)
+        return status, answer
+
     async def update_transaction(
         self, transaction_id: int, body: dict[str, Any], *, dry_run: bool = False,
     ) -> Saved:
@@ -291,6 +301,8 @@ _WORDS: dict[str, str] = {
     "out_of_range": "{field} is out of range",
     "wrong_type": "{field} has the wrong type",
     "server_error": "Ahon failed on its side (request {request_id}); try again later",
+    "name_taken": "that name is already a person in Ahon (#{person_id}), live or removed",
+    "paid_back_exceeds_amount": "what was paid back is more than was owed",
 }
 
 
