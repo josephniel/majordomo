@@ -198,6 +198,8 @@ class Bulletin:
                 "focusTime",
             ):
                 continue
+            if not str(ev.get("summary") or "").strip():
+                continue  # untitled blocks are private holds, not meetings
             mine = [a for a in ev.get("attendees") or [] if a.get("self")]
             if mine and mine[0].get("responseStatus") == "declined":
                 continue

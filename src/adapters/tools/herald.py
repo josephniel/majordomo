@@ -107,6 +107,23 @@ WORK_FEED = {
     "type": "object",
     "description": "the work bot's bulletin for the Work desk: pass work_bulletin's JSON as is",
 }
+CALENDAR = {
+    "type": "array",
+    "description": "every calendar event for the date through 14 days ahead: the "
+    "work_bulletin's events plus personal Google and Apple events",
+    "items": {
+        "type": "object",
+        "properties": {
+            "day": DATE,
+            "start_time": TIME,
+            "end_time": TIME,
+            "title": S,
+            "location": S,
+            "calendar": {"type": "string", "enum": ["work", "personal"]},
+        },
+        "required": ["day", "title"],
+    },
+}
 ID = {
     "type": "integer",
     "description": "the item's id (from herald_list, or the box number printed on the paper)",
@@ -331,7 +348,10 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
         "herald_publish",
         "Render the day's paper with your editorial and PRINT it on the home printer. "
         "Only for the morning run or when the operator asks for a print.",
-        _schema({"editorial": editorial, "date": DATE, "work_feed": WORK_FEED}, ["editorial"]),
+        _schema(
+            {"editorial": editorial, "date": DATE, "work_feed": WORK_FEED, "calendar": CALENDAR},
+            ["editorial"],
+        ),
     )
     async def herald_publish_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         return _result(await client.call("edition_publish", {**args, "print": True}))
@@ -340,7 +360,9 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
         "herald_preview",
         "Render the paper WITHOUT printing and stage the PDF for chat. Then send it with "
         "chat_send_file using the returned path. Editorial optional (the saved one is reused).",
-        _schema({"editorial": editorial, "date": DATE, "work_feed": WORK_FEED}),
+        _schema(
+            {"editorial": editorial, "date": DATE, "work_feed": WORK_FEED, "calendar": CALENDAR}
+        ),
     )
     async def herald_preview_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         return _result(
