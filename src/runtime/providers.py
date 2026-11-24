@@ -362,6 +362,11 @@ def _build_herald(rt: RuntimeContext) -> ToolProvider:
     return HeraldConnector(config=rt.config)
 
 
+def _build_apple_calendar(rt: RuntimeContext) -> ToolProvider:
+    from adapters.tools import AppleCalendarConnector
+    return AppleCalendarConnector(config=rt.config)
+
+
 def _build_peer(rt: RuntimeContext) -> ToolProvider:
     from adapters.tools import PeerConnector
     return PeerConnector(config=rt.config)
@@ -400,6 +405,7 @@ def _build_database(rt: RuntimeContext) -> ToolProvider:
 PROVIDERS: tuple[ProviderSpec, ...] = (
     _connector("gmail", _build_gmail),
     _connector("google_calendar", _build_google_calendar),
+    _connector("apple_calendar", _build_apple_calendar),
     _connector("google_drive", _build_google_drive),
     _connector("yahoo", _build_yahoo),
     _connector("clickup", _build_clickup),

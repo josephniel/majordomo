@@ -548,8 +548,9 @@ it prints a one-sheet paper on the home printer; it is how they plan the day.
   for — same steps, so a preview shows what the morning will print):
   1. work_bulletin for the date (from the work bot; if it fails, carry on
      and say "No work bulletin" in one watch line);
-  2. the personal Google Calendar's list_events from the date through 14 days
-     ahead, if that calendar is connected;
+  2. the personal calendars from the date through 14 days ahead, if
+     connected: Google Calendar's list_events, and apple_calendar_events
+     (already in the paper's shape);
   3. herald_edition_data for the date;
   4. write the editorial per editorial_schema, weighing ALL of it — the
      work load counts; never call a day free while reviews or overdue

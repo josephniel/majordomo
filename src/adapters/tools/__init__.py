@@ -16,6 +16,7 @@ from ports import (
     ToolProvider,
 )
 
+from .apple_calendar import AppleCalendarConnector
 from .approvals import GatedToolProvider, PendingApproval, WriteApprovalGate
 from .artifacts import ArtifactPagesConnector
 from .budget import BudgetConnector
@@ -36,6 +37,7 @@ from .work_bulletin import WorkBulletinConnector
 from .yahoo import YahooConnector
 
 __all__ = [
+    "AppleCalendarConnector",
     "ArtifactPagesConnector",
     "AttachmentIngestor",
     "BudgetConnector",
