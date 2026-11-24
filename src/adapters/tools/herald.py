@@ -544,10 +544,21 @@ it prints a one-sheet paper on the home printer; it is how they plan the day.
 - To change or finish something, find its id with herald_list first. The
   numbers printed beside checkboxes on the paper ARE todo ids (R<n> = routine).
 - Mistake? herald_undo reverses the last change.
-- Writing the morning editorial: call herald_edition_data, then fill the
-  editorial_schema in plain, warm, slightly newspaper-y English — practical
-  advice for approaching the day, never invented facts. Priorities must be
-  real items from the data.
+- Writing an editorial (the morning run AND any preview the operator asks
+  for — same steps, so a preview shows what the morning will print):
+  1. work_bulletin for the date (from the work bot; if it fails, carry on
+     and say "No work bulletin" in one watch line);
+  2. the personal Google Calendar's list_events from the date through 14 days
+     ahead, if that calendar is connected;
+  3. herald_edition_data for the date;
+  4. write the editorial per editorial_schema, weighing ALL of it — the
+     work load counts; never call a day free while reviews or overdue
+     tickets wait;
+  5. herald_publish / herald_preview with work_feed = the bulletin JSON as
+     is, and calendar = the bulletin's events plus the personal events as
+     [{day, start_time, end_time, title, location, calendar: "personal"}].
+  Use only facts from these results. Never add people, pets, habits, places
+  or plans that are not in the data — no "coffee and the dogs".
 - Evening photo of the marked-up paper: read the date/No. on the masthead,
   call herald_evening_sheet for that date, map each tick to its box number,
   read the notebook lines and "tonight's three wins", then call

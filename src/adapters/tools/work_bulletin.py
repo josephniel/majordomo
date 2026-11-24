@@ -134,7 +134,7 @@ class Bulletin:
             {
                 "title": f"Your MRs ready for review ({len(mine_open)}; "
                 f"{count([m for m in mine if m.get('draft')])} drafts)",
-                "items": _cap([line(m) for m in mine_open], self.max_items) or ["none"],
+                "items": _cap([line(m) for m in mine_open], self.max_items),
             },
         ]
 
@@ -162,7 +162,7 @@ class Bulletin:
         for t in tasks:
             status = str((t.get("status") or {}).get("status") or "").lower()
             ident = t.get("custom_id") or t.get("id")
-            label = f"{ident} {clean_title(str(t.get('name', '')), 52)} — {status}"
+            label = f"{ident} · {status} · {clean_title(str(t.get('name', '')), 70)}"
             due_ms = t.get("due_date")
             if due_ms and datetime.fromtimestamp(int(due_ms) / 1000, UTC) < end_of_day:
                 due.append(label)

@@ -181,11 +181,10 @@ class TestBulletin:
         titles = [s["title"] for s in out["sections"]]
         assert titles[0] == "Reviews waiting on you (1)"
         assert out["sections"][0]["items"] == ["crm-docs!1 · Fix it"]
-        assert out["sections"][1] == {"title": "Your MRs ready for review (0; 1 drafts)",
-                                      "items": ["none"]}
+        assert not any(x["title"].startswith("Your MRs") for x in out["sections"])
         assert out["events"] == []
-        assert any("TS-1 Due one" in i for s in out["sections"] for i in s["items"])
-        assert any("TS-2 Busy" in i for s in out["sections"] for i in s["items"])
+        assert any("TS-1 · to do · Due one" in i for s in out["sections"] for i in s["items"])
+        assert any("TS-2 · in progress · Busy" in i for s in out["sections"] for i in s["items"])
         assert out["sections"][-1] == {"title": "Release desk",
                                        "items": ["Deploy window open (Mon-Thu)."]}
         assert out["errors"] == []
