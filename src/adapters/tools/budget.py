@@ -18,7 +18,7 @@ import json
 import logging
 import sys
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, ClassVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from .registry import ServiceRegistry
 
 log = logging.getLogger(__name__)
+_MANILA = ZoneInfo("Asia/Manila")
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 
@@ -961,6 +962,44 @@ async def _find_scheduled(client: BudgetClient, sid: int) -> dict[str, Any] | No
         if row.get("id") == sid:
             return row
     return None
+
+
+def _schedule_tools(client: BudgetClient) -> list[ToolSpec]:
+    """Read the scheduled-payment queue as data, for the printed paper."""
+
+    @tool(
+        "scheduled_payments",
+        "Read-only: every scheduled payment in Ahon from overdue through `days` ahead "
+        "(default 14), for the printed paper. JSON [{id, day, title, amount, currency, "
+        "account, direction: 'out'|'in', overdue}]. Pass it as `payments` to "
+        "herald_publish/herald_preview. Never use it to settle anything.",
+        {"type": "object", "properties": {"days": {"type": "integer"}}},
+    )
+    @_guarded
+    async def scheduled_payments_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        days = max(1, min(int(args.get("days") or 14), 31))
+        today = datetime.now(_MANILA).date()
+        last = (today + timedelta(days=days)).isoformat()
+        data = await client.list_pending_payments()
+        rows = []
+        for r in (data.get("due") or []) + (data.get("upcoming") or []):
+            day = str(r.get("due_date") or "")[:10]
+            if not day or day > last:
+                continue
+            rows.append({
+                "id": r.get("id"),
+                "day": day,
+                "title": str(r.get("description") or r.get("tag_name") or "payment")[:60],
+                "amount": r.get("amount"),
+                "currency": r.get("currency") or "PHP",
+                "account": r.get("account_name") or "",
+                "direction": "in" if r.get("type") == "credit" else "out",
+                "overdue": day < today.isoformat(),
+            })
+        rows.sort(key=lambda x: (x["day"], x["title"]))
+        return ToolResult.ok(json.dumps(rows, ensure_ascii=False, default=str))
+
+    return [scheduled_payments_tool]
 
 
 def _pending_tools(client: BudgetClient) -> list[ToolSpec]:
@@ -1974,6 +2013,7 @@ class BudgetConnector(Connector):
         "list_pending_payments",
         "approve_pending_payment",
         "amend_pending_payment",
+        "scheduled_payments",
     ]
 
     STATUS: ClassVar[dict[str, str]] = {
@@ -2156,6 +2196,7 @@ problem when the real answer is that you are using the wrong tool."""
             *_plan_tools(client),
             *_transfer_tools(client),
             *_pending_tools(client),
+            *_schedule_tools(client),
             *_split_tools(client),
             *_settle_tools(client),
             *_people_tools(client),

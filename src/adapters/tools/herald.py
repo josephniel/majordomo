@@ -107,6 +107,11 @@ WORK_FEED = {
     "type": "object",
     "description": "the work bot's bulletin for the Work desk: pass work_bulletin's JSON as is",
 }
+PAYMENTS = {
+    "type": "array",
+    "description": "Ahon's scheduled payments: pass scheduled_payments' JSON as is",
+    "items": {"type": "object"},
+}
 CALENDAR = {
     "type": "array",
     "description": "every calendar event for the date through 14 days ahead: the "
@@ -349,7 +354,13 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
         "Render the day's paper with your editorial and PRINT it on the home printer. "
         "Only for the morning run or when the operator asks for a print.",
         _schema(
-            {"editorial": editorial, "date": DATE, "work_feed": WORK_FEED, "calendar": CALENDAR},
+            {
+                "editorial": editorial,
+                "date": DATE,
+                "work_feed": WORK_FEED,
+                "calendar": CALENDAR,
+                "payments": PAYMENTS,
+            },
             ["editorial"],
         ),
     )
@@ -361,7 +372,13 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
         "Render the paper WITHOUT printing and stage the PDF for chat. Then send it with "
         "chat_send_file using the returned path. Editorial optional (the saved one is reused).",
         _schema(
-            {"editorial": editorial, "date": DATE, "work_feed": WORK_FEED, "calendar": CALENDAR}
+            {
+                "editorial": editorial,
+                "date": DATE,
+                "work_feed": WORK_FEED,
+                "calendar": CALENDAR,
+                "payments": PAYMENTS,
+            }
         ),
     )
     async def herald_preview_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
@@ -573,12 +590,14 @@ it prints a one-sheet paper on the home printer; it is how they plan the day.
   2. the personal calendars from the date through 14 days ahead, if
      connected: Google Calendar's list_events, and apple_calendar_events
      (already in the paper's shape);
-  3. herald_edition_data for the date;
-  4. write the editorial per editorial_schema, weighing ALL of it — the
+  3. scheduled_payments (Ahon) for 14 days, if the budget connector is on;
+  4. herald_edition_data for the date;
+  5. write the editorial per editorial_schema, weighing ALL of it — the
      work load counts; never call a day free while reviews or overdue
      tickets wait;
-  5. herald_publish / herald_preview with work_feed = the bulletin JSON as
-     is, and calendar = the bulletin's events plus the personal events as
+  6. herald_publish / herald_preview with work_feed = the bulletin JSON as
+     is, payments = scheduled_payments' JSON as is, and calendar = the
+     bulletin's events plus the personal events as
      [{day, start_time, end_time, title, location, calendar: "personal"}].
   Use only facts from these results. Never add people, pets, habits, places
   or plans that are not in the data — no "coffee and the dogs".
