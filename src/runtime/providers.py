@@ -362,6 +362,16 @@ def _build_herald(rt: RuntimeContext) -> ToolProvider:
     return HeraldConnector(config=rt.config)
 
 
+def _build_peer(rt: RuntimeContext) -> ToolProvider:
+    from adapters.tools import PeerConnector
+    return PeerConnector(config=rt.config)
+
+
+def _build_work_bulletin(rt: RuntimeContext) -> ToolProvider:
+    from adapters.tools import WorkBulletinConnector
+    return WorkBulletinConnector(config=rt.config)
+
+
 def _build_gitlab(rt: RuntimeContext) -> ToolProvider:
     from adapters.tools import GitLabConnector
     return GitLabConnector(config=rt.config)
@@ -396,6 +406,8 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     _connector("splitwise", _build_splitwise),
     _connector("budget", _build_budget),
     _connector("herald", _build_herald),
+    _connector("work_bulletin", _build_work_bulletin),
+    _connector("peer", _build_peer),
     _connector("gitlab", _build_gitlab),
     _connector("artifacts", _build_artifacts),
     _connector("database", _build_database),

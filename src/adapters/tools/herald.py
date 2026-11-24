@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-CALL_TIMEOUT = 420.0          # render (headless Chrome) + up to 4 min waiting for the printer
+CALL_TIMEOUT = 420.0  # render (headless Chrome) + up to 4 min waiting for the printer
 MAX_RESULT_CHARS = 12_000
 
 
@@ -103,6 +103,10 @@ DATE = {"type": "string", "description": "YYYY-MM-DD (Asia/Manila)"}
 TIME = {"type": "string", "description": "HH:MM, 24-hour"}
 AREA = {"type": "string", "enum": ["personal", "work", "home", "health", "money"]}
 PRIORITY = {"type": "integer", "enum": [1, 2, 3], "description": "1 high, 2 normal, 3 low"}
+WORK_FEED = {
+    "type": "object",
+    "description": "the work bot's bulletin for the Work desk: pass work_bulletin's JSON as is",
+}
 ID = {
     "type": "integer",
     "description": "the item's id (from herald_list, or the box number printed on the paper)",
@@ -327,7 +331,7 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
         "herald_publish",
         "Render the day's paper with your editorial and PRINT it on the home printer. "
         "Only for the morning run or when the operator asks for a print.",
-        _schema({"editorial": editorial, "date": DATE}, ["editorial"]),
+        _schema({"editorial": editorial, "date": DATE, "work_feed": WORK_FEED}, ["editorial"]),
     )
     async def herald_publish_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         return _result(await client.call("edition_publish", {**args, "print": True}))
@@ -336,7 +340,7 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
         "herald_preview",
         "Render the paper WITHOUT printing and stage the PDF for chat. Then send it with "
         "chat_send_file using the returned path. Editorial optional (the saved one is reused).",
-        _schema({"editorial": editorial, "date": DATE}),
+        _schema({"editorial": editorial, "date": DATE, "work_feed": WORK_FEED}),
     )
     async def herald_preview_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         return _result(
@@ -398,7 +402,24 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
     async def herald_evening_record_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         return _result(await client.call("evening_record", args))
 
-    return [*specs, herald_publish_tool, herald_preview_tool, herald_evening_record_tool]
+    @tool(
+        "herald_add_work_todo",
+        "Put a WORK todo on the operator's printed paper (Work desk). For the work bot, "
+        "when the operator asks it to put something on tomorrow's paper. Args: title, "
+        "due (YYYY-MM-DD, optional), priority (1 high, 2 normal, 3 low; default 2).",
+        _schema({"title": S, "due": DATE, "priority": PRIORITY}, ["title"]),
+    )
+    async def herald_add_work_todo_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        fields = {k: args[k] for k in ("title", "due", "priority") if args.get(k) not in (None, "")}
+        return _result(await client.call("todo_add", {**fields, "area": "work"}))
+
+    return [
+        *specs,
+        herald_publish_tool,
+        herald_preview_tool,
+        herald_evening_record_tool,
+        herald_add_work_todo_tool,
+    ]
 
 
 class HeraldConnector(Connector):
@@ -449,6 +470,7 @@ class HeraldConnector(Connector):
         "herald_publish",
         "herald_preview",
         "herald_evening_record",
+        "herald_add_work_todo",
     ]
     WRITE_TOOLS = frozenset(set(TOOL_NAMES) - READ_TOOLS)
     # Gated even when the persona exempts this connector from approvals:
@@ -461,6 +483,7 @@ class HeraldConnector(Connector):
             "herald_recurring_add",
             "herald_note_add",
             "herald_evening_record",
+            "herald_add_work_todo",
         }
     )
 

@@ -1606,6 +1606,43 @@ class PersonaRuntime:
             allowed_hosts=[str(h) for h in cfg.get("allowed_hosts") or []],
         )
 
+    @cached_property
+    def peer_server(self) -> Any:
+        """The peer MCP server (adapters/trigger/peer_mcp.py), or None.
+
+        Serves exactly the tool names in persona.yaml `peer_mcp.tools`, taken
+        from the GATED view so this bot's approval rules still apply to a
+        peer's call. A name that no enabled provider offers is an error in the
+        log, not a silent gap.
+        """
+        cfg = self.persona.peer_mcp
+        if not cfg:
+            return None
+        from adapters.trigger.gateway_mcp import DeveloperRegistry
+        from adapters.trigger.peer_mcp import DEFAULT_PORT, PeerServer
+
+        wanted = [str(t) for t in cfg.get("tools") or []]
+        specs = {
+            s.name: s
+            for view in self.gated_services
+            for server in view.builtin_servers().values()
+            for s in server
+        }
+        missing = [t for t in wanted if t not in specs]
+        if missing:
+            log.error("persona %r: peer_mcp tools not offered by any enabled provider: %s",
+                      self.persona.id, ", ".join(missing))
+        tools = [specs[t] for t in wanted if t in specs]
+        if not tools:
+            log.warning("persona %r: peer_mcp has no tools to serve; disabled", self.persona.id)
+            return None
+        return PeerServer(
+            name=f"{self.persona.id}-peer",
+            tools=tools,
+            registry=DeveloperRegistry(self.persona.dir / "peer" / "peers.json"),
+            port=int(cfg.get("port") or DEFAULT_PORT),
+        )
+
     def _gateway_actions(self, cfg: Mapping[str, Any]) -> dict[str, Any]:
         from pathlib import Path
 
@@ -1683,8 +1720,13 @@ class PersonaRuntime:
 
         # Comms log only matters when this chat has a control room — otherwise
         # there's nothing to log or relay. Same gate as in `platform`.
-        cr_configured = bool(self.platform_config.raw.get("control_room"))
+        cr = self.platform_config.raw.get("control_room")
+        cr_configured = bool(cr)
         comms = self.comms_log if cr_configured else None
+        # control_room.relay: false keeps the room but stops this bot hearing
+        # other bots through the comms log — tool calls over peer MCP are then
+        # the only way bots reach each other.
+        peer_relay = not (isinstance(cr, dict) and cr.get("relay") is False)
         return ConversationOrchestrator(
             platform=self.platform,
             agent_factory=self.create_agent,
@@ -1694,6 +1736,7 @@ class PersonaRuntime:
             persona_id=self.persona.id,
             optional=OptionalSubsystems(
                 comms_log=comms,
+                peer_relay=peer_relay,
                 conversation_history=self.conversation_history,
                 reflection=self.reflection_engine,
                 status_reporter=self.status_reporter,
@@ -1719,6 +1762,7 @@ class PersonaRuntime:
         """
         from domain.triggers import (
             GatewaySource,
+            PeerSource,
             RetentionSource,
             ScheduleSource,
             WebhookSource,
@@ -1744,6 +1788,8 @@ class PersonaRuntime:
             sources.append(WebhookSource(self.webhook_server))
         if self.gateway_server is not None:
             sources.append(GatewaySource(self.gateway_server))
+        if self.peer_server is not None:
+            sources.append(PeerSource(self.peer_server))
         if self.retention_job is not None:
             sources.append(RetentionSource(self.retention_job))
         return sources

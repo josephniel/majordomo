@@ -14,6 +14,7 @@ from domain.triggers import (
     ALL_SOURCE_TYPES,
     GatewaySource,
     HeartbeatSource,
+    PeerSource,
     RetentionSource,
     ScheduleSource,
     WatchSource,
@@ -69,6 +70,7 @@ def _sources():
                     watcher=_Watcher(), preamble="[mail]\n"),
         WebhookSource(server=object()),
         GatewaySource(server=object()),
+        PeerSource(server=object()),
         ScheduleSource(scheduler=object()),
         RetentionSource(job=object()),
     ]

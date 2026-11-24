@@ -439,9 +439,20 @@ class RetentionSource:
             log.exception("retention run failed")
 
 
+class PeerSource(GatewaySource):
+    """The peer MCP server's lifecycle (adapters/trigger/peer_mcp.py).
+
+    Never emits: a peer's call runs one allowlisted tool and returns, and is
+    never turned into an agent turn. That is what keeps the bots from
+    triggering each other.
+    """
+
+    name = "peer_mcp"
+
+
 ALL_SOURCE_TYPES: tuple[type, ...] = (
     HeartbeatSource, WatchSource, WebhookSource, GatewaySource, ScheduleSource,
-    RetentionSource,
+    RetentionSource, PeerSource,
 )
 
 # Checked at import, not in a test, because the failure this catches is

@@ -95,6 +95,9 @@ class OptionalSubsystems:
     """
 
     comms_log: CommsLog | None = None
+    # False: never relay other bots' messages into turns (comms log still
+    # records this bot's own traffic). See control_room.relay.
+    peer_relay: bool = True
     conversation_history: ConversationHistory | None = None
     reflection: ReflectionEngine | None = None
     status_reporter: StatusReporter | None = None
@@ -173,7 +176,7 @@ class ConversationOrchestrator(CommandsMixin, ProactiveMixin, RecoveryMixin):
         self._ledger_fastpath = optional.ledger_fastpath
         self._relay: CommsRelay | None = (
             CommsRelay(optional.comms_log, persona_id, self._on_peer_message)
-            if optional.comms_log is not None else None
+            if optional.comms_log is not None and optional.peer_relay else None
         )
 
         # per-instance state

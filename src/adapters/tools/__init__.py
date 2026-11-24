@@ -26,11 +26,13 @@ from .gitlab import GitLabConnector
 from .gmail import GmailConnector
 from .google_calendar import GoogleCalendarConnector
 from .herald import HeraldConnector
+from .peer import PeerConnector
 
 # Foundational data layer — must be imported before any connector class
 # (every connector takes ServiceRegistry via constructor injection).
 from .registry import ConnectorEntry, ServiceRegistry  # ConnectorEntry: internal
 from .splitwise import SplitwiseConnector
+from .work_bulletin import WorkBulletinConnector
 from .yahoo import YahooConnector
 
 __all__ = [
@@ -49,11 +51,13 @@ __all__ = [
     "GoogleCalendarConnector",
     "GoogleDriveConnector",
     "HeraldConnector",
+    "PeerConnector",
     "PendingApproval",
     "ServiceRegistry",
     "SplitwiseConnector",
     "Summarizer",
     "ToolProvider",
+    "WorkBulletinConnector",
     "WriteApprovalGate",
     "YahooConnector",
 ]

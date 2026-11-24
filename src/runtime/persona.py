@@ -84,6 +84,9 @@ class Persona:
     # Developer tokens live in <instance>/gateway/developers.json. See
     # adapters/trigger/gateway.py and gateway_mcp.py.
     gateway: dict[str, Any] | None = None
+    # Peer MCP: {port, tools: [tool names served to peers]}. Peer tokens live
+    # in <instance>/peer/peers.json. See adapters/trigger/peer_mcp.py.
+    peer_mcp: dict[str, Any] | None = None
     # Push-style mail alerts: {every_minutes: 3, chat_id: <optional>}.
     # Needs the gmail connector enabled. See adapters/trigger/mailwatch.py.
     mail_watch: dict[str, Any] | None = None
@@ -192,6 +195,7 @@ class Persona:
             heartbeat=dict(cfg["heartbeat"]) if cfg.get("heartbeat") else None,
             webhooks=dict(cfg["webhooks"]) if cfg.get("webhooks") else None,
             gateway=dict(cfg["gateway"]) if cfg.get("gateway") else None,
+            peer_mcp=dict(cfg["peer_mcp"]) if cfg.get("peer_mcp") else None,
             mail_watch=dict(cfg["mail_watch"]) if cfg.get("mail_watch") else None,
             splitwise_watch=(
                 dict(cfg["splitwise_watch"]) if cfg.get("splitwise_watch") else None
