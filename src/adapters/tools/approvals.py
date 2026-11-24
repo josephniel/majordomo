@@ -725,12 +725,16 @@ class GatedToolProvider:
     side of the call.
     """
 
-    def __init__(self, inner: Any, gate: WriteApprovalGate) -> None:
+    def __init__(self, inner: Any, gate: WriteApprovalGate, exempt: bool = False) -> None:
         self._inner = inner
         self._gate = gate
+        # exempt: the persona trusts this provider's writes (write_approval_exempt);
+        # only its ALWAYS_CONFIRM tools still ask.
+        gated = getattr(inner, "ALWAYS_CONFIRM", frozenset()) if exempt else inner.WRITE_TOOLS
+        self._gated_names: frozenset[str] = frozenset(gated or ())
 
     def _gated(self, spec: ToolSpec) -> ToolSpec:
-        if spec.name in (self._inner.WRITE_TOOLS or ()):
+        if spec.name in self._gated_names:
             return self._gate.wrap_spec(self._inner.name, spec)
         return spec
 

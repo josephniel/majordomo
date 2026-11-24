@@ -549,8 +549,17 @@ class PersonaRuntime:
         gate = self.approval_gate
         if gate is None:
             return self.active_services
+        exempt = self.persona.write_approval_exempt
+        unknown = exempt - {c.name for c in self.active_services}
+        if unknown:
+            log.warning(
+                "persona %r: write_approval_exempt names %s, which are not active providers",
+                self.persona.id, ", ".join(sorted(unknown)),
+            )
         gated: list[ToolProviderView] = []
-        gated.extend(GatedToolProvider(c, gate) for c in self.active_services)
+        gated.extend(
+            GatedToolProvider(c, gate, exempt=c.name in exempt) for c in self.active_services
+        )
         return gated
 
     @cached_property

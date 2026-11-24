@@ -195,6 +195,11 @@ class ToolProvider:
     # that enables this provider with `true` gets everything EXCEPT these
     # (read-only by default); `read_write` grants them too.
     WRITE_TOOLS: frozenset[str] = frozenset()
+    # Write tools that stay behind the approval gate even when the persona
+    # exempts this provider (`write_approval_exempt`). For writes whose
+    # content the model inferred rather than was told — e.g. a reading of a
+    # photo — where the operator's tap is the confirmation.
+    ALWAYS_CONFIRM: frozenset[str] = frozenset()
 
     # ---- keyword routing (token-constrained vendors) ----
     # When a vendor can't afford every tool schema per turn (SUBSET_TOOLS),

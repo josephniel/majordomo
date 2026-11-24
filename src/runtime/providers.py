@@ -357,6 +357,11 @@ def _build_budget(rt: RuntimeContext) -> ToolProvider:
     return BudgetConnector(config=rt.config)
 
 
+def _build_herald(rt: RuntimeContext) -> ToolProvider:
+    from adapters.tools import HeraldConnector
+    return HeraldConnector(config=rt.config)
+
+
 def _build_gitlab(rt: RuntimeContext) -> ToolProvider:
     from adapters.tools import GitLabConnector
     return GitLabConnector(config=rt.config)
@@ -390,6 +395,7 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     _connector("clickup", _build_clickup),
     _connector("splitwise", _build_splitwise),
     _connector("budget", _build_budget),
+    _connector("herald", _build_herald),
     _connector("gitlab", _build_gitlab),
     _connector("artifacts", _build_artifacts),
     _connector("database", _build_database),

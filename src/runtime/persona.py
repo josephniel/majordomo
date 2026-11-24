@@ -69,6 +69,10 @@ class Persona:
     # Opting out (write_approval: false) restores unattended writes — only
     # sane for personas whose write surface is already trusted end-to-end.
     write_approval: bool = True
+    # Providers whose writes skip the tap (their ALWAYS_CONFIRM tools stay
+    # gated). For low-stakes, undoable surfaces the operator trusts — e.g.
+    # `write_approval_exempt: [herald]` for the daily-paper todo list.
+    write_approval_exempt: frozenset[str] = frozenset()
     # Proactive check-in: {cron: "0 8,13,18 * * *", chat_id: <optional int>,
     # prompt: "..."}. chat_id defaults to the platform's first allowed user
     # (their DM). The prompt is re-read from persona.yaml per fire.
@@ -182,6 +186,9 @@ class Persona:
             enabled_connectors=cls._merge_enablement(cfg, config_path),
             model=cfg.get("model") or None,
             write_approval=bool(cfg.get("write_approval", True)),
+            write_approval_exempt=frozenset(
+                str(n) for n in (cfg.get("write_approval_exempt") or [])
+            ),
             heartbeat=dict(cfg["heartbeat"]) if cfg.get("heartbeat") else None,
             webhooks=dict(cfg["webhooks"]) if cfg.get("webhooks") else None,
             gateway=dict(cfg["gateway"]) if cfg.get("gateway") else None,

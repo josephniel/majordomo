@@ -25,6 +25,7 @@ from .gdrive import GoogleDriveConnector
 from .gitlab import GitLabConnector
 from .gmail import GmailConnector
 from .google_calendar import GoogleCalendarConnector
+from .herald import HeraldConnector
 
 # Foundational data layer — must be imported before any connector class
 # (every connector takes ServiceRegistry via constructor injection).
@@ -47,6 +48,7 @@ __all__ = [
     "GmailConnector",
     "GoogleCalendarConnector",
     "GoogleDriveConnector",
+    "HeraldConnector",
     "PendingApproval",
     "ServiceRegistry",
     "SplitwiseConnector",
