@@ -20,7 +20,7 @@ from adapters.ahon import (
     splitwise_ref,
     when_fields,
 )
-from adapters.tools.ahon import AhonConnector
+from adapters.tools.ahon import SYSTEM_PROMPT_SECTION, AhonConnector
 from ports import PreviewRefusedError, ToolContext
 from tests.fakes.ahon import FakeAhon
 from tests.fakes.push_queue import MemoryPushQueue
@@ -695,19 +695,68 @@ class TestPayments:
 
 
 class TestPeople:
-    async def test_someone_who_owes_nothing_cannot_be_added_yet_and_nothing_is_sent(self):
+    async def test_someone_who_owes_nothing_is_the_name_alone_and_no_record(self):
+        """Ahon item 181: no balance at all, and Ahon writes the person and nothing else."""
         fake = FakeAhon.sample()
+        records = dict(fake.records)
         out = await _call(fake, "create_person", {"name": "  Dana  Lim "})
-        assert out.is_error
-        assert "cannot add a person who owes nothing yet" in out.text
-        assert "Dana Lim" in out.text
-        assert fake.writes(real_only=False) == []
+        assert not out.is_error, out.text
+        assert "added Dana Lim (person #" in out.text
+        assert "owes nothing either way" in out.text
+        [(_m, path, query, body)] = fake.writes()
+        assert path == "/v1/accounts"
+        assert query == {}
+        assert set(body) == {"kind", "name", "client_id"}
+        assert (body["kind"], body["name"]) == ("person", "Dana Lim")
+        assert fake.records == records
+        dana = next(p for p in fake.people if p["name"] == "Dana Lim")
+        assert (dana["balance"], dana["direction"]) == ("0.00", "settled")
 
-    async def test_its_preview_refuses_before_anyone_is_asked(self):
+    async def test_its_preview_is_a_dry_run_that_keeps_nothing(self):
         fake = FakeAhon.sample()
         spec = _tools(fake)["create_person"]
-        with pytest.raises(PreviewRefusedError, match="owes nothing"):
-            await spec.approval_preview({"name": "Dana"}, CTX)
+        said = await spec.approval_preview({"name": "Dana"}, CTX)
+        assert said.startswith("Ahon would add the person Dana, who owes nothing either way")
+        [(method, path, query, body)] = fake.requests
+        assert (method, path, query) == ("POST", "/v1/accounts", {"dry_run": "true"})
+        assert "balance" not in body
+        assert all(p["name"] != "Dana" for p in fake.people)
+
+    @pytest.mark.parametrize("zero", [{"owes_you": 0}, {"you_owe": "0.00"}, {"owes_you": ""}])
+    async def test_a_zero_amount_is_owing_nothing_and_never_sent_as_a_balance(self, zero):
+        fake = FakeAhon.sample()
+        out = await _call(fake, "create_person", {"name": "Dana", **zero})
+        assert not out.is_error, out.text
+        [(_m, _path, _q, body)] = fake.writes()
+        assert set(body) == {"kind", "name", "client_id"}
+
+    async def test_a_retry_after_a_lost_answer_is_the_same_person_once(self):
+        """The client sends a create again only with the same client_id: Ahon answers it, 200."""
+        fake = FakeAhon.sample()
+        lost: list[httpx.Request] = []
+
+        def handler(request):
+            answer = fake.handle(request)
+            if request.url.path == "/v1/accounts" and not lost:
+                lost.append(request)
+                raise httpx.ConnectError("the answer was lost", request=request)
+            return answer
+
+        conn = AhonConnector(config=None)
+        client = AhonClient("http://ahon.test", "k", transport=httpx.MockTransport(handler))
+        tools = {s.name: s for s in conn._build_tools_for_profile(client)}
+        out = await tools["create_person"].handler({"name": "Dana"}, CTX)
+        assert not out.is_error, out.text
+        first, again = fake.writes()
+        assert first[3]["client_id"] == again[3]["client_id"]
+        [dana] = [p for p in fake.people if p["name"] == "Dana"]
+        assert f"(person #{dana['id']})" in out.text
+
+    async def test_a_negative_or_unreadable_amount_is_refused_before_anything_is_sent(self):
+        fake = FakeAhon.sample()
+        for bad in ({"owes_you": -50}, {"you_owe": "lots"}):
+            out = await _call(fake, "create_person", {"name": "Dana", **bad})
+            assert out.is_error
         assert fake.requests == []
 
     async def test_create_person_with_a_debt_that_already_exists(self):
@@ -889,9 +938,11 @@ class TestFollowUps:
         assert "which time to bring back" in out.text
         assert fake.writes(real_only=False) == []
 
-    async def test_the_person_refusal_forbids_passing_the_entrys_own_amount(self):
-        out = await _call(FakeAhon.sample(), "create_person", {"name": "Dana"})
-        assert "never pass the share or loan you are about to record" in out.text
+    def test_the_tool_and_the_prompt_forbid_passing_the_entrys_own_amount(self):
+        spec = _tools(FakeAhon.sample())["create_person"]
+        assert "NEVER the share or loan you are about to record" in spec.description
+        assert "never a made-up amount" in spec.description
+        assert "never the entry's own" in " ".join(SYSTEM_PROMPT_SECTION.split())
 
     async def test_the_documented_redo_of_a_split_records_anew_under_the_same_id(self):
         """Remove the split, free the id on its first part, record it again: a 201."""
@@ -917,3 +968,91 @@ class TestFollowUps:
                 if r.get("external_id") == "splitwise:900" and not r.get("removed")]
         assert len(live) == 1
         assert live[0]["id"] != holder["id"]
+
+
+_DANAS_SPLIT = {"account_id": 1, "category_id": 9, "total_amount": 900,
+                "external_id": "splitwise:777", "shares": [{"person": "Dana Lim", "amount": 300}]}
+
+
+class TestEarlierThanAdded:
+    """AHON-LIMIT-182: Ahon takes no record with a person dated before they were added.
+
+    A person added owing nothing starts in Ahon the day they are added. Until Ahon
+    lifts that (its item 182), an entry dated earlier that needs a new person is
+    refused in words before anything is written, and never by an invented opening.
+    """
+
+    async def test_a_split_dated_earlier_with_a_new_person_writes_nothing(self):
+        fake = FakeAhon.sample()
+        args = {**_DANAS_SPLIT, "occurred_at": "2026-11-20"}
+        out = await _call(fake, "record_split", args)
+        assert out.is_error
+        assert "Dana Lim must NOT be added for this entry" in out.text
+        assert "dated 2026-11-20" in out.text
+        assert "date_before_opening" in out.text
+        assert "opening amount" in out.text
+        with pytest.raises(PreviewRefusedError, match="must NOT be added"):
+            await _tools(fake)["record_split"].approval_preview(args, CTX)
+        assert fake.writes(real_only=False) == []
+
+    async def test_today_a_new_person_is_still_asked_about(self):
+        fake = FakeAhon.sample()
+        out = await _call(fake, "record_split", _DANAS_SPLIT)
+        assert out.is_error
+        assert "ask the user whether to add them (create_person" in out.text
+        assert "must NOT be added" not in out.text
+
+    async def test_someone_else_paid_earlier_with_a_new_person_writes_nothing(self):
+        fake = FakeAhon.sample()
+        out = await _call(fake, "record_transaction", {
+            "kind": "spending", "person": "Dana Lim", "amount": 300, "category_id": 9,
+            "occurred_at": "2026-11-20T19:30:00+08:00",
+        })
+        assert out.is_error
+        assert "Dana Lim must NOT be added for this entry" in out.text
+        assert fake.writes(real_only=False) == []
+
+    async def test_a_name_kept_only_in_a_purchases_note_is_not_this_limit(self):
+        out = await _call(FakeAhon.sample(), "record_transaction", {
+            "kind": "spending", "account_id": 1, "person": "Dana Lim", "amount": 300,
+            "occurred_at": "2026-11-20",
+        })
+        assert out.is_error
+        assert "must NOT be added" not in out.text
+        assert "is not a person in Ahon" in out.text
+
+    async def test_a_person_added_owing_nothing_takes_a_split_dated_today(self):
+        fake = FakeAhon.sample()
+        added = await _call(fake, "create_person", {"name": "Dana Lim"})
+        assert not added.is_error, added.text
+        out = await _call(fake, "record_split", _DANAS_SPLIT)
+        assert out.text.startswith("recorded #"), out.text
+        dana = next(p for p in fake.people if p["name"] == "Dana Lim")
+        [body] = [b for _m, path, _q, b in fake.writes() if path == "/v1/transactions"]
+        assert body["shares"] == [{"person_id": dana["id"], "amount": "300.00"}]
+        assert dana["balance"] == "300.00"
+
+    async def test_a_person_added_today_refuses_an_earlier_record_in_words(self):
+        fake = FakeAhon.sample()
+        await _call(fake, "create_person", {"name": "Dana Lim"})
+        records = dict(fake.records)
+        args = {**_DANAS_SPLIT, "occurred_at": "2026-11-20"}
+        with pytest.raises(PreviewRefusedError) as preview:
+            await _tools(fake)["record_split"].approval_preview(args, CTX)
+        out = await _call(fake, "record_split", args)
+        for text in (str(preview.value), out.text):
+            assert "Ahon cannot yet take a record with a person dated before the day they" in text
+            assert "Dana Lim was added on 2026-11-24, and this entry is dated 2026-11-20" in text
+        assert out.is_error
+        assert fake.records == records
+
+    async def test_a_person_known_before_is_named_and_an_account_keeps_ahons_words(self):
+        fake = FakeAhon.sample()
+        fake.people[0]["opened_on"] = "2026-11-24"
+        out = await _call(fake, "record_transaction", {
+            "kind": "spending", "person": "Ana Reyes", "amount": 50, "occurred_at": "2026-11-20",
+        })
+        assert "Ana Reyes was added on 2026-11-24" in out.text
+        plain = describe(AhonError(422, "date_before_opening", "occurred_on",
+                                   {"opening_on": "2026-11-24", "account_id": 2}))
+        assert plain.startswith("that date is before the account was opened (2026-11-24)")

@@ -53,6 +53,7 @@ class FakeAhon:
     records: dict[int, dict[str, Any]] = field(default_factory=dict)
     requests: list[tuple[str, str, dict[str, str], Any]] = field(default_factory=list)
     _by_client: dict[str, int] = field(default_factory=dict)
+    _people_by_client: dict[str, int] = field(default_factory=dict)
     _next: int = 100
 
     # ---- sample data ----
@@ -215,27 +216,58 @@ class FakeAhon:
         row["bill"] = {**(row.get("bill") or {}), "this_time": "changed" if amount else None}
 
     def _add_person(self, body: dict[str, Any], dry: bool) -> httpx.Response:
-        """A key may add a person and nothing else (Ahon's item 179)."""
+        """A key may add a person and nothing else (Ahon's items 179 and 181).
+
+        No `balance` is someone who owes nothing: the person alone, no record,
+        opened today. A repeated `client_id` answers the person, before the name
+        check, as the real API did on a scratch server (25 Nov 2026).
+        """
         if body.get("kind") != "person":
             return _err(403, "session_required")
+        known = self._people_by_client.get(str(body.get("client_id")))
+        if known is not None:
+            return httpx.Response(200, json={
+                "account": self._person(known), "changes": [], "notices": [], "undo": None,
+            })
+        refused = self._person_refusal(body)
+        if refused is not None:
+            return refused
+        bal = Decimal("0.00")
+        if "balance" in body:
+            sign = 1 if body.get("direction") == "owes_you" else -1
+            bal = sign * (Decimal(body["balance"]) - Decimal(body.get("paid_back") or "0"))
         taken = next(
             (p for p in self.people if p["name"].lower() == str(body.get("name")).lower()), None,
         )
         if taken is not None:
             return _err(409, "name_taken", "name", person_id=taken["id"])
-        sign = 1 if body.get("direction") == "owes_you" else -1
-        owed = Decimal(body["balance"]) - Decimal(body.get("paid_back") or "0")
-        bal = sign * owed
         person = {
             "id": None if dry else self._new_id(), "kind": "person", "name": body["name"],
-            "balance": str(bal), "in_plan": False, "opened_on": TODAY,
+            "balance": f"{bal:.2f}", "in_plan": False, "opened_on": TODAY,
             "direction": "owes_you" if bal > 0 else ("you_owe" if bal < 0 else "settled"),
         }
         if not dry:
             self.people.append(person)
+            self._people_by_client[str(body.get("client_id"))] = int(person["id"])
         return httpx.Response(200 if dry else 201, json={
             "account": person, "changes": [], "notices": [], "undo": None,
         })
+
+    @staticmethod
+    def _person_refusal(body: dict[str, Any]) -> httpx.Response | None:
+        """The 422s of a key's person: the plan's fields; a zero, `since` or a pay-back alone."""
+        refused = next((k for k in ("in_plan", "terms", "payment") if k in body), None)
+        if refused:
+            return _err(422, "not_allowed", refused)
+        if "balance" in body:
+            if not MONEY.match(str(body["balance"])) or Decimal(body["balance"]) <= 0:
+                return _err(422, "out_of_range", "balance", min="0.01")
+            return None
+        if "since" in body:
+            return _err(422, "not_allowed", "since")
+        if Decimal(body.get("paid_back") or "0") > 0:
+            return _err(422, "paid_back_exceeds_amount", "paid_back", amount="0.00")
+        return None
 
     def _month(self, path: str) -> httpx.Response:
         month = self.months.get(path.rsplit("/", 1)[1])
@@ -350,7 +382,7 @@ class FakeAhon:
         return next(p for p in self.people if p["id"] == pid)
 
     def _check_create(self, body: dict[str, Any]) -> httpx.Response | None:
-        return self._check_shape(body) or self._check_rules(body)
+        return self._check_shape(body) or self._before_opening(body) or self._check_rules(body)
 
     @staticmethod
     def _check_shape(body: dict[str, Any]) -> httpx.Response | None:
@@ -389,6 +421,17 @@ class FakeAhon:
             total = sum(Decimal(s["amount"]) for s in body["shares"])
             if total >= Decimal(amount or "0"):
                 return _err(422, "shares_above_amount", "shares", amount=amount, shares=str(total))
+        return None
+
+    def _before_opening(self, body: dict[str, Any]) -> httpx.Response | None:
+        """No record with a person dated before they were opened (Ahon's date_before_opening)."""
+        on = str(body.get("occurred_on") or str(body.get("occurred_at") or "")[:10] or TODAY)
+        ids = [body.get("person_id")] + [s.get("person_id") for s in body.get("shares") or []]
+        for pid in ids:
+            person = next((p for p in self.people if p["id"] == pid), None) if pid else None
+            if person is not None and on < str(person.get("opened_on") or ""):
+                return _err(422, "date_before_opening", "occurred_on",
+                            opening_on=person["opened_on"], account_id=pid)
         return None
 
     def _replay(self, body: dict[str, Any]) -> dict[str, Any] | None:

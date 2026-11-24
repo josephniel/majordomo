@@ -13,8 +13,8 @@ What is not built here, and why
 `push_to_splitwise`, `find_by_reference` and `repayment_plan` were never called
 in four months of the old app (the parity survey's section A), so they are left
 out rather than ported. `amend_pending_payment` changes one time of a bill (Ahon
-item 180); `create_person` adds someone who already owes something either way, and
-answers plainly for someone who owes nothing until Ahon takes one (see its TODO).
+item 180); `create_person` adds a person owing nothing with the name alone (Ahon
+item 181: no record is written), or someone who already owes something either way.
 
 Credentials, by name only
 -------------------------
@@ -30,6 +30,7 @@ import getpass
 import json
 import logging
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -40,7 +41,9 @@ from adapters.ahon import (
     AhonError,
     Saved,
     as_decimal,
+    before_added,
     describe,
+    earlier_day,
     money,
     new_client_id,
     peso,
@@ -175,8 +178,15 @@ def render_preview(req: Request, saved: Saved) -> str:
     return f"{head}:\n{format_record(tx)}{said}{_moves(saved, req)}{_notices(saved, req)}"
 
 
-def _refusal(req: Request, err: AhonError) -> str:
+def _refusal(req: Request, err: AhonError, tz: str) -> str:
     """Word a refusal; a lone loan above what the user owes that person says what Ahon takes."""
+    if err.code == "date_before_opening":  # AHON-LIMIT-182
+        person = req.setup.person(err.params.get("account_id"))
+        if person is not None:
+            return before_added(
+                str(person.get("name")), on=earlier_day(req.body, tz),
+                added_on=str(err.params.get("opening_on") or "") or None,
+            )
     if err.code != "amount_above_balance" or req.body.get("kind") != "lent":
         return describe(err)
     person = req.setup.person(req.body.get("person_id")) or {}
@@ -225,7 +235,9 @@ class _Writer:
             except PlanRefusedError as r:
                 raise PreviewRefusedError(str(r)) from r
             except AhonError as e:
-                raise PreviewRefusedError(f"Ahon would refuse it: {_refusal(req, e)}") from e
+                raise PreviewRefusedError(
+                    f"Ahon would refuse it: {_refusal(req, e, client.timezone)}",
+                ) from e
             return render_preview(req, saved)
 
         async def handler(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
@@ -240,7 +252,9 @@ class _Writer:
             try:
                 saved = await send(client, req)
             except AhonError as e:
-                return ToolResult.error(f"Nothing was saved: {_refusal(req, e)}")
+                return ToolResult.error(
+                    f"Nothing was saved: {_refusal(req, e, client.timezone)}",
+                )
             except httpx.HTTPError as e:
                 return _unreachable(e)
             text = render_saved(name, req, saved)
@@ -504,39 +518,45 @@ def _change_tools(w: _Writer) -> list[ToolSpec]:
     return [remove, amend, undo, reference, pay]
 
 
-# TODO(ahon: a person with nothing owed): Ahon's POST /v1/accounts needs a balance
-# above 0 for a person today (ruling 179). The lead is changing Ahon so a person can be
-# added owing nothing; until that is merged, adding someone who owes nothing is refused
-# in words below and nothing is written. When it lands, send {"name", "client_id"} (and
-# whatever that change names) for that case instead of raising _NOTHING_OWED. Must be
-# done before the switch: docs/ahon-cutover.md, "Before the day".
-_NOTHING_OWED = (
-    "Nothing was added: Ahon cannot add a person who owes nothing yet (it is being "
-    "changed). Ask the user to add {name} in the Ahon app (People, then Add), then make the "
-    "original entry again with the same spelling. create_person takes an amount only for a "
-    "debt that ALREADY stood between them before this entry; never pass the share or loan you "
-    "are about to record, or it is counted twice."
-)
+def _opening(raw: Any, name: str) -> str | None:
+    """Return a debt that already stood, as money above 0; None for none (left out, or 0)."""
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        value = Decimal(str(raw).replace(",", "").strip())
+    except InvalidOperation as e:
+        raise PlanRefusedError(f"{name}: {raw!r} is not an amount") from e
+    if value == 0:
+        return None
+    try:
+        return money(value)
+    except ValueError as e:
+        raise PlanRefusedError(f"{name}: {e}") from e
 
 
 def _person_body(args: dict[str, Any]) -> dict[str, Any]:
+    """Return what to send for the person; owing nothing is the name alone (Ahon item 181).
+
+    Ahon then writes the person and no record. A zero balance is never sent (Ahon
+    answers 422 to "0.00"), nor `since`, `paid_back` or `in_plan`.
+    """
     name = " ".join(str(args.get("name") or "").split())[:120]
     if not name:
         raise PlanRefusedError("a name is required")
-    owes_you, you_owe = args.get("owes_you"), args.get("you_owe")
+    owes_you = _opening(args.get("owes_you"), "owes_you")
+    you_owe = _opening(args.get("you_owe"), "you_owe")
     if owes_you and you_owe:
         raise PlanRefusedError("give owes_you or you_owe, not both")
-    try:
-        if owes_you:
-            return {"name": name, "direction": "owes_you", "balance": money(owes_you)}
-        if you_owe:
-            return {"name": name, "direction": "you_owe", "balance": money(you_owe)}
-    except ValueError as e:
-        raise PlanRefusedError(str(e)) from e
-    raise PlanRefusedError(_NOTHING_OWED.format(name=name))
+    if owes_you:
+        return {"name": name, "direction": "owes_you", "balance": owes_you}
+    if you_owe:
+        return {"name": name, "direction": "you_owe", "balance": you_owe}
+    return {"name": name}
 
 
 def _person_said(body: dict[str, Any]) -> str:
+    if "balance" not in body:
+        return "owes nothing either way (Ahon writes the person and no record)"
     if body["direction"] == "owes_you":
         return f"owes the user {peso(body['balance'])}"
     return f"is owed {peso(body['balance'])} by the user"
@@ -568,18 +588,25 @@ def _person_tool(client: AhonClient) -> ToolSpec:
         "create_person",
         "Add a NEW person to Ahon. Only when a write was refused because the name is unknown.\n\n"
         "ASK THE USER FIRST, in words: 'X isn't in your people list — add them?' Only real "
-        "people the user settles up with; never a shop, a service or a bank. owes_you or "
-        "you_owe is a debt that ALREADY stood between them before this entry; NEVER the share "
-        "or loan you are about to record (it would be counted twice). "
-        "Ahon cannot yet add someone who owes nothing; then it answers how the user adds them "
-        "in the app. After it succeeds, make the original entry again with the same name. "
+        "people the user settles up with; never a shop, a service or a bank.\n\n"
+        "Usually pass the name ALONE: the person is added owing nothing and Ahon writes no "
+        "record; the entry you then record says what they owe. owes_you or you_owe is ONLY a "
+        "debt that ALREADY stood between them before this entry; NEVER the share or loan you "
+        "are about to record (it would be counted twice), and never a made-up amount. "
+        "After it succeeds, make the original entry again with the same name. "
         "There is no undo: a person added by mistake is removed in the Ahon app.",
         {
             "type": "object",
             "properties": {
                 "name": {"type": "string", "maxLength": 120},
-                "owes_you": {**_AMOUNT, "description": "What they already owe the user."},
-                "you_owe": {**_AMOUNT, "description": "What the user already owes them."},
+                "owes_you": {**_AMOUNT, "description": (
+                    "Only what they ALREADY owed the user before this entry; leave out when "
+                    "they owe nothing."
+                )},
+                "you_owe": {**_AMOUNT, "description": (
+                    "Only what the user ALREADY owed them before this entry; leave out when "
+                    "nothing is owed."
+                )},
             },
             "required": ["name"],
         },
@@ -600,7 +627,8 @@ def _person_tool(client: AhonClient) -> ToolSpec:
         person = answer.get("account") or {}
         return ToolResult.ok(
             f"added {person.get('name', body['name'])} (person #{person.get('id', '?')}), who "
-            f"{_person_said(body)} — now make the entry you were trying to record."
+            f"{_person_said(body)} — now make the entry you were trying to record, with "
+            "that entry's own amount."
         )
 
     return create_person_tool
@@ -631,11 +659,11 @@ Splitwise: record it with the external_id the watch gave you (splitwise:<id>),
 exactly, and leave share_to_splitwise off.
 
 PEOPLE ARE NOT CREATED BY NAMING THEM. An unknown name is refused: ask the user
-("Ana isn't in your people list — add her?"). Once he says yes, create_person adds
-someone who already owed something before this entry (never pass the entry's own
-amount); for someone who owes nothing it says how he adds them in the app. Then make
-the original entry again. Never retry with another spelling, and never
-add a shop, a service or a bank as a person.
+("Ana isn't in your people list — add her?"). Once he says yes, create_person with
+the name alone adds her owing nothing (Ahon writes no record). Pass owes_you or
+you_owe only for a debt that already stood before this entry, never the entry's own
+amount. Then make the original entry again. Never retry with another spelling, and
+never add a shop, a service or a bank as a person.
 
 BILLS AND INSTALLMENTS ARE ALREADY IN AHON, WAITING. When he says he paid a bill,
 rent, a subscription or a loan installment, call list_pending_payments FIRST and

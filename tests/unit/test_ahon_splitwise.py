@@ -191,6 +191,20 @@ class TestMirror:
         assert result.recorded
         assert asked == []
 
+    async def test_an_expense_dated_before_its_person_was_added_is_told_in_words(self):
+        """AHON-LIMIT-182: Ahon refuses it; the model is told why, not to try again."""
+        fake = FakeAhon.sample()
+        fake.people[0]["opened_on"] = "2026-11-24"  # Ana added after the 20th's dinner
+        records = dict(fake.records)
+        result = await self._mirror(fake, _expense())
+        assert not result.recorded
+        assert "cannot be recorded yet" in result.note
+        assert "Ana Reyes was added on 2026-11-24, and this entry is dated 2026-11-20" in (
+            result.note
+        )
+        assert "Record it yourself" not in result.note
+        assert fake.records == records
+
 
 # ---- the watch ---------------------------------------------------------------------
 

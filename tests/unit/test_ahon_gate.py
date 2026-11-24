@@ -56,7 +56,7 @@ WRITES = {
     "undo_change": {"transaction_id": 33, "undo": {"removed": False}},
     "add_reference": {"transaction_id": 30, "ref_type": "gcash", "ref_id": "7781"},
     "approve_pending_payment": {"id": "bill:2:2026-11-28"},
-    "create_person": {"name": "Dana", "owes_you": 100},
+    "create_person": {"name": "Dana"},
     "amend_pending_payment": {"id": "bill:2:2026-11-28", "amount": 1600},
 }
 
@@ -99,6 +99,18 @@ async def test_an_approved_write_reaches_ahon_once_after_showing_what_it_will_do
     assert len(fake.writes()) == 1
     assert len(prompts) == 1
     assert "Ahon would" in prompts[0]
+
+
+@pytest.mark.parametrize("approve", [False, True])
+async def test_a_person_with_an_amount_already_owed_also_waits_for_the_yes(approve):
+    fake = _sample()
+    prompts: list[str] = []
+    tools = _gated(fake, approve=approve, prompts=prompts)
+    out = await tools["create_person"].handler({"name": "Dana", "owes_you": 100}, CTX)
+    assert out.is_error is not approve
+    assert len(fake.writes()) == int(approve)
+    assert len(prompts) == 1
+    assert "Ahon would add the person Dana, who owes the user 100.00" in prompts[0]
 
 
 class TestJobWrites:

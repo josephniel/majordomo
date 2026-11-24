@@ -18,7 +18,16 @@ import logging
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from adapters.ahon import AhonError, describe, money, new_client_id, splitwise_ref, when_fields
+from adapters.ahon import (
+    AhonError,
+    before_added,
+    describe,
+    earlier_day,
+    money,
+    new_client_id,
+    splitwise_ref,
+    when_fields,
+)
 from adapters.ahonmodel import AhonSetup, choice_ledger, read_setup, repayment_notes
 from adapters.ahonwrites import RECORD, SPLIT, GatedWrites, Refused
 from adapters.timefmt import DEFAULT_TIMEZONE
@@ -132,10 +141,7 @@ class AhonExpenseMirror(ExpenseMirror):
                 lambda: self._ahon.create_transaction({**body, "client_id": new_client_id()}),
             )
         except AhonError as e:
-            return MirrorResult(note=(
-                f"  (the mirror could not record this: {describe(e)}. Record it yourself with "
-                f"external_id={ref} if it can be, else tell the user why)"
-            ))
+            return self._refused(e, body, ref)
         except Exception as e:
             log.exception("mirror: could not record expense %s", eid)
             return MirrorResult(note=(
@@ -148,6 +154,31 @@ class AhonExpenseMirror(ExpenseMirror):
                 "unless the user asks)"
             ))
         return self._said(result, shape, detail)
+
+    def _refused(self, e: AhonError, body: dict[str, Any], ref: str) -> MirrorResult:
+        """Tell the model why Ahon refused the write, and whether it can still be made."""
+        limit = self._before_added(e, body)  # AHON-LIMIT-182
+        if limit:
+            return MirrorResult(note=(
+                f"  (the mirror could not record this, and it cannot be recorded yet: {limit})"
+            ))
+        return MirrorResult(note=(
+            f"  (the mirror could not record this: {describe(e)}. Record it yourself with "
+            f"external_id={ref} if it can be, else tell the user why)"
+        ))
+
+    def _before_added(self, e: AhonError, body: dict[str, Any]) -> str:
+        """Ahon's refusal of a date before a person was added, in words; else "".
+
+        AHON-LIMIT-182: delete with `adapters.ahon.before_added`.
+        """
+        person = self._setup.person(e.params.get("account_id"))
+        if e.code != "date_before_opening" or person is None:
+            return ""
+        return before_added(
+            str(person.get("name")), on=earlier_day(body, self._tz),
+            added_on=str(e.params.get("opening_on") or "") or None,
+        )
 
     def _said(self, saved: Saved, shape: _Shape, detail: str) -> MirrorResult:
         # What Ahon did can differ from the Splitwise share: a share to someone the
