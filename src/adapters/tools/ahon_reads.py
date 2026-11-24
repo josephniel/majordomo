@@ -228,6 +228,13 @@ def _due_line(due: Due, setup: AhonSetup) -> str:
         if row.get("late_from") else ""
     )
     left = row.get("left") if row.get("left") not in (None, "") else row.get("amount")
+    if row.get("status") == "skipped":
+        return (
+            f"- id={due.token} {row.get('name') or '?'} — SKIPPED this time (usually "
+            f"{peso(row.get('amount'))}); restore with amend_pending_payment restore=true"
+        )
+    if (row.get("bill") or {}).get("this_time") == "changed":
+        late += " (amount changed for this time)"
     return (
         f"- id={due.token} {row.get('name') or '?'} — {peso(left)} left of "
         f"{peso(row.get('amount'))}, due {row.get('due_on') or 'this month'}"

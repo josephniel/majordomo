@@ -21,9 +21,13 @@ the running assistant (merging, the switch, a restart) needs the owner's word on
 | Jobs' own writes (mirror, retire, link) | straight to the app, no approval | through the approval gate, by tool name |
 
 Left out on purpose (never called in four months): `push_to_splitwise`,
-`find_by_reference`, `repayment_plan`. `amend_pending_payment` answers in words: Ahon
-does not let a key change or skip a bill's time yet; the usual case (another date,
-account or amount) is passed to `approve_pending_payment` when paying.
+`find_by_reference`, `repayment_plan`. A call to one of them is an unknown tool.
+
+Two tools mean something narrower than before. `amend_pending_payment` changes one time
+of a bill in Ahon (its amount this time, a skip, back to the usual; Ahon item 180); the
+day it was paid and the paying account now go with `approve_pending_payment` when it is
+paid. `create_person` adds a person who already owes something either way; a person who
+owes nothing cannot be added yet (below).
 
 Because the connector keeps the name `budget`, these keep working unchanged:
 `connectors: budget: read_write` and `background_tools: budget: …` in persona.yaml, the
@@ -47,7 +51,19 @@ approval prompts' names (`budget/record_split`), `approval_log`, and
 4. **The old app's push queue is empty.** Anything still queued for Splitwise in the old
    app is pushed by the old backend only; after the switch it would never go out. The
    parity survey found none on 24 Nov 2026; check again the day before.
-5. **The old app's waiting bills are matched to Ahon's.** Every item still waiting in the
+5. **`create_person` can add someone who owes nothing.** Ahon today needs an amount owed
+   for a new person, and the lead is changing that. Until it is merged, `create_person`
+   answers that it cannot and writes nothing (a `TODO(ahon: a person with nothing owed)`
+   in `adapters/tools/ahon.py` marks the line). Most new people are added right before a
+   split that says what they owe, so this has to be finished before the switch: when the
+   Ahon change is on its `main`, send the name alone for that case and run the tests.
+6. **`scheduled_payments` exists on Ahon too.** Another session is adding a read-only
+   `scheduled_payments` tool to the OLD budget connector on the `herald-connector` branch
+   (not on `main` when this page was written). When it lands on `main`, the Ahon connector
+   needs the same tool, with the same name and meaning, built from Ahon's month read
+   (`GET /v1/months/{month}`, its `payments`), or a prompt or skill that uses it stops
+   working on the switch. It was not built here from uncommitted code.
+7. **The old app's waiting bills are matched to Ahon's.** Every item still waiting in the
    old app's scheduled list should be a bill or a debt payment time in Ahon (Bills). After
    the switch the assistant reads only Ahon's month (`list_pending_payments`), and the old
    app's waiting items are never approved again. A loan's month-by-month principal and
@@ -143,9 +159,12 @@ migration has to be run by hand. Nothing in Ahon needs migrating for the assista
 
 | What | Ahon's answer | What the assistant does |
 |---|---|---|
-| Change or skip one bill time without paying it | 403 `session_required` (`PUT /v1/recurring-schedules/{id}/times/{date}`) | `amend_pending_payment` says so; the date, account and amount go with the payment |
+| Change or skip one time of a PAY (not a bill), or add, change, end or remove a bill | 403 `session_required` | `amend_pending_payment` says the user does it in the app |
+| Change a bill time's paying day or account | no such field on a time | they go with `approve_pending_payment` (date, account_id) when it is paid |
 | Pay a bill time of a month that has closed | 409 `due_row_closed` | listed as late, not offered to pay; the user decides |
-| A split share above what the owner owes that person | 422 `amount_above_balance` on the share | refused before asking; the answer spells out the guide's three saves with their amounts, each to be approved |
+| A LONE loan (not a share in a split) above what the owner owes that person | 422 `amount_above_balance` | refused before asking, with what Ahon takes: settle what is owed, then lend the rest |
+| Change the amount of a share's repayment part while its lent rest stands | 422 `kind_direction_mismatch` | refused before asking, in words: change the lent part, or remove the split, free its outside id and record it again |
+| Add a person who owes nothing | a balance above 0 is required | refused in words; must be finished before the switch (above) |
 | A second outside id on a record (an e-wallet reference beside a Splitwise id) | one `external_id` per record | `add_reference` writes it into the note, which `q=` finds |
 | A person on an ordinary purchase | no such field | kept in the note ("with …") |
 | Undo adding a person | `undo: null` | said in the answer; removed in the app |

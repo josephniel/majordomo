@@ -334,6 +334,23 @@ def holder_id(rec: dict[str, Any]) -> int:
     return int(rec.get("id") or 0)
 
 
+def person_share(rec: dict[str, Any], person_id: int) -> Decimal:
+    """Return this person's whole part of a record: of its split, every part that is theirs.
+
+    A share above what the owner owed someone is ONE save of two parts (Ahon's item
+    178): a repayment of what was owed, then the rest lent. Either part alone is only
+    half the share the other system knows.
+    """
+    split = rec.get("split")
+    if not isinstance(split, dict):
+        return as_decimal(rec.get("amount"))
+    return sum(
+        (as_decimal(p.get("amount")) for p in split.get("parts") or []
+         if isinstance(p.get("person"), dict) and p["person"].get("id") == person_id),
+        Decimal(0),
+    )
+
+
 def person_sign(rec: dict[str, Any], person_id: int) -> int:
     """How a record moves this person's balance: +1, -1, or 0 when it is not theirs."""
     person = _ref(rec, "person")
@@ -365,13 +382,20 @@ async def person_rows(
     pid = int(person.get("id") or 0)
     links = LinkReader(client)
     rows: list[dict[str, Any]] = []
+    merged: dict[tuple[int, int], dict[str, Any]] = {}
     for rec in await person_history(client, pid):
         sign = person_sign(rec, pid)
         if not sign:
             continue
+        hid = holder_id(rec)
+        if isinstance(rec.get("split"), dict) and (hid, sign) in merged:
+            # The second part of one share (repaid, then lent): one row, as the other
+            # system holds it.
+            row = merged[(hid, sign)]
+            row["amount"] = str(as_decimal(row["amount"]) + as_decimal(rec.get("amount")))
+            continue
         link = await links.link_of(rec)
         expense = splitwise_expense_id(link)
-        hid = holder_id(rec)
         queued = hid in (queued_ids or set())
         source = "splitwise" if expense else ("splitwise-queue" if queued else "")
         rows.append({
@@ -386,6 +410,8 @@ async def person_rows(
             "external_id": expense or "",
             "transfer_id": hid,
         })
+        if isinstance(rec.get("split"), dict):
+            merged[(hid, sign)] = rows[-1]
     return rows
 
 

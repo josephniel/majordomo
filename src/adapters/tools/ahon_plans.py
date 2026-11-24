@@ -389,6 +389,40 @@ def _move(setup: AhonSetup, rec: dict[str, Any], raw: Any) -> dict[str, Any]:
     return {"person_id": place.id, "account_id": None, "debt_id": None}
 
 
+def _refuse_repaid_with_rest(tid: int, rec: dict[str, Any]) -> None:
+    """Refuse, in words, what Ahon refuses: a repayment part whose lent rest still stands.
+
+    A share above what the user owed someone is one save of two parts (Ahon's item
+    178): a repayment of exactly what was owed, then the rest lent. Changing the
+    repayment's amount (or person) is checked against a balance that counts the lent
+    rest, so Ahon answers 422 kind_direction_mismatch and writes nothing.
+    """
+    split = rec.get("split")
+    person = rec.get("person")
+    if rec.get("kind") != "repaid" or not isinstance(split, dict) or not isinstance(person, dict):
+        return
+    rest = next(
+        (p for p in split.get("parts") or []
+         if p.get("kind") == "lent" and isinstance(p.get("person"), dict)
+         and p["person"].get("id") == person.get("id")),
+        None,
+    )
+    if rest is None:
+        return
+    name = person.get("name")
+    raise PlanRefusedError(
+        f"Nothing was changed. #{tid} is the repayment part of {name}'s share in split "
+        f"#{split.get('id')}: it paid back the {peso(rec.get('amount'))} the user owed them, and "
+        f"#{rest.get('id')} lends them the other {peso(rest.get('amount'))}. Ahon does not change "
+        "a repayment's amount or person while its lent part stands. If the share stays above "
+        f"what was owed, change the LENT part instead: amend_transaction transaction_id="
+        f"{rest.get('id')} amount=<new share minus {peso(rec.get('amount'))}>. If it falls to "
+        "what was owed or less, the split is recorded again: delete_transaction on it; if it "
+        f"carries an outside id, undo_change transaction_id={split.get('id')} undo="
+        '{"external_id": null} to let go of it; then record_split anew (with that outside id).'
+    )
+
+
 async def plan_amend(client: AhonClient, args: dict[str, Any]) -> Request:
     tid, rec = await _live_record(client, args)
     if rec.get("removed"):
@@ -402,6 +436,8 @@ async def plan_amend(client: AhonClient, args: dict[str, Any]) -> Request:
             f"record {tid} is a {rec.get('kind')} and a record keeps its kind. Remove it "
             "(delete_transaction) and record it again as the right kind."
         )
+    if args.get("amount") not in (None, "") or args.get("person") or args.get("counterparty"):
+        _refuse_repaid_with_rest(tid, rec)
     setup = await read_setup(client)
     body: dict[str, Any] = {}
     if args.get("amount") not in (None, ""):
@@ -518,7 +554,7 @@ async def due_items(client: AhonClient) -> list[Due]:
     out = [
         Due(str(p.get("kind") or "bill"), p)
         for p in month.get("payments") or []
-        if p.get("status") in ("upcoming", "part_paid", "past_due")
+        if p.get("status") in ("upcoming", "part_paid", "past_due", "skipped")
     ]
     today = str(month.get("today") or datetime.now(UTC).date().isoformat())
     previous = _previous_month(today)
@@ -593,6 +629,11 @@ async def plan_pay(client: AhonClient, args: dict[str, Any]) -> Request:
     kind, ident, rule_date = _parse_token(args.get("id"))
     items = await due_items(client)
     due = next((d for d in items if d.token == f"{kind}:{ident}:{rule_date}"), None)
+    if due is not None and due.row.get("status") == "skipped":
+        raise PlanRefusedError(
+            f"{due.row.get('name')} is skipped this time. If it was paid after all, bring the "
+            f"time back first (amend_pending_payment id={due.token} restore=true), then pay it."
+        )
     if due is not None and due.row.get("late_from"):
         raise PlanRefusedError(
             _CLOSED_MONTH.format(name=due.row.get("name"), month=due.row["late_from"])

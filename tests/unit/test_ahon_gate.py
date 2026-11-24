@@ -56,7 +56,7 @@ WRITES = {
     "undo_change": {"transaction_id": 33, "undo": {"removed": False}},
     "add_reference": {"transaction_id": 30, "ref_type": "gcash", "ref_id": "7781"},
     "approve_pending_payment": {"id": "bill:2:2026-11-28"},
-    "create_person": {"name": "Dana"},
+    "create_person": {"name": "Dana", "owes_you": 100},
     "amend_pending_payment": {"id": "bill:2:2026-11-28", "amount": 1600},
 }
 
@@ -89,7 +89,7 @@ async def test_a_denied_write_never_reaches_ahon(name):
     assert fake.records == before
 
 
-@pytest.mark.parametrize("name", sorted(set(WRITES) - {"amend_pending_payment"}))
+@pytest.mark.parametrize("name", sorted(WRITES))
 async def test_an_approved_write_reaches_ahon_once_after_showing_what_it_will_do(name):
     fake = _sample()
     prompts: list[str] = []
@@ -99,17 +99,6 @@ async def test_an_approved_write_reaches_ahon_once_after_showing_what_it_will_do
     assert len(fake.writes()) == 1
     assert len(prompts) == 1
     assert "Ahon would" in prompts[0]
-
-
-async def test_the_closed_tool_still_asks_first():
-    """amend_pending_payment writes nothing today, and stays gated."""
-    fake = _sample()
-    prompts: list[str] = []
-    tools = _gated(fake, approve=True, prompts=prompts)
-    out = await tools["amend_pending_payment"].handler(WRITES["amend_pending_payment"], CTX)
-    assert out.is_error
-    assert len(prompts) == 1
-    assert fake.writes() == []
 
 
 class TestJobWrites:

@@ -12,9 +12,9 @@ What is not built here, and why
 -------------------------------
 `push_to_splitwise`, `find_by_reference` and `repayment_plan` were never called
 in four months of the old app (the parity survey's section A), so they are left
-out rather than ported. `create_person` and `amend_pending_payment` exist but
-answer plainly while Ahon's key may not add a person or change a bill's time
-(both wait on the owner's word in Ahon's BOT-KEY guide).
+out rather than ported. `amend_pending_payment` changes one time of a bill (Ahon
+item 180); `create_person` adds someone who already owes something either way, and
+answers plainly for someone who owes nothing until Ahon takes one (see its TODO).
 
 Credentials, by name only
 -------------------------
@@ -30,6 +30,7 @@ import getpass
 import json
 import logging
 import sys
+from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -65,6 +66,7 @@ from .ahon_plans import (
     split_holder,
 )
 from .ahon_reads import read_tools
+from .ahon_times import time_tool
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -81,9 +83,7 @@ KEY_ENV = "AHON_API_KEY"
 URL_ENV = "AHON_BASE_URL"
 
 _NOTICE_WORDS = {
-    "recorded_as_repaid": "Ahon booked that share as a REPAYMENT, because the user owed them",
     "recorded_as_paid_back": "Ahon booked it as them PAYING BACK, because they owed the user",
-    "recorded_as_debt_payment": "Ahon booked it as a payment on that person's debt in the plan",
     "account_below_zero": "that account is now below zero",
     "card_over_limit": "that card is now over its limit",
     "payment_above_balance": "that pays more than was owed",
@@ -122,10 +122,40 @@ def _moves(saved: Saved, req: Request) -> str:
     return f"\nmoves: {'; '.join(shown)}" if shown else ""
 
 
-def _notices(saved: Saved) -> str:
-    words = [
-        _NOTICE_WORDS[str(n.get("code"))] for n in saved.notices if n.get("code") in _NOTICE_WORDS
+def _repaid_words(saved: Saved, req: Request, notice: dict[str, Any]) -> str:
+    """Say what a share to someone the user owed became: a repayment, and lent the rest."""
+    params = notice.get("params") or {}
+    pid = params.get("person_id") or params.get("debt_id")
+    person = req.setup.person(pid) or {}
+    name = str(person.get("name") or f"person {pid}")
+    raw_split = saved.transaction.get("split")
+    split = raw_split if isinstance(raw_split, dict) else {}
+    parts = [
+        p for p in split.get("parts") or []
+        if isinstance(p.get("person"), dict) and p["person"].get("id") == pid
     ]
+    paid = sum((as_decimal(p.get("amount")) for p in parts if p.get("kind") != "lent"), Decimal(0))
+    lent = sum((as_decimal(p.get("amount")) for p in parts if p.get("kind") == "lent"), Decimal(0))
+    how = "a payment on their debt in the plan" if notice.get("code") == (
+        "recorded_as_debt_payment") else "paying back what the user owed them"
+    if not parts:
+        return f"Ahon booked {name}'s part as {how}"
+    if lent:
+        return (
+            f"{peso(paid)} of {name}'s share is {how}; the other {peso(lent)} is lent, so they "
+            f"now owe the user {peso(lent)}"
+        )
+    return f"{name}'s share of {peso(paid)} is {how}"
+
+
+def _notices(saved: Saved, req: Request) -> str:
+    words = []
+    for n in saved.notices:
+        code = str(n.get("code"))
+        if code in ("recorded_as_repaid", "recorded_as_debt_payment"):
+            words.append(_repaid_words(saved, req, n))
+        elif code in _NOTICE_WORDS:
+            words.append(_NOTICE_WORDS[code])
     return f"\nnote: {'; '.join(words)}." if words else ""
 
 
@@ -156,7 +186,7 @@ def render_saved(tool_name: str, req: Request, saved: Saved) -> str:
         "undo_change": "changed back",
         "add_reference": "noted",
     }.get(tool_name, "recorded" if req.method == "POST" else "corrected")
-    tail = f"{said}{_moves(saved, req)}{_notices(saved)}{_undo(saved)}"
+    tail = f"{said}{_moves(saved, req)}{_notices(saved, req)}{_undo(saved)}"
     return f"{verb} #{saved.record_id}: {line}{tail}"
 
 
@@ -171,37 +201,22 @@ def render_preview(req: Request, saved: Saved) -> str:
         )
     head = "Ahon would record" if req.method == "POST" else f"Ahon would change #{req.record_id}"
     said = "".join(f"\n{s}" for s in req.said)
-    return f"{head}:\n{format_record(tx)}{said}{_moves(saved, req)}{_notices(saved)}"
+    return f"{head}:\n{format_record(tx)}{said}{_moves(saved, req)}{_notices(saved, req)}"
 
 
 def _refusal(req: Request, err: AhonError) -> str:
-    """Word a refusal; a split share above what is owed gets the guide's three saves."""
-    field_name = err.field or ""
-    if err.code != "amount_above_balance" or not field_name.startswith("shares["):
+    """Word a refusal; a lone loan above what the user owes that person says what Ahon takes."""
+    if err.code != "amount_above_balance" or req.body.get("kind") != "lent":
         return describe(err)
-    try:
-        index = int(field_name.split("[", 1)[1].split("]", 1)[0])
-        share = req.body["shares"][index]
-    except (KeyError, IndexError, ValueError):
-        return describe(err)
-    person = req.setup.person(share.get("person_id")) or {}
-    name = str(person.get("name") or f"person {share.get('person_id')}")
+    person = req.setup.person(req.body.get("person_id")) or {}
+    name = str(person.get("name") or "them")
     owed = as_decimal(err.params.get("balance"))
-    amount = as_decimal(share.get("amount"))
-    rest = as_decimal(req.body.get("amount")) - amount
-    others = [s for i, s in enumerate(req.body["shares"]) if i != index]
-    first = (
-        f"record_split for the rest: total_amount {rest:.2f}, the other shares only"
-        if others else f"record_transaction kind=spending, amount {rest:.2f}, for the user's part"
-    )
+    rest = as_decimal(req.body.get("amount")) - owed
     return (
-        f"{describe(err)}. The user owes {name} {owed:.2f}, and Ahon books a share to someone he "
-        f"owes as repaying them, so it cannot be more than that. Until the owner picks a rule, "
-        f"Ahon's guide records it as three saves, each approved: (1) {first}, on the same "
-        f"account or card, with any outside id; (2) settle_person {name}, amount {owed:.2f}, "
-        f"from the same account; (3) record_split total_amount {amount - owed:.2f} with "
-        f"shares [{{person: {name}, amount: {amount - owed:.2f}}}] (money lent to them). "
-        "Say this to the user before doing it."
+        f"{describe(err)}. On its own (not a share in a split), money lent to someone the user "
+        f"owes is at most what he owes them ({owed:.2f}); only a split divides a share into a "
+        f"repayment and a loan. Tell the user; if he agrees: settle_person {name} amount "
+        f"{owed:.2f}, then record_split total_amount {rest:.2f} with {name}'s share {rest:.2f}."
     )
 
 
@@ -518,9 +533,18 @@ def _change_tools(w: _Writer) -> list[ToolSpec]:
     return [remove, amend, undo, reference, pay]
 
 
-# A person who owes nothing yet is added as Ahon's own sheet does it: an opening and
-# its paying back, of the same amount. The smallest amount leaves the least trace.
-_SETTLED = "0.01"
+# TODO(ahon: a person with nothing owed): Ahon's POST /v1/accounts needs a balance
+# above 0 for a person today (ruling 179). The lead is changing Ahon so a person can be
+# added owing nothing; until that is merged, adding someone who owes nothing is refused
+# in words below and nothing is written. When it lands, send {"name", "client_id"} (and
+# whatever that change names) for that case instead of raising _NOTHING_OWED. Must be
+# done before the switch: docs/ahon-cutover.md, "Before the day".
+_NOTHING_OWED = (
+    "Nothing was added: Ahon cannot add a person who owes nothing yet (it is being "
+    "changed). Ask the user to add {name} in the Ahon app (People, then Add), then make the "
+    "original entry again with the same spelling. If {name} already owes the user something, "
+    "or he owes them, create_person takes that amount (owes_you or you_owe)."
+)
 
 
 def _person_body(args: dict[str, Any]) -> dict[str, Any]:
@@ -537,12 +561,10 @@ def _person_body(args: dict[str, Any]) -> dict[str, Any]:
             return {"name": name, "direction": "you_owe", "balance": money(you_owe)}
     except ValueError as e:
         raise PlanRefusedError(str(e)) from e
-    return {"name": name, "direction": "owes_you", "balance": _SETTLED, "paid_back": _SETTLED}
+    raise PlanRefusedError(_NOTHING_OWED.format(name=name))
 
 
 def _person_said(body: dict[str, Any]) -> str:
-    if body.get("paid_back"):
-        return "owes nothing yet"
     if body["direction"] == "owes_you":
         return f"owes the user {peso(body['balance'])}"
     return f"is owed {peso(body['balance'])} by the user"
@@ -575,9 +597,9 @@ def _person_tool(client: AhonClient) -> ToolSpec:
         "Add a NEW person to Ahon. Only when a write was refused because the name is unknown.\n\n"
         "ASK THE USER FIRST, in words: 'X isn't in your people list — add them?' Only real "
         "people the user settles up with; never a shop, a service or a bank. Pass owes_you or "
-        "you_owe only for a debt that already exists outside what you are about to record; "
-        "otherwise they are added owing nothing and the next record (a split, a loan) says "
-        "what they owe. After it succeeds, make the original entry again with the same name. "
+        "you_owe: what is ALREADY owed between them, outside what you are about to record. "
+        "Ahon cannot yet add someone who owes nothing; then it answers how the user adds them "
+        "in the app. After it succeeds, make the original entry again with the same name. "
         "There is no undo: a person added by mistake is removed in the Ahon app.",
         {
             "type": "object",
@@ -609,36 +631,6 @@ def _person_tool(client: AhonClient) -> ToolSpec:
         )
 
     return create_person_tool
-
-
-def _closed_tools() -> list[ToolSpec]:
-    """Build the used tool a key cannot do yet: it answers plainly, never guesses."""
-
-    @tool(
-        "amend_pending_payment",
-        "Change one scheduled bill time before paying it. With Ahon the usual case is the "
-        "payment itself: approve_pending_payment takes amount, account_id and date.",
-        {
-            "type": "object",
-            "properties": {
-                "id": {"type": "string"},
-                "account_id": {"type": "integer"},
-                "due_date": {"type": "string"},
-                "amount": _AMOUNT,
-            },
-            "required": ["id"],
-        },
-    )
-    async def amend_pending_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-        return ToolResult.error(
-            "Nothing was changed. In Ahon the account, amount and date of a bill time are set "
-            "when it is PAID: call approve_pending_payment with id "
-            f"{args.get('id')!r} and amount, account_id or date. Changing or skipping a time "
-            "without paying it is not open to the assistant yet; the user does it in Ahon "
-            "(Bills, the bill, this month)."
-        )
-
-    return [amend_pending_tool]
 
 
 SYSTEM_PROMPT_SECTION = """== Budget (Ahon) ==
@@ -675,6 +667,8 @@ rent, a subscription or a loan installment, call list_pending_payments FIRST and
 approve_pending_payment on what matches (pass amount, account_id or date when they
 differ). Recording it by hand leaves the bill open. IF A PAYMENT FAILS, IT DID NOT
 HAPPEN: say so, and never record it a second way to make a balance match.
+A bill that is different THIS time ("the internet is 1,650 this month", "skip the
+water bill this month") -> amend_pending_payment on its id before it is paid.
 
 TO CORRECT A RECORD -> amend_transaction (it can even move it to another account).
 TO REMOVE ONE -> delete_transaction; removing any part of a split removes the whole
@@ -704,9 +698,7 @@ class AhonConnector(Connector):
         "record_transaction", "record_split", "record_transfer", "settle_person",
         "delete_transaction", "amend_transaction", "undo_change", "add_reference",
         "approve_pending_payment",
-        "create_person",
-        # Answers plainly today, and stays gated so the day it writes, it asks.
-        "amend_pending_payment",
+        "create_person", "amend_pending_payment",
     })
     RECORD_CLAIM_TOOLS = frozenset({
         "record_transaction", "record_split", "record_transfer", "settle_person",
@@ -795,7 +787,7 @@ class AhonConnector(Connector):
             *_record_tools(writer, can_queue=self.push_queue is not None),
             *_change_tools(writer),
             _person_tool(client),
-            *_closed_tools(),
+            time_tool(client),
         ]
 
     def _tool_status(self, local: str, _args: dict[str, Any]) -> str | None:

@@ -360,7 +360,8 @@ class TestRecordSplit:
         assert body["shares"] == [
             {"person_id": 5, "amount": "300.00"}, {"person_id": 6, "amount": "300.00"},
         ]
-        assert "booked that share as a REPAYMENT" in out.text  # Ben was owed
+        # The user owed Ben 500: his 300 share pays part of that back.
+        assert "Ben Cruz's share of 300.00 is paying back what the user owed them" in out.text
 
     async def test_paid_by_card(self):
         fake = FakeAhon.sample()
@@ -445,26 +446,49 @@ class TestRecordSplit:
         assert out.is_error
         assert "already exists in Splitwise" in out.text
 
-    async def test_a_share_above_what_is_owed_gets_the_guides_three_saves(self):
+    async def test_a_share_above_what_is_owed_is_one_save_of_two_parts(self):
         fake = FakeAhon.sample()  # the user owes Ben 500
-        spec = _tools(fake)["record_split"]
-        args = {
+        out = await _call(fake, "record_split", {
             "account_id": 1, "category_id": 9, "total_amount": 2000,
             "shares": [
                 {"person": "Ana Reyes", "amount": 300}, {"person": "Ben Cruz", "amount": 800},
             ],
-        }
-        with pytest.raises(PreviewRefusedError) as refused:
-            await spec.approval_preview(args, CTX)
-        text = str(refused.value)
-        assert "owes Ben Cruz 500.00" in text
-        assert "(1) record_split for the rest: total_amount 1200.00" in text
-        assert "(2) settle_person Ben Cruz, amount 500.00" in text
-        assert "(3) record_split total_amount 300.00" in text
-        out = await spec.handler(args, CTX)
+        })
+        assert not out.is_error, out.text
+        [body] = _posts(fake)
+        assert body["shares"][1] == {"person_id": 6, "amount": "800.00"}
+        bens = sorted(
+            (r["kind"], r["amount"]) for r in fake.records.values()
+            if (r.get("person") or {}).get("id") == 6
+        )
+        assert bens == [("lent", "300.00"), ("repaid", "500.00")]
+        assert "Ben Cruz 500.00 repaid; Ben Cruz 300.00 lent" in out.text
+        assert (
+            "500.00 of Ben Cruz's share is paying back what the user owed them; the other "
+            "300.00 is lent, so they now owe the user 300.00"
+        ) in out.text
+        assert "three saves" not in out.text
+
+    async def test_on_a_card_a_share_stays_one_loan(self):
+        fake = FakeAhon.sample()
+        out = await _call(fake, "record_split", {
+            "account_id": 4, "category_id": 9, "total_amount": 2000,
+            "shares": [{"person": "Ben Cruz", "amount": 800}],
+        })
+        assert not out.is_error
+        bens = [(r["kind"], r["amount"]) for r in fake.records.values()
+                if (r.get("person") or {}).get("id") == 6]
+        assert bens == [("lent", "800.00")]
+
+    async def test_a_lone_loan_above_what_is_owed_says_what_ahon_takes(self):
+        fake = FakeAhon.sample()
+        out = await _call(fake, "record_split", {
+            "account_id": 1, "total_amount": 800, "shares": [{"person": "Ben Cruz", "amount": 800}],
+        })
         assert out.is_error
-        assert "three saves" in out.text
-        assert fake.records == {}  # Ahon refused it; nothing was kept
+        assert "settle_person Ben Cruz amount 500.00" in out.text
+        assert "record_split total_amount 300.00" in out.text
+        assert fake.records == {}
 
     async def test_ahons_refusal_is_worded_and_nothing_is_said_to_be_saved(self):
         fake = FakeAhon.sample()
@@ -558,6 +582,22 @@ class TestChanges:
         assert not out.is_error, out.text
         [(_path, body)] = _puts(fake)
         assert body == {"amount": "350.00", "debt_id": 4, "account_id": None, "title": "Pancit"}
+
+    async def test_a_repayment_part_with_its_lent_rest_is_explained_not_sent(self):
+        fake = FakeAhon.sample()
+        fake.add(id=40, _split=40, account={"id": 1, "name": "GCash"})
+        fake.add(id=41, kind="repaid", amount="500.00", _split=40,
+                 person={"id": 6, "name": "Ben Cruz"})
+        fake.add(id=42, kind="lent", amount="300.00", _split=40,
+                 person={"id": 6, "name": "Ben Cruz"})
+        out = await _call(fake, "amend_transaction", {"transaction_id": 41, "amount": 450})
+        assert out.is_error
+        assert "#42 lends them the other 300.00" in out.text
+        assert "amend_transaction transaction_id=42" in out.text
+        assert '{"external_id": null}' in out.text
+        assert fake.writes(real_only=False) == []
+        lent = await _call(fake, "amend_transaction", {"transaction_id": 42, "amount": 250})
+        assert not lent.is_error
 
     async def test_amend_will_not_change_a_kind(self):
         fake = FakeAhon.sample()
@@ -655,41 +695,107 @@ class TestPayments:
 
 
 class TestPeople:
-    async def test_create_person_adds_someone_who_owes_nothing_yet(self):
+    async def test_someone_who_owes_nothing_cannot_be_added_yet_and_nothing_is_sent(self):
         fake = FakeAhon.sample()
         out = await _call(fake, "create_person", {"name": "  Dana  Lim "})
-        assert not out.is_error
-        assert "added Dana Lim (person #" in out.text
-        [(_m, path, _q, body)] = fake.writes()
-        assert path == "/v1/accounts"
-        assert body["kind"] == "person"
-        assert body["name"] == "Dana Lim"
-        assert body["balance"] == body["paid_back"]
-        assert body["client_id"]
-        assert fake.people[-1]["direction"] == "settled"
+        assert out.is_error
+        assert "cannot add a person who owes nothing yet" in out.text
+        assert "Dana Lim" in out.text
+        assert fake.writes(real_only=False) == []
+
+    async def test_its_preview_refuses_before_anyone_is_asked(self):
+        fake = FakeAhon.sample()
+        spec = _tools(fake)["create_person"]
+        with pytest.raises(PreviewRefusedError, match="owes nothing"):
+            await spec.approval_preview({"name": "Dana"}, CTX)
+        assert fake.requests == []
 
     async def test_create_person_with_a_debt_that_already_exists(self):
         fake = FakeAhon.sample()
-        await _call(fake, "create_person", {"name": "Dana", "you_owe": 250})
-        body = fake.writes()[0][3]
+        out = await _call(fake, "create_person", {"name": "Dana", "you_owe": 250})
+        assert not out.is_error
+        assert "added Dana (person #" in out.text
+        [(_m, path, _q, body)] = fake.writes()
+        assert path == "/v1/accounts"
+        assert body["kind"] == "person"
         assert (body["direction"], body["balance"]) == ("you_owe", "250.00")
         assert "paid_back" not in body
+        assert body["client_id"]
 
     async def test_a_name_already_taken_points_at_that_person(self):
         fake = FakeAhon.sample()
-        out = await _call(fake, "create_person", {"name": "ana reyes"})
+        out = await _call(fake, "create_person", {"name": "ana reyes", "owes_you": 10})
         assert out.is_error
         assert "#5" in out.text
 
     async def test_the_preview_refuses_a_taken_name_before_asking(self):
         spec = _tools(FakeAhon.sample())["create_person"]
         with pytest.raises(PreviewRefusedError, match="already a person"):
-            await spec.approval_preview({"name": "Ben Cruz"}, CTX)
+            await spec.approval_preview({"name": "Ben Cruz", "owes_you": 10}, CTX)
 
-    async def test_amend_pending_payment_points_at_paying_with_the_changes(self):
-        out = await _call(FakeAhon.sample(), "amend_pending_payment", {"id": "bill:2:2026-11-28"})
+
+class TestBillTimes:
+    async def test_a_times_amount_is_changed_for_this_time_only(self):
+        fake = FakeAhon.sample()
+        out = await _call(
+            fake, "amend_pending_payment", {"id": "bill:2:2026-11-28", "amount": 1650},
+        )
+        assert not out.is_error, out.text
+        [(method, path, _q, body)] = fake.writes()
+        assert (method, path) == ("PUT", "/v1/recurring-schedules/2/times/2026-11-28")
+        assert body["amount"] == "1650.00"
+        assert "Internet" in out.text
+        assert "1,650.00 this time (usually 1,500.00)" in out.text
+        assert "to undo: amend_pending_payment id=bill:2:2026-11-28 restore=true" in out.text
+
+    async def test_skip_then_bring_back(self):
+        fake = FakeAhon.sample()
+        out = await _call(fake, "amend_pending_payment", {"id": "bill:2:2026-11-28", "skip": True})
+        assert "SKIPPED this time" in out.text
+        assert "to undo: amend_pending_payment id=bill:2:2026-11-28 restore=true" in out.text
+        listed = (await _call(fake, "list_pending_payments", {})).text
+        assert "Internet — SKIPPED this time" in listed
+        paid = await _call(fake, "approve_pending_payment", {"id": "bill:2:2026-11-28"})
+        assert paid.is_error
+        assert "restore=true" in paid.text
+        back = await _call(fake, "amend_pending_payment",
+                           {"id": "bill:2:2026-11-28", "restore": True})
+        assert "back to its usual 1,500.00" in back.text
+        assert fake.writes()[-1][3]["skipped"] is False
+        assert fake.writes()[-1][3]["amount"] is None
+
+    async def test_a_time_with_payments_cannot_be_skipped(self):
+        fake = FakeAhon.sample()
+        fake.months["current"]["payments"][1]["record_ids"] = [77]
+        out = await _call(fake, "amend_pending_payment", {"id": "bill:2:2026-11-28", "skip": True})
         assert out.is_error
-        assert "approve_pending_payment" in out.text
+        assert "already has payments recorded against it" in out.text
+
+    async def test_a_debt_row_or_a_paid_then_field_is_refused_before_anything_is_sent(self):
+        fake = FakeAhon.sample()
+        debt = await _call(fake, "amend_pending_payment", {"id": "debt:7:2026-11-15", "amount": 5})
+        moved = await _call(fake, "amend_pending_payment",
+                            {"id": "bill:2:2026-11-28", "due_date": "2026-11-25"})
+        assert debt.is_error
+        assert "only a bill's time" in debt.text
+        assert moved.is_error
+        assert "approve_pending_payment with date and account_id" in moved.text
+        assert fake.writes(real_only=False) == []
+
+    async def test_the_due_day_is_not_a_times_name(self):
+        fake = FakeAhon.sample()
+        out = await _call(fake, "amend_pending_payment",
+                          {"rule_id": 2, "date": "2026-11-30", "amount": 5})
+        assert out.is_error
+        assert "not one of Internet's times" in out.text
+
+    async def test_the_preview_is_a_dry_run_that_changes_nothing(self):
+        fake = FakeAhon.sample()
+        spec = _tools(fake)["amend_pending_payment"]
+        text = await spec.approval_preview({"id": "bill:2:2026-11-28", "skip": True}, CTX)
+        assert text.startswith("Ahon would set Internet's time of 2026-11-28 to SKIPPED")
+        assert fake.writes() == []
+        assert fake.months["current"]["payments"][1]["status"] == "upcoming"
 
 
 # ---- the preview the approval prompt shows -------------------------------------------------

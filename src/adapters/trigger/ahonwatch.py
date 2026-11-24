@@ -35,6 +35,7 @@ from adapters.ahonmodel import (
     LinkReader,
     holder_id,
     person_history,
+    person_share,
     person_sign,
     read_setup,
 )
@@ -294,17 +295,21 @@ class AhonSplitwiseWatcher(SplitwiseWatcher):
         day = date.fromisoformat(local_date(e.get("date"), self._tz)[:10])
         links = LinkReader(ahon)
         found: dict[str, list[dict[str, Any]]] = {}
+        held: set[int] = set()
         for rec in await self._history(ahon, pid):
+            if holder_id(rec) in held:
+                continue  # the other part of a share already taken (repaid, then lent)
             when = str(rec.get("occurred_on") or "")[:10]
             if not when or abs((date.fromisoformat(when) - day).days) > ADOPT_WINDOW_DAYS:
                 continue
             sign = 1 if first.amount > 0 else -1
             if person_sign(rec, pid) != sign:
                 continue
-            if Decimal(str(rec.get("amount") or 0)) != abs(first.amount):
+            if person_share(rec, pid) != abs(first.amount):
                 continue
             if not _covers(rec, others) or await links.link_of(rec):
                 continue
+            held.add(holder_id(rec))
             found.setdefault(when, []).append(rec)
         return found
 
@@ -397,12 +402,12 @@ def _covers(rec: dict[str, Any], others: list[Debt]) -> bool:
     split = rec.get("split")
     parts = split.get("parts") if isinstance(split, dict) else []
     for debt in others:
-        hit = any(
-            isinstance(p.get("person"), dict)
+        theirs = [
+            p for p in parts or []
+            if isinstance(p.get("person"), dict)
             and same_person(p["person"].get("name"), debt.first_name, debt.last_name)
-            and Decimal(str(p.get("amount") or 0)) == abs(debt.amount)
-            for p in parts or []
-        )
-        if not hit:
+        ]
+        total = sum((Decimal(str(p.get("amount") or 0)) for p in theirs), Decimal(0))
+        if not theirs or total != abs(debt.amount):
             return False
     return True

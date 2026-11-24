@@ -152,6 +152,9 @@ class FakeAhon:
         body = json.loads(request.content) if request.content else None
         path = request.url.path
         self.requests.append((request.method, path, params, body))
+        time = re.fullmatch(r"/v1/recurring-schedules/(\d+)/times/([0-9-]+)", path)
+        if time and request.method == "PUT":
+            return self._time(int(time[1]), time[2], body or {}, params.get("dry_run") == "true")
         route = (request.method, re.sub(r"/(\d+|current|\d{4}-\d{2})$", "/{id}", path))
         answer = {
             ("GET", "/v1/setup"): lambda: httpx.Response(200, json=self._setup()),
@@ -166,6 +169,50 @@ class FakeAhon:
                 body or {}, params.get("dry_run") == "true"),
         }.get(route)
         return answer() if answer else _err(403, "session_required")
+
+    def _time(self, rule_id: int, when: str, body: dict[str, Any], dry: bool) -> httpx.Response:
+        """One time of a bill (Ahon's item 180): its amount this time, a skip, or the usual."""
+        rule = next((r for r in self.schedules if r["id"] == rule_id), None)
+        if rule is None:
+            return _err(404, "not_found", resource="schedule")
+        if rule["kind"] == "pay":
+            return _err(403, "session_required")
+        row = next(
+            (p for p in self.months["current"]["payments"]
+             if p.get("rule_id") == rule_id and p.get("rule_date") == when and p["kind"] == "bill"),
+            None,
+        )
+        if row is None:
+            return _err(404, "not_found", resource="time")
+        if body.get("skipped") and body.get("amount") is not None:
+            return _err(422, "not_allowed", "amount")
+        if body.get("skipped") and row.get("record_ids"):
+            return _err(409, "due_row_has_records", "skipped", record_ids=row["record_ids"])
+        was = {"amount": row.get("_changed"), "skipped": row.get("status") == "skipped"}
+        if not dry:
+            self._set_time(row, rule, body)
+        time = {"rule_id": rule_id, "date": when, "amount": row.get("_changed"),
+                "skipped": row.get("status") == "skipped", "usual_amount": rule["amount"]}
+        if dry:
+            time = {**time, "skipped": bool(body.get("skipped")), "amount": body.get("amount")}
+        return httpx.Response(200, json={
+            "time": time, "changes": [{"figure": "bills_due", "before": "1500.00",
+                                       "after": "0.00" if body.get("skipped") else "1500.00"}],
+            "undo": None if dry else {
+                "method": "PUT", "path": f"/v1/recurring-schedules/{rule_id}/times/{when}",
+                "body": was},
+        })
+
+    @staticmethod
+    def _set_time(row: dict[str, Any], rule: dict[str, Any], body: dict[str, Any]) -> None:
+        if body.get("skipped"):
+            row.update(status="skipped", left="0.00", _changed=None)
+            row["bill"] = {**(row.get("bill") or {}), "this_time": "skipped"}
+            return
+        amount = body.get("amount")
+        row.update(status="upcoming", _changed=amount, amount=amount or rule["amount"],
+                   left=amount or rule["amount"])
+        row["bill"] = {**(row.get("bill") or {}), "this_time": "changed" if amount else None}
 
     def _add_person(self, body: dict[str, Any], dry: bool) -> httpx.Response:
         """A key may add a person and nothing else (Ahon's item 179)."""
@@ -333,10 +380,11 @@ class FakeAhon:
                 return _err(422, "kind_direction_mismatch", "kind", direction=person["direction"])
             if Decimal(amount or "0") > abs(bal):
                 return _err(422, "amount_above_balance", "amount", balance=str(abs(bal)))
-        for i, share in enumerate(body.get("shares") or []):
-            owed = -Decimal(self._person(int(share["person_id"]))["balance"])
-            if owed > 0 and Decimal(share["amount"]) > owed:
-                return _err(422, "amount_above_balance", f"shares[{i}].amount", balance=str(owed))
+        if kind == "lent" and body.get("account_id") and body.get("person_id"):
+            owed = self._owed(int(body["person_id"]))
+            if owed > 0 and Decimal(amount or "0") > owed:
+                # A lone loan to someone the owner owes is at most what he owes them.
+                return _err(422, "amount_above_balance", "amount", balance=str(owed))
         if body.get("shares"):
             total = sum(Decimal(s["amount"]) for s in body["shares"])
             if total >= Decimal(amount or "0"):
@@ -411,22 +459,37 @@ class FakeAhon:
         out = [head]
         for share in body["shares"]:
             person = self._person(int(share["person_id"]))
-            kind = "lent"
-            if Decimal(person["balance"]) < 0:
-                kind = "repaid"
-                notices.append(
-                    {"code": "recorded_as_repaid", "params": {"person_id": person["id"]}})
-            part = self._record_from(
-                {"kind": kind, "amount": share["amount"], "account_id": body.get("account_id"),
-                 "debt_id": body.get("debt_id"), "person_id": person["id"],
-                 "title": body.get("title"),
-                 "occurred_at": body.get("occurred_at"), "occurred_on": body.get("occurred_on")},
-                None if dry else self._new_id(),
-            )
-            part["category"] = {"id": 5, "kind": "lent", "name": None}
-            part["_split"] = sid
-            out.append(part)
+            for kind, amount in self._share_parts(person, Decimal(share["amount"]), body):
+                if kind == "repaid":
+                    notices.append(
+                        {"code": "recorded_as_repaid", "params": {"person_id": person["id"]}})
+                part = self._record_from(
+                    {"kind": kind, "amount": str(amount), "account_id": body.get("account_id"),
+                     "debt_id": body.get("debt_id"), "person_id": person["id"],
+                     "title": body.get("title"), "occurred_at": body.get("occurred_at"),
+                     "occurred_on": body.get("occurred_on")},
+                    None if dry else self._new_id(),
+                )
+                part["category"] = {"id": 5, "kind": "lent", "name": None}
+                part["_split"] = sid
+                out.append(part)
         return out
+
+    def _owed(self, pid: int) -> Decimal:
+        """What the owner owes this person, or 0 when it is ₱0.50 or less."""
+        owed = -Decimal(self._person(pid)["balance"])
+        return owed if owed > Decimal("0.50") else Decimal(0)
+
+    def _share_parts(
+        self, person: dict[str, Any], share: Decimal, body: dict[str, Any],
+    ) -> list[tuple[str, Decimal]]:
+        """Ahon's item 178: from an account, repaid up to what is owed, the rest lent."""
+        owed = self._owed(person["id"])
+        if body.get("debt_id") or owed == 0:
+            return [("lent", share)]
+        if share <= owed:
+            return [("repaid", share)]
+        return [("repaid", owed), ("lent", share - owed)]
 
     def _apply(self, rec: dict[str, Any], direction: int) -> None:
         """Move the person's balance the way Ahon does (+ they owe the owner)."""

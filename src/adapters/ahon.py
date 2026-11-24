@@ -197,6 +197,21 @@ class AhonClient:
         _raise_for(status, answer)
         return _envelope(status, answer)
 
+    async def update_time(
+        self, rule_id: int, rule_date: str, body: dict[str, Any], *, dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """PUT one time of a bill: its amount this time, a skip, or back to usual (item 180).
+
+        `rule_date` is the time's date BEFORE any weekend shift (the month's
+        `payments[].rule_date`, or setup's `schedules[].next_on`), never `due_on`.
+        """
+        status, answer = await self._call(
+            "PUT", f"/v1/recurring-schedules/{int(rule_id)}/times/{rule_date}",
+            params=_dry(dry_run), body=body,
+        )
+        _raise_for(status, answer)
+        return answer
+
     async def create_person(
         self, body: dict[str, Any], *, dry_run: bool = False,
     ) -> tuple[int, dict[str, Any]]:
@@ -290,6 +305,12 @@ _WORDS: dict[str, str] = {
     "due_row_already_paid": "that bill time is already paid in full",
     "due_row_skipped": "that bill time was skipped",
     "due_row_closed": "that bill time belongs to a closed month",
+    "due_row_has_records": (
+        "that bill time already has payments recorded against it ({record_ids}); a time "
+        "with payments cannot be skipped until they are removed or moved"
+    ),
+    "schedule_archived": "that bill was removed in Ahon",
+    "month_in_future": "Ahon cannot read a month that has not started yet",
     "money_must_be_string": "the amount was not sent as money",
     "money_format": "the amount is not a valid amount of money",
     "date_format": "the date is not YYYY-MM-DD",

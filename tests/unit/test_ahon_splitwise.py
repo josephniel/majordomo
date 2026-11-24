@@ -523,3 +523,73 @@ async def test_job_writes_land_in_the_approval_log(tmp_path, auto):
                        gate=gate)
     await watcher.check()
     assert rows == [("budget", "delete_transaction", "auto_approved" if auto else "approved")]
+
+
+class TestASharePaidBackThenLent:
+    """Ahon's item 178: a share above what the user owed is one split, two parts."""
+
+    def _two_part_split(self, fake, holder=60, external_id=None, day="2026-11-19"):
+        fake.people[0]["balance"] = "200.00"  # Ana: was owed 100, then lent 200
+        fake.add(id=holder, amount="600.00", occurred_on=day, _split=holder,
+                 external_id=external_id, account={"id": 1, "name": "GCash"},
+                 category={"id": 9, "kind": "normal", "name": "Dining out"}, title="Hapunan")
+        fake.add(id=holder + 1, kind="repaid", amount="100.00", occurred_on=day, _split=holder,
+                 person={"id": 5, "name": "Ana Reyes"}, account={"id": 1, "name": "GCash"})
+        fake.add(id=holder + 2, kind="lent", amount="200.00", occurred_on=day, _split=holder,
+                 person={"id": 5, "name": "Ana Reyes"}, account={"id": 1, "name": "GCash"})
+
+    async def test_the_watch_adopts_a_split_whose_share_is_two_parts(self, tmp_path):
+        fake = FakeAhon.sample()
+        self._two_part_split(fake)
+        watcher = _watcher(tmp_path, fake, FakeSplitwise([_expense()]), _Decider(SURE))
+        assert await watcher.check() is None
+        assert fake.records[60]["external_id"] == "splitwise:500"
+        assert [m for m, *_ in _real_writes(fake)] == ["PUT"]
+
+    async def test_an_edit_of_such_a_split_is_redone_as_one_save(self, tmp_path):
+        """Never a change of the repaid part's amount, which Ahon refuses."""
+        fake = FakeAhon.sample()
+        self._two_part_split(fake, holder=40, external_id="splitwise:500")
+        splitwise = FakeSplitwise([_expense()])
+        watcher = _watcher(tmp_path, fake, splitwise, _Decider(SURE))
+        await watcher.check()
+        watcher.commit()
+        splitwise.expenses = [_expense(cost="1000.0", my_owed="600.0", ana_owed="400.0",
+                                       updated_at="2026-11-21T00:00:00Z")]
+        assert await watcher.check() is None
+        assert fake.records[40]["removed"]
+        assert fake.records[40]["external_id"] is None
+        puts = [b for m, p, b in _real_writes(fake) if m == "PUT"]
+        assert all("amount" not in b for b in puts)
+        new = next(r for r in fake.records.values() if r.get("external_id") == "splitwise:500")
+        anas = sorted((r["kind"], r["amount"]) for r in fake.records.values()
+                      if r.get("_split") == new["id"] and (r.get("person") or {}).get("id") == 5)
+        assert anas == [("lent", "300.00"), ("repaid", "100.00")]
+
+    async def test_reconcile_reads_the_two_parts_as_one_share(self):
+        from adapters.ahonmodel import person_rows
+
+        fake = FakeAhon.sample()
+        self._two_part_split(fake, external_id="splitwise:500")
+        rows = await person_rows(fake.client(), {"id": 5, "name": "Ana Reyes"})
+        [row] = rows
+        assert row["amount"] == "300.00"
+        assert row["type"] == "credit"
+        assert row["external_id"] == "500"
+
+    async def test_the_push_files_the_whole_share(self):
+        fake = FakeAhon.sample()
+        self._two_part_split(fake, holder=70)
+        queue = MemoryPushQueue()
+        await queue.enqueue(70)
+        splitwise = FakeSplitwise()
+        pusher = AhonSplitwisePusher(
+            splitwise_connector=_Clients(splitwise), budget_connector=_Clients(fake.client()),
+            queue=queue, writes=GatedWrites(None, 1),
+        )
+        text = await pusher.check()
+        assert "Ana Reyes 300.00" in text
+        form = splitwise.created[0]
+        assert form["cost"] == "900.00"
+        owed = {v for k, v in form.items() if k.endswith("owed_share")}
+        assert owed == {"600.00", "300.00"}
