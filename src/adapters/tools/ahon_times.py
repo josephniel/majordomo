@@ -145,31 +145,36 @@ def _unreachable(e: Exception) -> ToolResult:
     )
 
 
-def time_tool(client: AhonClient) -> ToolSpec:
-    """Build amend_pending_payment: a dry-run preview, then the change, through the gate."""
+async def _plan(client: AhonClient, args: dict[str, Any]) -> tuple[int, str, dict[str, Any], str]:
+    setup = await read_setup(client)
+    rule_id, when = _time_of(setup, args)
+    return rule_id, when, _body(args), _name(setup, rule_id)
 
-    async def plan(args: dict[str, Any]) -> tuple[int, str, dict[str, Any], str]:
-        setup = await read_setup(client)
-        rule_id, when = _time_of(setup, args)
-        return rule_id, when, _body(args), _name(setup, rule_id)
 
+def _preview(client: AhonClient) -> Any:
     async def preview(args: dict[str, Any], _ctx: ToolContext) -> str:
         try:
-            rule_id, when, body, name = await plan(args)
-            answer = await client.update_time(
-                rule_id, when, {**body, "client_id": new_client_id()}, dry_run=True,
-            )
+            rule_id, when, body, name = await _plan(client, args)
         except PlanRefusedError as r:
             raise PreviewRefusedError(str(r)) from r
         except AhonError as e:
-            raise PreviewRefusedError(
-                _refused(e, str(args.get("id") or args.get("rule_id") or "that bill"),
-                         str(args.get("date") or "that date"))
-            ) from e
+            raise PreviewRefusedError(f"Nothing was changed: {describe(e)}") from e
+        try:
+            answer = await client.update_time(
+                rule_id, when, {**body, "client_id": new_client_id()}, dry_run=True,
+            )
+        except AhonError as e:
+            raise PreviewRefusedError(_refused(e, name, when)) from e
         return (
             f"Ahon would set {name}'s time of {when} to "
             f"{_state(answer.get('time') or {})}.{_moves(answer)}"
         )
+
+    return preview
+
+
+def time_tool(client: AhonClient) -> ToolSpec:
+    """Build amend_pending_payment: a dry-run preview, then the change, through the gate."""
 
     @tool(
         "amend_pending_payment",
@@ -194,11 +199,11 @@ def time_tool(client: AhonClient) -> ToolSpec:
                 "restore": {"type": "boolean"},
             },
         },
-        approval_preview=preview,
+        approval_preview=_preview(client),
     )
     async def amend_pending_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         try:
-            rule_id, when, body, name = await plan(args)
+            rule_id, when, body, name = await _plan(client, args)
         except PlanRefusedError as r:
             return ToolResult.error(str(r))
         except AhonError as e:

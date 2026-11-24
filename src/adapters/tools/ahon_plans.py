@@ -393,9 +393,12 @@ def _refuse_repaid_with_rest(tid: int, rec: dict[str, Any]) -> None:
     """Refuse, in words, what Ahon refuses: a repayment part whose lent rest still stands.
 
     A share above what the user owed someone is one save of two parts (Ahon's item
-    178): a repayment of exactly what was owed, then the rest lent. Changing the
-    repayment's amount (or person) is checked against a balance that counts the lent
-    rest, so Ahon answers 422 kind_direction_mismatch and writes nothing.
+    178): a repayment of exactly what was owed, then the rest lent. Ahon checks a new
+    amount (or person) for the repayment against the balance WITHOUT it, which counts
+    the lent rest: it answers 422 kind_direction_mismatch when the rest is more than
+    was owed, and caps it (amount_above_balance) when the rest is less. Either way the
+    repayment would stop being "what was owed", so this asks for the documented way
+    instead of sending it.
     """
     split = rec.get("split")
     person = rec.get("person")
@@ -413,10 +416,12 @@ def _refuse_repaid_with_rest(tid: int, rec: dict[str, Any]) -> None:
     raise PlanRefusedError(
         f"Nothing was changed. #{tid} is the repayment part of {name}'s share in split "
         f"#{split.get('id')}: it paid back the {peso(rec.get('amount'))} the user owed them, and "
-        f"#{rest.get('id')} lends them the other {peso(rest.get('amount'))}. Ahon does not change "
-        "a repayment's amount or person while its lent part stands. If the share stays above "
-        f"what was owed, change the LENT part instead: amend_transaction transaction_id="
-        f"{rest.get('id')} amount=<new share minus {peso(rec.get('amount'))}>. If it falls to "
+        f"#{rest.get('id')} lends them the other {peso(rest.get('amount'))}. While that lent "
+        "part stands, Ahon checks a new repayment against a balance that already counts it, "
+        "and refuses (422 kind_direction_mismatch, or amount_above_balance). If the share "
+        "stays above what was owed, change the LENT part instead: amend_transaction "
+        f"transaction_id={rest.get('id')} amount=<new share minus {peso(rec.get('amount'))}>. "
+        "If it falls to "
         "what was owed or less, the split is recorded again: delete_transaction on it; if it "
         f"carries an outside id, undo_change transaction_id={split.get('id')} undo="
         '{"external_id": null} to let go of it; then record_split anew (with that outside id).'
