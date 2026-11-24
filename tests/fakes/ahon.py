@@ -333,6 +333,10 @@ class FakeAhon:
                 return _err(422, "kind_direction_mismatch", "kind", direction=person["direction"])
             if Decimal(amount or "0") > abs(bal):
                 return _err(422, "amount_above_balance", "amount", balance=str(abs(bal)))
+        for i, share in enumerate(body.get("shares") or []):
+            owed = -Decimal(self._person(int(share["person_id"]))["balance"])
+            if owed > 0 and Decimal(share["amount"]) > owed:
+                return _err(422, "amount_above_balance", f"shares[{i}].amount", balance=str(owed))
         if body.get("shares"):
             total = sum(Decimal(s["amount"]) for s in body["shares"])
             if total >= Decimal(amount or "0"):

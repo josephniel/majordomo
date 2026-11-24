@@ -35,7 +35,16 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 
-from adapters.ahon import AhonClient, AhonError, Saved, describe, money, new_client_id, peso
+from adapters.ahon import (
+    AhonClient,
+    AhonError,
+    Saved,
+    as_decimal,
+    describe,
+    money,
+    new_client_id,
+    peso,
+)
 from adapters.ahonmodel import format_record
 from adapters.timefmt import DEFAULT_TIMEZONE
 from ports import Connector, PreviewRefusedError, ToolContext, ToolResult, ToolSpec, tool
@@ -165,6 +174,37 @@ def render_preview(req: Request, saved: Saved) -> str:
     return f"{head}:\n{format_record(tx)}{said}{_moves(saved, req)}{_notices(saved)}"
 
 
+def _refusal(req: Request, err: AhonError) -> str:
+    """Word a refusal; a split share above what is owed gets the guide's three saves."""
+    field_name = err.field or ""
+    if err.code != "amount_above_balance" or not field_name.startswith("shares["):
+        return describe(err)
+    try:
+        index = int(field_name.split("[", 1)[1].split("]", 1)[0])
+        share = req.body["shares"][index]
+    except (KeyError, IndexError, ValueError):
+        return describe(err)
+    person = req.setup.person(share.get("person_id")) or {}
+    name = str(person.get("name") or f"person {share.get('person_id')}")
+    owed = as_decimal(err.params.get("balance"))
+    amount = as_decimal(share.get("amount"))
+    rest = as_decimal(req.body.get("amount")) - amount
+    others = [s for i, s in enumerate(req.body["shares"]) if i != index]
+    first = (
+        f"record_split for the rest: total_amount {rest:.2f}, the other shares only"
+        if others else f"record_transaction kind=spending, amount {rest:.2f}, for the user's part"
+    )
+    return (
+        f"{describe(err)}. The user owes {name} {owed:.2f}, and Ahon books a share to someone he "
+        f"owes as repaying them, so it cannot be more than that. Until the owner picks a rule, "
+        f"Ahon's guide records it as three saves, each approved: (1) {first}, on the same "
+        f"account or card, with any outside id; (2) settle_person {name}, amount {owed:.2f}, "
+        f"from the same account; (3) record_split total_amount {amount - owed:.2f} with "
+        f"shares [{{person: {name}, amount: {amount - owed:.2f}}}] (money lent to them). "
+        "Say this to the user before doing it."
+    )
+
+
 async def send(client: AhonClient, req: Request, *, dry_run: bool = False) -> Saved:
     if req.method == "POST":
         return await client.create_transaction(req.fresh(), dry_run=dry_run)
@@ -199,7 +239,7 @@ class _Writer:
             except PlanRefusedError as r:
                 raise PreviewRefusedError(str(r)) from r
             except AhonError as e:
-                raise PreviewRefusedError(f"Ahon would refuse it: {describe(e)}") from e
+                raise PreviewRefusedError(f"Ahon would refuse it: {_refusal(req, e)}") from e
             return render_preview(req, saved)
 
         async def handler(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
@@ -214,7 +254,7 @@ class _Writer:
             try:
                 saved = await send(client, req)
             except AhonError as e:
-                return ToolResult.error(f"Nothing was saved: {describe(e)}")
+                return ToolResult.error(f"Nothing was saved: {_refusal(req, e)}")
             except httpx.HTTPError as e:
                 return _unreachable(e)
             text = render_saved(name, req, saved)

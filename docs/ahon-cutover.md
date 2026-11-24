@@ -141,7 +141,7 @@ migration has to be run by hand. Nothing in Ahon needs migrating for the assista
 |---|---|---|
 | Change or skip one bill time without paying it | 403 `session_required` (`PUT /v1/recurring-schedules/{id}/times/{date}`) | `amend_pending_payment` says so; the date, account and amount go with the payment |
 | Pay a bill time of a month that has closed | 409 `due_row_closed` | listed as late, not offered to pay; the user decides |
-| A split share above what the owner owes that person | 422 `amount_above_balance` on the share | refused before asking, in words; three saves are the guide's workaround |
+| A split share above what the owner owes that person | 422 `amount_above_balance` on the share | refused before asking; the answer spells out the guide's three saves with their amounts, each to be approved |
 | A second outside id on a record (an e-wallet reference beside a Splitwise id) | one `external_id` per record | `add_reference` writes it into the note, which `q=` finds |
 | A person on an ordinary purchase | no such field | kept in the note ("with …") |
 | Undo adding a person | `undo: null` | said in the answer; removed in the app |

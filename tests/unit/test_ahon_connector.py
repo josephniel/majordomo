@@ -305,7 +305,7 @@ class TestRecordTransaction:
     async def test_an_unknown_person_is_refused_with_the_known_names(self):
         fake = FakeAhon.sample()
         out = await _call(fake, "record_transaction", {
-            "kind": "spending", "person": "Jollibee", "amount": "90",
+            "kind": "spending", "person": "Some Shop", "amount": "90",
         })
         assert out.is_error
         assert "Known people: Ana Reyes, Ben Cruz, Carla Diaz" in out.text
@@ -444,6 +444,27 @@ class TestRecordSplit:
         }, MemoryPushQueue())
         assert out.is_error
         assert "already exists in Splitwise" in out.text
+
+    async def test_a_share_above_what_is_owed_gets_the_guides_three_saves(self):
+        fake = FakeAhon.sample()  # the user owes Ben 500
+        spec = _tools(fake)["record_split"]
+        args = {
+            "account_id": 1, "category_id": 9, "total_amount": 2000,
+            "shares": [
+                {"person": "Ana Reyes", "amount": 300}, {"person": "Ben Cruz", "amount": 800},
+            ],
+        }
+        with pytest.raises(PreviewRefusedError) as refused:
+            await spec.approval_preview(args, CTX)
+        text = str(refused.value)
+        assert "owes Ben Cruz 500.00" in text
+        assert "(1) record_split for the rest: total_amount 1200.00" in text
+        assert "(2) settle_person Ben Cruz, amount 500.00" in text
+        assert "(3) record_split total_amount 300.00" in text
+        out = await spec.handler(args, CTX)
+        assert out.is_error
+        assert "three saves" in out.text
+        assert fake.records == {}  # Ahon refused it; nothing was kept
 
     async def test_ahons_refusal_is_worded_and_nothing_is_said_to_be_saved(self):
         fake = FakeAhon.sample()
