@@ -7,7 +7,7 @@ import pytest
 
 from adapters.tools.approvals import GatedToolProvider, WriteApprovalGate
 from adapters.tools.peer import PEER_RELAY_MARK, PeerClient, PeerConnector
-from adapters.tools.work_bulletin import Bulletin
+from adapters.tools.work_bulletin import Bulletin, clean_title
 from adapters.trigger.gateway_mcp import DeveloperRegistry, add_developer
 from adapters.trigger.peer_mcp import PEER_RELAY_MARK as SERVER_MARK
 from adapters.trigger.peer_mcp import PeerServer
@@ -180,8 +180,10 @@ class TestBulletin:
         out = await b.build(date(2026, 11, 25))  # a Wednesday
         titles = [s["title"] for s in out["sections"]]
         assert titles[0] == "Reviews waiting on you (1)"
-        assert out["sections"][0]["items"] == ["crm-docs!1 Fix it"]
-        assert out["sections"][1]["items"] == ["api!2 draft · Mine"]
+        assert out["sections"][0]["items"] == ["crm-docs!1 · Fix it"]
+        assert out["sections"][1] == {"title": "Your MRs ready for review (0; 1 drafts)",
+                                      "items": ["none"]}
+        assert out["events"] == []
         assert any("TS-1 Due one" in i for s in out["sections"] for i in s["items"])
         assert any("TS-2 Busy" in i for s in out["sections"] for i in s["items"])
         assert out["sections"][-1] == {"title": "Release desk",
@@ -196,3 +198,10 @@ class TestBulletin:
                                  "ClickUp unavailable: RuntimeError"]
         assert {"title": "Release desk",
                 "items": ["No production deploys today (Fri-Sun rule)."]} in out["sections"]
+
+
+def test_clean_title_keeps_ticket_drops_noise():
+    t = "Draft: fix(TS-212822): CRM follows the BillEase account (RFC-0134 step 1)"
+    assert clean_title(t) == "TS-212822 CRM follows the BillEase account"
+    assert clean_title("x" * 100, 20).endswith("…")
+    assert len(clean_title("x" * 100, 20)) == 20

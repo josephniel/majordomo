@@ -11,7 +11,9 @@ Profile env (connectors.yaml, profile `default`):
                       (GITLAB_BASE_URL, GITLAB_TOKEN)
     CLICKUP_SECRETS   path to the clickup connector's secrets.json
                       (CLICKUP_API_KEY, CLICKUP_TEAM_ID)
-    MAX_ITEMS         per section (default 6)
+    CALENDAR_OAUTH_PATH, CALENDAR_CREDENTIALS_PATH
+                      the google_calendar connector's files, for today's meetings
+    MAX_ITEMS         per section (default 4)
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -56,11 +59,40 @@ def _cap(items: list[str], n: int) -> list[str]:
     return items[:n] + ([f"… and {len(items) - n} more"] if len(items) > n else [])
 
 
+_PREFIX = re.compile(r"^(?:draft:\s*)?(?:\[[^\]]*\]\s*)?(?:[a-z]+(?:\(([^)]*)\))?!?:\s*)?", re.I)
+_TRAILING_REF = re.compile(r"\s*\((?:RFC|TS)-[^)]*\)?\s*$", re.I)
+
+
+def clean_title(title: str, width: int = 64) -> str:
+    """'Draft: fix(TS-212822): CRM follows … (RFC-0134 step 1)' -> 'TS-212822 CRM follows …'.
+
+    Paper-width: the conventional-commit prefix and Draft marker go, a ticket
+    id in the scope is kept up front, a trailing (RFC-…) note is dropped, and
+    the rest is cut to `width` characters.
+    """
+    t = title.strip()
+    m = _PREFIX.match(t)
+    scope = (m.group(1) or "") if m else ""
+    t = t[m.end() :] if m else t
+    t = _TRAILING_REF.sub("", t).strip()
+    ticket = scope if re.fullmatch(r"[A-Z]+-\d+", scope or "") else ""
+    out = f"{ticket} {t}".strip()
+    return out if len(out) <= width else out[: width - 1].rstrip() + "…"
+
+
 class Bulletin:
-    def __init__(self, gitlab: dict[str, str], clickup: dict[str, str], max_items: int) -> None:
+    def __init__(
+        self,
+        gitlab: dict[str, str],
+        clickup: dict[str, str],
+        max_items: int,
+        calendar: Any = None,
+    ) -> None:
         self.gitlab = gitlab
         self.clickup = clickup
         self.max_items = max_items
+        # CredentialStore for the work Google Calendar, or None
+        self.calendar = calendar
 
     async def _gitlab(self, client: httpx.AsyncClient) -> list[dict[str, Any]]:
         base = self.gitlab.get("GITLAB_BASE_URL", "").rstrip("/")
@@ -87,22 +119,22 @@ class Bulletin:
 
         def line(m: dict[str, Any]) -> str:
             ref = m.get("references", {}).get("full") or f"!{m.get('iid')}"
-            short = ref.split("/")[-1]
-            draft = "draft · " if m.get("draft") else ""
-            return f"{short} {draft}{m.get('title', '')}"
+            return f"{ref.split('/')[-1]} · {clean_title(str(m.get('title', '')))}"
 
         mine_open = [m for m in mine if not m.get("draft")]
 
         def count(rows: list[dict[str, Any]]) -> str:
             return f"{len(rows)}+" if len(rows) >= PAGE else str(len(rows))
+
         return [
             {
                 "title": f"Reviews waiting on you ({count(review)})",
                 "items": _cap([line(m) for m in review], self.max_items),
             },
             {
-                "title": f"Your open MRs ({count(mine)}, {len(mine) - len(mine_open)} draft)",
-                "items": _cap([line(m) for m in mine], self.max_items),
+                "title": f"Your MRs ready for review ({len(mine_open)}; "
+                f"{count([m for m in mine if m.get('draft')])} drafts)",
+                "items": _cap([line(m) for m in mine_open], self.max_items) or ["none"],
             },
         ]
 
@@ -130,7 +162,7 @@ class Bulletin:
         for t in tasks:
             status = str((t.get("status") or {}).get("status") or "").lower()
             ident = t.get("custom_id") or t.get("id")
-            label = f"{ident} {t.get('name', '')} — {status}"
+            label = f"{ident} {clean_title(str(t.get('name', '')), 52)} — {status}"
             due_ms = t.get("due_date")
             if due_ms and datetime.fromtimestamp(int(due_ms) / 1000, UTC) < end_of_day:
                 due.append(label)
@@ -141,6 +173,48 @@ class Bulletin:
             {"title": f"Tickets in flight ({len(active)})", "items": _cap(active, self.max_items)},
         ]
 
+    async def _events(self, client: httpx.AsyncClient, day: date) -> list[dict[str, Any]]:
+        """Return the day's work meetings: start, end, title, place. No attendees, no links."""
+        if self.calendar is None:
+            return []
+        token = await self.calendar.access_token()
+        start = datetime.combine(day, datetime.min.time(), MANILA)
+        r = await client.get(
+            "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "timeMin": start.isoformat(),
+                "timeMax": (start + timedelta(days=1)).isoformat(),
+                "singleEvents": "true",
+                "orderBy": "startTime",
+                "maxResults": "50",
+            },
+        )
+        out = []
+        for ev in r.raise_for_status().json().get("items") or []:
+            if ev.get("status") == "cancelled" or ev.get("eventType") in (
+                "workingLocation",
+                "outOfOffice",
+                "focusTime",
+            ):
+                continue
+            mine = [a for a in ev.get("attendees") or [] if a.get("self")]
+            if mine and mine[0].get("responseStatus") == "declined":
+                continue
+            st, en = ev.get("start") or {}, ev.get("end") or {}
+            loc = str(ev.get("location") or "")
+            out.append(
+                {
+                    "day": day.isoformat(),
+                    "start_time": str(st.get("dateTime", ""))[11:16] or None,
+                    "end_time": str(en.get("dateTime", ""))[11:16] or None,
+                    "title": clean_title(str(ev.get("summary") or "(no title)"), 60),
+                    "location": "" if "://" in loc else loc[:60],
+                    "calendar": "work",
+                }
+            )
+        return out
+
     async def build(self, day: date) -> dict[str, Any]:
         sections: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -148,6 +222,12 @@ class Bulletin:
             results = await asyncio.gather(
                 self._gitlab(client), self._clickup(client, day), return_exceptions=True
             )
+            try:
+                events = await self._events(client, day)
+            except Exception as e:
+                events = []
+                errors.append(f"Work calendar unavailable: {type(e).__name__}")
+                log.warning("work_bulletin: calendar failed: %s", e)
         for source, res in zip(("GitLab", "ClickUp"), results, strict=True):
             if isinstance(res, BaseException):
                 errors.append(f"{source} unavailable: {type(res).__name__}")
@@ -162,7 +242,20 @@ class Bulletin:
         sections.append({"title": "Release desk", "items": [deploy]})
         if errors:
             sections.append({"title": "Wire trouble", "items": errors})
-        return {"date": day.isoformat(), "sections": sections, "errors": errors}
+        return {"date": day.isoformat(), "sections": sections, "events": events, "errors": errors}
+
+
+def _calendar(env: dict[str, str]) -> Any:
+    oauth, creds = env.get("CALENDAR_OAUTH_PATH"), env.get("CALENDAR_CREDENTIALS_PATH")
+    if not oauth or not creds:
+        return None
+    from ._google_oauth import CredentialStore, GoogleOAuthClient
+
+    try:
+        return CredentialStore(GoogleOAuthClient(Path(oauth)), Path(creds))
+    except Exception:
+        log.exception("work_bulletin: calendar credentials unusable")
+        return None
 
 
 def _tools_for(b: Bulletin) -> list[ToolSpec]:
@@ -170,8 +263,10 @@ def _tools_for(b: Bulletin) -> list[ToolSpec]:
         "work_bulletin",
         "The operator's work morning bulletin for a date (default today, Asia/Manila): MRs "
         "waiting on their review, their own open MRs, ClickUp tickets due or in flight, and "
-        "whether today is a deploy day. Titles and ids only. Returns JSON "
-        '{"date", "sections": [{"title", "items"}], "errors"} ready for the printed paper.',
+        "whether today is a deploy day, plus the day's work-calendar meetings. Titles and ids "
+        'only. Returns JSON {"date", "sections": [{"title", "items"}], "events": [{"day", '
+        '"start_time", "end_time", "title", "location", "calendar"}], "errors"}: pass it as '
+        "work_feed, and its events in calendar, to herald_publish/herald_preview.",
         {"type": "object", "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}}},
     )
     async def work_bulletin_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
@@ -201,7 +296,8 @@ class WorkBulletinConnector(Connector):
             out[profile.name] = Bulletin(
                 _load(profile.env.get("GITLAB_SECRETS")),
                 _load(profile.env.get("CLICKUP_SECRETS")),
-                int(profile.env.get("MAX_ITEMS") or 6),
+                int(profile.env.get("MAX_ITEMS") or 4),
+                _calendar(profile.env),
             )
         return out
 
