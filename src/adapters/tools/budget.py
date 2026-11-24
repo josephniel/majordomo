@@ -964,42 +964,128 @@ async def _find_scheduled(client: BudgetClient, sid: int) -> dict[str, Any] | No
     return None
 
 
+MANUAL_SOURCES = {"checking account", "savings account", "cash", "e-wallet", "wallet"}
+DEBT_KINDS = {"credit card", "loan"}
+
+
+def classify_payment(row: dict[str, Any], types: dict[Any, str]) -> str:
+    """Classify what a scheduled row asks of the operator.
+
+    'loan'  — a loan amortization: paid by hand.
+    'debt'  — money moved from a bank to a card or loan (a plan transfer): by hand.
+    'bill'  — paid from checking/savings/cash (rent PDC funding, allowances): by hand.
+    'auto'  — charged to a credit card: the bank applies it, nothing to do.
+    'income'— money coming in.
+    """
+    acct = types.get(row.get("account_id"), "")
+    counter = types.get(row.get("counter_account_id"), "")
+    if acct == "loan":
+        return "loan"
+    if counter in DEBT_KINDS:
+        return "debt"
+    if row.get("type") == "credit":
+        return "income"
+    if acct == "credit card":
+        return "auto"
+    if acct in MANUAL_SOURCES or not acct:
+        return "bill"
+    return "auto"
+
+
 def _schedule_tools(client: BudgetClient) -> list[ToolSpec]:
-    """Read the scheduled-payment queue as data, for the printed paper."""
+    """Read the payment queue and the debt plan as data, for the printed paper."""
 
     @tool(
         "scheduled_payments",
-        "Read-only: every scheduled payment in Ahon from overdue through `days` ahead "
-        "(default 14), for the printed paper. JSON [{id, day, title, amount, currency, "
-        "account, direction: 'out'|'in', overdue}]. Pass it as `payments` to "
-        "herald_publish/herald_preview. Never use it to settle anything.",
-        {"type": "object", "properties": {"days": {"type": "integer"}}},
+        "Read-only: the operator's ACTIONABLE scheduled payments in Ahon from overdue "
+        "through `days` ahead (default 14) — rent and allowances paid from a bank, loan "
+        "amortizations, and transfers to a card or loan. Card-charged items (subscriptions, "
+        "installments) are applied by the bank and left out unless all=true. JSON [{id, day, "
+        "title, amount, currency, account, kind: bill|loan|debt|auto|income, direction, "
+        "overdue}]. Pass it as `payments` to herald_publish/herald_preview.",
+        {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer"},
+                "all": {"type": "boolean", "description": "include card-charged and income rows"},
+            },
+        },
     )
     @_guarded
     async def scheduled_payments_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         days = max(1, min(int(args.get("days") or 14), 31))
         today = datetime.now(_MANILA).date()
         last = (today + timedelta(days=days)).isoformat()
+        types = {a.get("id"): str(a.get("type") or "") for a in await client.list_accounts()}
         data = await client.list_pending_payments()
         rows = []
         for r in (data.get("due") or []) + (data.get("upcoming") or []):
             day = str(r.get("due_date") or "")[:10]
             if not day or day > last:
                 continue
-            rows.append({
-                "id": r.get("id"),
-                "day": day,
-                "title": str(r.get("description") or r.get("tag_name") or "payment")[:60],
-                "amount": r.get("amount"),
-                "currency": r.get("currency") or "PHP",
-                "account": r.get("account_name") or "",
-                "direction": "in" if r.get("type") == "credit" else "out",
-                "overdue": day < today.isoformat(),
-            })
+            kind = classify_payment(r, types)
+            if kind in ("auto", "income") and not args.get("all"):
+                continue
+            rows.append(
+                {
+                    "id": r.get("id"),
+                    "day": day,
+                    "title": str(r.get("description") or r.get("tag_name") or "payment")[:60],
+                    "amount": r.get("amount"),
+                    "currency": r.get("currency") or "PHP",
+                    "account": r.get("account_name") or "",
+                    "kind": kind,
+                    "direction": "in" if kind == "income" else "out",
+                    "overdue": day < today.isoformat(),
+                }
+            )
         rows.sort(key=lambda x: (x["day"], x["title"]))
         return ToolResult.ok(json.dumps(rows, ensure_ascii=False, default=str))
 
-    return [scheduled_payments_tool]
+    @tool(
+        "debt_plan",
+        "Read-only: the saved repayment plan as data for the printed paper — the plan "
+        "month, the debt-free date, what to pay each debt that month (and which scheduled "
+        "payments already cover it), and the balances of the accounts to pay from. Pass it "
+        "as `debt_plan` to herald_publish/herald_preview.",
+        {"type": "object", "properties": {}},
+    )
+    @_guarded
+    async def debt_plan_tool(_args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        plan = await client.repayment_plan()
+        months = plan.get("months") or []
+        summary = plan.get("summary") or {}
+        debts = [
+            {
+                "name": d.get("name"),
+                "kind": d.get("kind"),
+                "plan_amount": d.get("plan_amount"),
+                "scheduled": [
+                    {
+                        "day": s.get("due_date"),
+                        "amount": s.get("amount"),
+                        "title": s.get("description"),
+                    }
+                    for s in d.get("scheduled") or []
+                ],
+                "still_to_schedule": d.get("beyond_schedule"),
+            }
+            for d in plan.get("checklist") or []
+        ]
+        out = {
+            "month": months[0].get("label") if months else None,
+            "debt_free_on": summary.get("debt_free_on") if summary.get("debt_free") else None,
+            "months_left": summary.get("months"),
+            "debts": debts,
+            "pay_from": [
+                {"name": a.get("name"), "balance": a.get("balance")}
+                for a in (plan.get("pay_from") or [])[:4]
+            ],
+            "currency": plan.get("currency") or "PHP",
+        }
+        return ToolResult.ok(json.dumps(out, ensure_ascii=False, default=str))
+
+    return [scheduled_payments_tool, debt_plan_tool]
 
 
 def _pending_tools(client: BudgetClient) -> list[ToolSpec]:
@@ -2014,6 +2100,7 @@ class BudgetConnector(Connector):
         "approve_pending_payment",
         "amend_pending_payment",
         "scheduled_payments",
+        "debt_plan",
     ]
 
     STATUS: ClassVar[dict[str, str]] = {

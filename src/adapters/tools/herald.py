@@ -107,6 +107,10 @@ WORK_FEED = {
     "type": "object",
     "description": "the work bot's bulletin for the Work desk: pass work_bulletin's JSON as is",
 }
+DEBT_PLAN = {
+    "type": "object",
+    "description": "Ahon's repayment plan for the month: pass debt_plan's JSON as is",
+}
 PAYMENTS = {
     "type": "array",
     "description": "Ahon's scheduled payments: pass scheduled_payments' JSON as is",
@@ -360,6 +364,7 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
                 "work_feed": WORK_FEED,
                 "calendar": CALENDAR,
                 "payments": PAYMENTS,
+                "debt_plan": DEBT_PLAN,
             },
             ["editorial"],
         ),
@@ -378,6 +383,7 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
                 "work_feed": WORK_FEED,
                 "calendar": CALENDAR,
                 "payments": PAYMENTS,
+                "debt_plan": DEBT_PLAN,
             }
         ),
     )
@@ -590,13 +596,16 @@ it prints a one-sheet paper on the home printer; it is how they plan the day.
   2. the personal calendars from the date through 14 days ahead, if
      connected: Google Calendar's list_events, and apple_calendar_events
      (already in the paper's shape);
-  3. scheduled_payments (Ahon) for 14 days, if the budget connector is on;
+  3. scheduled_payments (Ahon, 14 days: only payments made by hand — card
+     charges are applied by the bank) and debt_plan, if the budget
+     connector is on;
   4. herald_edition_data for the date;
   5. write the editorial per editorial_schema, weighing ALL of it — the
      work load counts; never call a day free while reviews or overdue
      tickets wait;
   6. herald_publish / herald_preview with work_feed = the bulletin JSON as
-     is, payments = scheduled_payments' JSON as is, and calendar = the
+     is, payments = scheduled_payments' JSON as is, debt_plan = debt_plan's
+     JSON as is, and calendar = the
      bulletin's events plus the personal events as
      [{day, start_time, end_time, title, location, calendar: "personal"}].
   Use only facts from these results. Never add people, pets, habits, places
