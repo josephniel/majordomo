@@ -53,6 +53,7 @@ class FakeAhon:
     categories: list[dict[str, Any]] = field(default_factory=list)
     schedules: list[dict[str, Any]] = field(default_factory=list)
     months: dict[str, dict[str, Any]] = field(default_factory=dict)
+    plan: dict[str, Any] = field(default_factory=dict)
     records: dict[int, dict[str, Any]] = field(default_factory=dict)
     requests: list[tuple[str, str, dict[str, str], Any]] = field(default_factory=list)
     _by_client: dict[str, int] = field(default_factory=dict)
@@ -163,6 +164,7 @@ class FakeAhon:
         answer = {
             ("GET", "/v1/setup"): lambda: httpx.Response(200, json=self._setup()),
             ("GET", "/v1/months/{id}"): lambda: self._month(path),
+            ("GET", "/v1/plan"): lambda: httpx.Response(200, json=self.plan or {"debts": []}),
             ("GET", "/v1/transactions"): lambda: self._list(params),
             ("GET", "/v1/transactions/{id}"): lambda: self._one(path),
             ("POST", "/v1/transactions"): lambda: self._create(
@@ -276,7 +278,11 @@ class FakeAhon:
         return None
 
     def _month(self, path: str) -> httpx.Response:
-        month = self.months.get(path.rsplit("/", 1)[1])
+        wanted = path.rsplit("/", 1)[1]
+        current = str(self.months.get("current", {}).get("month") or "9999-12")
+        if re.fullmatch(r"\d{4}-\d{2}", wanted) and wanted > current:
+            return _err(422, "month_in_future", "month")  # a key reads no later month
+        month = self.months.get(wanted)
         if month is None:
             return _err(404, "not_found", resource="month")
         return httpx.Response(200, json=month)

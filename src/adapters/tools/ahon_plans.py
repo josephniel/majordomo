@@ -554,9 +554,13 @@ def _previous_month(today: str) -> str:
     return f"{year - 1}-12" if month == 1 else f"{year}-{month - 1:02d}"
 
 
-async def due_items(client: AhonClient) -> list[Due]:
-    """List this month's unpaid bills and debt payments, and last month's unpaid bills."""
-    month = await client.month("current")
+async def due_items(client: AhonClient, month: dict[str, Any] | None = None) -> list[Due]:
+    """List this month's unpaid bills and debt payments, and last month's unpaid bills.
+
+    `month` is this month's read when the caller already has it.
+    """
+    if month is None:
+        month = await client.month("current")
     out = [
         Due(str(p.get("kind") or "bill"), p)
         for p in month.get("payments") or []

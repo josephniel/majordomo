@@ -164,6 +164,10 @@ class AhonClient:
         """Return the month: what is due and paid (`current` or `YYYY-MM`)."""
         return await self._get(f"/v1/months/{month}")
 
+    async def plan(self) -> dict[str, Any]:
+        """Return the debt plan, read only (Ahon item 185): this month, the run, its series."""
+        return await self._get("/v1/plan")
+
     async def list_transactions(self, **filters: Any) -> dict[str, Any]:
         """Return one page of records (`month`, `account_id`, `category_id`, `q`, `cursor`)."""
         return await self._get("/v1/transactions", params=filters)

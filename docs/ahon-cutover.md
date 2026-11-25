@@ -13,15 +13,15 @@ the running assistant (merging, the switch, a restart) needs the owner's word on
 | | Budget app (`budget-tracker`, default) | Ahon (`ahon`) |
 |---|---|---|
 | Connector | `adapters/tools/budget.py` | `adapters/tools/ahon.py`, same name `budget` |
-| Tool names | 18 | the 15 used ones, same names; `undo_change` added |
+| Tool names | 18 (20 with `herald-connector`'s `scheduled_payments` and `debt_plan`) | the 18 used ones, same names; `undo_change` added |
 | Splitwise watch, mirror, push | `splitwisewatch.py`, `splitwisemirror.py`, `splitwisepush.py` | `ahonwatch.py`, `ahonmirror.py`, `ahonpush.py` |
 | `reconcile_person`, `link_splitwise_references` | whole-ledger scan | one person's history in Ahon |
 | Fast path ("paid 320 for lunch using GCash") | budget app's lists | Ahon's lists |
 | Push queue | a stamp on the ledger's rows | table `splitwise_push_queue` in the assistant's own Postgres |
 | Jobs' own writes (mirror, retire, link) | straight to the app, no approval | through the approval gate, by tool name |
 
-Left out on purpose (never called in four months): `push_to_splitwise`,
-`find_by_reference`, `repayment_plan`. A call to one of them is an unknown tool.
+Left out on purpose (never called in four months): `push_to_splitwise` and
+`find_by_reference`. A call to one of them is an unknown tool.
 
 Two tools mean something narrower than before. `amend_pending_payment` changes one time
 of a bill in Ahon (its amount this time, a skip, back to the usual; Ahon item 180); the
@@ -55,30 +55,32 @@ approval prompts' names (`budget/record_split`), `approval_log`, and
 4. **The old app's push queue is empty.** Anything still queued for Splitwise in the old
    app is pushed by the old backend only; after the switch it would never go out. The
    parity survey found none on 24 Nov 2026; check again the day before.
-5. **The printed paper's budget tools exist on Ahon too.** The other session's branch
-   `herald-connector` (pushed; `origin/herald-connector` at `2b6a959` when this was
-   written, no pull request) adds to the OLD budget connector, all reading the old budget
-   app: the read-only tools `scheduled_payments` (the payments made by hand, overdue
-   through `days` ahead, as JSON rows `{id, day, title, amount, currency, account, kind,
-   direction, overdue}`) and `debt_plan` (the saved repayment plan for the month: its
-   month, the debt-free date, what to pay each debt, the accounts to pay from), and the
-   helper `classify_payment` (whether a scheduled row is paid by hand, `bill`, `loan` or
-   `debt`, applied by the bank, `auto`, or money in, `income`). The daily printed paper
-   (`herald.py` on that branch) passes both tools' JSON as it is. The Ahon connector has
-   neither tool, so with the switch set the paper's sidebar goes blank on cut-over day,
-   unless before the switch the Ahon connector gets both, under the same names and with
-   the same JSON:
-   - `scheduled_payments` from Ahon's month read (`GET /v1/months/{month}`, its
-     `payments[]`: `kind` bill or debt, `name`, `due_on`, `amount`, `left`, `status`
-     including `past_due` and `skipped`, `account_id`, `debt_id`), with
-     `classify_payment`'s by-hand or by-the-bank split redone on Ahon's kinds. Ahon reads
-     no month after the current one (`month_in_future`), so a window past the month's end
-     needs setup's `schedules[].next_on` for the next times.
-   - `debt_plan` from Ahon's plan (`GET /v1/plan`). A bot's key cannot read the plan
-     today (403 `session_required`), so this needs an Ahon change that opens that read
-     to a key, and the owner's yes for it, before it can be built.
+5. **The printed paper's budget tools are on Ahon too.** The other session's branch
+   `herald-connector` (pushed, no pull request; mirrored at `f11b316`) gives the OLD
+   connector `scheduled_payments` and `debt_plan`, and the paper and the chat prompt call
+   those and `repayment_plan` by name. The Ahon connector has all three, read only, with
+   the same names, arguments and JSON or text (`adapters/tools/ahon_schedule.py`), from
+   what a key reads since Ahon items 184 (a bill's `auto_pay`) and 185 (`GET /v1/plan`):
+   - `scheduled_payments(days, all)`: this month's unpaid bills and debt payments and last
+     month's late bills, with the ids `list_pending_payments` and
+     `approve_pending_payment` use; `kind` `bill`/`auto` from the bill's `auto_pay`,
+     `loan` or `debt` for a loan's or a card's payment, `income` for a pay (ids `pay:…`,
+     which no write tool takes). Ahon reads no later month, so past this month's end it
+     lists only a bill's or pay's next time when setup names it exactly; card and loan
+     payments next month, later times of a weekly bill, and a time a weekend shift
+     moves are not listed (the module's docstring has the whole list). `account` is null
+     where Ahon names none.
+   - `debt_plan()`: this month (the old app's plan began with next month), the
+     debt-free month (`run.last_month`), what the plan puts on each debt, the dated
+     payment row's part (`scheduled`) and the extra beyond it (`still_to_schedule`), and
+     the accounts the debts are paid from.
+   - `repayment_plan(month)`: next month by default; this month with what is left, the
+     due day and the id to pay with; a later month with amounts only, from the run's
+     series, which reaches 72 months at most (Ahon gives no later month, nor a due date
+     for one).
 
-   Nothing of this was built on this branch.
+   The paper prints no amounts (the other session's choice, `f11b316`); the tools still
+   return them, and chat quotes them.
 6. **The old app's waiting bills are matched to Ahon's.** Every item still waiting in the
    old app's scheduled list should be a bill or a debt payment time in Ahon (Bills). After
    the switch the assistant reads only Ahon's month (`list_pending_payments`), and the old
@@ -87,7 +89,7 @@ approval prompts' names (`budget/record_split`), `approval_log`, and
 
 ## The day
 
-Do these in order. Each is reversible until the restart in step 5.
+Do these in order. Each is reversible until the restart in step 6.
 
 1. **Stop the copy from the old app into Ahon.** The lead's scripts under
    `~/personal/ahon-import/additions-*` copy new old-app rows above an id floor; they are
@@ -140,7 +142,12 @@ Do these in order. Each is reversible until the restart in step 5.
    finds it by date and amount and asks again; it does not create it twice. To let these
    run unattended, add `budget__link_external_id` to `approvals.background_auto_approve`.
    That is the owner's choice; every one of these writes is in `approval_log` either way.
-5. **Restart** the assistant (`./manage agent-restart <persona>`).
+5. **Allow the paper's tools.** Where `instances/personal_assistant/persona.yaml` names
+   the budget connector's tools one by one (a list under `connectors:` or under
+   `background_tools:`, the paper's morning run being a background one), add
+   `scheduled_payments`, `debt_plan` and `repayment_plan` for it. A plain `true` or
+   `read_write` already covers them.
+6. **Restart** the assistant (`./manage agent-restart <persona>`).
 
 The push queue's table is created the first time a split is queued or the push runs; no
 migration has to be run by hand. Nothing in Ahon needs migrating for the assistant.
@@ -181,7 +188,8 @@ migration has to be run by hand. Nothing in Ahon needs migrating for the assista
 | A LONE loan (not a share in a split) above what the owner owes that person | 422 `amount_above_balance` | refused before asking, with what Ahon takes: settle what is owed, then lend the rest |
 | Change the amount of a share's repayment part while its lent rest stands | 422 `kind_direction_mismatch` | refused before asking, in words: change the lent part, or remove the split, free its outside id and record it again |
 | A record dated before the start of what it names: an account or card opened later, a person added with an amount owed (their opening), or the user's first day in Ahon | 422 `date_before_opening`, naming that account, card or person | said in words, naming which; nothing written, the date not moved, no opening made up |
-| Read the debt plan (`GET /v1/plan`) | 403 `session_required` | no `debt_plan` on Ahon yet (above, item 5) |
+| Read a month after this one | 422 `month_in_future` | `scheduled_payments` lists past this month's end only what setup dates exactly (above, item 5) |
+| Mark a card's or a loan's payment as automatic (item 184 is a bill's) | always `auto_pay: false` on a debt's row | `scheduled_payments` lists every card and loan payment as paid by hand |
 | A second outside id on a record (an e-wallet reference beside a Splitwise id) | one `external_id` per record | `add_reference` writes it into the note, which `q=` finds |
 | A person on an ordinary purchase | no such field | kept in the note ("with …") |
 | Undo adding a person | `undo: null` | said in the answer; removed in the app |
@@ -191,5 +199,6 @@ migration has to be run by hand. Nothing in Ahon needs migrating for the assista
 The live assistant runs `herald-connector`, which also edits `runtime/container.py`,
 `runtime/providers.py` and `adapters/tools/approvals.py`. `git merge-tree` of this branch
 with `origin/herald-connector` (`2b6a959`) reported no conflicts when this page was
-written. That is the text only: the merged tree was not built or tested, and the tools
-it adds to the old connector have no Ahon twin yet (above, "Before the day", item 5).
+written. That is the text only: the merged tree was not built or tested. The tools it
+adds to the old connector have Ahon twins of the same names in the Ahon connector; only
+one of the two connectors is loaded, by `budget.backend`.

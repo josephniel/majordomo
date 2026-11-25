@@ -893,7 +893,10 @@ class TestConnector:
         names = {s.name for s in conn._build_tools_for_profile(FakeAhon.sample().client())}
         assert names == set(conn.TOOL_NAMES)
         assert names >= conn.WRITE_TOOLS
-        assert not names & {"push_to_splitwise", "find_by_reference", "repayment_plan"}
+        assert not names & {"push_to_splitwise", "find_by_reference"}
+        reads = {"scheduled_payments", "debt_plan", "repayment_plan"}
+        assert reads <= names
+        assert not reads & conn.WRITE_TOOLS
 
 
 class TestCredentials:

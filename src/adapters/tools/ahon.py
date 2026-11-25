@@ -10,11 +10,13 @@ changes.
 
 What is not built here, and why
 -------------------------------
-`push_to_splitwise`, `find_by_reference` and `repayment_plan` were never called
-in four months of the old app (the parity survey's section A), so they are left
-out rather than ported. `amend_pending_payment` changes one time of a bill (Ahon
-item 180); `create_person` adds a person owing nothing with the name alone (Ahon
-item 181: no record is written), or someone who already owes something either way.
+`push_to_splitwise` and `find_by_reference` were never called in four months of
+the old app (the parity survey's section A), so they are left out rather than
+ported. `scheduled_payments`, `debt_plan` and `repayment_plan` (the printed paper's
+and the plan questions', `ahon_schedule.py`) only read. `amend_pending_payment`
+changes one time of a bill (Ahon item 180); `create_person` adds a person owing
+nothing with the name alone (Ahon item 181: no record is written), or someone who
+already owes something either way.
 
 Credentials, by name only
 -------------------------
@@ -66,6 +68,7 @@ from .ahon_plans import (
     split_holder,
 )
 from .ahon_reads import read_tools
+from .ahon_schedule import schedule_tools
 from .ahon_times import time_tool
 
 if TYPE_CHECKING:
@@ -665,6 +668,10 @@ HAPPEN: say so, and never record it a second way to make a balance match.
 A bill that is different THIS time ("the internet is 1,650 this month", "skip the
 water bill this month") -> amend_pending_payment on its id before it is paid.
 
+PLAN QUESTIONS ("how much on the card next month", "when am I debt-free") ->
+repayment_plan (month YYYY-MM). Dated payments over the coming days -> scheduled_payments;
+past this month's end it lists only what Ahon dates, so never call it complete.
+
 TO CORRECT A RECORD -> amend_transaction (it can even move it to another account).
 TO REMOVE ONE -> delete_transaction; removing any part of a split removes the whole
 split. Every save answers its undo: undo_change sends it back. To change WHO owes
@@ -701,7 +708,7 @@ class AhonConnector(Connector):
     })
     TOOL_NAMES: ClassVar[list[str]] = [
         "list_accounts", "list_tags", "recent_transactions", "account_balances",
-        "list_pending_payments",
+        "list_pending_payments", "scheduled_payments", "debt_plan", "repayment_plan",
         "record_transaction", "record_split", "record_transfer", "settle_person",
         "delete_transaction", "amend_transaction", "undo_change", "add_reference",
         "approve_pending_payment", "create_person", "amend_pending_payment",
@@ -712,6 +719,9 @@ class AhonConnector(Connector):
         "recent_transactions": "Reading Ahon records",
         "account_balances": "Reading balances",
         "list_pending_payments": "Checking what is due",
+        "scheduled_payments": "Reading what is due",
+        "debt_plan": "Reading the debt plan",
+        "repayment_plan": "Reading the repayment plan",
         "record_transaction": "Recording in Ahon",
         "record_split": "Recording the split",
         "record_transfer": "Moving money",
@@ -779,6 +789,7 @@ class AhonConnector(Connector):
         writer = _Writer(client, self.push_queue)
         return [
             *read_tools(client, self.push_queue),
+            *schedule_tools(client),
             *_record_tools(writer, can_queue=self.push_queue is not None),
             *_change_tools(writer),
             _person_tool(client),
