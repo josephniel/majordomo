@@ -40,6 +40,15 @@ approvals:
   # background_auto_approve: [gemini, claude, groq]
 
 # ------------------------------------------------------------------
+budget:
+  # Which ledger the budget connector and the Splitwise jobs use:
+  # budget-tracker (the old budget app, the default) or ahon. ahon needs
+  # AHON_API_KEY and AHON_BASE_URL in the budget profile; see
+  # docs/ahon-cutover.md before changing it.
+  # env fallback: BUDGET_BACKEND
+  # backend: budget-tracker
+
+# ------------------------------------------------------------------
 database_connector:
   # statement_timeout for the database connector, in ms. A profile may
   # lower it, never raise it.

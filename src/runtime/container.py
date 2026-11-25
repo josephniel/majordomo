@@ -89,7 +89,7 @@ if TYPE_CHECKING:
     from domain.ledger_fastpath import LedgerFastPath
     from domain.triggers import HeartbeatSource, WatchSource
     from domain.watch_gate import WatchGate
-    from ports import Decider, Question, ToolContext, ToolSpec
+    from ports import Decider, PushQueue, Question, ToolContext, ToolSpec
 
     # One tool's handler, as the agent sees it (approval gate included).
     ToolHandler = Callable[[dict[str, Any], ToolContext], Awaitable[Any]]
@@ -355,8 +355,13 @@ class PersonaRuntime:
             )
             return None
         from domain.ledger_fastpath import LedgerFastPath
+        reader = None
+        if self.settings.budget_backend == "ahon":
+            from adapters.ahonmodel import read_choice_ledger
+            reader = read_choice_ledger
         return LedgerFastPath(
-            self.provider("budget"), record, decider, self.settings.schedule_timezone
+            self.provider("budget"), record, decider, self.settings.schedule_timezone,
+            ledger_reader=reader,
         )
 
     def _gated_handler(self, tool: str) -> ToolHandler | None:
@@ -493,6 +498,27 @@ class PersonaRuntime:
         return WriteApprovalGate(
             background_auto_approve=frozenset(self.settings.background_auto_approve),
         )
+
+    @cached_property
+    def splitwise_push_queue(self) -> PushQueue | None:
+        """The Splitwise push queue in this persona's own database, or None.
+
+        Only for the Ahon budget backend: the old app keeps its queue on its own
+        ledger rows. Built lazily and connecting on first use, so the table is
+        created the first time a split is queued or the push runs — never by a
+        default-backend assistant.
+        """
+        if self.settings.budget_backend != "ahon":
+            return None
+        dsn = self.settings.memory_database_url
+        if not dsn:
+            log.error(
+                "persona %r: budget.backend is ahon but MEMORY_DATABASE_URL is not set; "
+                "Splitwise pushes are off", self.persona.id,
+            )
+            return None
+        from adapters.store.pushqueue import PushQueueDatabase
+        return PushQueueDatabase(dsn, self.persona.id)
 
     # ---- tool providers (registry-driven; see runtime/providers.py) ----
 
@@ -1295,6 +1321,8 @@ class PersonaRuntime:
         chat_id = self._watch_chat_id(cfg, "splitwise_watch")
         if chat_id is None:
             return None
+        if self.settings.budget_backend == "ahon":
+            return self._ahon_splitwise_watch(cfg, chat_id)
         from adapters.trigger.splitwisewatch import (
             SPLITWISE_WATCH_PROMPT_PREAMBLE,
             SplitwiseWatcher,
@@ -1348,6 +1376,8 @@ class PersonaRuntime:
         chat_id = self._watch_chat_id(cfg, "splitwise_push")
         if chat_id is None:
             return None
+        if self.settings.budget_backend == "ahon":
+            return self._ahon_splitwise_push(cfg, chat_id)
         from adapters.trigger.splitwisepush import (
             SPLITWISE_PUSH_PROMPT_PREAMBLE,
             SplitwisePusher,
@@ -1366,6 +1396,70 @@ class PersonaRuntime:
                 group_ids=dict(cfg.get("group_ids") or {}),
             ),
             preamble=SPLITWISE_PUSH_PROMPT_PREAMBLE,
+        )
+
+    def _ahon_splitwise_watch(
+        self, cfg: dict[str, Any], chat_id: ConversationRef,
+    ) -> WatchSource:
+        """Build the Splitwise watch against Ahon: same poll, Ahon's look-up, gated writes.
+
+        Every change it makes (record, remove, link) goes through the approval
+        gate under the budget connector's names, so `background_auto_approve`
+        decides which run unattended, as it does for the model's own writes.
+        """
+        from adapters.ahonwrites import GatedWrites
+        from adapters.trigger.ahonwatch import (
+            AHON_SPLITWISE_WATCH_PROMPT_PREAMBLE,
+            AhonSplitwiseWatcher,
+        )
+        from domain.triggers import WatchSource
+
+        every = max(1, int(cfg.get("every_minutes") or 10))
+        return WatchSource(
+            name="splitwise_watch",
+            cron=f"*/{every} * * * *",
+            conversation=chat_id,
+            watcher=AhonSplitwiseWatcher(
+                splitwise_connector=self.provider("splitwise"),
+                state_file=self.persona.data_dir / "splitwise_watch.json",
+                default_timezone=self.settings.schedule_timezone,
+                budget_connector=self.provider("budget"),
+                decider=self.decider if bool(cfg.get("autonomous")) else None,
+                writes=GatedWrites(self.approval_gate, chat_id),
+            ),
+            preamble=AHON_SPLITWISE_WATCH_PROMPT_PREAMBLE,
+        )
+
+    def _ahon_splitwise_push(
+        self, cfg: dict[str, Any], chat_id: ConversationRef,
+    ) -> WatchSource | None:
+        """Build the Splitwise push from Ahon, its queue in this persona's database."""
+        queue = self.splitwise_push_queue
+        if queue is None:
+            log.error("persona %r: splitwise_push on Ahon needs its queue; disabled",
+                      self.persona.id)
+            return None
+        from adapters.ahonwrites import GatedWrites
+        from adapters.trigger.ahonpush import (
+            AHON_SPLITWISE_PUSH_PROMPT_PREAMBLE,
+            AhonSplitwisePusher,
+        )
+        from domain.triggers import WatchSource
+
+        every = max(1, int(cfg.get("every_minutes") or 15))
+        return WatchSource(
+            name="splitwise_push",
+            cron=f"*/{every} * * * *",
+            conversation=chat_id,
+            watcher=AhonSplitwisePusher(
+                splitwise_connector=self.provider("splitwise"),
+                budget_connector=self.provider("budget"),
+                queue=queue,
+                writes=GatedWrites(self.approval_gate, chat_id),
+                default_timezone=self.settings.schedule_timezone,
+                group_ids=dict(cfg.get("group_ids") or {}),
+            ),
+            preamble=AHON_SPLITWISE_PUSH_PROMPT_PREAMBLE,
         )
 
     @cached_property

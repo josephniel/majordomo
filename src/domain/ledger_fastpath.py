@@ -194,11 +194,16 @@ class LedgerFastPath:
         record: Callable[[dict[str, Any], ToolContext], Awaitable[Any]],
         decider: Decider,
         tz: str | None = None,
+        # How the ledger's option sets are read. The old budget app's by default;
+        # Ahon's (adapters.ahonmodel.read_choice_ledger) when it is the backend.
+        # The questions, the floors and the write are the same either way.
+        ledger_reader: Callable[[Any], Awaitable[Ledger | None]] | None = None,
     ) -> None:
         self._budget = budget
         self._record = record
         self._decider = decider
         self._tz = tz or DEFAULT_TIMEZONE
+        self._read_ledger = ledger_reader or Ledger.read
 
     async def handle(self, chat_id: ConversationRef, text: str) -> str | None:
         """Record what the message says, or None to let the turn happen.
@@ -220,7 +225,7 @@ class LedgerFastPath:
         client = self._client()
         if client is None:
             return None
-        ledger = await Ledger.read(client)
+        ledger = await self._read_ledger(client)
         if ledger is None:
             return None
 

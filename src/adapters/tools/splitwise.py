@@ -1131,6 +1131,12 @@ class SplitwiseConnector(Connector):
         ]
         budgets = self._budget_connector.build_clients() if self._budget_connector else {}
         budget = next(iter(budgets.values()), None)
-        if budget is not None:
-            tools += _reconcile_tools(client, budget, tz)
-        return tools
+        if budget is None:
+            return tools
+        if getattr(self._budget_connector, "LEDGER", "") == "ahon":
+            # Same two tools, read from Ahon (budget.backend: ahon). Imported here so
+            # the default path never loads the Ahon modules.
+            from .ahon_splitwise import reconcile_tools
+            queue = getattr(self._budget_connector, "push_queue", None)
+            return tools + reconcile_tools(client, budget, tz, queue)
+        return tools + _reconcile_tools(client, budget, tz)

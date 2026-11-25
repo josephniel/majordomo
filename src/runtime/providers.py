@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from adapters.tools import ServiceRegistry
     from adapters.tools.approvals import WriteApprovalGate
     from domain.schedule import ScheduleEngine
-    from ports import ConversationMirror, ConversationRef, ToolProvider
+    from ports import ConversationMirror, ConversationRef, PushQueue, ToolProvider
 
     from .persona import Persona
     from .settings import RuntimeSettings
@@ -88,6 +88,10 @@ class RuntimeContext(Protocol):
     # persona set write_approval: false.
     @property
     def approval_gate(self) -> WriteApprovalGate | None: ...
+    # Tenth, added for the Ahon budget backend: the Splitwise push queue in the
+    # assistant's own database. None unless `budget.backend: ahon`.
+    @property
+    def splitwise_push_queue(self) -> PushQueue | None: ...
 
     # Narrow on purpose: PersonaRuntime.create_agent takes more, but a provider
     # builder only ever needs these two, so only these two are promised.
@@ -339,13 +343,44 @@ def _build_clickup(rt: RuntimeContext) -> ToolProvider:
     return ClickUpConnector(config=rt.config)
 
 
+BUDGET_TRACKER = "budget-tracker"
+AHON = "ahon"
+BUDGET_BACKENDS = (BUDGET_TRACKER, AHON)
+
+
+def budget_backend(rt: RuntimeContext) -> str:
+    """Which ledger the budget connector uses: the old app (default) or Ahon.
+
+    An unknown value stops the assistant rather than picking one: guessing the
+    ledger would write somebody's money into the wrong system.
+    """
+    value = rt.settings.budget_backend or BUDGET_TRACKER
+    if value not in BUDGET_BACKENDS:
+        raise SystemExit(
+            f"persona {rt.persona.id!r}: budget.backend is {value!r}; it must be one of "
+            f"{', '.join(BUDGET_BACKENDS)}"
+        )
+    return value
+
+
+def _budget_connector(rt: RuntimeContext) -> ToolProvider:
+    if budget_backend(rt) == AHON:
+        # Imported only on this branch: the default never loads the Ahon modules.
+        from adapters.tools.ahon import AhonConnector
+        return AhonConnector(
+            config=rt.config,
+            push_queue=rt.splitwise_push_queue,
+            timezone=rt.settings.schedule_timezone,
+        )
+    from adapters.tools import BudgetConnector
+    return BudgetConnector(config=rt.config)
+
+
 def _build_splitwise(rt: RuntimeContext) -> ToolProvider:
-    from adapters.tools import BudgetConnector, SplitwiseConnector
+    from adapters.tools import SplitwiseConnector
     # For comparing the two. Only the clients are read from it, and it holds nothing
     # but config, so a second instance costs nothing.
-    budget = (
-        BudgetConnector(config=rt.config) if rt.persona.is_connector_enabled("budget") else None
-    )
+    budget = _budget_connector(rt) if rt.persona.is_connector_enabled("budget") else None
     return SplitwiseConnector(
         config=rt.config, default_timezone=rt.settings.schedule_timezone,
         budget_connector=budget,
@@ -353,8 +388,7 @@ def _build_splitwise(rt: RuntimeContext) -> ToolProvider:
 
 
 def _build_budget(rt: RuntimeContext) -> ToolProvider:
-    from adapters.tools import BudgetConnector
-    return BudgetConnector(config=rt.config)
+    return _budget_connector(rt)
 
 
 def _build_gitlab(rt: RuntimeContext) -> ToolProvider:

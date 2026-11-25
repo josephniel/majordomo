@@ -111,6 +111,10 @@ class RuntimeSettings:
     # connector name, a qualified tool, or a bare tool name.
     background_auto_approve: tuple[str, ...] = ()
 
+    # ---- the budget ledger ----
+    # "budget-tracker" (the old app, default) or "ahon". See runtime/providers.py.
+    budget_backend: str = "budget-tracker"
+
     # ---- schedules / proactivity ----
     schedule_timezone: str | None = None
     webhook_token: str = ""
