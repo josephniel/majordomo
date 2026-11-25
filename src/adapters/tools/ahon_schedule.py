@@ -148,6 +148,18 @@ def _row(
     }
 
 
+def _payable(r: dict[str, Any], this_month: str, everything: bool) -> bool:
+    """Unpaid, with something left, and (unless all=true) not in a closed month.
+
+    A bill time in a closed month takes no payment (409 due_row_closed), so by
+    default it is not something to pay; import leftovers showed paid October
+    bills as overdue (2026-11-25).
+    """
+    if r.get("status") not in (*_OPEN, "not_paid") or as_decimal(r.get("left")) <= 0:
+        return False
+    return everything or str(r.get("due_on") or "")[:7] >= this_month
+
+
 async def _scheduled(client: AhonClient, days: int, everything: bool) -> list[dict[str, Any]]:
     month = await client.month("current")
     setup = await read_setup(client)
@@ -166,7 +178,7 @@ async def _scheduled(client: AhonClient, days: int, everything: bool) -> list[di
     # list_pending_payments shows and approve_pending_payment takes.
     for due in await due_items(client, month):
         r = due.row
-        if r.get("status") not in (*_OPEN, "not_paid") or as_decimal(r.get("left")) <= 0:
+        if not _payable(r, this_month, everything):
             continue
         rule = setup.schedule(r.get("rule_id")) or {}
         account = r.get("account_id") or rule.get("account_id")
@@ -373,7 +385,8 @@ def schedule_tools(client: AhonClient) -> list[ToolSpec]:
 
     @tool(
         "scheduled_payments",
-        "Read-only: the operator's ACTIONABLE scheduled payments (Ahon) from overdue through "
+        "Read-only: the operator's ACTIONABLE scheduled payments (Ahon) from overdue (this "
+        "month; closed months take no payment and are left out unless all=true) through "
         "`days` ahead (default 14, at most 31): bills paid by hand (rent, allowances), loan "
         "payments, and card payments. Bills the bank or a card takes by itself (auto) and pay "
         "(income) are left out unless all=true. JSON [{id, day, title, amount, currency, "

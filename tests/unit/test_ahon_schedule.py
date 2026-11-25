@@ -153,14 +153,14 @@ class TestScheduledPayments:
     async def test_by_default_only_what_is_paid_by_hand_in_fourteen_days(self):
         rows = await _rows(_fake())
         assert [(r["id"], r["day"], r["kind"], r["overdue"]) for r in rows] == [
-            ("bill:3:2026-10-05", "2026-10-05", "bill", True),   # last month's rent, late
+            # last month's late rent is left out by default: a closed month takes no payment
             ("bill:3:2026-11-05", "2026-11-05", "bill", True),
             ("debt:3:2026-11-01", "2026-11-28", "debt", False),  # the card, the plan's amount
             ("bill:6:2026-11-30", "2026-11-30", "bill", False),
             ("bill:3:2026-12-05", "2026-12-05", "bill", False),  # next month, named by next_on
             ("bill:5:2026-12-08", "2026-12-08", "bill", False),
         ]
-        card = rows[2]
+        card = rows[1]
         assert card == {"id": "debt:3:2026-11-01", "day": "2026-11-28", "title": "Blue card",
                         "amount": "3500.00", "currency": "PHP", "account": "GCash",
                         "kind": "debt", "direction": "out", "overdue": False}
