@@ -409,6 +409,31 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
         for x in args.get("done_routine_ids") or []:
             n = int(str(x).lstrip("Rr"))
             lines.append(f"✓ R{n} — {routines.get(n, '⚠️ NOT ON THIS PAPER')}")
+        lines.extend(
+            f"→ tomorrow: {x} — {todos.get(int(x), '⚠️ NOT ON THIS PAPER')}"
+            for x in args.get("moved_todo_ids") or []
+        )
+        lines.extend(
+            f"✕ drop: {x} — {todos.get(int(x), '⚠️ NOT ON THIS PAPER')}"
+            for x in args.get("dropped_todo_ids") or []
+        )
+        pays = {p["ref"]: p.get("title") for p in sheet.get("payments", [])}
+        lines.extend(
+            f"₱ paid: {r} — {pays.get(str(r).upper(), '⚠️ NOT ON THIS PAPER')} "
+            "(you'll approve the payment itself next)"
+            for r in args.get("paid_payment_refs") or []
+        )
+        decs = {d["ref"]: d for d in sheet.get("decisions", [])}
+        for a in args.get("decision_answers") or []:
+            d = decs.get(str(a.get("ref", "")).upper())
+            ch = str(a.get("choice", "")).lower().strip("() ")
+            opt = d["options"]["abc".index(ch)] if d and ch in "abc"[: len(d["options"])] else None
+            lines.append(
+                f"◯ {a.get('ref')}: {d['question'] if d else '⚠️ NOT ON THIS PAPER'} → "
+                f"{opt or '⚠️ no such option ' + ch}"
+            )
+        if args.get("question"):
+            lines.append(f"✉ question for the editor: {args['question']}")
         lines += [
             f"+ todo: {t.get('title')}" for t in args.get("new_todos") or [] if isinstance(t, dict)
         ]
@@ -420,15 +445,36 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
 
     @tool(
         "herald_evening_record",
-        "Record what the operator marked on the printed paper (from their evening photo): ticked "
-        "todo boxes by number, ticked routines (R<n>), new todos/notes they wrote, and the three "
-        "wins. Call herald_evening_sheet first. Only include what is clearly marked; when unsure "
-        "about a mark, leave it out and ask. The operator confirms with a tap.",
+        "Record what the operator marked on the printed paper (from a photo): todo boxes by "
+        "number — ✓ done, → moved to tomorrow, ✕ dropped; ticked routines (R<n>); ticked To pay "
+        "boxes (P<n>); circled answers to 'Your call' (D<n> + a/b/c); the question written under "
+        "'Ask the editor'; new todos/notes; the three wins. Call herald_evening_sheet first. Only "
+        "include what is clearly marked; when unsure about a mark, leave it out and ask. The "
+        "operator confirms with a tap. The result lists payments marked paid, decisions answered "
+        "and the letter: act on those next.",
         _schema(
             {
                 "date": DATE,
                 "done_todo_ids": {"type": "array", "items": I},
                 "done_routine_ids": {"type": "array", "items": S},
+                "moved_todo_ids": {"type": "array", "items": I, "description": "boxes marked →"},
+                "dropped_todo_ids": {"type": "array", "items": I, "description": "boxes marked ✕"},
+                "paid_payment_refs": {"type": "array", "items": S, "description": "P1, P2… ticked"},
+                "decision_answers": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ref": S,
+                            "choice": {"type": "string", "enum": ["a", "b", "c"]},
+                        },
+                        "required": ["ref", "choice"],
+                    },
+                },
+                "question": {
+                    "type": "string",
+                    "description": "what is written under Ask the editor",
+                },
                 "new_todos": {
                     "type": "array",
                     "items": {
@@ -458,8 +504,19 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
         fields = {k: args[k] for k in ("title", "due", "priority") if args.get(k) not in (None, "")}
         return _result(await client.call("todo_add", {**fields, "area": "work"}))
 
+    @tool(
+        "herald_letter_answer",
+        "Answer an 'Ask the editor' question (its id comes from herald_evening_record's `letter`). "
+        "Give a short, plain answer for the paper — it prints under Letters tomorrow, without "
+        "peso amounts. Also answer him in chat right away, where amounts are fine.",
+        _schema({"id": I, "answer": S}, ["id", "answer"]),
+    )
+    async def herald_letter_answer_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
+        return _result(await client.call("letter_answer", args))
+
     return [
         *specs,
+        herald_letter_answer_tool,
         herald_publish_tool,
         herald_preview_tool,
         herald_evening_record_tool,
@@ -516,6 +573,7 @@ class HeraldConnector(Connector):
         "herald_preview",
         "herald_evening_record",
         "herald_add_work_todo",
+        "herald_letter_answer",
     ]
     WRITE_TOOLS = frozenset(set(TOOL_NAMES) - READ_TOOLS)
     # Gated even when the persona exempts this connector from approvals:
@@ -623,9 +681,22 @@ it prints a one-sheet paper on the home printer; it is how they plan the day.
   true, days: up to 31) or list_pending_payments for dated items.
   Use only facts from these results. Never add people, pets, habits, places
   or plans that are not in the data — no "coffee and the dogs".
-- Evening photo of the marked-up paper: read the date/No. on the masthead,
-  call herald_evening_sheet for that date, map each tick to its box number,
-  read the notebook lines and "tonight's three wins", then call
-  herald_evening_record. The operator confirms the reading with a tap. If a
-  mark is unclear, say which box and ask instead of guessing.
+- The paper is interactive. Each morning, also fill `decisions` (Your call):
+  0-3 multiple-choice questions only he can answer, from things you are
+  unsure about in the data — an overdue payment that may be paid already, a
+  todo with no date, a card charge with no split partner. Never pad.
+- A photo of the marked-up paper (any time of day): read the date/No. on the
+  masthead, call herald_evening_sheet for that date, then read every mark —
+  todo boxes ✓ done / → tomorrow / ✕ dropped; R<n> routines; P<n> payments
+  ticked; D<n> answers circled (a/b/c); the question written under "Ask the
+  editor"; notebook lines and tonight's three wins. Call herald_evening_record;
+  he confirms the reading with a tap. If a mark is unclear, ask about that box.
+  Then act on what it returns, in this order:
+  1. payments_marked_paid: settle each with the budget's approve_pending_payment
+     (its own tap) — use the id given;
+  2. decisions_answered: do what each chosen answer means (update a todo,
+     settle or remind about a payment, record a split) with the right tools;
+     if an answer needs no action, say so;
+  3. letter: answer his question in chat now (amounts are fine there), then
+     herald_letter_answer with a short paper version (no amounts).
 """
