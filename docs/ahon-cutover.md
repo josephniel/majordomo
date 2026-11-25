@@ -198,7 +198,8 @@ migration has to be run by hand. Nothing in Ahon needs migrating for the assista
 
 The live assistant runs `herald-connector`, which also edits `runtime/container.py`,
 `runtime/providers.py` and `adapters/tools/approvals.py`. `git merge-tree` of this branch
-with `origin/herald-connector` (`2b6a959`) reported no conflicts when this page was
-written. That is the text only: the merged tree was not built or tested. The tools it
-adds to the old connector have Ahon twins of the same names in the Ahon connector; only
-one of the two connectors is loaded, by `budget.backend`.
+with `origin/herald-connector` (`f11b316`) reported no conflicts when this page was
+written. That is the text only: the merged tree was not built or tested. In it both
+connectors define `scheduled_payments`, `debt_plan` and `repayment_plan`, each once, and
+`runtime/providers.py` loads only one of them under the name `budget`, by
+`budget.backend`, so no name is offered twice.

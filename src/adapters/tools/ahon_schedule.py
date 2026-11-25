@@ -250,7 +250,8 @@ async def _debt_plan(client: AhonClient) -> dict[str, Any]:
     return {
         "month": _label(str(plan.get("month") or "")) if plan.get("month") else None,
         "debt_free_on": run.get("last_month") if run.get("finishes") else None,
-        "months_left": run.get("months_count"),
+        # A run that never finishes counts Ahon's whole horizon (360): no end, so null.
+        "months_left": run.get("months_count") if run.get("finishes") else None,
         "debts": [_plan_debt(d, rows.get(d.get("id"))) for d in debts],
         "pay_from": pay_from[:PAY_FROM_MAX],
         "currency": CURRENCY,

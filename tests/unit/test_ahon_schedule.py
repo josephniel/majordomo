@@ -255,9 +255,10 @@ class TestDebtPlan:
 
     async def test_a_plan_that_does_not_finish_has_no_debt_free_month(self):
         fake = _fake()
-        fake.plan["run"].update(finishes=False, last_month=None)
+        fake.plan["run"].update(finishes=False, last_month=None, months_count=360)
         out = json.loads((await _tools(fake)["debt_plan"].handler({}, None)).text)
         assert out["debt_free_on"] is None
+        assert out["months_left"] is None
 
 
 class TestRepaymentPlan:
