@@ -608,10 +608,12 @@ it prints a one-sheet paper on the home printer; it is how they plan the day.
      JSON as is, and calendar = the
      bulletin's events plus the personal events as
      [{day, start_time, end_time, title, location, calendar: "personal"}].
-  News: herald_edition_data includes today's top headlines as `news`. Set
-  news_pick to the ONE story that matters most to the operator (national,
-  economic or policy impact over local crime) and news_why to one short
-  sentence built from the headline alone — never add facts it doesn't state.
+  News: herald_edition_data's `news` holds recent headlines on two beats,
+  Philippine politics and AI. Set news_picks to at most ONE per topic — the
+  story that genuinely warrants knowing (real policy, power or legal moves;
+  major AI releases or breakthroughs; not gossip, crime or stock chatter) —
+  or leave a topic out when nothing qualifies. `why` is one short sentence
+  from the headline alone; never add facts it doesn't state.
   Never write peso amounts anywhere in the editorial (the operator checks
   amounts in the app); name what is due, when, and to whom.
   That rule is for the PAPER only. In chat, amounts are wanted: when the
