@@ -216,6 +216,61 @@ def _merge_events(given: Any, work: Any, apple: Any) -> list[dict[str, Any]]:
     return merged
 
 
+def _evening_lines(sheet: dict[str, Any], args: dict[str, Any]) -> str:
+    """List every mark read from the photo, mapped to its item, for the approval prompt."""
+    todos = {t["id"]: t["title"] for t in sheet.get("todos", [])}
+    routines = {r["id"]: r["title"] for r in sheet.get("routines", [])}
+    lines = [f"Evening record for paper No. {sheet['edition_no']} ({sheet['date']}):"]
+    lines.extend(
+        f"✓ {x} — {todos.get(int(x), '⚠️ NOT ON THIS PAPER')}"
+        for x in args.get("done_todo_ids") or []
+    )
+    for x in args.get("done_routine_ids") or []:
+        n = int(str(x).lstrip("Rr"))
+        lines.append(f"✓ R{n} — {routines.get(n, '⚠️ NOT ON THIS PAPER')}")
+    lines.extend(
+        f"→ tomorrow: {x} — {todos.get(int(x), '⚠️ NOT ON THIS PAPER')}"
+        for x in args.get("moved_todo_ids") or []
+    )
+    lines.extend(
+        f"✕ drop: {x} — {todos.get(int(x), '⚠️ NOT ON THIS PAPER')}"
+        for x in args.get("dropped_todo_ids") or []
+    )
+    pays = {p["ref"]: p.get("title") for p in sheet.get("payments", [])}
+    lines.extend(
+        f"₱ paid: {r} — {pays.get(str(r).upper(), '⚠️ NOT ON THIS PAPER')} "
+        "(you'll approve the payment itself next)"
+        for r in args.get("paid_payment_refs") or []
+    )
+    decs = {d["ref"]: d for d in sheet.get("decisions", [])}
+    for a in args.get("decision_answers") or []:
+        d = decs.get(str(a.get("ref", "")).upper())
+        ch = str(a.get("choice", "")).lower().strip("() ")
+        opt = d["options"]["abc".index(ch)] if d and ch in "abc"[: len(d["options"])] else None
+        lines.append(
+            f"◯ {a.get('ref')}: {d['question'] if d else '⚠️ NOT ON THIS PAPER'} → "
+            f"{opt or '⚠️ no such option ' + ch}"
+        )
+    prog = {p["ref"]: p for p in sheet.get("progress", [])}
+    for x in args.get("progress") or []:
+        p = prog.get(str(x.get("ref", "")).upper())
+        lines.append(
+            f"▮ {x.get('ref')}: {x.get('done')} of {p['total']} {p['label']}"
+            if p
+            else f"▮ {x.get('ref')}: ⚠️ NOT ON THIS PAPER"
+        )
+    if args.get("question"):
+        lines.append(f"✉ question for the editor: {args['question']}")
+    lines += [
+        f"+ todo: {t.get('title')}" for t in args.get("new_todos") or [] if isinstance(t, dict)
+    ]
+    lines += [f"+ note: {n}" for n in args.get("new_notes") or []]
+    lines += [f"★ win: {w}" for w in args.get("wins") or []]
+    if sheet.get("already_recorded"):
+        lines.append("(this day was already recorded once; this adds to it)")
+    return "\n".join(lines)
+
+
 def _tools_for(
     client: HeraldClient, preview_dir: Path, fetch: Fetch | None = None
 ) -> list[ToolSpec]:
@@ -471,49 +526,7 @@ def _tools_for(
         if not body.get("ok"):
             return f"⚠️ {body.get('error')}"
         sheet = body["result"]
-        todos = {t["id"]: t["title"] for t in sheet.get("todos", [])}
-        routines = {r["id"]: r["title"] for r in sheet.get("routines", [])}
-        lines = [f"Evening record for paper No. {sheet['edition_no']} ({sheet['date']}):"]
-        lines.extend(
-            f"✓ {x} — {todos.get(int(x), '⚠️ NOT ON THIS PAPER')}"
-            for x in args.get("done_todo_ids") or []
-        )
-        for x in args.get("done_routine_ids") or []:
-            n = int(str(x).lstrip("Rr"))
-            lines.append(f"✓ R{n} — {routines.get(n, '⚠️ NOT ON THIS PAPER')}")
-        lines.extend(
-            f"→ tomorrow: {x} — {todos.get(int(x), '⚠️ NOT ON THIS PAPER')}"
-            for x in args.get("moved_todo_ids") or []
-        )
-        lines.extend(
-            f"✕ drop: {x} — {todos.get(int(x), '⚠️ NOT ON THIS PAPER')}"
-            for x in args.get("dropped_todo_ids") or []
-        )
-        pays = {p["ref"]: p.get("title") for p in sheet.get("payments", [])}
-        lines.extend(
-            f"₱ paid: {r} — {pays.get(str(r).upper(), '⚠️ NOT ON THIS PAPER')} "
-            "(you'll approve the payment itself next)"
-            for r in args.get("paid_payment_refs") or []
-        )
-        decs = {d["ref"]: d for d in sheet.get("decisions", [])}
-        for a in args.get("decision_answers") or []:
-            d = decs.get(str(a.get("ref", "")).upper())
-            ch = str(a.get("choice", "")).lower().strip("() ")
-            opt = d["options"]["abc".index(ch)] if d and ch in "abc"[: len(d["options"])] else None
-            lines.append(
-                f"◯ {a.get('ref')}: {d['question'] if d else '⚠️ NOT ON THIS PAPER'} → "
-                f"{opt or '⚠️ no such option ' + ch}"
-            )
-        if args.get("question"):
-            lines.append(f"✉ question for the editor: {args['question']}")
-        lines += [
-            f"+ todo: {t.get('title')}" for t in args.get("new_todos") or [] if isinstance(t, dict)
-        ]
-        lines += [f"+ note: {n}" for n in args.get("new_notes") or []]
-        lines += [f"★ win: {w}" for w in args.get("wins") or []]
-        if sheet.get("already_recorded"):
-            lines.append("(this day was already recorded once; this adds to it)")
-        return "\n".join(lines)
+        return _evening_lines(sheet, args)
 
     @tool(
         "herald_evening_record",
@@ -541,6 +554,15 @@ def _tools_for(
                             "choice": {"type": "string", "enum": ["a", "b", "c"]},
                         },
                         "required": ["ref", "choice"],
+                    },
+                },
+                "progress": {
+                    "type": "array",
+                    "description": "work tallies W1, W2…: the number in the blank or ticked boxes",
+                    "items": {
+                        "type": "object",
+                        "properties": {"ref": S, "done": I},
+                        "required": ["ref", "done"],
                     },
                 },
                 "question": {
@@ -753,7 +775,8 @@ it prints a one-sheet paper on the home printer; it is how they plan the day.
   todo with no date, a card charge with no split partner. Never pad.
 - A photo of the marked-up paper (any time of day): read the date/No. on the
   masthead, call herald_evening_sheet for that date, then read every mark —
-  todo boxes ✓ done / → tomorrow / ✕ dropped; R<n> routines; P<n> payments
+  todo boxes ✓ done / → tomorrow / ✕ dropped; W<n> work tallies (the number in
+  the blank, or the ticked tally boxes, e.g. 7 of 11 reviews); R<n> routines; P<n> payments
   ticked; D<n> answers circled (a/b/c); the question written under "Ask the
   editor"; notebook lines and tonight's three wins. Call herald_evening_record;
   he confirms the reading with a tap. If a mark is unclear, ask about that box.
