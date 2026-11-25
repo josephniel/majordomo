@@ -197,6 +197,14 @@ class TestScheduledPayments:
         rows = await _rows(fake)
         assert "bill:10:2026-12-07" in {r["id"] for r in rows}
 
+    async def test_a_row_with_no_due_day_is_left_out_as_the_old_tool_did(self):
+        fake = _fake()
+        fake.months["current"]["payments"][4]["due_on"] = None  # the card: any day this month
+        rows = await _rows(fake)
+        assert "debt:3:2026-11-01" not in {r["id"] for r in rows}
+        listed = await _tools(fake)["list_pending_payments"].handler({}, None)
+        assert "id=debt:3:2026-11-01" in listed.text
+
     async def test_days_is_held_between_one_and_thirty_one(self):
         far = await _rows(_fake(), days=400, all=True)
         assert max(r["day"] for r in far) <= "2026-12-26"
@@ -302,6 +310,15 @@ class TestRepaymentPlan:
     ])
     async def test_a_month_outside_the_run_says_so(self, month, said):
         assert said in await self._text(_fake(), month=month)
+
+    async def test_a_run_that_finishes_past_the_series_does_not_claim_a_month_paid_off(self):
+        fake = _fake()
+        fake.plan["run"].update(last_month="2033-04", series_ends_before_plan=True)
+        text = await self._text(fake, month="2029-01")
+        assert "The plan has no month 2029-01: Ahon gives its months only through 2028-05." in text
+        assert "Nothing is due" not in text
+        assert "Nothing is due in 2033-05: in the plan every debt is paid off by 2033-04." in (
+            await self._text(fake, month="2033-05"))
 
     async def test_a_run_longer_than_ahon_gives_says_how_far_it_answers(self):
         fake = _fake()

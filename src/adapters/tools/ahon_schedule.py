@@ -33,6 +33,9 @@ time `money.next_pay` gives with its own due day. Not knowable, so never listed:
   - a card's or loan's payment left unpaid in an ended month (an ended month's `debts`
     give only what was paid), and a bill left unpaid two or more months back (as
     `list_pending_payments`, this reads one month back).
+Also left out, as the old tool left out a row with no date: a row of this month whose
+`due_on` is null ("any day this month", e.g. a card with no due day), which
+`list_pending_payments` still shows.
 """
 from __future__ import annotations
 
@@ -334,9 +337,10 @@ def _plan_text(  # noqa: C901, PLR0912 - the old tool's text, line by line
         early = f"The plan has no month {chosen}: it starts with {_label(start)}."
         return "\n".join([*lines, early])
     if i >= count:
-        if run.get("finishes"):
-            tail = f"Nothing is due in {chosen}: in the plan every debt is paid off by {end}."
-        else:
+        paid_off = str(run.get("last_month") or "")
+        if run.get("finishes") and paid_off and chosen > paid_off:
+            tail = f"Nothing is due in {chosen}: in the plan every debt is paid off by {paid_off}."
+        else:  # the series stops short of the month (72 months at most)
             tail = f"The plan has no month {chosen}: Ahon gives its months only through {end}."
         return "\n".join([*lines, tail])
     lines.append(f"Pay in {_label(chosen)}:")

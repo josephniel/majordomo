@@ -142,11 +142,12 @@ Do these in order. Each is reversible until the restart in step 6.
    finds it by date and amount and asks again; it does not create it twice. To let these
    run unattended, add `budget__link_external_id` to `approvals.background_auto_approve`.
    That is the owner's choice; every one of these writes is in `approval_log` either way.
-5. **Allow the paper's tools.** Where `instances/personal_assistant/persona.yaml` names
-   the budget connector's tools one by one (a list under `connectors:` or under
-   `background_tools:`, the paper's morning run being a background one), add
-   `scheduled_payments`, `debt_plan` and `repayment_plan` for it. A plain `true` or
-   `read_write` already covers them.
+5. **Allow the paper's tools.** Where `instances/personal_assistant/persona.yaml` gives
+   the budget connector a list of tool names (under `connectors:`, and under
+   `background_tools:` when that is set, which unattended runs use instead), the list
+   means only those tools (`Persona.allowed_tool_names`): add `scheduled_payments`,
+   `debt_plan` and `repayment_plan` to it. A plain `true` or `read_write` already covers
+   them.
 6. **Restart** the assistant (`./manage agent-restart <persona>`).
 
 The push queue's table is created the first time a split is queued or the push runs; no
