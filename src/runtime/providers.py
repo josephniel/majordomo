@@ -359,7 +359,22 @@ def _build_budget(rt: RuntimeContext) -> ToolProvider:
 
 def _build_herald(rt: RuntimeContext) -> ToolProvider:
     from adapters.tools import HeraldConnector
-    return HeraldConnector(config=rt.config)
+    from ports import ToolContext, ToolResult, as_tool_result
+
+    async def fetch(connector: str, tool_name: str, args: dict[str, Any]) -> ToolResult:
+        # Read tools of other providers, called directly (lazy: the herald is
+        # itself one of the gated services).
+        for view in rt.gated_services:
+            if getattr(view, "name", "") != connector:
+                continue
+            for specs in view.builtin_servers().values():
+                for spec in specs:
+                    if spec.name == tool_name:
+                        raw = await spec.handler(args, ToolContext(chat_id=None, background=True))
+                        return as_tool_result(raw)
+        return ToolResult.error(f"{connector}.{tool_name} is not enabled")
+
+    return HeraldConnector(config=rt.config, fetch=fetch)
 
 
 def _build_apple_calendar(rt: RuntimeContext) -> ToolProvider:

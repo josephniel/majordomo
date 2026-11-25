@@ -29,6 +29,7 @@ import json
 import logging
 import shutil
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -149,7 +150,75 @@ def _simple(
     return handler
 
 
-def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
+# fetch(connector, tool, args) -> ToolResult: another provider's tool, called directly.
+Fetch = Callable[[str, str, dict[str, Any]], Awaitable[ToolResult]]
+
+
+async def _sources(fetch: Fetch | None, args: dict[str, Any]) -> dict[str, Any]:
+    """Fetch the paper's data straight from its tools, never through the model.
+
+    2026-11-25: after the Ahon switch the model fetched the new plan and then
+    passed an older preview's payments and plan from its conversation to the
+    paper. Data the model only relays is data it can relay wrong, so the
+    publish tools fetch it themselves; the model writes the editorial.
+    """
+    if fetch is None:
+        return args
+    day = str(args.get("date") or "") or None
+    out = dict(args)
+
+    async def get(connector: str, name: str, a: dict[str, Any]) -> Any:
+        try:
+            res = await fetch(connector, name, a)
+        except Exception as e:  # a missing source leaves that box empty, never the paper
+            log.warning("herald: %s.%s failed: %s", connector, name, e)
+            return None
+        if res.is_error:
+            log.warning("herald: %s.%s: %s", connector, name, res.text[:200])
+            return None
+        try:
+            return json.loads(res.text)
+        except ValueError:
+            return None
+
+    payments = await get("budget", "scheduled_payments", {"days": 14})
+    plan = await get("budget", "debt_plan", {})
+    work = await get("peer", "work_bulletin", {"date": day} if day else {})
+    apple = await get(
+        "apple_calendar",
+        "apple_calendar_events",
+        {"start": day, "days": 14} if day else {"days": 14},
+    )
+    if isinstance(payments, list):
+        out["payments"] = payments
+    if isinstance(plan, dict):
+        out["debt_plan"] = plan
+    if isinstance(work, dict):
+        out["work_feed"] = work
+    out["calendar"] = _merge_events(args.get("calendar"), work, apple)
+    return out
+
+
+def _merge_events(given: Any, work: Any, apple: Any) -> list[dict[str, Any]]:
+    """Google events from the model; work and Apple events as fetched; no duplicates."""
+    events = [e for e in (given or []) if isinstance(e, dict) and e.get("calendar") != "work"]
+    if isinstance(work, dict):
+        events += [e for e in work.get("events") or [] if isinstance(e, dict)]
+    if isinstance(apple, list):
+        events += [e for e in apple if isinstance(e, dict)]
+    seen: set[tuple[Any, Any, str]] = set()
+    merged = []
+    for e in events:
+        key = (e.get("day"), e.get("start_time"), str(e.get("title", "")).strip().lower())
+        if key not in seen:
+            seen.add(key)
+            merged.append(e)
+    return merged
+
+
+def _tools_for(
+    client: HeraldClient, preview_dir: Path, fetch: Fetch | None = None
+) -> list[ToolSpec]:
     specs = [
         _simple(
             client,
@@ -370,7 +439,9 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
         ),
     )
     async def herald_publish_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
-        return _result(await client.call("edition_publish", {**args, "print": True}))
+        return _result(
+            await client.call("edition_publish", {**await _sources(fetch, args), "print": True})
+        )
 
     @tool(
         "herald_preview",
@@ -390,7 +461,8 @@ def _tools_for(client: HeraldClient, preview_dir: Path) -> list[ToolSpec]:
     async def herald_preview_tool(args: dict[str, Any], _ctx: ToolContext) -> ToolResult:
         return _result(
             await client.call(
-                "edition_publish", {**args, "print": False, "copy_to": str(preview_dir)}
+                "edition_publish",
+                {**await _sources(fetch, args), "print": False, "copy_to": str(preview_dir)},
             )
         )
 
@@ -590,8 +662,9 @@ class HeraldConnector(Connector):
         }
     )
 
-    def __init__(self, config: ServiceRegistry) -> None:
+    def __init__(self, config: ServiceRegistry, fetch: Fetch | None = None) -> None:
         self._config = config
+        self._fetch = fetch
 
     @property
     def preview_dir(self) -> Path:
@@ -621,7 +694,7 @@ class HeraldConnector(Connector):
 
     def builtin_servers(self) -> dict[str, list[ToolSpec]]:
         return {
-            name: _tools_for(client, self.preview_dir)
+            name: _tools_for(client, self.preview_dir, self._fetch)
             for name, client in self.build_clients().items()
         }
 
@@ -661,17 +734,10 @@ it prints a one-sheet paper on the home printer; it is how they plan the day.
   5. write the editorial per editorial_schema, weighing ALL of it — the
      work load counts; never call a day free while reviews or overdue
      tickets wait;
-  6. herald_publish / herald_preview with work_feed = the bulletin JSON as
-     is, payments = scheduled_payments' JSON as is, debt_plan = debt_plan's
-     JSON as is, and calendar = the
-     bulletin's events plus the personal events as
-     [{day, start_time, end_time, title, location, calendar: "personal"}].
-  News: herald_edition_data's `news` holds recent headlines on two beats,
-  Philippine politics and AI. Set news_picks to at most ONE per topic — the
-  story that genuinely warrants knowing (real policy, power or legal moves;
-  major AI releases or breakthroughs; not gossip, crime or stock chatter) —
-  or leave a topic out when nothing qualifies. `why` is one short sentence
-  from the headline alone; never add facts it doesn't state.
+  6. herald_publish / herald_preview with the editorial and calendar = the
+     personal Google events as [{day, start_time, end_time, title, location,
+     calendar: "personal"}]. The tools fetch the payments, debt plan, work
+     bulletin, work meetings and Apple events themselves — don't pass them.
   Never write peso amounts anywhere in the editorial (the operator checks
   amounts in the app); name what is due, when, and to whom.
   That rule is for the PAPER only. In chat, amounts are wanted: when the

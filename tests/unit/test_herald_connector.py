@@ -161,3 +161,73 @@ class TestExemption:
         asked = await self._run(exempt=True)
         assert len(asked) == 1
         assert "photo_write" in asked[0]
+
+
+class TestSourcesFetchedNotRelayed:
+    """2026-11-25: the model passed a stale plan; the publish tools fetch their own data."""
+
+    async def test_fetched_data_overrides_what_the_model_passed(self):
+        from adapters.tools.herald import _sources
+
+        async def fetch(connector, name, _args):
+            data = {
+                ("budget", "scheduled_payments"): [
+                    {"id": "b:1", "day": "2026-11-30", "title": "Fresh"}
+                ],
+                ("budget", "debt_plan"): {"month": "Nov 2026", "debts": []},
+                ("peer", "work_bulletin"): {
+                    "sections": [],
+                    "events": [
+                        {
+                            "day": "2026-11-25",
+                            "start_time": "15:00",
+                            "title": "Standup",
+                            "calendar": "work",
+                        }
+                    ],
+                },
+                ("apple_calendar", "apple_calendar_events"): [
+                    {
+                        "day": "2026-11-28",
+                        "start_time": None,
+                        "title": "Bill",
+                        "calendar": "personal",
+                    }
+                ],
+            }[(connector, name)]
+            return ToolResult.ok(json.dumps(data))
+
+        out = await _sources(
+            fetch,
+            {
+                "date": "2026-11-25",
+                "payments": [{"title": "Stale"}],
+                "debt_plan": {"month": "Dec 2026"},
+                "calendar": [
+                    {
+                        "day": "2026-11-25",
+                        "start_time": "15:00",
+                        "title": "standup",
+                        "calendar": "work",
+                    },
+                    {
+                        "day": "2026-11-26",
+                        "start_time": "09:00",
+                        "title": "Google thing",
+                        "calendar": "personal",
+                    },
+                ],
+            },
+        )
+        assert out["payments"][0]["title"] == "Fresh"
+        assert out["debt_plan"]["month"] == "Nov 2026"
+        assert sorted(e["title"] for e in out["calendar"]) == ["Bill", "Google thing", "Standup"]
+
+    async def test_a_failing_source_leaves_the_model_value(self):
+        from adapters.tools.herald import _sources
+
+        async def fetch(_c, _n, _a):
+            return ToolResult.error("down")
+
+        out = await _sources(fetch, {"payments": [{"title": "Given"}]})
+        assert out["payments"][0]["title"] == "Given"
