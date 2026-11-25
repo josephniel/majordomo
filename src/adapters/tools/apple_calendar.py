@@ -1,9 +1,9 @@
-"""Apple (iCloud) Calendar connector — read-only, over CalDAV.
+"""Apple (iCloud) Calendar connector, over CalDAV.
 
-One tool, `apple_calendar_events`, returning events from every iCloud
-calendar in a date window, already shaped for the printed paper:
-[{day, start_time, end_time, title, location, calendar}]. There is no write
-tool: the connector only issues PROPFIND and REPORT.
+`apple_calendar_events` returns events from every iCloud calendar in a date
+window, already shaped for the printed paper:
+[{day, start_time, end_time, title, location, calendar, uid}]. The write tools
+(add/update/delete, approval-gated) live in apple_calendar_write.py.
 
 Auth is the Apple ID plus an app-specific password (account.apple.com →
 Sign-In and Security → App-Specific Passwords), never the Apple ID password.
@@ -128,7 +128,7 @@ def parse_events(ics: str, calendar: str) -> list[dict[str, Any]]:
             continue
         head, value = line.split(":", 1)
         name, _, params = head.partition(";")
-        if name.upper() in ("DTSTART", "DTEND", "SUMMARY", "LOCATION", "STATUS"):
+        if name.upper() in ("DTSTART", "DTEND", "SUMMARY", "LOCATION", "STATUS", "UID"):
             cur[name.upper()] = (params, value)
     return events
 
@@ -153,6 +153,7 @@ def _event(raw: dict[str, tuple[str, str]], calendar: str) -> dict[str, Any] | N
         "location": "" if "://" in loc else loc.split("\n")[0][:60],
         "calendar": "personal",
         "source": f"apple:{calendar}",
+        "uid": raw.get("UID", ("", ""))[1].strip(),
     }
 
 
@@ -231,8 +232,9 @@ def _tools_for(client: AppleCalendarClient) -> list[ToolSpec]:
         "apple_calendar_events",
         "Events from the operator's Apple (iCloud) calendars, read-only. Args: start "
         "(YYYY-MM-DD, default today, Asia/Manila), days (default 15, max 31). Returns JSON "
-        '[{"day", "start_time", "end_time", "title", "location", "calendar"}] in the '
-        "shape herald_publish/herald_preview take as `calendar`.",
+        '[{"day", "start_time", "end_time", "title", "location", "calendar", "uid"}] in the '
+        "shape herald_publish/herald_preview take as `calendar` (uid is for "
+        "apple_calendar_update_event/delete_event).",
         {
             "type": "object",
             "properties": {
@@ -267,7 +269,16 @@ def _tools_for(client: AppleCalendarClient) -> list[ToolSpec]:
 class AppleCalendarConnector(Connector):
     name = "apple_calendar"
     TRIGGER_KEYWORDS = ("apple", "icloud", "calendar", "event", "herald", "paper", "schedule")
-    TOOL_NAMES: ClassVar[list[str]] = ["apple_calendar_events"]
+    TOOL_NAMES: ClassVar[list[str]] = [
+        "apple_calendar_events",
+        "apple_calendar_calendars",
+        "apple_calendar_add_event",
+        "apple_calendar_update_event",
+        "apple_calendar_delete_event",
+    ]
+    WRITE_TOOLS = frozenset(
+        {"apple_calendar_add_event", "apple_calendar_update_event", "apple_calendar_delete_event"}
+    )
 
     def __init__(self, config: ServiceRegistry) -> None:
         self._config = config
@@ -287,4 +298,6 @@ class AppleCalendarConnector(Connector):
         return out
 
     def builtin_servers(self) -> dict[str, list[ToolSpec]]:
-        return {name: _tools_for(c) for name, c in self.build_clients().items()}
+        from .apple_calendar_write import write_tools
+
+        return {name: [*_tools_for(c), *write_tools(c)] for name, c in self.build_clients().items()}

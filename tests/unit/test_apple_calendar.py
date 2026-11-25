@@ -128,4 +128,4 @@ async def test_tool_output_shape(monkeypatch):
     spec = _tools_for(AppleCalendarClient("me@example.com", "app-pw"))[0]
     res = await spec.handler({"start": "2026-11-25", "days": 7}, None)
     rows = json.loads(res.text)
-    assert set(rows[0]) == {"day", "start_time", "end_time", "title", "location", "calendar"}
+    assert set(rows[0]) == {"day", "start_time", "end_time", "title", "location", "calendar", "uid"}
