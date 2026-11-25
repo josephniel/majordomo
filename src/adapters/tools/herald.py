@@ -608,6 +608,8 @@ it prints a one-sheet paper on the home printer; it is how they plan the day.
      JSON as is, and calendar = the
      bulletin's events plus the personal events as
      [{day, start_time, end_time, title, location, calendar: "personal"}].
+  Never write peso amounts anywhere in the editorial (the operator checks
+  amounts in the app); name what is due, when, and to whom.
   Use only facts from these results. Never add people, pets, habits, places
   or plans that are not in the data — no "coffee and the dogs".
 - Evening photo of the marked-up paper: read the date/No. on the masthead,
